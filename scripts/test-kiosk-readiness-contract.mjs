@@ -44,6 +44,7 @@ assert.match(convexHttp, /internal\.kiosks\.internalHealthSnapshot/, 'Public hea
 assert.match(convexHttp, /inventory_truncated:[\s\S]*inventoryTruncated/, 'A fleet beyond the bounded read should degrade with an explicit truncation fact instead of failing health');
 assert.match(convexHttp, /missingDeviceHealth \+ staleDeviceHealth > 0/, 'Missing or stale device telemetry must degrade aggregate kiosk health');
 assert.match(convexHttp, /health\.reported_at/, 'Device telemetry freshness must use its own report time instead of kiosk sync alone');
+assert.match(convexHttp, /typeof kiosk\.health\.camera_ok !== 'boolean'[\s\S]*typeof kiosk\.health\.model_ok !== 'boolean'[\s\S]*missingDeviceHealth/, 'Fresh but incomplete device telemetry must remain degraded');
 assert.doesNotMatch(convexHttp.slice(convexHttp.indexOf('const publicKioskHealth')), /checkedAtMs:\s*v\./, 'Public callers must not supply the health evaluation clock');
 
 console.log('Kiosk readiness page contract passed');
