@@ -83,6 +83,76 @@ export const list = query({
   },
 });
 
+type PublicKioskStatus = "online" | "stale" | "offline" | "never_synced";
+
+function publicKioskStatus(lastSync: string | undefined, now: number): PublicKioskStatus {
+  if (!lastSync) return "never_synced";
+  const ageMs = now - new Date(lastSync).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= 15 * 60 * 1000) return "online";
+  if (ageMs <= 60 * 60 * 1000) return "stale";
+  return "offline";
+}
+
+/**
+ * Credential-free, aggregate-only health for external availability monitors.
+ * Deliberately excludes kiosk identifiers, names, locations, workers, scans,
+ * schedules, attendance records, and recognition details.
+ */
+export const publicHealthSummary = query({
+  args: {},
+  returns: v.object({
+    status: v.union(v.literal("healthy"), v.literal("degraded")),
+    timestamp: v.string(),
+    kiosks: v.object({
+      total: v.float64(),
+      online: v.float64(),
+      stale: v.float64(),
+      offline: v.float64(),
+      never_synced: v.float64(),
+      reporting_device_health: v.float64(),
+      device_issues: v.float64(),
+      queued_records: v.float64(),
+    }),
+  }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const kiosks = await ctx.db
+      .query("kiosks")
+      .withIndex("by_active", (q) => q.eq("active", true))
+      .collect();
+    const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
+    let reportingDeviceHealth = 0;
+    let deviceIssues = 0;
+    let queuedRecords = 0;
+
+    for (const kiosk of kiosks) {
+      counts[publicKioskStatus(kiosk.lastSync, now)] += 1;
+      if (!kiosk.health) continue;
+      reportingDeviceHealth += 1;
+      if (kiosk.health.cameraOk === false || kiosk.health.modelOk === false || kiosk.health.degradedReason) {
+        deviceIssues += 1;
+      }
+      queuedRecords += Math.max(0, kiosk.health.queuedLogs ?? 0) + Math.max(0, kiosk.health.queuedAttempts ?? 0);
+    }
+
+    const degraded = kiosks.length === 0
+      || counts.stale + counts.offline + counts.never_synced > 0
+      || deviceIssues > 0
+      || queuedRecords > 0;
+    return {
+      status: degraded ? "degraded" as const : "healthy" as const,
+      timestamp: new Date(now).toISOString(),
+      kiosks: {
+        total: kiosks.length,
+        ...counts,
+        reporting_device_health: reportingDeviceHealth,
+        device_issues: deviceIssues,
+        queued_records: queuedRecords,
+      },
+    };
+  },
+});
+
 export const create = mutation({
   args: { name: v.string(), kioskId: v.optional(v.string()), type: v.string(), location: v.optional(v.string()) },
   returns: v.object({ id: v.id("kiosks"), name: v.string(), type: v.string() }),

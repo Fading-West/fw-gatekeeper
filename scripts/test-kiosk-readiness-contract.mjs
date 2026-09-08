@@ -29,4 +29,17 @@ const kiosksRoute = read('src/app/api/kiosks/route.ts');
 assert.match(kiosksRoute, /hasValidPortalSession\(req,\s*\['admin'\]\)/, 'Kiosks API should enforce admin role at the route layer, not rely on middleware alone');
 assert.match(kiosksRoute, /unauthorizedApiResponse/, 'Kiosks API should return the standard unauthorized response for non-admin users');
 
+const publicHealthRoute = read('src/app/api/health/kiosks/route.ts');
+assert.match(publicHealthRoute, /api\.kiosks\.publicHealthSummary/, 'Public kiosk health should use the aggregate-only Convex query');
+assert.match(publicHealthRoute, /Cache-Control['"]:\s*['"]no-store/, 'Public kiosk health should not be cached by intermediaries');
+assert.doesNotMatch(publicHealthRoute, /api\.kiosks\.list/, 'Public kiosk health must not expose the role-protected kiosk inventory');
+
+const kioskQueries = read('convex/kiosks.ts');
+const publicSummary = kioskQueries.slice(
+  kioskQueries.indexOf('export const publicHealthSummary'),
+  kioskQueries.indexOf('export const create'),
+);
+assert.match(publicSummary, /status:[\s\S]*timestamp:[\s\S]*kiosks:/, 'Public kiosk health should return a timestamped aggregate status');
+assert.doesNotMatch(publicSummary, /serializeKiosk|workerName|attendance|location:/, 'Public kiosk health must not return kiosk identity, worker, attendance, or location details');
+
 console.log('Kiosk readiness page contract passed');
