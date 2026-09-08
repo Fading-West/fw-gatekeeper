@@ -110,6 +110,8 @@ export const publicHealthSummary = query({
       offline: v.float64(),
       never_synced: v.float64(),
       reporting_device_health: v.float64(),
+      missing_device_health: v.float64(),
+      stale_device_health: v.float64(),
       device_issues: v.float64(),
       queued_records: v.float64(),
       inventory_truncated: v.boolean(),
@@ -125,12 +127,22 @@ export const publicHealthSummary = query({
     const kiosks = kioskPage.slice(0, 100);
     const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
     let reportingDeviceHealth = 0;
+    let missingDeviceHealth = 0;
+    let staleDeviceHealth = 0;
     let deviceIssues = 0;
     let queuedRecords = 0;
 
     for (const kiosk of kiosks) {
       counts[publicKioskStatus(kiosk.lastSync, now)] += 1;
-      if (!kiosk.health) continue;
+      if (!kiosk.health) {
+        missingDeviceHealth += 1;
+        continue;
+      }
+      const healthAgeMs = now - new Date(kiosk.health.reportedAt).getTime();
+      if (!Number.isFinite(healthAgeMs) || healthAgeMs < 0 || healthAgeMs > 15 * 60 * 1000) {
+        staleDeviceHealth += 1;
+        continue;
+      }
       reportingDeviceHealth += 1;
       if (kiosk.health.cameraOk === false || kiosk.health.modelOk === false || kiosk.health.degradedReason) {
         deviceIssues += 1;
@@ -141,6 +153,7 @@ export const publicHealthSummary = query({
     const degraded = kiosks.length === 0
       || inventoryTruncated
       || counts.stale + counts.offline + counts.never_synced > 0
+      || missingDeviceHealth + staleDeviceHealth > 0
       || deviceIssues > 0
       || queuedRecords > 0;
     return {
@@ -150,6 +163,8 @@ export const publicHealthSummary = query({
         total: kiosks.length,
         ...counts,
         reporting_device_health: reportingDeviceHealth,
+        missing_device_health: missingDeviceHealth,
+        stale_device_health: staleDeviceHealth,
         device_issues: deviceIssues,
         queued_records: queuedRecords,
         inventory_truncated: inventoryTruncated,
