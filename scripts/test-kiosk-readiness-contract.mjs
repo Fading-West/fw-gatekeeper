@@ -41,5 +41,6 @@ const publicSummary = kioskQueries.slice(
 );
 assert.match(publicSummary, /status:[\s\S]*timestamp:[\s\S]*kiosks:/, 'Public kiosk health should return a timestamped aggregate status');
 assert.doesNotMatch(publicSummary, /serializeKiosk|workerName|attendance|location:/, 'Public kiosk health must not return kiosk identity, worker, attendance, or location details');
+assert.doesNotMatch(publicSummary, /Date\.now\(\)|\.collect\(\)/, 'Public kiosk health should stay deterministic and bound its indexed fleet query');
 
 console.log('Kiosk readiness page contract passed');

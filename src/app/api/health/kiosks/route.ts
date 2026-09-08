@@ -6,7 +6,7 @@ import { api } from '../../../../../convex/_generated/api';
 
 export async function GET() {
   try {
-    const summary = await convex.query(api.kiosks.publicHealthSummary, {});
+    const summary = await convex.query(api.kiosks.publicHealthSummary, { checkedAtMs: Date.now() });
     return NextResponse.json(summary, {
       headers: { 'Cache-Control': 'no-store' },
     });

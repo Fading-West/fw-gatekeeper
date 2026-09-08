@@ -99,7 +99,7 @@ function publicKioskStatus(lastSync: string | undefined, now: number): PublicKio
  * schedules, attendance records, and recognition details.
  */
 export const publicHealthSummary = query({
-  args: {},
+  args: { checkedAtMs: v.float64() },
   returns: v.object({
     status: v.union(v.literal("healthy"), v.literal("degraded")),
     timestamp: v.string(),
@@ -114,12 +114,13 @@ export const publicHealthSummary = query({
       queued_records: v.float64(),
     }),
   }),
-  handler: async (ctx) => {
-    const now = Date.now();
+  handler: async (ctx, args) => {
+    const now = args.checkedAtMs;
     const kiosks = await ctx.db
       .query("kiosks")
       .withIndex("by_active", (q) => q.eq("active", true))
-      .collect();
+      .take(101);
+    if (kiosks.length > 100) throw new Error("Kiosk health inventory limit exceeded");
     const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
     let reportingDeviceHealth = 0;
     let deviceIssues = 0;
