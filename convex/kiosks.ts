@@ -112,15 +112,17 @@ export const publicHealthSummary = query({
       reporting_device_health: v.float64(),
       device_issues: v.float64(),
       queued_records: v.float64(),
+      inventory_truncated: v.boolean(),
     }),
   }),
   handler: async (ctx, args) => {
     const now = args.checkedAtMs;
-    const kiosks = await ctx.db
+    const kioskPage = await ctx.db
       .query("kiosks")
       .withIndex("by_active", (q) => q.eq("active", true))
       .take(101);
-    if (kiosks.length > 100) throw new Error("Kiosk health inventory limit exceeded");
+    const inventoryTruncated = kioskPage.length > 100;
+    const kiosks = kioskPage.slice(0, 100);
     const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
     let reportingDeviceHealth = 0;
     let deviceIssues = 0;
@@ -137,6 +139,7 @@ export const publicHealthSummary = query({
     }
 
     const degraded = kiosks.length === 0
+      || inventoryTruncated
       || counts.stale + counts.offline + counts.never_synced > 0
       || deviceIssues > 0
       || queuedRecords > 0;
@@ -149,6 +152,7 @@ export const publicHealthSummary = query({
         reporting_device_health: reportingDeviceHealth,
         device_issues: deviceIssues,
         queued_records: queuedRecords,
+        inventory_truncated: inventoryTruncated,
       },
     };
   },
