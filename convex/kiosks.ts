@@ -1,4 +1,4 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
@@ -83,93 +83,25 @@ export const list = query({
   },
 });
 
-type PublicKioskStatus = "online" | "stale" | "offline" | "never_synced";
-
-function publicKioskStatus(lastSync: string | undefined, now: number): PublicKioskStatus {
-  if (!lastSync) return "never_synced";
-  const ageMs = now - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= 15 * 60 * 1000) return "online";
-  if (ageMs <= 60 * 60 * 1000) return "stale";
-  return "offline";
-}
-
 /**
- * Credential-free, aggregate-only health for external availability monitors.
- * Deliberately excludes kiosk identifiers, names, locations, workers, scans,
- * schedules, attendance records, and recognition details.
+ * Supplies the credential-free Convex HTTP health action with the minimum
+ * fields needed to aggregate fleet status. It is not callable through api.*.
  */
-export const publicHealthSummary = query({
-  args: { checkedAtMs: v.float64() },
-  returns: v.object({
-    status: v.union(v.literal("healthy"), v.literal("degraded")),
-    timestamp: v.string(),
-    kiosks: v.object({
-      total: v.float64(),
-      online: v.float64(),
-      stale: v.float64(),
-      offline: v.float64(),
-      never_synced: v.float64(),
-      reporting_device_health: v.float64(),
-      missing_device_health: v.float64(),
-      stale_device_health: v.float64(),
-      device_issues: v.float64(),
-      queued_records: v.float64(),
-      inventory_truncated: v.boolean(),
-    }),
-  }),
-  handler: async (ctx, args) => {
-    const now = args.checkedAtMs;
-    const kioskPage = await ctx.db
+export const internalHealthSnapshot = internalQuery({
+  args: {},
+  returns: v.array(v.object({
+    last_sync: v.union(v.string(), v.null()),
+    health: healthSerialized,
+  })),
+  handler: async (ctx) => {
+    const kiosks = await ctx.db
       .query("kiosks")
       .withIndex("by_active", (q) => q.eq("active", true))
       .take(101);
-    const inventoryTruncated = kioskPage.length > 100;
-    const kiosks = kioskPage.slice(0, 100);
-    const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
-    let reportingDeviceHealth = 0;
-    let missingDeviceHealth = 0;
-    let staleDeviceHealth = 0;
-    let deviceIssues = 0;
-    let queuedRecords = 0;
-
-    for (const kiosk of kiosks) {
-      counts[publicKioskStatus(kiosk.lastSync, now)] += 1;
-      if (!kiosk.health) {
-        missingDeviceHealth += 1;
-        continue;
-      }
-      const healthAgeMs = now - new Date(kiosk.health.reportedAt).getTime();
-      if (!Number.isFinite(healthAgeMs) || healthAgeMs < 0 || healthAgeMs > 15 * 60 * 1000) {
-        staleDeviceHealth += 1;
-        continue;
-      }
-      reportingDeviceHealth += 1;
-      if (kiosk.health.cameraOk === false || kiosk.health.modelOk === false || kiosk.health.degradedReason) {
-        deviceIssues += 1;
-      }
-      queuedRecords += Math.max(0, kiosk.health.queuedLogs ?? 0) + Math.max(0, kiosk.health.queuedAttempts ?? 0);
-    }
-
-    const degraded = kiosks.length === 0
-      || inventoryTruncated
-      || counts.stale + counts.offline + counts.never_synced > 0
-      || missingDeviceHealth + staleDeviceHealth > 0
-      || deviceIssues > 0
-      || queuedRecords > 0;
-    return {
-      status: degraded ? "degraded" as const : "healthy" as const,
-      timestamp: new Date(now).toISOString(),
-      kiosks: {
-        total: kiosks.length,
-        ...counts,
-        reporting_device_health: reportingDeviceHealth,
-        missing_device_health: missingDeviceHealth,
-        stale_device_health: staleDeviceHealth,
-        device_issues: deviceIssues,
-        queued_records: queuedRecords,
-        inventory_truncated: inventoryTruncated,
-      },
-    };
+    return kiosks.map((kiosk) => ({
+      last_sync: kiosk.lastSync ?? null,
+      health: serializeHealth(kiosk.health),
+    }));
   },
 });
 

@@ -29,21 +29,21 @@ const kiosksRoute = read('src/app/api/kiosks/route.ts');
 assert.match(kiosksRoute, /hasValidPortalSession\(req,\s*\['admin'\]\)/, 'Kiosks API should enforce admin role at the route layer, not rely on middleware alone');
 assert.match(kiosksRoute, /unauthorizedApiResponse/, 'Kiosks API should return the standard unauthorized response for non-admin users');
 
-const publicHealthRoute = read('src/app/api/health/kiosks/route.ts');
-assert.match(publicHealthRoute, /api\.kiosks\.publicHealthSummary/, 'Public kiosk health should use the aggregate-only Convex query');
-assert.match(publicHealthRoute, /Cache-Control['"]:\s*['"]no-store/, 'Public kiosk health should not be cached by intermediaries');
-assert.doesNotMatch(publicHealthRoute, /api\.kiosks\.list/, 'Public kiosk health must not expose the role-protected kiosk inventory');
-
 const kioskQueries = read('convex/kiosks.ts');
 const publicSummary = kioskQueries.slice(
-  kioskQueries.indexOf('export const publicHealthSummary'),
+  kioskQueries.indexOf('export const internalHealthSnapshot'),
   kioskQueries.indexOf('export const create'),
 );
-assert.match(publicSummary, /status:[\s\S]*timestamp:[\s\S]*kiosks:/, 'Public kiosk health should return a timestamped aggregate status');
+assert.match(publicSummary, /internalQuery/, 'The health snapshot must remain internal to the Convex HTTP action');
 assert.doesNotMatch(publicSummary, /serializeKiosk|workerName|attendance|location:/, 'Public kiosk health must not return kiosk identity, worker, attendance, or location details');
-assert.doesNotMatch(publicSummary, /Date\.now\(\)|\.collect\(\)/, 'Public kiosk health should stay deterministic and bound its indexed fleet query');
-assert.match(publicSummary, /inventory_truncated:[\s\S]*inventoryTruncated/, 'A fleet beyond the bounded read should degrade with an explicit truncation fact instead of failing health');
-assert.match(publicSummary, /missingDeviceHealth \+ staleDeviceHealth > 0/, 'Missing or stale device telemetry must degrade aggregate kiosk health');
-assert.match(publicSummary, /health\.reportedAt/, 'Device telemetry freshness must use its own report time instead of kiosk sync alone');
+assert.doesNotMatch(publicSummary, /Date\.now\(\)|\.collect\(\)/, 'The internal snapshot should stay deterministic and bound its indexed fleet query');
+
+const convexHttp = read('convex/http.ts');
+assert.match(convexHttp, /path: '\/api\/public\/kiosk-health'[\s\S]*method: 'GET'/, 'Convex should expose a credential-free GET health action');
+assert.match(convexHttp, /internal\.kiosks\.internalHealthSnapshot/, 'Public health should read only the internal aggregate input');
+assert.match(convexHttp, /inventory_truncated:[\s\S]*inventoryTruncated/, 'A fleet beyond the bounded read should degrade with an explicit truncation fact instead of failing health');
+assert.match(convexHttp, /missingDeviceHealth \+ staleDeviceHealth > 0/, 'Missing or stale device telemetry must degrade aggregate kiosk health');
+assert.match(convexHttp, /health\.reported_at/, 'Device telemetry freshness must use its own report time instead of kiosk sync alone');
+assert.doesNotMatch(convexHttp.slice(convexHttp.indexOf('const publicKioskHealth')), /checkedAtMs:\s*v\./, 'Public callers must not supply the health evaluation clock');
 
 console.log('Kiosk readiness page contract passed');
