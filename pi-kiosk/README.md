@@ -112,6 +112,7 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
+| "queued logs have no server worker mapping" | Attendance rows whose worker was removed before they synced. Each row snapshots `server_worker_id` at write time, so this only affects rows from older releases. Back up `data/attendance.db`, then either delete the rows if they are test data, or set `server_worker_id` to the worker's Convex id (`UPDATE attendance_log SET server_worker_id='<id>' WHERE synced=0 AND worker_id=<local id>`) and the next sync cycle sends them |
 
 ## Architecture
 

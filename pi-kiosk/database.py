@@ -158,6 +158,7 @@ def init_db():
     _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "attendance_log", "note", "note TEXT")
+    _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
 
     _ensure_column(conn, "recognition_attempts", "timestamp", "timestamp TEXT NOT NULL DEFAULT (datetime('now'))")
     _ensure_column(conn, "recognition_attempts", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
@@ -193,8 +194,43 @@ def init_db():
     if "event_type" in attendance_columns:
         conn.execute("UPDATE attendance_log SET action = event_type WHERE action IS NULL OR action = ''")
 
+    # Rows written before server_worker_id existed still resolve through the
+    # workers table today; freeze that mapping now so a later deactivation
+    # cannot strand them.
+    backfilled = _backfill_attendance_server_ids(conn)
+    if backfilled:
+        logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
+
     conn.commit()
     logger.info("Database initialized at %s", config.DB_PATH)
+
+
+def _backfill_attendance_server_ids(conn: sqlite3.Connection, local_worker_id: Optional[int] = None) -> int:
+    """Copy workers.server_id onto attendance rows that have no snapshot yet.
+
+    Restricted to one local worker when local_worker_id is given (used right
+    before that worker row is deleted). Returns the number of rows updated.
+    """
+    params: list = []
+    scope = ""
+    if local_worker_id is not None:
+        scope = " AND attendance_log.worker_id = ?"
+        params.append(int(local_worker_id))
+    cursor = conn.execute(
+        f"""
+        UPDATE attendance_log
+        SET server_worker_id = (
+            SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
+        )
+        WHERE server_worker_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM workers
+            WHERE workers.id = attendance_log.worker_id AND workers.server_id IS NOT NULL
+          ){scope}
+        """,
+        params,
+    )
+    return cursor.rowcount
 
 
 def add_worker(
@@ -261,20 +297,31 @@ def add_worker(
     return worker_id
 
 
+def _delete_workers_preserving_attendance(conn: sqlite3.Connection, where_sql: str, params: tuple) -> int:
+    """Delete matching worker rows after freezing their server_id onto queued attendance.
+
+    attendance_log only stores the local worker id, so deleting a worker row
+    would otherwise leave its unsynced events with no way to name the worker
+    to the server. Snapshot first, then delete.
+    """
+    rows = conn.execute(f"SELECT id FROM workers WHERE {where_sql}", params).fetchall()
+    for row in rows:
+        _backfill_attendance_server_ids(conn, local_worker_id=int(row["id"]))
+    cursor = conn.execute(f"DELETE FROM workers WHERE {where_sql}", params)
+    conn.commit()
+    return cursor.rowcount
+
+
 def remove_worker(name: str) -> bool:
     """Remove a worker by case-insensitive name."""
     conn = _get_conn()
-    cursor = conn.execute("DELETE FROM workers WHERE lower(name) = lower(?)", (name.strip(),))
-    conn.commit()
-    return cursor.rowcount > 0
+    return _delete_workers_preserving_attendance(conn, "lower(name) = lower(?)", (name.strip(),)) > 0
 
 
 def remove_worker_by_server_id(server_id: str) -> bool:
     """Remove a worker by server_id."""
     conn = _get_conn()
-    cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
-    conn.commit()
-    return cursor.rowcount > 0
+    return _delete_workers_preserving_attendance(conn, "server_id = ?", (server_id,)) > 0
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:
@@ -405,16 +452,24 @@ def log_attendance(
     confidence: float = 0.0,
     timestamp: Optional[str] = None,
     note: Optional[str] = None,
+    server_worker_id: Optional[str] = None,
 ) -> int:
-    """Create a gatekeeper log entry and return log id."""
+    """Create a gatekeeper log entry and return log id.
+
+    The worker's Convex id is snapshotted onto the row at write time so the
+    event can still be synced if the local worker row is later removed.
+    """
     conn = _get_conn()
     normalized_action = _normalize_action(action)
     timestamp = timestamp or datetime.now().isoformat(timespec="seconds")
+    if server_worker_id is None:
+        server_worker_id = get_server_id(worker_id)
     cursor = conn.execute(
         """
         INSERT INTO attendance_log
-            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
+             server_worker_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         """,
         (
             int(worker_id),
@@ -425,6 +480,7 @@ def log_attendance(
             float(confidence),
             config.KIOSK_ID,
             note,
+            server_worker_id,
         ),
     )
     conn.commit()
@@ -491,7 +547,8 @@ def get_unsynced_logs() -> list[dict]:
     conn = _get_conn()
     rows = conn.execute(
         """
-        SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note
+        SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note,
+               server_worker_id
         FROM attendance_log
         WHERE synced = 0
         ORDER BY id ASC

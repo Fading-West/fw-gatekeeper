@@ -53,30 +53,60 @@ def _build_attempt_idempotency_key(attempt: dict) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
+# Orphaned attendance rows (no server worker mapping) are reported once per
+# distinct set, not once per row per 30-second cycle.
+_last_orphan_signature: Optional[tuple] = None
+
+
+def _resolve_log_server_id(log: dict, server_id_cache: dict[int, Optional[str]]) -> Optional[str]:
+    """Prefer the server id snapshotted on the row; fall back to the live worker row."""
+    snapshot = log.get("server_worker_id")
+    if snapshot:
+        return str(snapshot)
+    local_worker_id = int(log["worker_id"])
+    if local_worker_id not in server_id_cache:
+        server_id_cache[local_worker_id] = database.get_server_id(local_worker_id)
+    return server_id_cache[local_worker_id]
+
+
+def _report_orphaned_logs(orphans: list[dict], total: int) -> None:
+    global _last_orphan_signature
+    signature = tuple(int(o["id"]) for o in orphans)
+    if signature == _last_orphan_signature:
+        logger.debug("Attendance sync: %d of %d queued logs still have no server worker mapping", len(orphans), total)
+        return
+    _last_orphan_signature = signature
+    by_worker: dict[str, int] = {}
+    for o in orphans:
+        key = f"local_worker_id={o['worker_id']} name={o.get('worker_name')}"
+        by_worker[key] = by_worker.get(key, 0) + 1
+    logger.warning(
+        "Attendance sync: %d of %d queued logs have no server worker mapping and will stay queued "
+        "until server_worker_id is set or the rows are removed (%s); log ids=%s",
+        len(orphans),
+        total,
+        "; ".join(f"{k} x{n}" for k, n in by_worker.items()),
+        list(signature),
+    )
+
+
 def sync_attendance() -> bool:
     """POST unsynced gatekeeper logs to server. Returns True on success."""
+    global _last_orphan_signature
     logs = database.get_unsynced_logs()
     if not logs:
+        _last_orphan_signature = None
         return True
 
     payload_logs = []
     synced_log_ids = []
-    missing_mappings = 0
+    orphans: list[dict] = []
     server_id_cache: dict[int, Optional[str]] = {}
 
     for log in logs:
-        local_worker_id = int(log["worker_id"])
-        if local_worker_id not in server_id_cache:
-            server_id_cache[local_worker_id] = database.get_server_id(local_worker_id)
-        server_id = server_id_cache[local_worker_id]
+        server_id = _resolve_log_server_id(log, server_id_cache)
         if not server_id:
-            missing_mappings += 1
-            logger.error(
-                "Skipping attendance log %s: no server_id for local worker_id=%s worker_name=%s",
-                log["id"],
-                local_worker_id,
-                log.get("worker_name"),
-            )
+            orphans.append(log)
             continue
 
         payload_logs.append(
@@ -95,11 +125,13 @@ def sync_attendance() -> bool:
         )
         synced_log_ids.append(int(log["id"]))
 
+    missing_mappings = len(orphans)
+    if orphans:
+        _report_orphaned_logs(orphans, len(logs))
+    else:
+        _last_orphan_signature = None
+
     if not payload_logs:
-        logger.error(
-            "Attendance sync aborted: %d unsynced logs found, but none had a server_id mapping",
-            len(logs),
-        )
         return False
 
     try:
