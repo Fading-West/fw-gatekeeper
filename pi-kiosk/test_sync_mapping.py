@@ -9,7 +9,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import numpy as np
+try:
+    import numpy as np
+    import requests  # noqa: F401  (imported by sync)
+except ImportError as exc:  # pragma: no cover - environment guard
+    # The other kiosk tests in `npm test` are pure Python; this one exercises
+    # database.py and sync.py, which need the kiosk runtime deps.
+    print(f"SKIP test_sync_mapping: {exc}. Install pi-kiosk/requirements.txt to run it.", file=sys.stderr)
+    sys.exit(0)
 
 KIOSK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(KIOSK_DIR))
