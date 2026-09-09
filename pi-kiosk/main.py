@@ -455,7 +455,8 @@ def run(args):
     # Liveness wait state: set when a matched worker still needs to blink.
     pending_clock = [None]
 
-    def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed):
+    def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
+                     server_worker_id=None):
         """Log the clock event + telemetry, update the display. Returns True on success."""
         if config.KIOSK_TYPE == "entry":
             action = "clock_in"
@@ -470,6 +471,7 @@ def run(args):
             database.log_attendance(
                 worker_id=worker_id, worker_name=display_name,
                 action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
+                server_worker_id=server_worker_id,
             )
             _log_recognition_attempt(result, "accepted")
         except Exception as e:
@@ -623,6 +625,7 @@ def run(args):
                     recorded = record_clock(
                         pending["result"], pending["worker_id"], pending["display_name"],
                         pending["display_id"], pending["confidence"], liveness_confirmed=True,
+                        server_worker_id=pending["server_worker_id"],
                     )
                     liveness.reset()
                     display_until[0] = now + (config.DISPLAY_TIME_SUCCESS_SEC if recorded else 2)
@@ -759,6 +762,9 @@ def run(args):
             worker = database.get_worker_by_id(worker_id)
             display_id = format_worker_display_id(worker, worker_id)
             display_name = worker["name"] if worker else name
+            # Carry the server id from the roster the match came from, so a
+            # deactivation landing mid-scan cannot strand this event.
+            server_worker_id = (worker["server_id"] if worker else None) or recognizer.server_id_for(worker_id)
             id_suffix = f" | ID: {display_id}" if display_id else ""
             box_label = f"{display_name}{id_suffix}"
 
@@ -792,6 +798,7 @@ def run(args):
                     "display_name": display_name,
                     "display_id": display_id,
                     "confidence": confidence,
+                    "server_worker_id": server_worker_id,
                     "encoding": worker_encoding,
                     "deadline": now + config.LIVENESS_WAIT_SEC,
                     "blink_confirmed": False,
@@ -806,7 +813,7 @@ def run(args):
                 continue
 
             recorded = record_clock(result, worker_id, display_name, display_id, confidence,
-                                    liveness_confirmed=False)
+                                    liveness_confirmed=False, server_worker_id=server_worker_id)
             display_until[0] = now + (config.DISPLAY_TIME_SUCCESS_SEC if recorded else 2)
 
     except KeyboardInterrupt:

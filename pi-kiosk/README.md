@@ -112,7 +112,33 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
-| "queued logs have no server worker mapping" | Attendance rows whose worker was removed before they synced. Each row snapshots `server_worker_id` at write time, so this only affects rows from older releases. Back up `data/attendance.db`, then either delete the rows if they are test data, or set `server_worker_id` to the worker's Convex id (`UPDATE attendance_log SET server_worker_id='<id>' WHERE synced=0 AND worker_id=<local id>`) and the next sync cycle sends them |
+| "queued logs have no server worker mapping" | Queued rows whose worker row was removed before this release; see *Stranded attendance rows* below |
+
+### Stranded attendance rows
+
+Each attendance row stores the worker's Convex id (`server_worker_id`) when it is
+written, and a schema trigger freezes it before any worker row is deleted, so a
+deactivation can no longer strand queued events. Rows written by older releases
+whose worker was already removed have no id to recover and stay queued until an
+operator resolves them. They still count in `queued_logs` on the health endpoint.
+
+```bash
+cd /opt/fw-gatekeeper/pi-kiosk
+sqlite3 data/attendance.db ".backup data/attendance.db.bak-$(date +%Y%m%d)"
+sqlite3 -header data/attendance.db \
+  "SELECT id, worker_id, worker_name, action, timestamp FROM attendance_log WHERE synced = 0;"
+```
+
+Then either delete the rows if they are test data, or attach the worker's Convex
+id and the next sync cycle sends them. The Convex id is the 32-character
+lowercase id in the worker's dashboard URL, not the employee ID; the kiosk
+refuses to send anything that does not look like one, since the server stores
+whatever worker id it is given:
+
+```sql
+UPDATE attendance_log SET server_worker_id = '<convex worker id>'
+WHERE synced = 0 AND worker_id = <local worker id>;
+```
 
 ## Architecture
 

@@ -29,6 +29,7 @@ class FaceRecognizer:
         self._encodings: list[np.ndarray] = []
         self._ids: list[int] = []
         self._names: list[str] = []
+        self._server_ids: dict[int, str | None] = {}
 
         self.liveness_checker = None
 
@@ -60,7 +61,7 @@ class FaceRecognizer:
     def load_faces(self):
         """Load all worker encodings from SQLite."""
         with self._lock:
-            self._encodings, self._ids, self._names = database.get_worker_encodings()
+            self._encodings, self._ids, self._names, self._server_ids = database.get_worker_roster()
         logger.info("Loaded %d known face encodings", len(self._encodings))
 
     def reload_faces(self):
@@ -70,3 +71,12 @@ class FaceRecognizer:
         """Return a consistent (encodings, ids, names) copy for matching."""
         with self._lock:
             return list(self._encodings), list(self._ids), list(self._names)
+
+    def server_id_for(self, worker_id: int) -> str | None:
+        """Server id for a roster worker as of the last load.
+
+        A match can only come from this roster, so this stays valid even if
+        the sync thread has already deleted the worker row (deactivation)
+        and the roster has not been reloaded yet."""
+        with self._lock:
+            return self._server_ids.get(worker_id)

@@ -159,6 +159,22 @@ def init_db():
     _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "attendance_log", "note", "note TEXT")
     _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
+    # Enforced in the schema, not by convention: any DELETE FROM workers
+    # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
+    # server id onto that worker's queued attendance rows.
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS attendance_keep_server_id_before_worker_delete
+        BEFORE DELETE ON workers FOR EACH ROW
+        WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
+        BEGIN
+            UPDATE attendance_log SET server_worker_id = OLD.server_id
+            WHERE worker_id = OLD.id AND synced = 0
+              AND (server_worker_id IS NULL OR server_worker_id = '');
+        END
+        """
+    )
 
     _ensure_column(conn, "recognition_attempts", "timestamp", "timestamp TEXT NOT NULL DEFAULT (datetime('now'))")
     _ensure_column(conn, "recognition_attempts", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
@@ -205,30 +221,27 @@ def init_db():
     logger.info("Database initialized at %s", config.DB_PATH)
 
 
-def _backfill_attendance_server_ids(conn: sqlite3.Connection, local_worker_id: Optional[int] = None) -> int:
-    """Copy workers.server_id onto attendance rows that have no snapshot yet.
+def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
+    """Copy workers.server_id onto queued attendance rows that have no snapshot yet.
 
-    Restricted to one local worker when local_worker_id is given (used right
-    before that worker row is deleted). Returns the number of rows updated.
+    Only unsynced rows matter: synced rows never need the mapping again, so
+    this stays cheap no matter how much history the kiosk holds. Returns the
+    number of rows updated.
     """
-    params: list = []
-    scope = ""
-    if local_worker_id is not None:
-        scope = " AND attendance_log.worker_id = ?"
-        params.append(int(local_worker_id))
     cursor = conn.execute(
-        f"""
+        """
         UPDATE attendance_log
         SET server_worker_id = (
             SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
         )
-        WHERE server_worker_id IS NULL
+        WHERE synced = 0
+          AND (server_worker_id IS NULL OR server_worker_id = '')
           AND EXISTS (
             SELECT 1 FROM workers
-            WHERE workers.id = attendance_log.worker_id AND workers.server_id IS NOT NULL
-          ){scope}
-        """,
-        params,
+            WHERE workers.id = attendance_log.worker_id
+              AND workers.server_id IS NOT NULL AND workers.server_id != ''
+          )
+        """
     )
     return cursor.rowcount
 
@@ -297,31 +310,23 @@ def add_worker(
     return worker_id
 
 
-def _delete_workers_preserving_attendance(conn: sqlite3.Connection, where_sql: str, params: tuple) -> int:
-    """Delete matching worker rows after freezing their server_id onto queued attendance.
-
-    attendance_log only stores the local worker id, so deleting a worker row
-    would otherwise leave its unsynced events with no way to name the worker
-    to the server. Snapshot first, then delete.
-    """
-    rows = conn.execute(f"SELECT id FROM workers WHERE {where_sql}", params).fetchall()
-    for row in rows:
-        _backfill_attendance_server_ids(conn, local_worker_id=int(row["id"]))
-    cursor = conn.execute(f"DELETE FROM workers WHERE {where_sql}", params)
-    conn.commit()
-    return cursor.rowcount
-
-
 def remove_worker(name: str) -> bool:
-    """Remove a worker by case-insensitive name."""
+    """Remove a worker by case-insensitive name.
+
+    The attendance_keep_server_id_before_worker_delete trigger snapshots the
+    worker's server id onto queued attendance rows before the row goes."""
     conn = _get_conn()
-    return _delete_workers_preserving_attendance(conn, "lower(name) = lower(?)", (name.strip(),)) > 0
+    cursor = conn.execute("DELETE FROM workers WHERE lower(name) = lower(?)", (name.strip(),))
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def remove_worker_by_server_id(server_id: str) -> bool:
-    """Remove a worker by server_id."""
+    """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
-    return _delete_workers_preserving_attendance(conn, "server_id = ?", (server_id,)) > 0
+    cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:
@@ -428,12 +433,19 @@ def has_workers_missing_employee_id() -> bool:
     return row is not None
 
 
-def get_worker_encodings() -> tuple[list[np.ndarray], list[int], list[str]]:
-    """Return tuples of encodings, ids, and names."""
+def get_worker_roster() -> tuple[list[np.ndarray], list[int], list[str], dict[int, Optional[str]]]:
+    """Return encodings, ids, names, and a local-id -> server-id map from one read."""
     workers = get_all_workers()
     encodings = [worker["encoding_blob"] for worker in workers]
     ids = [worker["id"] for worker in workers]
     names = [worker["name"] for worker in workers]
+    server_ids = {worker["id"]: (worker["server_id"] or None) for worker in workers}
+    return encodings, ids, names, server_ids
+
+
+def get_worker_encodings() -> tuple[list[np.ndarray], list[int], list[str]]:
+    """Return tuples of encodings, ids, and names."""
+    encodings, ids, names, _ = get_worker_roster()
     return encodings, ids, names
 
 
@@ -458,12 +470,13 @@ def log_attendance(
 
     The worker's Convex id is snapshotted onto the row at write time so the
     event can still be synced if the local worker row is later removed.
+    Callers that already hold the id (recognizer roster, manual clock) pass
+    it in; otherwise it is looked up from the workers table.
     """
     conn = _get_conn()
     normalized_action = _normalize_action(action)
     timestamp = timestamp or datetime.now().isoformat(timespec="seconds")
-    if server_worker_id is None:
-        server_worker_id = get_server_id(worker_id)
+    server_worker_id = server_worker_id or get_server_id(worker_id) or None
     cursor = conn.execute(
         """
         INSERT INTO attendance_log
