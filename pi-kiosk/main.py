@@ -370,7 +370,7 @@ def run(args):
                 smoothed_embedding = normalize_embedding(np.mean(np.stack(embedding_history), axis=0))
 
                 # Match against known workers
-                known_encs, known_ids, known_names = recognizer.snapshot_known_faces()
+                known_encs, known_ids, known_names, known_server_ids = recognizer.snapshot_known_faces()
                 matched = None
                 conf = 0.0
                 best_idx = None
@@ -417,6 +417,12 @@ def run(args):
                 margin = conf - second_score if second_score is not None else None
                 candidate_worker_id = known_ids[best_idx] if best_idx is not None else None
                 candidate_worker_name = known_names[best_idx] if best_idx is not None else None
+                candidate_server_worker_id = (
+                    known_server_ids.get(candidate_worker_id) if candidate_worker_id is not None else None
+                )
+                candidate_encoding = (
+                    np.array(known_encs[best_idx], copy=True) if best_idx is not None else None
+                )
                 decision = "accepted" if matched else "rejected_unknown"
                 if (
                     matched is None
@@ -432,6 +438,8 @@ def run(args):
                     "confidence": conf,
                     "candidate_worker_id": candidate_worker_id,
                     "candidate_worker_name": candidate_worker_name,
+                    "server_worker_id": candidate_server_worker_id,
+                    "candidate_encoding": candidate_encoding,
                     "best_score": conf if best_idx is not None else None,
                     "second_best_score": second_score,
                     "score_margin": margin,
@@ -552,13 +560,9 @@ def run(args):
                 identity_changed = False
                 if fresh is not None:
                     current_result[0] = None
-                    fresh_name = fresh.get("name")
-                    fresh_worker_id = None
-                    if fresh_name is not None:
-                        _, fresh_ids, fresh_names = recognizer.snapshot_known_faces()
-                        if fresh_name in fresh_names:
-                            fresh_worker_id = fresh_ids[fresh_names.index(fresh_name)]
-                    if fresh_worker_id != pending["worker_id"]:
+                    fresh_identity = (fresh.get("candidate_worker_id"), fresh.get("server_worker_id"))
+                    pending_identity = (pending["worker_id"], pending["server_worker_id"])
+                    if fresh.get("name") is None or fresh_identity != pending_identity:
                         identity_changed = True
                     else:
                         # The post-blink confirmation must come from a frame
@@ -748,23 +752,24 @@ def run(args):
             unknown_streak = 0
             box_color = GREEN
 
-            known_encs, known_ids, known_names = recognizer.snapshot_known_faces()
-            worker_id = None
+            worker_id = result.get("candidate_worker_id")
+            server_worker_id = result.get("server_worker_id")
             worker_encoding = None
-            if name in known_names:
-                idx = known_names.index(name)
-                worker_id = known_ids[idx]
-                worker_encoding = np.array(known_encs[idx])
+            if worker_id is not None:
+                # The candidate encoding is from the same immutable detection
+                # result identity; a later roster reload cannot remap by name.
+                worker_encoding = result.get("candidate_encoding")
 
             if worker_id is None:
                 continue
 
             worker = database.get_worker_by_id(worker_id)
-            display_id = format_worker_display_id(worker, worker_id)
-            display_name = worker["name"] if worker else name
-            # Carry the server id from the roster the match came from, so a
-            # deactivation landing mid-scan cannot strand this event.
-            server_worker_id = (worker["server_id"] if worker else None) or recognizer.server_id_for(worker_id)
+            # Only use mutable worker metadata if it is still the same server
+            # identity that produced the match. The recognition name and id
+            # remain authoritative across a concurrent delete/reload.
+            same_worker = worker and (worker["server_id"] or None) == server_worker_id
+            display_id = format_worker_display_id(worker if same_worker else None, worker_id)
+            display_name = name
             id_suffix = f" | ID: {display_id}" if display_id else ""
             box_label = f"{display_name}{id_suffix}"
 

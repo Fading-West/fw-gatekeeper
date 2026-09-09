@@ -68,15 +68,11 @@ class FaceRecognizer:
         self.load_faces()
 
     def snapshot_known_faces(self):
-        """Return a consistent (encodings, ids, names) copy for matching."""
+        """Return one consistent roster snapshot for matching and attribution."""
         with self._lock:
-            return list(self._encodings), list(self._ids), list(self._names)
-
-    def server_id_for(self, worker_id: int) -> str | None:
-        """Server id for a roster worker as of the last load.
-
-        A match can only come from this roster, so this stays valid even if
-        the sync thread has already deleted the worker row (deactivation)
-        and the roster has not been reloaded yet."""
-        with self._lock:
-            return self._server_ids.get(worker_id)
+            return (
+                list(self._encodings),
+                list(self._ids),
+                list(self._names),
+                dict(self._server_ids),
+            )

@@ -117,8 +117,10 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 ### Stranded attendance rows
 
 Each attendance row stores the worker's Convex id (`server_worker_id`) when it is
-written, and a schema trigger freezes it before any worker row is deleted, so a
-deactivation can no longer strand queued events. Rows written by older releases
+written. Recognition carries the id from the same roster snapshot as the match,
+including through a blink wait. Sync prefers the current worker mapping while
+that worker exists; a schema trigger copies its latest id onto every queued row
+before deletion. Startup replaces older versions of the trigger automatically. Rows written by older releases
 whose worker was already removed have no id to recover and stay queued until an
 operator resolves them. They still count in `queued_logs` on the health endpoint.
 

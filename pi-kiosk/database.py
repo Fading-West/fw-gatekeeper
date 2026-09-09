@@ -163,18 +163,29 @@ def init_db():
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
     # server id onto that worker's queued attendance rows.
-    conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS attendance_keep_server_id_before_worker_delete
-        BEFORE DELETE ON workers FOR EACH ROW
-        WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
-        BEGIN
-            UPDATE attendance_log SET server_worker_id = OLD.server_id
-            WHERE worker_id = OLD.id AND synced = 0
-              AND (server_worker_id IS NULL OR server_worker_id = '');
-        END
-        """
-    )
+    # Replace the trigger on every startup so kiosks with the earlier
+    # fill-empty-only definition receive the corrected behavior. A savepoint
+    # keeps DROP + CREATE atomic even when init_db is called with no pending
+    # DML transaction.
+    conn.execute("SAVEPOINT install_attendance_delete_trigger")
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS attendance_keep_server_id_before_worker_delete")
+        conn.execute(
+            """
+            CREATE TRIGGER attendance_keep_server_id_before_worker_delete
+            BEFORE DELETE ON workers FOR EACH ROW
+            WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
+            BEGIN
+                UPDATE attendance_log SET server_worker_id = OLD.server_id
+                WHERE worker_id = OLD.id AND synced = 0;
+            END
+            """
+        )
+        conn.execute("RELEASE SAVEPOINT install_attendance_delete_trigger")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT install_attendance_delete_trigger")
+        conn.execute("RELEASE SAVEPOINT install_attendance_delete_trigger")
+        raise
 
     _ensure_column(conn, "recognition_attempts", "timestamp", "timestamp TEXT NOT NULL DEFAULT (datetime('now'))")
     _ensure_column(conn, "recognition_attempts", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")

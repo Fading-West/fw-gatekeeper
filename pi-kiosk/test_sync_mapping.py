@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,13 @@ sys.path.insert(0, str(KIOSK_DIR))
 import config  # noqa: E402
 import database  # noqa: E402
 import sync  # noqa: E402
+
+fake_embeddings = types.ModuleType("embeddings")
+fake_embeddings.EXPECTED_EMBEDDING_DIM = 512
+fake_liveness = types.ModuleType("liveness")
+fake_liveness.LivenessChecker = mock.Mock
+with mock.patch.dict(sys.modules, {"embeddings": fake_embeddings, "liveness": fake_liveness}):
+    import recognition  # noqa: E402
 
 ENCODING = np.ones(512, dtype=np.float64)
 SERVER_ID = "jh7f1wb6ndevpfktsdq1vmwmd584grnd"
@@ -91,6 +99,40 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
         self.assertEqual(self._row(log_id)["server_worker_id"], SERVER_ID)
 
+    def test_recognition_snapshot_identity_survives_delete_and_roster_reload(self):
+        """Exercise the match-to-write contract used by main.py during a sync race."""
+        worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id=SERVER_ID)
+        recognizer = recognition.FaceRecognizer()
+        recognizer.load_faces()
+        encodings, ids, names, server_ids = recognizer.snapshot_known_faces()
+        matched = {
+            "worker_id": ids[0],
+            "name": names[0],
+            "encoding": encodings[0],
+            "server_worker_id": server_ids[ids[0]],
+        }
+
+        database.remove_worker_by_server_id(SERVER_ID)
+        database.add_worker(name="replacement", encoding=-ENCODING, server_id="replacement-server-id")
+        recognizer.reload_faces()  # sync reload lands before main consumes the old detection result
+
+        log_id = database.log_attendance(
+            worker_id=matched["worker_id"],
+            worker_name=matched["name"],
+            action="clock_in",
+            server_worker_id=matched["server_worker_id"],
+        )
+        with mock.patch.object(sync.requests, "post", return_value=_ok_response()) as post:
+            self.assertTrue(sync.sync_attendance())
+        self.assertEqual(post.call_args.kwargs["json"]["logs"][0]["worker_id"], SERVER_ID)
+        self.assertEqual(self._row(log_id)["server_worker_id"], SERVER_ID)
+
+        main_source = (KIOSK_DIR / "main.py").read_text(encoding="utf-8")
+        self.assertIn("known_server_ids.get(candidate_worker_id)", main_source)
+        self.assertIn('server_worker_id = result.get("server_worker_id")', main_source)
+        self.assertIn('fresh.get("candidate_worker_id"), fresh.get("server_worker_id")', main_source)
+        self.assertNotIn('recognizer.server_id_for(worker_id)', main_source)
+
     def test_roster_exposes_server_ids_for_the_recognizer(self):
         worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id=SERVER_ID)
 
@@ -121,6 +163,23 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
         self.assertEqual(self._row(legacy_id)["server_worker_id"], SERVER_ID)
 
+    def test_delete_overwrites_stale_snapshot_with_latest_live_server_id(self):
+        server_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        server_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id=server_a)
+        log_id = database.log_attendance(worker_id=worker_id, worker_name="caleb", action="clock_in")
+        conn = database._get_conn()
+        conn.execute("UPDATE workers SET server_id = ? WHERE id = ?", (server_b, worker_id))
+        conn.commit()
+
+        conn.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
+        conn.commit()
+
+        self.assertEqual(self._row(log_id)["server_worker_id"], server_b)
+        with mock.patch.object(sync.requests, "post", return_value=_ok_response()) as post:
+            self.assertTrue(sync.sync_attendance())
+        self.assertEqual(post.call_args.kwargs["json"]["logs"][0]["worker_id"], server_b)
+
     # --- startup migration ------------------------------------------------
 
     def test_init_db_backfills_queued_rows_only(self):
@@ -137,6 +196,39 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         self.assertEqual(self._row(queued_id)["server_worker_id"], "server-prime")
         self.assertEqual(self._row(blank_id)["server_worker_id"], "server-prime")
         self.assertIsNone(self._row(synced_id)["server_worker_id"])
+
+    def test_init_db_replaces_old_installed_delete_trigger(self):
+        conn = database._get_conn()
+        conn.execute("DROP TRIGGER attendance_keep_server_id_before_worker_delete")
+        conn.execute(
+            """
+            CREATE TRIGGER attendance_keep_server_id_before_worker_delete
+            BEFORE DELETE ON workers FOR EACH ROW
+            BEGIN
+                UPDATE attendance_log SET server_worker_id = OLD.server_id
+                WHERE worker_id = OLD.id AND synced = 0
+                  AND (server_worker_id IS NULL OR server_worker_id = '');
+            END
+            """
+        )
+        conn.commit()
+
+        database.init_db()
+        trigger_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'attendance_keep_server_id_before_worker_delete'"
+        ).fetchone()["sql"]
+        self.assertNotIn("server_worker_id IS NULL", trigger_sql)
+
+        worker_id = database.add_worker(name="upgrade", encoding=ENCODING, server_id="server-b")
+        log_id = database.log_attendance(
+            worker_id=worker_id,
+            worker_name="upgrade",
+            action="clock_in",
+            server_worker_id="server-a",
+        )
+        database.remove_worker_by_server_id("server-b")
+        self.assertEqual(self._row(log_id)["server_worker_id"], "server-b")
 
     # --- sync -------------------------------------------------------------
 
