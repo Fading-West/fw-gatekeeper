@@ -110,7 +110,7 @@ assert.match(page, /const actionHeaders = \['Date', 'Priority', 'Action', 'Descr
 assert.match(page, /actions\.map\(\(action\) => \[[\s\S]*action\.priority[\s\S]*action\.label[\s\S]*action\.description[\s\S]*canOperateBriefingAction\(role, action\.href\) \? action\.href : getReviewHref\(action\.href, date\)/, 'Briefing export should preserve action priority and copy while using role-safe source hrefs.');
 assert.match(page, /'Action Items'/, 'Briefing export should separate action items from worker rows.');
 assert.match(page, /briefingCsv\(date, filteredWorkers, payload\?\.action_items \|\| \[\], currentRole\)/, 'Briefing export should include the current briefing action items with current role context.');
-assert.match(page, /const hasExportableBriefing = filteredWorkers\.length > 0 \|\| Boolean\(payload\?\.action_items\.length\)/, 'Briefing export should remain available when action items exist even if the current worker filter is empty.');
+assert.match(page, /const hasExportableBriefing = dataReady && \(filteredWorkers\.length > 0 \|\| Boolean\(payload\?\.action_items\.length\)\)/, 'Briefing export should remain available when action items exist even if the current worker filter is empty.');
 assert.match(page, /disabled=\{!hasExportableBriefing\}/, 'Briefing export button should use the full exportable briefing state instead of only worker rows.');
 assert.match(page, /const canOperateAction = canOperateBriefingAction\(currentRole, item\.href\)/, 'Briefing action cards should decide operate/review state per item.');
 assert.match(page, /href=\{canOperateAction \? item\.href : getReviewHref\(item\.href, date\)\}/, 'Briefing action cards should downgrade hrefs for read-only roles.');

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
 import {
@@ -12,6 +12,7 @@ import {
 } from '@/lib/types';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useSelectedData } from '@/hooks/useSelectedData';
 
 const decisionOptions: Array<{ value: RecognitionDecision | 'all'; label: string }> = [
   { value: 'all', label: 'All decisions' },
@@ -115,11 +116,8 @@ function RecognitionCalibrationLabContent() {
   const [reviewStatus, setReviewStatus] = useState<RecognitionReviewStatus | 'all'>(queryReviewStatus);
   const [confidenceBand, setConfidenceBand] = useState<RecognitionConfidenceBand | 'all'>(queryConfidenceBand);
   const [kioskId, setKioskId] = useState(queryKioskId);
-  const [payload, setPayload] = useState<RecognitionAttemptsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [pendingReviewId, setPendingReviewId] = useState<string | null>(null);
-  const [isReviewPending, startReviewTransition] = useTransition();
+  const [isReviewPending, setIsReviewPending] = useState(false);
+  const reviewPendingRef = useRef(false);
 
   useEffect(() => {
     setDate(queryDate);
@@ -139,28 +137,19 @@ function RecognitionCalibrationLabContent() {
     return params.toString();
   }, [confidenceBand, date, decision, kioskId, queryAttemptId, reviewStatus]);
 
-  const fetchAttempts = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetch(`/api/recognition-attempts?${queryString}`, { cache: 'no-store' });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || 'Failed to load recognition attempts');
-      setPayload(body);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load recognition attempts';
-      setError(message);
-      setPayload(null);
-    } finally {
-      setLoading(false);
-    }
+  const currentQueryRef = useRef(queryString);
+  currentQueryRef.current = queryString;
+  const loadAttempts = useCallback(async (signal: AbortSignal): Promise<RecognitionAttemptsResponse> => {
+    const res = await fetch(`/api/recognition-attempts?${queryString}`, { cache: 'no-store', signal });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error || 'Failed to load recognition attempts');
+    if (!Array.isArray(body?.attempts) || !body.summary) throw new Error('Invalid recognition response. Refresh to try again.');
+    return body;
   }, [queryString]);
+  const { data: payload, loading, error, refresh: fetchAttempts } = useSelectedData(queryString, loadAttempts);
+  const dataReady = Boolean(payload && !loading && !error);
 
-  useEffect(() => {
-    fetchAttempts();
-  }, [fetchAttempts]);
-
-  const attempts = payload?.attempts ?? [];
+  const attempts = useMemo(() => payload?.attempts ?? [], [payload]);
   const summary = payload?.summary;
   const canOperate = canOperateRecognition(currentRole);
   const kiosks = useMemo(() => {
@@ -174,12 +163,14 @@ function RecognitionCalibrationLabContent() {
   }, [attempts, queryAttemptId]);
 
   function reviewAttempt(attempt: RecognitionAttempt, nextStatus: RecognitionReviewStatus) {
+    if (!dataReady || currentQueryRef.current !== queryString || reviewPendingRef.current || !attempts.some((row) => row.id === attempt.id)) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can update recognition reviews.', 'error');
       return;
     }
-    setPendingReviewId(attempt.id);
-    startReviewTransition(async () => {
+    reviewPendingRef.current = true;
+    setIsReviewPending(true);
+    void (async () => {
       try {
         const res = await fetch('/api/recognition-attempts', {
           method: 'PATCH',
@@ -197,9 +188,10 @@ function RecognitionCalibrationLabContent() {
       } catch (err) {
         toast(err instanceof Error ? err.message : 'Failed to update review', 'error');
       } finally {
-        setPendingReviewId(null);
+        reviewPendingRef.current = false;
+        setIsReviewPending(false);
       }
-    });
+    })();
   }
 
   return (
@@ -214,7 +206,7 @@ function RecognitionCalibrationLabContent() {
             Review kiosk recognition quality, tune confidence thresholds, and clear ambiguous scan attempts before they become attendance issues.
           </p>
         </div>
-        <button type="button" onClick={fetchAttempts} className="btn-secondary" disabled={loading}>
+        <button type="button" onClick={fetchAttempts} className="btn-secondary" disabled={loading || isReviewPending}>
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
@@ -322,7 +314,7 @@ function RecognitionCalibrationLabContent() {
             </thead>
             <tbody className="divide-y divide-navy-600/35">
               {attempts.map((attempt) => {
-                const controlsDisabled = isReviewPending && pendingReviewId === attempt.id;
+                const controlsDisabled = !dataReady || isReviewPending;
                 const targeted = queryAttemptId === attempt.id;
                 return (
                   <tr
@@ -395,7 +387,7 @@ function RecognitionCalibrationLabContent() {
           </table>
         </div>
 
-        {!loading && attempts.length === 0 && (
+        {!loading && !error && attempts.length === 0 && (
           <div className="px-5 py-12 text-center text-sm text-slate-500">
             No recognition attempts match these filters yet.
           </div>
