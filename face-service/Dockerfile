@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock
 
 # Download the InsightFace buffalo_s recognition model during build (~13MB).
 # Pinned to HuggingFace commit 0ff1751885575e62e084dff70549ce24a11fa5dc with
