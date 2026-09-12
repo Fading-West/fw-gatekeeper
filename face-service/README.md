@@ -63,7 +63,7 @@ with `photos` and `disagreeing_pairs`, and the enrollment page lists them under 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MIN_PAIRWISE_SIMILARITY` | `0.6` | Minimum cosine similarity between every pair of used enrollment embeddings |
-| `MIN_GOOD_PHOTOS` | `2` | Minimum number of consistent single-face photos required to enroll |
+| `MIN_GOOD_PHOTOS` | `2` | Minimum consistent photos: `2` or `3`. The portal captures three photos, so other values fail at startup. |
 | `FACE_MODEL_DIR` | `/app/models` | Where the recognition model is stored/downloaded |
 
 Both thresholds are read at startup, so they can be tuned on the deployment without a

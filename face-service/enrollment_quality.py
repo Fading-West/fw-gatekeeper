@@ -50,8 +50,10 @@ MIN_PAIRWISE_SIMILARITY = _env_float("MIN_PAIRWISE_SIMILARITY", 0.6)
 MIN_GOOD_PHOTOS = _env_int("MIN_GOOD_PHOTOS", 2)
 if not math.isfinite(MIN_PAIRWISE_SIMILARITY) or not 0 < MIN_PAIRWISE_SIMILARITY <= 1:
     raise ValueError("MIN_PAIRWISE_SIMILARITY must be finite and in (0, 1]")
-if not 2 <= MIN_GOOD_PHOTOS <= 6:
-    raise ValueError("MIN_GOOD_PHOTOS must be between 2 and 6")
+# The portal captures three frames per enrollment. Fail at startup if a configured
+# minimum would make every normal portal enrollment impossible.
+if not 2 <= MIN_GOOD_PHOTOS <= 3:
+    raise ValueError("MIN_GOOD_PHOTOS must be 2 or 3 to match portal capture")
 
 
 def face_area(box: FaceBox) -> int:

@@ -2,6 +2,8 @@
 import base64
 import io
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -29,6 +31,19 @@ class QualityBoundaryTests(unittest.TestCase):
     def test_nonfinite_threshold_is_rejected(self):
         with self.assertRaises(ValueError):
             select_consistent_embeddings([np.ones(512), np.ones(512)], float('nan'))
+
+    def test_configured_minimum_fits_portal_capture_count(self):
+        for minimum in (1, 2, 3, 4, 6):
+            with self.subTest(minimum=minimum):
+                result = subprocess.run(
+                    [sys.executable, '-c', 'import enrollment_quality'],
+                    cwd=os.path.dirname(__file__),
+                    env={**os.environ, 'MIN_GOOD_PHOTOS': str(minimum)},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode == 0, minimum in (2, 3))
+                if minimum not in (2, 3):
+                    self.assertIn('must be 2 or 3', result.stderr)
 
     def test_invalid_model_output_is_a_service_error(self):
         with patch.object(main, 'decode_image', return_value=np.zeros((10,10,3))), patch.object(main, 'get_face_crop', return_value=np.zeros((112,112,3))), patch.object(main, 'embed_face_crop', return_value=[0.0]*512):
