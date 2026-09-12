@@ -639,7 +639,7 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     return logs
 
 
-def get_unsynced_logs() -> list[dict]:
+def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0) -> list[dict]:
     """Return unsynced gatekeeper logs for optional server sync."""
     conn = _get_conn()
     rows = conn.execute(
@@ -647,9 +647,11 @@ def get_unsynced_logs() -> list[dict]:
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note,
                server_worker_id
         FROM attendance_log
-        WHERE synced = 0
+        WHERE synced = 0 AND id > ?
         ORDER BY id ASC
-        """
+        LIMIT ?
+        """,
+        (int(after_id), max(1, int(limit)) if limit is not None else -1),
     ).fetchall()
     logs = []
     for row in rows:

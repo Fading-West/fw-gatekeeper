@@ -38,7 +38,7 @@ SERVER_ID = "jh7f1wb6ndevpfktsdq1vmwmd584grnd"
 
 
 def _ok_response():
-    return mock.Mock(status_code=200, text="")
+    return mock.Mock(status_code=200, text="", json=lambda: {"synced": 0})
 
 
 class AttendanceServerIdMappingTests(unittest.TestCase):
