@@ -27,8 +27,10 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
   retry. Larger offline backlogs drain over subsequent sync cycles.
 - Blink liveness is **optional and off by default** (`LIVENESS_REQUIRED = False`).
   When enabled, a matched worker must blink before the clock event is recorded;
-  if the landmark model is missing, the kiosk keeps working, records events as
-  unverified, and reports itself degraded.
+  if the landmark model is missing or corrupt, automatic attendance is blocked
+  and the display asks the worker to contact a supervisor. The camera, UI, and
+  offline queue sync keep running. Model loading is retried every 30 seconds;
+  installing the predictor restores scanning without restarting the kiosk.
 - Supervisor controls (manual clock-in/out) are behind a separate PIN
   (`KIOSK_SUPERVISOR_PIN`) with a five-minute session and attempt lockout.
 

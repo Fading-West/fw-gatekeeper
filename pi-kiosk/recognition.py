@@ -17,6 +17,7 @@ import config
 import database
 from embeddings import EXPECTED_EMBEDDING_DIM
 from liveness import LivenessChecker
+from liveness_policy import LivenessPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -31,19 +32,14 @@ class FaceRecognizer:
         self._names: list[str] = []
         self._server_ids: dict[int, str | None] = {}
 
-        self.liveness_checker = None
+        self.liveness_policy = LivenessPolicy(
+            required=getattr(config, "LIVENESS_REQUIRED", False), factory=LivenessChecker,
+        )
+        self.liveness_policy.refresh()
 
-        # Only load the (large) landmark model when this kiosk actually
-        # enforces blink verification; it is off by default.
-        if getattr(config, "LIVENESS_REQUIRED", False):
-            try:
-                self.liveness_checker = LivenessChecker()
-            except FileNotFoundError as exc:
-                logger.error(str(exc))
-                logger.error(
-                    "Blink verification is unavailable; clock events will be recorded "
-                    "without liveness and the kiosk will report itself degraded."
-                )
+    @property
+    def liveness_checker(self):
+        return self.liveness_policy.refresh()
 
     @property
     def known_count(self) -> int:

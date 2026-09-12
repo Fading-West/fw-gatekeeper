@@ -161,13 +161,14 @@ function risk(
 }
 
 // Self-reported device faults that stop a kiosk from scanning even while its
-// network sync stays green. liveness_unavailable is deliberately excluded:
-// blink verification is optional and the kiosk still records clock events.
+// network sync stays green. The legacy optional liveness_unavailable reason
+// stays non-blocking; missing REQUIRED verification prevents attendance.
 const SCAN_BLOCKING_DEGRADED_REASONS = new Set([
   "camera_error",
   "model_error",
   "encoding_mismatch",
   "no_workers_synced",
+  "liveness_required_unavailable",
 ]);
 
 function hasScanBlockingDeviceFault(health: any): boolean {
@@ -252,7 +253,7 @@ function buildShiftTrustBrief(input: {
       "kiosk",
       "critical",
       "Kiosk hardware faults block scanning",
-      `${plural(input.deviceFaultKiosks, "kiosk")} report a camera, model, or roster fault that prevents face scans.`,
+      `${plural(input.deviceFaultKiosks, "kiosk")} report a camera, model, roster, or required blink-verification fault that prevents face scans.`,
       input.deviceFaultKiosks,
       "/kiosks",
     ));
