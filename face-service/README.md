@@ -93,3 +93,13 @@ or image is needed). If the system `python3` lacks them, either
 `python3 -m pip install numpy fastapi httpx2 Pillow` or run the file with a venv
 interpreter, e.g. `~/fsvenv/bin/python face-service/test_encode_quality.py`. Missing
 packages make the affected tests skip with a warning rather than fail.
+
+Enrollment requests accept at most six photos and four million base64 characters
+per photo. Images must be still images of at most four million pixels. Invalid or
+zero model embeddings fail closed. Similarity thresholds must be finite in (0,1],
+and at least two consistent photos are required. Only accepted photo indexes are
+stored by the dashboard. Concurrent cold starts share one recognition session.
+
+Rollout: deploy the face service with this quality gate before the corresponding
+portal code. The portal rejects encoders that omit accepted-photo metadata, so an
+old encoder cannot silently bypass the new gate.

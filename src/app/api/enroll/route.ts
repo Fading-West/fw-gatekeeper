@@ -15,13 +15,23 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId } = body as {
+    const { name, employeeId, department, photos, workerId, consent } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
+      consent?: boolean;
     };
+
+    // Biometric consent must be acknowledged on every enrollment and
+    // re-enrollment before any photo is processed. See RETENTION.md.
+    if (consent !== true) {
+      return NextResponse.json(
+        { error: 'Biometric consent must be confirmed before enrolling a face.' },
+        { status: 400 },
+      );
+    }
 
     let normalizedName = name?.trim();
     let employeeIdForSave = employeeId?.trim() || undefined;
@@ -50,9 +60,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
 
-    if (!photos || photos.length < 3) {
+    if (!Array.isArray(photos) || photos.length < 3 || photos.length > 6 ||
+        photos.some((photo) => typeof photo !== 'string' || photo.length === 0 || photo.length > 4_000_000)) {
       return NextResponse.json(
-        { error: 'At least 3 photos required for enrollment' },
+        { error: 'Provide 3 to 6 photos, each no larger than 4 MB, for enrollment' },
         { status: 400 }
       );
     }
@@ -72,6 +83,7 @@ export async function POST(req: NextRequest) {
     }
 
     let faceEncoding: number[] | undefined;
+    let acceptedPhotos = photos;
     try {
       const encodeUrl = process.env.FACE_ENCODE_URL || 'http://localhost:5557/encode';
       const faceServiceKey = process.env.FACE_SERVICE_KEY?.trim();
@@ -90,6 +102,17 @@ export async function POST(req: NextRequest) {
       const encodeBody = await encodeRes.json();
       if (encodeRes.ok) {
         faceEncoding = encodeBody.encoding;
+        if (!Array.isArray(encodeBody.used_photo_indexes)) {
+          throw new Error('Face service must support enrollment quality before accepting photos');
+        }
+        {
+          const indexes = encodeBody.used_photo_indexes;
+          if (indexes.length < 2 || new Set(indexes).size !== indexes.length ||
+              indexes.some((index: unknown) => typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= photos.length)) {
+            throw new Error('Face service returned invalid accepted photo indexes');
+          }
+          acceptedPhotos = indexes.map((index: number) => photos[index]);
+        }
       } else {
         // The face service's quality gate returns 422 with a structured detail
         // ({ message, photos, disagreeing_pairs }); other failures use a string detail.
@@ -126,7 +149,9 @@ export async function POST(req: NextRequest) {
     }
 
     const storageIds: string[] = [];
-    for (const photo of photos) {
+    // Store only frames the quality gate used for the reference encoding.
+    // A rejected/outlier frame must not become the worker's dashboard photo.
+    for (const photo of acceptedPhotos) {
       try {
         const uploadUrl = await convex.mutation(api.workers.generateUploadUrl, {});
         const base64Data = photo.replace(/^data:image\/\w+;base64,/, '');
@@ -149,6 +174,7 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date().toISOString();
+    const consentAt = now;
     const result = workerId
       ? await convex.mutation(api.workers.update, {
           id: workerId as any,
@@ -158,6 +184,7 @@ export async function POST(req: NextRequest) {
           faceEncoding,
           photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
           enrolledAt: now,
+          consentAt,
         })
       : isAdminSession
         ? await convex.mutation(api.workers.create, {
@@ -166,11 +193,13 @@ export async function POST(req: NextRequest) {
             department: departmentForSave,
             faceEncoding,
             photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+            consentAt,
           })
         : await convex.mutation(api.workers.createFromRoster, {
             employeeId: employeeIdForSave!,
             faceEncoding,
             photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+            consentAt,
           });
 
     return NextResponse.json(

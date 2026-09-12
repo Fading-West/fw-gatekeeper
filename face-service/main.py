@@ -15,17 +15,19 @@ Enrollment quality gate (POST /encode):
 import base64
 import io
 import os
-import urllib.request
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import cv2
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import onnxruntime as ort
+
+from model_pinning import REC_MODEL_URL, REC_MODEL_SHA256, ensure_pinned_model
 
 from enrollment_quality import (
     MIN_GOOD_PHOTOS,
@@ -55,11 +57,12 @@ MODEL_DIR = Path(os.environ.get("FACE_MODEL_DIR", "/app/models"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # InsightFace buffalo_s recognition model from HuggingFace (Immich mirror)
-REC_URL = "https://huggingface.co/immich-app/buffalo_s/resolve/main/recognition/model.onnx"
+REC_URL = REC_MODEL_URL
 REC_PATH = MODEL_DIR / "rec_model.onnx"
 
 # Lazy global
 _rec_session = None
+_rec_lock = threading.Lock()
 
 
 class MultipleFacesError(ValueError):
@@ -67,29 +70,29 @@ class MultipleFacesError(ValueError):
 
 
 def _validate_encoding_vector(encoding: list[float]) -> bool:
-    if len(encoding) not in {128, 512}:
-        return False
-    return all(np.isfinite(value) for value in encoding)
+    return len(encoding) == 512 and bool(np.isfinite(encoding).all()) and float(np.linalg.norm(encoding)) > 0
 
 
 def ensure_models():
-    """Download the recognition model if not present."""
-    if not REC_PATH.exists():
-        print(f"Downloading {REC_PATH.name} from {REC_URL}...")
-        urllib.request.urlretrieve(REC_URL, str(REC_PATH))
-        print(f"Downloaded {REC_PATH.name} ({REC_PATH.stat().st_size / 1e6:.1f} MB)")
+    """Verify the pinned recognition model before loading it."""
+    ensure_pinned_model(REC_URL, REC_PATH, REC_MODEL_SHA256, label="MobileFaceNet")
 
 
 def get_rec_session():
     global _rec_session
-    if _rec_session is None:
-        ensure_models()
-        _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
+    # FastAPI sync handlers run in multiple threads; load only one native session.
+    with _rec_lock:
+        if _rec_session is None:
+            ensure_models()
+            _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
     return _rec_session
 
 
+PhotoInput = Annotated[str, Field(min_length=1, max_length=4_000_000)]
+
+
 class EncodeRequest(BaseModel):
-    photos: list[str]
+    photos: list[PhotoInput] = Field(min_length=1, max_length=6)
 
 class PhotoResult(BaseModel):
     index: int
@@ -130,7 +133,10 @@ def decode_image(data_url: str) -> np.ndarray:
     """Decode base64 data URL to BGR numpy array."""
     if "," in data_url:
         data_url = data_url.split(",", 1)[1]
-    img = Image.open(io.BytesIO(base64.b64decode(data_url))).convert("RGB")
+    with Image.open(io.BytesIO(base64.b64decode(data_url, validate=True))) as source:
+        if source.width * source.height > 4_000_000 or getattr(source, "n_frames", 1) != 1:
+            raise ValueError("Use a single photo no larger than four megapixels")
+        img = source.convert("RGB")
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
@@ -223,7 +229,10 @@ def _inspect_enrollment_photo(index: int, photo: str) -> tuple[PhotoResult, Opti
     if face is None:
         return PhotoResult(index=index, ok=False, reason="no_face"), None
 
-    return PhotoResult(index=index, ok=True, reason="ok"), np.asarray(embed_face_crop(face), dtype=np.float64)
+    embedding = embed_face_crop(face)
+    if not _validate_encoding_vector(embedding):
+        raise HTTPException(503, "Recognition model returned an invalid embedding")
+    return PhotoResult(index=index, ok=True, reason="ok"), np.asarray(embedding, dtype=np.float64)
 
 
 _REASON_LABELS = {
@@ -262,7 +271,12 @@ def encode(req: EncodeRequest):
     usable_indexes: list[int] = []
     embeddings: list[np.ndarray] = []
     for i, photo in enumerate(req.photos):
-        result, embedding = _inspect_enrollment_photo(i, photo)
+        try:
+            result, embedding = _inspect_enrollment_photo(i, photo)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(503, "Recognition service is unavailable. Please try again.") from None
         photos.append(result)
         if embedding is not None:
             usable_indexes.append(i)
@@ -316,6 +330,7 @@ def match(req: MatchRequest):
     if not valid_encodings:
         return MatchResponse(match=None)
     known = np.array([w.encoding for w in valid_encodings])
+    known = known / np.linalg.norm(known, axis=1, keepdims=True)
 
     # Cosine similarity (embeddings are already L2-normalized)
     similarities = known @ emb_arr

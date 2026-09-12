@@ -1,4 +1,4 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
@@ -80,6 +80,28 @@ export const list = query({
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
     return kiosks.map(serializeKiosk);
+  },
+});
+
+/**
+ * Supplies the credential-free Convex HTTP health action with the minimum
+ * fields needed to aggregate fleet status. It is not callable through api.*.
+ */
+export const internalHealthSnapshot = internalQuery({
+  args: {},
+  returns: v.array(v.object({
+    last_sync: v.union(v.string(), v.null()),
+    health: healthSerialized,
+  })),
+  handler: async (ctx) => {
+    const kiosks = await ctx.db
+      .query("kiosks")
+      .withIndex("by_active", (q) => q.eq("active", true))
+      .take(101);
+    return kiosks.map((kiosk) => ({
+      last_sync: kiosk.lastSync ?? null,
+      health: serializeHealth(kiosk.health),
+    }));
   },
 });
 

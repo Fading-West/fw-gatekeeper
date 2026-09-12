@@ -4,6 +4,7 @@ import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
 import { ingestAttendanceEvent } from '@/lib/convex-ingest';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
+import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
 
 export async function GET(req: NextRequest) {
   try {
@@ -26,6 +27,11 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  // Defense in depth: kiosk credential is checked here, not only in middleware.
+  if (!hasValidKioskKey(req)) {
+    return unauthorizedApiResponse();
+  }
+
   try {
     const body = await req.json().catch(() => ({}));
     const { worker_id, event_type, type, kiosk_id, timestamp } = body;

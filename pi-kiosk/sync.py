@@ -4,8 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
+from collections import Counter
 from datetime import datetime
 from typing import Optional
 
@@ -53,30 +55,76 @@ def _build_attempt_idempotency_key(attempt: dict) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-def sync_attendance() -> bool:
-    """POST unsynced gatekeeper logs to server. Returns True on success."""
-    logs = database.get_unsynced_logs()
-    if not logs:
-        return True
+# Orphaned attendance rows (no server worker mapping) are reported when the
+# set changes and then once an hour, not once per row per 30-second cycle.
+_last_orphan_signature: Optional[tuple] = None
+_last_orphan_warned_at: float = 0.0
+ORPHAN_REWARN_SEC = 3600
+# Convex document ids as the server hands them out. A hand-entered value that
+# does not look like one (an employee id, a name) must not be sent, because
+# the server stores whatever worker id it is given.
+_SERVER_ID_RE = re.compile(r"[a-z0-9]{20,64}")
 
+
+def _resolve_log_server_id(log: dict) -> Optional[str]:
+    """Server id to send a queued log under.
+
+    The live workers row wins so a worker re-created on the server keeps the
+    current id; the snapshot taken at write time covers rows whose worker has
+    since been removed.
+    """
+    live = database.get_server_id(int(log["worker_id"]))
+    if live:
+        return str(live)
+    snapshot = str(log.get("server_worker_id") or "").strip()
+    if not snapshot:
+        return None
+    if not _SERVER_ID_RE.fullmatch(snapshot):
+        logger.error(
+            "Attendance log %s has server_worker_id=%r which is not a server worker id; leaving it queued",
+            log.get("id"),
+            snapshot,
+        )
+        return None
+    return snapshot
+
+
+def _track_orphans(orphans: list[dict], total: int) -> None:
+    """Warn when the set of stuck rows changes, and hourly while it persists."""
+    global _last_orphan_signature, _last_orphan_warned_at
+    signature = tuple(int(o["id"]) for o in orphans) or None
+    changed = signature != _last_orphan_signature
+    _last_orphan_signature = signature
+    if not signature:
+        return
+    now = time.monotonic()
+    if not changed and now - _last_orphan_warned_at < ORPHAN_REWARN_SEC:
+        logger.debug("Attendance sync: %d of %d queued logs still have no server worker mapping", len(orphans), total)
+        return
+    _last_orphan_warned_at = now
+    by_worker = Counter(f"local_worker_id={o['worker_id']} name={o.get('worker_name')}" for o in orphans)
+    logger.warning(
+        "Attendance sync: %d of %d queued logs have no server worker mapping and will stay queued "
+        "until server_worker_id is set or the rows are removed (%s); log ids=%s%s",
+        len(orphans),
+        total,
+        "; ".join(f"{k} x{n}" for k, n in by_worker.items()),
+        list(signature[:20]),
+        f" (+{len(signature) - 20} more)" if len(signature) > 20 else "",
+    )
+
+
+def sync_attendance() -> bool:
+    """POST unsynced gatekeeper logs to server. Returns True when nothing is left queued."""
+    logs = database.get_unsynced_logs()
     payload_logs = []
     synced_log_ids = []
-    missing_mappings = 0
-    server_id_cache: dict[int, Optional[str]] = {}
+    orphans: list[dict] = []
 
     for log in logs:
-        local_worker_id = int(log["worker_id"])
-        if local_worker_id not in server_id_cache:
-            server_id_cache[local_worker_id] = database.get_server_id(local_worker_id)
-        server_id = server_id_cache[local_worker_id]
+        server_id = _resolve_log_server_id(log)
         if not server_id:
-            missing_mappings += 1
-            logger.error(
-                "Skipping attendance log %s: no server_id for local worker_id=%s worker_name=%s",
-                log["id"],
-                local_worker_id,
-                log.get("worker_name"),
-            )
+            orphans.append(log)
             continue
 
         payload_logs.append(
@@ -95,12 +143,9 @@ def sync_attendance() -> bool:
         )
         synced_log_ids.append(int(log["id"]))
 
+    _track_orphans(orphans, len(logs))
     if not payload_logs:
-        logger.error(
-            "Attendance sync aborted: %d unsynced logs found, but none had a server_id mapping",
-            len(logs),
-        )
-        return False
+        return not orphans
 
     try:
         r = requests.post(
@@ -114,9 +159,9 @@ def sync_attendance() -> bool:
             logger.info(
                 "Synced %d gatekeeper logs to server%s",
                 len(synced_log_ids),
-                f"; {missing_mappings} still waiting for worker mappings" if missing_mappings else "",
+                f"; {len(orphans)} still waiting for worker mappings" if orphans else "",
             )
-            return missing_mappings == 0
+            return not orphans
         else:
             logger.error(
                 "Attendance sync failed with status=%d body=%s",

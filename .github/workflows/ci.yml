@@ -1,0 +1,45 @@
+name: Gatekeeper checks
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gatekeeper-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_CONVEX_URL: https://ci-only.convex.cloud
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scripts/requirements-ci.txt
+      - run: npm ci
+      - run: python -m pip install -r scripts/requirements-ci.txt
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+  face-service-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build face service with pinned models and native dependencies
+        run: docker build --tag gatekeeper-face-service:ci ./face-service
+      - name: Load recognition model in the built image
+        run: docker run --rm gatekeeper-face-service:ci python -c "import main; main.get_rec_session(); print('Recognition model loaded')"

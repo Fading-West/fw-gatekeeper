@@ -11,6 +11,7 @@ gate can be adjusted on a deployment without rebuilding the image:
 """
 
 import os
+import math
 from typing import Sequence
 
 import numpy as np
@@ -46,7 +47,11 @@ def _env_int(name: str, default: int) -> int:
 
 
 MIN_PAIRWISE_SIMILARITY = _env_float("MIN_PAIRWISE_SIMILARITY", 0.6)
-MIN_GOOD_PHOTOS = max(1, _env_int("MIN_GOOD_PHOTOS", 2))
+MIN_GOOD_PHOTOS = _env_int("MIN_GOOD_PHOTOS", 2)
+if not math.isfinite(MIN_PAIRWISE_SIMILARITY) or not 0 < MIN_PAIRWISE_SIMILARITY <= 1:
+    raise ValueError("MIN_PAIRWISE_SIMILARITY must be finite and in (0, 1]")
+if not 2 <= MIN_GOOD_PHOTOS <= 6:
+    raise ValueError("MIN_GOOD_PHOTOS must be between 2 and 6")
 
 
 def face_area(box: FaceBox) -> int:
@@ -100,6 +105,12 @@ def select_consistent_embeddings(
     count = len(embeddings)
     if count == 0:
         return [], []
+    if not math.isfinite(min_pairwise) or not 0 < min_pairwise <= 1:
+        raise ValueError("Invalid enrollment similarity threshold")
+    for vector in embeddings:
+        vec = np.asarray(vector)
+        if vec.shape != (512,) or not np.isfinite(vec).all() or np.linalg.norm(vec) == 0:
+            raise ValueError("Invalid recognition embedding")
     if count == 1:
         return [0], []
 

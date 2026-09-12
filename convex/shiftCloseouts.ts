@@ -1,3 +1,4 @@
+import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { buildShiftExceptions } from "./shiftExceptions";
@@ -405,7 +406,7 @@ export const get = query({
   args: { date: v.optional(v.string()) },
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
-    const date = args.date || new Date().toISOString().slice(0, 10);
+    const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
     return buildCloseoutPayload(ctx, date);
   },
 });

@@ -22,6 +22,7 @@ function getInitials(name: string) {
 export default function WorkersPage() {
   const { toast } = useToast();
   const [workers, setWorkers] = useState<Worker[]>([]);
+  const [showInactive, setShowInactive] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
@@ -46,7 +47,7 @@ export default function WorkersPage() {
     try {
       // Non-admin roles are only authorized for the read-scoped roster
       // (readiness metadata, no admin management payload).
-      const endpoint = currentRole === 'admin' ? '/api/workers' : '/api/workers?scope=dashboard';
+      const endpoint = currentRole === 'admin' ? (showInactive ? '/api/workers?active=false' : '/api/workers') : '/api/workers?scope=dashboard';
       const res = await fetch(endpoint);
       if (!res.ok) {
         throw new Error(res.status === 401 ? 'Your account does not have access to the worker list.' : 'Failed to load workers');
@@ -58,7 +59,7 @@ export default function WorkersPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentRole]);
+  }, [currentRole, showInactive]);
 
   useEffect(() => { fetchWorkers(); }, [fetchWorkers]);
 
@@ -100,6 +101,36 @@ export default function WorkersPage() {
       fetchWorkers();
     } catch {
       toast('Failed to deactivate worker', 'error');
+    }
+  };
+
+  // Admin-only: irreversibly deletes the face template + enrollment photos and
+  // deactivates the worker so kiosks drop the cached template on next sync.
+  const purgeBiometrics = async (w: Worker) => {
+    const reason = window.prompt(
+      `Permanently delete ${w.name}'s face template and enrollment photos?\n\n` +
+      'This also deactivates the worker; kiosks drop the cached template on their next successful sync. ' +
+      'This cannot be undone.\n\nEnter a reason (required):',
+    );
+    if (reason === null) return;
+    if (!reason.trim()) {
+      toast('A reason is required to purge face data', 'error');
+      return;
+    }
+    try {
+      const res = await fetch('/api/workers/purge-biometrics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: w.id, reason: reason.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Failed to purge face data');
+      }
+      toast(`${w.name}'s face data purged and worker deactivated`);
+      fetchWorkers();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Failed to purge face data', 'error');
     }
   };
 
@@ -153,6 +184,13 @@ export default function WorkersPage() {
           </div>
         )}
       </div>
+
+      {canEdit && (
+        <label className="mb-5 flex items-center gap-3 text-sm text-slate-300">
+          <input type="checkbox" checked={showInactive} onChange={(event) => { setShowInactive(event.target.checked); resetEdit(); }} />
+          Show inactive workers to review or purge retained face data
+        </label>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-8">
         <div className="glass-card p-4">
@@ -273,7 +311,7 @@ export default function WorkersPage() {
         <div className="glass-card p-6 text-sm text-slate-400">Loading workers...</div>
       ) : !error && workers.length === 0 ? (
         <div className="glass-card p-12 text-center">
-          <p className="text-slate-400 font-display">No workers registered yet</p>
+          <p className="text-slate-400 font-display">{showInactive ? 'No inactive workers' : 'No workers registered yet'}</p>
           <p className="text-xs text-slate-600 mt-1">Use Enroll Face to add the first worker.</p>
         </div>
       ) : filteredWorkers.length === 0 ? (
@@ -285,8 +323,8 @@ export default function WorkersPage() {
           const faceReady = encodingStatus === 'valid';
           const faceInvalid = encodingStatus === 'invalid';
           const statusLabel = faceReady ? 'Face enrolled' : faceInvalid ? 'Invalid face data' : 'Missing face';
-          const readinessLabel = faceReady ? 'Ready for kiosk recognition' : faceInvalid ? 'Needs re-enrollment' : 'Needs enrollment';
-          const readinessDetail = faceReady
+          const readinessLabel = !w.active ? 'Inactive — excluded from kiosk recognition' : faceReady ? 'Ready for kiosk recognition' : faceInvalid ? 'Needs re-enrollment' : 'Needs enrollment';
+          const readinessDetail = !w.active ? 'Purge retained face data here. To restore a returning worker, enroll them again using the same employee ID.' : faceReady
             ? 'This worker has valid face data and will sync to kiosks.'
             : faceInvalid
               ? 'This worker has face data, but it is not a supported kiosk vector. Re-enroll from photos.'
@@ -302,7 +340,7 @@ export default function WorkersPage() {
                   <div className="text-xs font-mono text-slate-500 truncate">ID: {w.employee_id || 'Not set'}</div>
                   <div className="text-xs font-mono text-slate-500 truncate">{w.department || 'No department'}</div>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <span className="badge border bg-emerald-400/10 text-emerald-400 border-emerald-400/20">Active</span>
+                    <span className="badge border bg-emerald-400/10 text-emerald-400 border-emerald-400/20">{w.active ? 'Active' : 'Inactive'}</span>
                     <span className={`badge border ${faceReady ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20' : faceInvalid ? 'bg-red-400/10 text-red-400 border-red-400/20' : 'bg-amber-400/10 text-amber-400 border-amber-400/20'}`}>
                       {statusLabel}
                     </span>
@@ -316,10 +354,10 @@ export default function WorkersPage() {
                 </p>
               </div>
               <div className="flex gap-2 pt-1">
-                {canEdit && (
+                {canEdit && Boolean(w.active) && (
                   <button onClick={() => startEdit(w)} className="btn-secondary flex-1 text-xs">Edit</button>
                 )}
-                {canEnroll ? (
+                {canEnroll && Boolean(w.active) ? (
                   <Link href={`/enroll?worker_id=${encodeURIComponent(w.id)}`} className={`flex-1 text-center text-xs ${faceReady ? 'btn-ghost' : 'btn-primary'}`}>
                     {faceReady ? 'Re-enroll' : faceInvalid ? 'Re-enroll' : 'Enroll now'}
                   </Link>
@@ -328,9 +366,18 @@ export default function WorkersPage() {
                     Review-only
                   </button>
                 )}
-                {canEdit && (
+                {canEdit && Boolean(w.active) && (
                   <button onClick={() => deactivate(w.id)} className="px-3 py-2 text-xs rounded-xl bg-red-400/5 border border-red-400/10 text-red-400 hover:bg-red-400/10 transition-all">
                     Deactivate
+                  </button>
+                )}
+                {canEdit && (
+                  <button
+                    onClick={() => purgeBiometrics(w)}
+                    title="Permanently delete face template and photos, then deactivate"
+                    className="px-3 py-2 text-xs rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 transition-all"
+                  >
+                    Purge face data
                   </button>
                 )}
               </div>
@@ -347,7 +394,7 @@ export default function WorkersPage() {
             <tbody className="divide-y divide-navy-700/60">
               {filteredWorkers.map((worker) => {
                 const encodingStatus = getEncodingStatus(worker);
-                const statusLabel = encodingStatus === 'valid' ? 'Face enrolled' : encodingStatus === 'invalid' ? 'Invalid face data' : 'Needs enrollment';
+                const statusLabel = !worker.active ? 'Inactive' : encodingStatus === 'valid' ? 'Face enrolled' : encodingStatus === 'invalid' ? 'Invalid face data' : 'Needs enrollment';
                 return (
                   <tr key={worker.id} className="hover:bg-navy-800/50">
                     <td className="px-4 py-3 font-semibold text-slate-200">{worker.name}</td>
@@ -356,9 +403,10 @@ export default function WorkersPage() {
                     <td className="px-4 py-3"><span className={`badge border ${encodingStatus === 'valid' ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-400' : encodingStatus === 'invalid' ? 'border-red-400/20 bg-red-400/10 text-red-400' : 'border-amber-400/20 bg-amber-400/10 text-amber-400'}`}>{statusLabel}</span></td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
-                        {canEdit && <button onClick={() => startEdit(worker)} className="btn-ghost text-xs">Edit</button>}
-                        {canEnroll && <Link href={`/enroll?worker_id=${encodeURIComponent(worker.id)}`} className={encodingStatus === 'valid' ? 'btn-ghost text-xs' : 'btn-primary text-xs'}>{encodingStatus === 'missing' ? 'Enroll' : 'Re-enroll'}</Link>}
-                        {canEdit && <button onClick={() => deactivate(worker.id)} className="rounded-lg border border-red-400/20 px-2 py-1 text-xs text-red-400 hover:bg-red-400/10">Deactivate</button>}
+                        {canEdit && Boolean(worker.active) && <button onClick={() => startEdit(worker)} className="btn-ghost text-xs">Edit</button>}
+                        {canEnroll && Boolean(worker.active) && <Link href={`/enroll?worker_id=${encodeURIComponent(worker.id)}`} className={encodingStatus === 'valid' ? 'btn-ghost text-xs' : 'btn-primary text-xs'}>{encodingStatus === 'missing' ? 'Enroll' : 'Re-enroll'}</Link>}
+                        {canEdit && Boolean(worker.active) && <button onClick={() => deactivate(worker.id)} className="rounded-lg border border-red-400/20 px-2 py-1 text-xs text-red-400 hover:bg-red-400/10">Deactivate</button>}
+                        {canEdit && <button onClick={() => purgeBiometrics(worker)} title="Permanently delete face template and photos, then deactivate" className="rounded-lg border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-300 hover:bg-red-500/20">Purge face data</button>}
                       </div>
                     </td>
                   </tr>
