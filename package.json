@@ -32,7 +32,8 @@
     "test:convex-local-date": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-convex-local-date-contract.mjs",
     "test:python": "node scripts/run-python-tests.mjs",
     "test:contracts": "node scripts/run-contract-tests.mjs",
-    "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit",
+    "test:shift-exceptions-behavior": "vitest run convex/shiftExceptions.test.ts"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.95",

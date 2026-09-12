@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestAttendanceBatch } from '@/lib/convex-ingest';
+import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
+  // Defense in depth: the middleware gates this route too, but the handler
+  // must not depend on it. This is the only path to the server ingest key.
+  if (!hasValidKioskKey(req)) {
+    return unauthorizedApiResponse();
+  }
+
   try {
     const body = await req.json();
     const events = body.events || body.logs;

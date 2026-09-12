@@ -1,3 +1,4 @@
+import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { assertPortalRole } from "./access";
@@ -30,7 +31,7 @@ export const get = query({
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
 
-    const today = args.date || new Date().toISOString().split("T")[0];
+    const today = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
 
     const allWorkers = await ctx.db
       .query("workers")

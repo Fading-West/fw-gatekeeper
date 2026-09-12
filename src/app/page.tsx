@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import WorkerCard from '@/components/WorkerCard';
 import { DashboardSkeleton } from '@/components/Skeleton';
-import { getLocalDateString } from '@/lib/date';
+import { getFactoryLocalDateString } from '@/lib/date';
 import { buildLiveShiftSentinelItems, buildProactiveActions, getLiveShiftSentinelSnapshot } from '@/lib/proactive-actions';
 import type { LiveShiftSentinelItem, LiveShiftSentinelSnapshot, ProactiveActionFreshness, ProactiveSignalFreshness } from '@/lib/proactive-actions';
 import type { ShiftBriefingResponse, ShiftCloseoutResponse, ShiftException, ShiftExceptionsResponse, ShiftTrustBriefStatus } from '@/lib/types';
@@ -334,7 +334,7 @@ export default function Dashboard() {
     try {
       const attemptedAt = new Date();
       const attemptedAtIso = attemptedAt.toISOString();
-      const today = getLocalDateString();
+      const today = getFactoryLocalDateString();
       const signals: Array<{ key: SignalFailureKey; label: string; href: string; request: () => Promise<Response> }> = [
         { key: 'stats', label: 'Dashboard stats', href: `/log?date=${today}`, request: () => fetch(`/api/stats?date=${today}`) },
         { key: 'workers', label: 'Worker roster', href: '/workers', request: () => fetch('/api/workers?scope=dashboard') },
@@ -514,7 +514,7 @@ export default function Dashboard() {
     };
   }, [fetchData]);
 
-  const actionDate = getLocalDateString();
+  const actionDate = getFactoryLocalDateString();
   const dashboardRole = currentRole || 'viewer';
   const proactiveShiftCloseout = shiftCloseout
     ? {
