@@ -1,0 +1,32 @@
+import { NextRequest } from 'next/server';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { POST } from './route';
+import { hasValidKioskKey } from '@/lib/auth';
+import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from '@/lib/attendance-backlog';
+vi.mock('@/lib/auth', () => ({ hasValidKioskKey: vi.fn(() => true), unauthorizedApiResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }) }));
+vi.mock('@/lib/attendance-backlog', () => ({ AttendanceBacklogPendingError: class extends Error {}, ingestAttendanceBacklog: vi.fn() }));
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(hasValidKioskKey).mockReturnValue(true); });
+const request = (body: unknown) => new NextRequest('http://localhost/api/attendance/bulk', { method: 'POST', body: JSON.stringify(body) });
+const log = { worker_id: 'worker', action: 'clock_in', timestamp: '2026-09-01 06:00:00', idempotency_key: 'legacy-key', liveness_confirmed: 1, confidence: 1.0000000000000002 };
+it('preserves the old Pi wire format and returns full acknowledgement for 501 logs', async () => {
+  vi.mocked(ingestAttendanceBacklog).mockResolvedValue({ synced: 501, acknowledged: 501 });
+  const response = await POST(request({ kiosk_id: 'entry', logs: Array(501).fill(log) }));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ synced: 501, acknowledged: 501 });
+  expect(vi.mocked(ingestAttendanceBacklog).mock.calls[0][0][0]).toMatchObject({ workerId: 'worker', eventType: 'clock_in', kioskId: 'entry', idempotencyKey: 'legacy-key', livenessConfirmed: true, confidence: 1 });
+});
+it('rejects a malformed final row before forwarding any events', async () => {
+  const response = await POST(request({ logs: [...Array(500).fill(log), { ...log, timestamp: 'bad' }] }));
+  expect(response.status).toBe(400);
+  expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
+});
+it('never returns success for a partially processed backlog', async () => {
+  vi.mocked(ingestAttendanceBacklog).mockRejectedValue(new AttendanceBacklogPendingError('Retry pending'));
+  expect((await POST(request({ logs: [log] }))).status).toBe(503);
+});
+
+it('rejects an unauthorized legacy request before ingest', async () => {
+  vi.mocked(hasValidKioskKey).mockReturnValue(false);
+  expect((await POST(request({ logs: [log] }))).status).toBe(401);
+  expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
+});
