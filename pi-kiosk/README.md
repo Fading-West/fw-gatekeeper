@@ -8,6 +8,10 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 - The camera runs continuously; dlib HOG finds faces, MobileFaceNet ONNX
   encodes them as 512-dim embeddings (the same model family the server uses),
   and matching is cosine similarity against locally cached worker encodings.
+  Each accepted scan must match the current camera frame. Temporal smoothing
+  only combines consecutive frames of the same worker and clears when the
+  face, roster encoding, or frame sequence changes; an unknown face cannot
+  inherit a previous worker's strong match.
 - A Flask web UI on port `5555` (loopback by default) shows the live camera
   feed, status messages, and today's log; Firefox ESR in kiosk mode displays it
   fullscreen on the attached monitor via XDG autostart.

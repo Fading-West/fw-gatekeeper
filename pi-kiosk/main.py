@@ -10,7 +10,6 @@ import logging
 import os
 import time
 import threading
-from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -20,7 +19,8 @@ import face_recognition as fr
 
 import config
 import database
-from embeddings import embed_face, model_ready as recognition_model_ready, normalize_embedding
+from embeddings import embed_face, model_ready as recognition_model_ready
+from matching import FreshFaceMatcher
 from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
@@ -321,7 +321,7 @@ def run(args):
 
     def detection_loop():
         logger.info("Detection thread started")
-        embedding_history = deque(maxlen=config.RECOGNITION_EMBEDDING_WINDOW)
+        embedding_history = FreshFaceMatcher(config.RECOGNITION_EMBEDDING_WINDOW, config.RECOGNITION_MATCH_THRESHOLD)
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -366,9 +366,6 @@ def run(args):
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding")
                     continue
 
-                embedding_history.append(embedding)
-                smoothed_embedding = normalize_embedding(np.mean(np.stack(embedding_history), axis=0))
-
                 # Match against known workers
                 known_encs, known_ids, known_names, known_server_ids = recognizer.snapshot_known_faces()
                 matched = None
@@ -377,7 +374,7 @@ def run(args):
                 second_score = None
 
                 if known_encs:
-                    cand_dim = len(smoothed_embedding)
+                    cand_dim = len(embedding)
                     # Validate every roster row, not just the first: legacy
                     # 128-dim entries can coexist with 512-dim ones (server and
                     # local stores both still accept them), and an unchecked
@@ -401,17 +398,15 @@ def run(args):
                         current_result[0] = _empty_recognition_result(face_loc, decision="rejected_dim_mismatch")
                         continue
 
-                    scores = []
-                    for i, known in compatible:
-                        sim = cosine_sim(np.array(known), smoothed_embedding)
-                        scores.append((sim, i))
-                    scores.sort(reverse=True, key=lambda item: item[0])
+                    scores, frame_accepted = embedding_history.match(
+                        embedding, compatible, known_ids, known_server_ids, frame_ts,
+                    )
                     best_sim, best_idx = scores[0]
                     if len(scores) > 1:
                         second_score = scores[1][0]
                     conf = best_sim
                     logger.info("Match: sim=%.3f name=%s window=%d", conf, known_names[best_idx], len(embedding_history))
-                    if conf >= config.RECOGNITION_MATCH_THRESHOLD:
+                    if frame_accepted:
                         matched = known_names[best_idx]
 
                 margin = conf - second_score if second_score is not None else None
@@ -451,6 +446,7 @@ def run(args):
 
             except Exception as e:
                 logger.error("Detection error: %s", e, exc_info=True)
+                embedding_history.clear()
                 current_result[0] = None
 
     det_thread = threading.Thread(target=detection_loop, daemon=True, name="face-detect")
