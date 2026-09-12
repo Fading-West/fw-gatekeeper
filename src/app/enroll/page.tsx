@@ -84,6 +84,7 @@ function EnrollPageContent() {
   }, [name, statusFilter, workerId]);
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
+    setConsentConfirmed(false);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
     setDepartment(employee.department);
@@ -94,6 +95,7 @@ function EnrollPageContent() {
   };
 
   const handleNameChange = (value: string) => {
+    setConsentConfirmed(false);
     if (selectedEmployee && value !== selectedEmployee.name) {
       if (employeeId === selectedEmployee.employeeId) setEmployeeId('');
       if (department === selectedEmployee.department) setDepartment('');
@@ -139,6 +141,7 @@ function EnrollPageContent() {
   }, [stopCamera]);
 
   useEffect(() => {
+    setConsentConfirmed(false);
     if (!workerId) return;
     let cancelled = false;
     async function loadWorker() {
@@ -161,6 +164,7 @@ function EnrollPageContent() {
   }, [workerId]);
 
   const startCamera = async () => {
+    setConsentConfirmed(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
@@ -196,6 +200,7 @@ function EnrollPageContent() {
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
+      if (!consentConfirmed) throw new Error('Confirm biometric consent for this worker before enrolling.');
       const res = await fetch('/api/enroll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -205,7 +210,7 @@ function EnrollPageContent() {
           department: departmentRef.current.trim(),
           workerId: workerIdRef.current,
           photos: capturedPhotos,
-          consent: true,
+          consent: consentConfirmed,
         }),
       });
 
@@ -235,6 +240,7 @@ function EnrollPageContent() {
   submitEnrollmentRef.current = submitEnrollment;
 
   const startCapturing = useCallback(() => {
+    if (!consentConfirmed) return;
     setStep('capturing');
     setCaptureCount(0);
     setPhotos([]);
@@ -261,7 +267,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [captureFrame]);
+  }, [captureFrame, consentConfirmed]);
 
   // Viewers cannot submit enrollments (the API rejects them), so stop them
   // here instead of letting them capture photos that will 401 on save.

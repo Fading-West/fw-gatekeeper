@@ -13,11 +13,12 @@ export async function POST(req: NextRequest) {
     return unauthorizedApiResponse();
   }
 
-  const body = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
   const { id, reason } = body as { id?: string; reason?: string };
   const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
 
-  if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
+  if (typeof id !== 'string' || !id.trim()) return NextResponse.json({ error: 'ID required' }, { status: 400 });
   if (!trimmedReason) return NextResponse.json({ error: 'A reason is required to purge face data' }, { status: 400 });
 
   try {

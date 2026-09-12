@@ -29,4 +29,25 @@ const kiosksRoute = read('src/app/api/kiosks/route.ts');
 assert.match(kiosksRoute, /hasValidPortalSession\(req,\s*\['admin'\]\)/, 'Kiosks API should enforce admin role at the route layer, not rely on middleware alone');
 assert.match(kiosksRoute, /unauthorizedApiResponse/, 'Kiosks API should return the standard unauthorized response for non-admin users');
 
+const kioskQueries = read('convex/kiosks.ts');
+const publicSummary = kioskQueries.slice(
+  kioskQueries.indexOf('export const internalHealthSnapshot'),
+  kioskQueries.indexOf('export const create'),
+);
+assert.match(publicSummary, /internalQuery/, 'The health snapshot must remain internal to the Convex HTTP action');
+assert.doesNotMatch(publicSummary, /serializeKiosk|workerName|attendance|location:/, 'Public kiosk health must not return kiosk identity, worker, attendance, or location details');
+assert.doesNotMatch(publicSummary, /Date\.now\(\)|\.collect\(\)/, 'The internal snapshot should stay deterministic and bound its indexed fleet query');
+
+const convexHttp = read('convex/http.ts');
+assert.match(convexHttp, /path: '\/api\/public\/kiosk-health'[\s\S]*method: 'GET'/, 'Convex should expose a credential-free GET health action');
+assert.match(convexHttp, /internal\.kiosks\.internalHealthSnapshot/, 'Public health should read only the internal aggregate input');
+assert.match(convexHttp, /inventory_truncated:[\s\S]*inventoryTruncated/, 'A fleet beyond the bounded read should degrade with an explicit truncation fact instead of failing health');
+assert.match(convexHttp, /missingDeviceHealth \+ staleDeviceHealth > 0/, 'Missing or stale device telemetry must degrade aggregate kiosk health');
+assert.match(convexHttp, /health\.reported_at/, 'Device telemetry freshness must use its own report time instead of kiosk sync alone');
+assert.match(convexHttp, /typeof kiosk\.health\.camera_ok !== 'boolean'[\s\S]*typeof kiosk\.health\.model_ok !== 'boolean'[\s\S]*missingDeviceHealth/, 'Fresh but incomplete device telemetry must remain degraded');
+const incompleteTelemetryCheck = convexHttp.indexOf("typeof kiosk.health.camera_ok !== 'boolean'");
+assert.ok(convexHttp.indexOf('deviceIssues += 1') < incompleteTelemetryCheck, 'Known device faults must be counted before incomplete telemetry is skipped');
+assert.ok(convexHttp.indexOf('queuedRecords +=') < incompleteTelemetryCheck, 'Known queued records must be counted before incomplete telemetry is skipped');
+assert.doesNotMatch(convexHttp.slice(convexHttp.indexOf('const publicKioskHealth')), /checkedAtMs:\s*v\./, 'Public callers must not supply the health evaluation clock');
+
 console.log('Kiosk readiness page contract passed');

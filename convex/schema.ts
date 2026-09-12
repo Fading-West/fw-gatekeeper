@@ -27,6 +27,7 @@ export default defineSchema({
     // ISO timestamp of the most recent biometric consent acknowledgement
     // captured at enrollment (refreshed on re-enrollment).
     consentAt: v.optional(v.string()),
+    consentRecordedBy: v.optional(v.id("users")),
     // Set when an admin purged faceEncoding + photos; see RETENTION.md.
     biometricsPurgedAt: v.optional(v.string()),
   })

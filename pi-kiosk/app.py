@@ -255,6 +255,7 @@ def manual_clock():
         liveness_confirmed=False,
         confidence=1.0,
         note="manual_clock",
+        server_worker_id=worker.get("server_id"),
     )
     action_label = "Clocked in" if action == "clock_in" else "Clocked out"
     update_status(
