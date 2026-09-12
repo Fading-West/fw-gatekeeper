@@ -62,6 +62,15 @@ if [ -z "$KIOSK_SUPERVISOR_PIN" ]; then
   exit 1
 fi
 
+# The native dependency lock targets Bookworm's Python 3.11 on 64-bit ARM.
+# Refuse other images before changing the machine or attempting source builds.
+python3 - <<'PYTHON_TARGET'
+import platform
+import sys
+if platform.machine() != "aarch64" or sys.version_info[:2] != (3, 11):
+    raise SystemExit("Use Raspberry Pi OS Bookworm (64-bit), Python 3.11, for this dependency lock.")
+PYTHON_TARGET
+
 # ─── 1. System Update ──────────────────────────────────────────
 echo "[1/7] Updating system packages..."
 apt-get update -qq
@@ -101,8 +110,10 @@ cd "$INSTALL_DIR/pi-kiosk"
 
 # Python virtual environment
 python3 -m venv venv --system-site-packages
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements.txt
+# picamera2/libcamera remain apt-managed. No pip camera dependency or upgrade.
+# Hash-check the source-build tools first; isolated builds would fetch newer tools.
+./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
+PATH="$PWD/venv/bin:$PATH" ./venv/bin/python -m pip install --require-hashes --no-build-isolation -r requirements.lock
 
 # ─── 4. Download Face Models ───────────────────────────────────
 echo "[4/8] Downloading face models..."
