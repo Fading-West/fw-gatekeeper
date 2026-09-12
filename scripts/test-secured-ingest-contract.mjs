@@ -9,6 +9,7 @@ const recognitionAttempts = read('convex/recognitionAttempts.ts');
 const kiosks = read('convex/kiosks.ts');
 const http = read('convex/http.ts');
 const helper = read('src/lib/convex-ingest.ts');
+const backlog = read('src/lib/attendance-backlog.ts');
 const attendanceRoute = read('src/app/api/attendance/bulk/route.ts');
 const attendanceSingleRoute = read('src/app/api/attendance/route.ts');
 const recognitionRoute = read('src/app/api/recognition-attempts/bulk/route.ts');
@@ -45,7 +46,9 @@ assert.match(helper, /process\.env\.CONVEX_INGEST_KEY/, 'Next secured ingest mus
 assert.match(helper, /authorization: `Bearer \$\{getConvexIngestKey\(\)\}`/, 'Next secured ingest must send bearer authorization.');
 assert.match(helper, /INGEST_TIMEOUT_MS = 10_000/, 'Next secured ingest must time out before the kiosk request does.');
 assert.doesNotMatch(helper, /assertProductionIngestAllowed|FW_DEMO_WRITE_MODE/, 'Demo write mode was removed; secured ingest must not carry demo guards.');
-assert.match(attendanceRoute, /ingestAttendanceBatch\(mapped\)/, 'Attendance route must call secured HTTP ingest.');
+assert.match(attendanceRoute, /ingestAttendanceBacklog\(mapped\)/, 'Attendance route must call the compatible backlog gateway.');
+assert.match(backlog, /ingestAttendanceBatch\(/, 'Backlog gateway must call secured HTTP ingest.');
+assert.match(backlog, /getAttendanceReceiptStatus\(/, 'Backlog gateway must resume durable chunk receipts.');
 assert.match(attendanceSingleRoute, /ingestAttendanceEvent\(/, 'Single attendance route must call secured HTTP ingest.');
 assert.match(recognitionRoute, /ingestRecognitionAttemptBatch\(mapped\)/, 'Recognition route must call secured HTTP ingest.');
 assert.match(syncRoute, /updateKioskLastSync\(kioskId, lastSync, parseKioskHealth\(/, 'Sync route must update lastSync and kiosk health through secured HTTP ingest.');
