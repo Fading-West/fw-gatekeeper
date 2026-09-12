@@ -7,7 +7,6 @@ Total: ~16MB — runs comfortably on Render free tier (512MB RAM).
 import base64
 import io
 import os
-import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +24,14 @@ from face_auth import (
     get_configured_face_service_key,
     is_valid_face_service_key,
 )
+from model_pinning import (
+    DET_MODEL_SHA256,
+    DET_MODEL_URL,
+    MODEL_COMMIT,
+    REC_MODEL_SHA256,
+    REC_MODEL_URL,
+    ensure_pinned_model,
+)
 
 app = FastAPI(title="Face Encoding Service")
 app.add_middleware(
@@ -34,12 +41,14 @@ app.add_middleware(
     allow_headers=["Content-Type", FACE_SERVICE_KEY_HEADER],
 )
 
-MODEL_DIR = Path("/app/models")
+MODEL_DIR = Path(os.environ.get("FACE_MODEL_DIR", "/app/models"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-# InsightFace buffalo_s models from HuggingFace (Immich mirror)
-DET_URL = "https://huggingface.co/immich-app/buffalo_s/resolve/main/detection/model.onnx"
-REC_URL = "https://huggingface.co/immich-app/buffalo_s/resolve/main/recognition/model.onnx"
+# InsightFace buffalo_s models from HuggingFace (Immich mirror), pinned to
+# commit MODEL_COMMIT with SHA-256 digests. Re-pin instructions live in
+# model_pinning.py; the Dockerfile repeats the same URLs and digests.
+DET_URL = DET_MODEL_URL
+REC_URL = REC_MODEL_URL
 DET_PATH = MODEL_DIR / "det_model.onnx"
 REC_PATH = MODEL_DIR / "rec_model.onnx"
 
@@ -55,12 +64,17 @@ def _validate_encoding_vector(encoding: list[float]) -> bool:
 
 
 def ensure_models():
-    """Download models if not present."""
-    for url, path in [(DET_URL, DET_PATH), (REC_URL, REC_PATH)]:
-        if not path.exists():
-            print(f"Downloading {path.name} from {url}...")
-            urllib.request.urlretrieve(url, str(path))
-            print(f"Downloaded {path.name} ({path.stat().st_size / 1e6:.1f} MB)")
+    """Download models if not present and verify both against pinned digests.
+
+    A present file that fails verification is deleted and re-fetched; a
+    download that fails verification is discarded and raises, so the service
+    never serves embeddings from an unpinned model.
+    """
+    for url, path, digest, label in [
+        (DET_URL, DET_PATH, DET_MODEL_SHA256, f"SCRFD detector (buffalo_s@{MODEL_COMMIT[:12]})"),
+        (REC_URL, REC_PATH, REC_MODEL_SHA256, f"MobileFaceNet (buffalo_s@{MODEL_COMMIT[:12]})"),
+    ]:
+        ensure_pinned_model(url, path, digest, label=label)
 
 
 def get_det_session():

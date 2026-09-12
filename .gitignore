@@ -12,3 +12,8 @@ pi-kiosk/config_local.py
 # Local scratch/build outputs
 outputs/
 tmp_*
+
+# Local credentials; keep the documented example versioned.
+.env
+.env.*
+!.env.example

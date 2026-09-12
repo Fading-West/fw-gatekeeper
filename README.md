@@ -29,7 +29,7 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 
 | Component | Technology |
 |-----------|-----------|
-| Dashboard | Next.js 14 + Tailwind CSS |
+| Dashboard | Next.js 16 + Tailwind CSS |
 | Database | Convex (cloud) |
 | Face Encoding | ArcFace ONNX (512-dim embeddings) |
 | Face Detection (Pi) | dlib HOG + Haar cascade |
@@ -110,7 +110,7 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 ## Step 1: Flash Raspberry Pi OS
 
 1. Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-2. Choose **Raspberry Pi OS with Desktop (64-bit)** — NOT Lite (we need a desktop session + browser for the monitor display)
+2. Choose **Raspberry Pi OS Bookworm with Desktop (64-bit, Python 3.11)** — NOT Lite (we need a desktop session + browser for the monitor display)
 3. Click the ⚙️ gear icon and configure:
    - **Hostname:** `fw-kiosk-1` (increment for each Pi: `fw-kiosk-2`, etc.)
    - **Enable SSH:** Yes, use password authentication
@@ -153,8 +153,10 @@ Before bringing kiosks online, configure the shared secrets used for dashboard a
 
 1. In Render (`fw-gatekeeper` → **Environment**), set:
    - `KIOSK_API_KEY` to a long random shared secret
-   - `AUTH_SECRET` to a long random signing key for admin session cookies
+   - `CONVEX_INGEST_KEY` to a long random secret, then set the **same** value on the Convex deployment with `npx convex env set CONVEX_INGEST_KEY <value>`
 2. Use the **same** `KIOSK_API_KEY` value on every Pi kiosk
+
+See `.env.example` for every variable, grouped by where it is set (Render, Convex, face service, kiosk).
 
 > The dashboard no longer auto-seeds demo data. Enroll real workers before expecting kiosks to recognize anyone.
 
@@ -218,7 +220,7 @@ libcamera-hello --timeout 5000
 Before the kiosks can recognize anyone, enroll workers:
 
 1. Go to https://fw-gatekeeper.onrender.com
-2. Enter PIN: **4729**
+2. Sign in with the portal account provided by your administrator.
 3. Click **Enroll Face** in the sidebar
 4. Enter the worker's name and department
 5. Capture 3 photos (look straight at camera, good lighting)
@@ -399,7 +401,8 @@ ssh pi@fw-kiosk-1.local
 cd /opt/fw-gatekeeper
 sudo git pull origin master
 cd pi-kiosk
-./venv/bin/pip install -r requirements.txt
+./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
+PATH="$PWD/venv/bin:$PATH" ./venv/bin/python -m pip install --require-hashes --no-build-isolation -r requirements.lock
 sudo systemctl restart fw-gatekeeper-kiosk
 ```
 
@@ -422,12 +425,6 @@ done
 1. Dashboard → Workers → click worker → Deactivate
 2. Worker will no longer be recognized at kiosks after next sync
 
-### Change the admin PIN
-Set the `ADMIN_PIN` environment variable on Render:
-1. Go to https://dashboard.render.com → fw-gatekeeper → Environment
-2. Change `ADMIN_PIN` value
-3. Redeploy
-
 ---
 
 ## Configuration Reference
@@ -436,13 +433,26 @@ Set the `ADMIN_PIN` environment variable on Render:
 
 | Variable | Value | Description |
 |----------|-------|-------------|
+| `NODE_ENV` | `production` | Required. Missing kiosk credentials fail closed; local development requires an explicit `FW_ALLOW_UNCONFIGURED_KIOSK_KEY=true` override, which production ignores. |
+| `NODE_VERSION` | `22` | Node major for Render builds (matches `.node-version` and `package.json` engines) |
 | `NEXT_PUBLIC_CONVEX_URL` | `https://modest-bat-146.convex.cloud` | Convex prod URL |
-| `ADMIN_PIN` | `4729` | Dashboard login PIN |
-| `AUTH_SECRET` | long random secret | Signing key for admin session cookies (required for dashboard auth) |
-| `KIOSK_API_KEY` | long random shared secret | Shared secret between server and Pi kiosks (required for sync) |
+| `CONVEX_INGEST_URL` | `https://modest-bat-146.convex.site` | Convex HTTP-actions host for secured ingest |
+| `CONVEX_INGEST_KEY` | long random secret | **Required.** Must equal `CONVEX_INGEST_KEY` on the Convex deployment (table below) |
+| `KIOSK_API_KEY` | long random shared secret | **Required.** Shared secret between server and Pi kiosks; without it every kiosk gets 401 |
 | `FACE_ENCODE_URL` | `https://fw-face-service.onrender.com/encode` | Face encoding service |
 | `FACE_SERVICE_KEY` | long random shared secret | Shared secret between the dashboard server and face service |
-| `FACE_SERVICE_ALLOWED_ORIGINS` | `https://fw-gatekeeper.onrender.com` | Browser origin allowed by the face service |
+| `FACE_SERVICE_ALLOWED_ORIGINS` | `https://fw-gatekeeper.onrender.com` | Browser origin allowed by the face service (set on `fw-face-service`) |
+
+### Convex deployment environment
+
+Set these on the Convex deployment (`npx convex env set NAME value` or the Convex dashboard), not on Render:
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `CONVEX_INGEST_KEY` | same value as on Render | Bearer secret checked by `convex/http.ts` for secured ingest |
+| `JWT_PRIVATE_KEY` | generated | Convex Auth RS256 signing key; created and set by `npx @convex-dev/auth` |
+| `JWKS` | generated | Convex Auth public key set matching `JWT_PRIVATE_KEY`; set by `npx @convex-dev/auth` |
+| `SITE_URL` | `https://fw-gatekeeper.onrender.com` | Dashboard URL used by Convex Auth for redirects |
 
 ### Kiosk Setup Variables
 
