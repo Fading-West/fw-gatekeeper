@@ -75,33 +75,39 @@ describe("missing clock-out timing uses the factory-local day", () => {
     expect(missingClockOuts(payload)[0]).toMatchObject({ worker_name: "Evening Worker", severity: "warning" });
   });
 
-  it("flags the worker on the same day once the scheduled end has passed", async () => {
+  it("flags a normal morning arrival after the scheduled end on the same day", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    // 2026-09-03 22:30 Central, after the 22:00 end. The rule keys on the
-    // last event's time versus schedule end, so a late-evening clock-in is
-    // used to exercise that branch.
     vi.setSystemTime(new Date("2026-09-04T03:30:00.000Z"));
+    const admin = await seedShift();
+    const payload = await admin.query(api.shiftExceptions.summary, { date: DATE });
+    expect(missingClockOuts(payload)).toHaveLength(1);
+  });
 
+  it("uses the factory day when no explicit date is supplied", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-04T01:30:00.000Z"));
+    const admin = await seedShift();
+    const payload = await admin.query(api.shiftExceptions.summary, {});
+    expect(payload.date).toBe(DATE);
+    expect(missingClockOuts(payload)).toHaveLength(0);
+    expect(await admin.query(api.attendance.list, {})).toHaveLength(1);
+    expect(await admin.query(api.stats.get, {})).toMatchObject({ clockedIn: 1 });
+  });
+
+  it.each([
+    ["2026-09-03T10:00:00.000Z", 0], // 05:00 before the shift
+    ["2026-09-03T11:00:00.000Z", 0], // exactly the 06:00 start
+    ["2026-09-03T11:01:00.000Z", 1], // after the start
+    ["2026-09-02T18:00:00.000Z", 0], // a future shift
+    ["2026-09-04T18:00:00.000Z", 1], // a past shift
+  ])("only raises missing arrivals when due at %s", async (now, expected) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(now));
     const admin = await seedShift();
     await admin.run(async (ctx) => {
-      const worker = await ctx.db.query("workers").first();
-      await ctx.db.insert("attendance", {
-        workerId: String(worker!._id),
-        eventType: "clock_out",
-        kioskId: "kiosk-exit-1",
-        timestamp: `${DATE}T12:00:00`,
-        synced: true,
-      });
-      await ctx.db.insert("attendance", {
-        workerId: String(worker!._id),
-        eventType: "clock_in",
-        kioskId: "kiosk-entry-1",
-        timestamp: `${DATE}T22:15:00`,
-        synced: true,
-      });
+      for (const event of await ctx.db.query("attendance").collect()) await ctx.db.delete(event._id);
     });
     const payload = await admin.query(api.shiftExceptions.summary, { date: DATE });
-
-    expect(missingClockOuts(payload)).toHaveLength(1);
+    expect(payload.exceptions.filter((row: any) => row.type === "missing_arrival")).toHaveLength(expected);
   });
 });

@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useTransit
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
-import { createLocalIsoTimestamp, getLocalDateString } from '@/lib/date';
+import { createLocalIsoTimestamp, getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import {
   AttendanceCorrectionAction,
@@ -176,7 +176,7 @@ function exceptionRowId(key: string) {
 function ExceptionsPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const queryDepartment = searchParams.get('department') || 'all';
   const queryType = searchParams.get('type') || 'all';
   const querySeverity = validSeverityParam(searchParams.get('severity'));

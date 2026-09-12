@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } fr
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
-import { getLocalDateString } from '@/lib/date';
+import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import {
   ShiftCloseoutChecklistItem,
@@ -159,7 +159,7 @@ function getCloseoutNextStep({
 function ShiftCloseoutPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const currentRole = usePortalRole();
   const [date, setDate] = useState(queryDate);
   const [payload, setPayload] = useState<ShiftCloseoutResponse | null>(null);
