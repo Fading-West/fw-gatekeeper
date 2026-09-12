@@ -7,7 +7,9 @@ function getKioskApiKey(): string {
 export function hasValidKioskKey(req: NextRequest): boolean {
   const configuredKey = getKioskApiKey();
   if (!configuredKey) {
-    return process.env.NODE_ENV !== 'production';
+    // Fail closed. A missing key must never mean "trust everyone", regardless
+    // of NODE_ENV. Local development can opt in explicitly.
+    return process.env.FW_ALLOW_UNCONFIGURED_KIOSK_KEY === 'true' && process.env.NODE_ENV !== 'production';
   }
 
   const authHeader = req.headers.get('authorization');

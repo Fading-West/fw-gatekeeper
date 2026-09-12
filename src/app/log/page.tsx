@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
-import { DEFAULT_FACTORY_TIME_ZONE, getLocalDateString } from '@/lib/date';
+import { DEFAULT_FACTORY_TIME_ZONE, getFactoryLocalDateString } from '@/lib/date';
 
 function correctionLabel(action: string) {
   return action.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -23,7 +23,7 @@ function validDateParam(value: string | null) {
 function LogPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const queryWorkerId = searchParams.get('worker_id') || '';
   const queryAttendanceId = searchParams.get('attendance_id') || '';
   const [date, setDate] = useState(queryDate);
