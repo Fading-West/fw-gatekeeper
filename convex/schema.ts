@@ -2,6 +2,25 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+export const closeoutFields = {
+    date: v.string(),
+    status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")),
+    supervisorName: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    acknowledgedBlockers: v.boolean(),
+    expected: v.float64(),
+    present: v.float64(),
+    late: v.float64(),
+    missing: v.float64(),
+    openExceptions: v.float64(),
+    criticalExceptions: v.float64(),
+    kioskWarnings: v.float64(),
+    completedAt: v.optional(v.string()),
+    reopenedAt: v.optional(v.string()),
+    createdAt: v.string(),
+    updatedAt: v.string(),
+};
+
 export default defineSchema({
   ...authTables,
 
@@ -124,26 +143,18 @@ export default defineSchema({
     .index("by_key", ["exceptionKey"])
     .index("by_date", ["date"]),
 
-  shiftCloseouts: defineTable({
-    date: v.string(),
-    status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")),
-    supervisorName: v.optional(v.string()),
-    notes: v.optional(v.string()),
-    acknowledgedBlockers: v.boolean(),
-    expected: v.float64(),
-    present: v.float64(),
-    late: v.float64(),
-    missing: v.float64(),
-    openExceptions: v.float64(),
-    criticalExceptions: v.float64(),
-    kioskWarnings: v.float64(),
-    completedAt: v.optional(v.string()),
-    reopenedAt: v.optional(v.string()),
-    createdAt: v.string(),
-    updatedAt: v.string(),
-  })
+  shiftCloseouts: defineTable(closeoutFields)
     .index("by_date", ["date"])
     .index("by_status", ["status"]),
+
+  shiftCloseoutHistory: defineTable({
+    closeoutId: v.id("shiftCloseouts"),
+    actorUserId: v.id("users"),
+    action: v.union(v.literal("complete"), v.literal("reopen")),
+    occurredAt: v.string(),
+    before: v.optional(v.object(closeoutFields)),
+    after: v.object(closeoutFields),
+  }).index("by_closeout", ["closeoutId"]),
 
   kiosks: defineTable({
     name: v.string(),

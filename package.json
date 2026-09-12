@@ -32,6 +32,7 @@
     "test:date": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-date-contract.mjs",
     "test:convex-local-date": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-convex-local-date-contract.mjs",
     "test:shift-selection": "vitest run src/hooks/useSelectedData.test.tsx src/app/closeout/closeout-selection.test.tsx src/components/RecognitionCalibrationLab.test.tsx",
+    "test:closeout-integrity": "vitest run convex/shiftCloseouts.test.ts",
     "test:alerts": "vitest run convex/alerts.test.ts",
     "test:model-pinning": "python3 pi-kiosk/test_model_pinning.py && python3 face-service/test_model_pinning.py",
     "test:face-encode-quality": "python3 face-service/test_encode_quality.py",

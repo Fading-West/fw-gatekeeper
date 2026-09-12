@@ -47,3 +47,21 @@ it('keeps React 18 save controls disabled until the network request and refresh 
   await act(async () => requests.get('/api/shift-closeout?date=2026-09-10')!(payload('2026-09-10', 'Notes')));
   expect(button('Save notes').props.disabled).toBe(false);
 });
+
+it('locks completed notes and exports the signed summary instead of later source changes', async () => {
+  const data = {
+    ...payload('2026-09-10', 'Signed notes'),
+    closeout: { status: 'completed', notes: 'Signed notes', snapshot: { expected: 9, present: 8, late: 1, missing: 0, open_exceptions: 0, critical_exceptions: 0, kiosk_warnings: 0 } },
+    summary: { expected: 123, attendance_corrections: 2 },
+  };
+  await act(async () => requests.get('/api/shift-closeout?date=2026-09-10')!(data));
+  expect(button('Save notes').props.disabled).toBe(true);
+  expect(tree.root.findByType('textarea').props.readOnly).toBe(true);
+  let exported!: Blob;
+  vi.stubGlobal('URL', { createObjectURL: (blob: Blob) => { exported = blob; return 'blob:test'; }, revokeObjectURL: vi.fn() });
+  vi.stubGlobal('document', { createElement: () => ({ click: vi.fn() }) });
+  await act(async () => button('Export').props.onClick());
+  const text = await exported.text();
+  expect(text).toContain('Signed summary\nExpected: 9');
+  expect(text).not.toContain('Expected: 123');
+});
