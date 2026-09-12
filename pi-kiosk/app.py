@@ -236,11 +236,19 @@ def today_log_alias():
 @supervisor_auth_required
 def manual_clock():
     payload = request.get_json(silent=True) or {}
-    name = str(payload.get("name", "")).strip()
-    if not name:
-        return jsonify({"success": False, "error": "Name is required"}), 400
-
-    worker = database.get_worker_by_name(name)
+    try:
+        if "worker_id" in payload:
+            worker_id = payload["worker_id"]
+            if isinstance(worker_id, bool) or not isinstance(worker_id, int) or worker_id <= 0:
+                return jsonify({"success": False, "error": "Valid worker ID is required"}), 400
+            worker = database.get_worker_by_id(worker_id)
+        else:
+            name = str(payload.get("name", "")).strip()
+            if not name:
+                return jsonify({"success": False, "error": "Name is required"}), 400
+            worker = database.get_worker_by_name(name)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
     if worker is None:
         return jsonify({"success": False, "error": "Worker not found"}), 404
 
