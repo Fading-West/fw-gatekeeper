@@ -1,3 +1,4 @@
+import { getFactoryLocalDateKey } from "./localDate";
 import { internalMutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
@@ -109,7 +110,7 @@ export const list = query({
   },
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
-    const date = args.date || new Date().toISOString().split("T")[0];
+    const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
     const records: any[] = args.includeCorrections === false
       ? await listAttendanceByTimestampRange(ctx, date, args.workerId)
       : await listEffectiveAttendanceByTimestampRange(ctx, date, args.workerId);

@@ -10,7 +10,7 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
-import { getLocalDateString } from '@/lib/date';
+import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 
 const decisionOptions: Array<{ value: RecognitionDecision | 'all'; label: string }> = [
@@ -103,7 +103,7 @@ function recognitionAttemptRowId(id: string) {
 function RecognitionCalibrationLabContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const queryDecision = validDecisionParam(searchParams.get('decision'));
   const queryReviewStatus = validReviewParam(searchParams.get('review_status'));
   const queryConfidenceBand = validConfidenceParam(searchParams.get('confidence_band'));

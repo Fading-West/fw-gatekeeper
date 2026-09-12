@@ -35,6 +35,7 @@ function EnrollPageContent() {
   const [directoryError, setDirectoryError] = useState('');
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [resultMsg, setResultMsg] = useState('');
@@ -83,6 +84,7 @@ function EnrollPageContent() {
   }, [name, statusFilter, workerId]);
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
+    setConsentConfirmed(false);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
     setDepartment(employee.department);
@@ -93,6 +95,7 @@ function EnrollPageContent() {
   };
 
   const handleNameChange = (value: string) => {
+    setConsentConfirmed(false);
     if (selectedEmployee && value !== selectedEmployee.name) {
       if (employeeId === selectedEmployee.employeeId) setEmployeeId('');
       if (department === selectedEmployee.department) setDepartment('');
@@ -138,6 +141,7 @@ function EnrollPageContent() {
   }, [stopCamera]);
 
   useEffect(() => {
+    setConsentConfirmed(false);
     if (!workerId) return;
     let cancelled = false;
     async function loadWorker() {
@@ -160,6 +164,7 @@ function EnrollPageContent() {
   }, [workerId]);
 
   const startCamera = async () => {
+    setConsentConfirmed(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
@@ -195,6 +200,7 @@ function EnrollPageContent() {
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
+      if (!consentConfirmed) throw new Error('Confirm biometric consent for this worker before enrolling.');
       const res = await fetch('/api/enroll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,6 +210,7 @@ function EnrollPageContent() {
           department: departmentRef.current.trim(),
           workerId: workerIdRef.current,
           photos: capturedPhotos,
+          consent: consentConfirmed,
         }),
       });
 
@@ -233,6 +240,7 @@ function EnrollPageContent() {
   submitEnrollmentRef.current = submitEnrollment;
 
   const startCapturing = useCallback(() => {
+    if (!consentConfirmed) return;
     setStep('capturing');
     setCaptureCount(0);
     setPhotos([]);
@@ -259,7 +267,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [captureFrame]);
+  }, [captureFrame, consentConfirmed]);
 
   // Viewers cannot submit enrollments (the API rejects them), so stop them
   // here instead of letting them capture photos that will 401 on save.
@@ -550,10 +558,31 @@ function EnrollPageContent() {
             <div className="absolute bottom-4 right-4 w-8 h-8 border-b-2 border-r-2 border-gold/40 rounded-br-lg" />
           </div>
 
+          <label
+            htmlFor="biometric-consent"
+            className={`glass-card mb-5 flex cursor-pointer items-start gap-3 px-4 py-3 text-left transition-colors ${consentConfirmed ? 'border-emerald-400/30' : 'border-amber-400/30'}`}
+          >
+            <input
+              id="biometric-consent"
+              type="checkbox"
+              checked={consentConfirmed}
+              onChange={(event) => setConsentConfirmed(event.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 accent-gold"
+              required
+            />
+            <span className="text-sm text-slate-300">
+              The worker has been told that a facial template will be stored for attendance and has agreed.
+              <span className="mt-1 block text-xs text-slate-500">
+                Required before capture. Face data can be deleted at any time by an admin from the Workers page.
+              </span>
+            </span>
+          </label>
+
           <div className="space-y-3">
             <button
               onClick={startCapturing}
-              className="btn-primary w-full py-3.5 text-base flex items-center justify-center gap-2"
+              disabled={!consentConfirmed}
+              className="btn-primary w-full py-3.5 text-base flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />

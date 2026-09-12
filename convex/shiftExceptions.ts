@@ -4,6 +4,7 @@ import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
+import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -84,8 +85,11 @@ function getMinutesFromTimestamp(timestamp?: string | null): number | null {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
-function dateHasPassed(date: string) {
-  return date < new Date().toISOString().slice(0, 10);
+// Compare both the day and scheduled deadline with the factory clock. A
+// worker's last scan cannot tell us whether the shift has finished yet.
+function scheduleTimeHasPassed(date: string, time: string, now: string) {
+  if (getMinutesFromTime(time) === null) return false;
+  return now > `${date}T${time}:00`;
 }
 
 function formatTime(value?: string | null) {
@@ -353,6 +357,7 @@ function summarize(exceptions: ShiftException[]) {
 
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
+  const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
   const [workers, attendance, schedules, reviews, recognitionAttempts] = await Promise.all([
     ctx.db
       .query("workers")
@@ -399,7 +404,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       schedules: "/schedules",
     };
 
-    if (schedule && !firstIn) {
+    if (schedule && !firstIn && scheduleTimeHasPassed(date, schedule.startTime, factoryNow)) {
       const key = `${date}:missing_arrival:${workerId}`;
       exceptions.push(createException({
         key,
@@ -457,11 +462,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
 
     if (schedule && lastEvent?.eventType === "clock_in") {
-      const endMinutes = getMinutesFromTime(schedule.endTime);
-      const lastEventMinutes = getMinutesFromTimestamp(lastEvent.timestamp);
-      const shouldFlagMissingClockOut =
-        endMinutes !== null &&
-        (dateHasPassed(date) || (lastEventMinutes !== null && lastEventMinutes > endMinutes));
+      const shouldFlagMissingClockOut = scheduleTimeHasPassed(date, schedule.endTime, factoryNow);
       if (shouldFlagMissingClockOut) {
         const key = `${date}:missing_clock_out:${workerId}`;
         exceptions.push(createException({
@@ -624,7 +625,7 @@ export const summary = query({
   args: { date: v.optional(v.string()) },
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
-    const date = args.date || new Date().toISOString().slice(0, 10);
+    const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
     const exceptions = await buildShiftExceptions(ctx, date);
     return {
       date,

@@ -1,7 +1,7 @@
 # FW Gatekeeper face service - pinned Python dependencies.
 #
-# Policy: every package is pinned with == so each Docker build produces the
-# same runtime. Target: python:3.11-slim (CPython 3.11, x86_64, glibc 2.36).
+# Policy: direct dependencies are pinned with == to reduce runtime drift.
+# Transitive dependencies and the base image can still change. Target: python:3.11-slim (CPython 3.11, x86_64, glibc 2.36).
 # numpy MUST stay <2 and match the kiosk pin so server and kiosk embeddings
 # are produced by identical numeric stacks.
 #

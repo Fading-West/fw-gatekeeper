@@ -1,7 +1,7 @@
 # FW Gatekeeper kiosk - pinned Python dependencies.
 #
-# Policy: every package installed from a wheel is pinned with == so that kiosks
-# provisioned on different days get identical numpy/onnxruntime/opencv builds.
+# Policy: direct dependencies are pinned with == for consistent native packages.
+# Transitive dependencies and system packages can still change.
 # Target: Raspberry Pi OS Bookworm (64-bit) = CPython 3.11, aarch64, glibc 2.36.
 # numpy MUST stay <2: numpy 2.x breaks the dlib/face_recognition ABI.
 #
