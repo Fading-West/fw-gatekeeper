@@ -1,5 +1,5 @@
 import { getFactoryLocalDateKey } from "./localDate";
-import { internalMutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { validateAttendanceBatch, validateAttendanceEvent, type AttendanceEvent } from "./attendanceValidation";
@@ -208,16 +208,46 @@ export const createFromHttp = internalMutation({
 });
 
 export const bulkCreateFromHttp = internalMutation({
-  args: { events: v.array(attendanceEventInput) },
+  args: { events: v.array(attendanceEventInput), receiptHash: v.optional(v.string()) },
   returns: v.object({ synced: v.number(), acknowledged: v.number() }),
   handler: async (ctx, args) => {
     const events = validateAttendanceBatch(args.events);
+    if (args.receiptHash !== undefined) {
+      validateReceiptDigests([args.receiptHash]);
+      const receipt = await ctx.db.query("attendanceIngestReceipts")
+        .withIndex("by_digest", q => q.eq("digest", args.receiptHash!)).first();
+      if (receipt) {
+        if (receipt.acknowledged !== events.length) throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "Receipt size mismatch" });
+        return { synced: 0, acknowledged: receipt.acknowledged };
+      }
+    }
     let synced = 0;
     for (const event of events) {
       if ((await insertAttendanceEvent(ctx, event)).inserted) synced++;
     }
+    if (args.receiptHash !== undefined) {
+      await ctx.db.insert("attendanceIngestReceipts", { digest: args.receiptHash, acknowledged: events.length });
+    }
     // Acknowledgement includes existing rows. The transaction rejects the
     // entire batch if any event is invalid; callers can safely retry it.
     return { synced, acknowledged: events.length };
+  },
+});
+
+
+export function validateReceiptDigests(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 500 || value.some(digest => typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))) {
+    throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "digests must contain at most 500 lowercase SHA-256 hashes" });
+  }
+  return value;
+}
+
+export const receiptStatus = internalQuery({
+  args: { digests: v.array(v.string()) },
+  returns: v.array(v.boolean()),
+  handler: async (ctx, args) => {
+    const digests = validateReceiptDigests(args.digests);
+    return await Promise.all(digests.map(async digest => Boolean(await ctx.db.query("attendanceIngestReceipts")
+      .withIndex("by_digest", q => q.eq("digest", digest)).first())));
   },
 });
