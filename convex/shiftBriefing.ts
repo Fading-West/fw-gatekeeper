@@ -1,3 +1,4 @@
+import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
@@ -710,7 +711,7 @@ export const summary = query({
   args: { date: v.optional(v.string()) },
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
-    const date = args.date || new Date().toISOString().slice(0, 10);
+    const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
     return buildShiftBriefing(ctx, date);
   },
 });

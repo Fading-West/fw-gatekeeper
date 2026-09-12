@@ -1,6 +1,9 @@
 import { internalQuery, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { assertPortalRole } from "./access";
+import { writeAuditLog } from "./audit";
 import { findEmployeeDirectoryById } from "../src/lib/employee-directory";
 
 // The kiosk matches exclusively 512-dim MobileFaceNet embeddings; legacy
@@ -12,6 +15,23 @@ function isSupportedFaceEncoding(encoding?: number[]) {
     encoding === undefined ||
     (SUPPORTED_ENCODING_LENGTHS.has(encoding.length) && encoding.every((value) => Number.isFinite(value)))
   );
+}
+
+function assertBiometricConsent(consentAt?: string) {
+  if (!consentAt || !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:?\d{2})$/i.test(consentAt) || !Number.isFinite(Date.parse(consentAt))) {
+    throw new Error("Biometric consent must be confirmed before saving face data");
+  }
+}
+
+async function deleteReplacedPhotos(ctx: MutationCtx, previous: Id<"_storage">[] | undefined, next: Id<"_storage">[] | undefined) {
+  const retained = new Set(next ?? []);
+  for (const id of new Set(previous ?? [])) {
+    if (!retained.has(id)) await ctx.storage.delete(id);
+  }
+}
+
+function assertPhotoLimit(photos?: Id<"_storage">[]) {
+  if (photos && photos.length > 6) throw new Error("At most 6 enrollment photos may be stored");
 }
 
 function normalizeName(name: string) {
@@ -37,17 +57,20 @@ async function findWorkerByName(ctx: any, name: string) {
     return null;
   }
   let cursor: string | null = null;
+  let inactiveMatch = null;
   do {
     const page: any = await ctx.db.query("workers").paginate({ cursor, numItems: 500 });
-    const worker = page.page.find((candidate: any) => candidate.name.trim().toLocaleLowerCase() === normalizedLower);
-    if (worker) return worker;
-    if (page.isDone) return null;
+    const matches = page.page.filter((candidate: any) => normalizeName(candidate.name).toLocaleLowerCase() === normalizedLower);
+    const activeMatch = matches.find((candidate: any) => candidate.active);
+    if (activeMatch) return activeMatch;
+    inactiveMatch ??= matches[0] ?? null;
+    if (page.isDone) return inactiveMatch;
     cursor = page.continueCursor;
   } while (cursor);
   return null;
 }
 
-async function findWorkerByEmployeeId(ctx: any, employeeId?: string) {
+async function findWorkerByEmployeeId(ctx: any, employeeId?: string, includeInactive = false) {
   const normalized = normalizeEmployeeId(employeeId);
   if (!normalized) return null;
   const exact = await ctx.db
@@ -55,6 +78,8 @@ async function findWorkerByEmployeeId(ctx: any, employeeId?: string) {
     .withIndex("by_employee_id_and_active", (q: any) => q.eq("employeeId", normalized).eq("active", true))
     .first();
   if (exact) return exact;
+  const inactive = includeInactive ? await ctx.db.query("workers")
+    .withIndex("by_employee_id_and_active", (q: any) => q.eq("employeeId", normalized).eq("active", false)).first() : null;
 
   // Compatibility for records created before IDs were normalized on write.
   let cursor: string | null = null;
@@ -65,22 +90,34 @@ async function findWorkerByEmployeeId(ctx: any, employeeId?: string) {
       .paginate({ cursor, numItems: 500 });
     const worker = page.page.find((candidate: any) => normalizeEmployeeId(candidate.employeeId) === normalized);
     if (worker) return worker;
-    if (page.isDone) return null;
+    if (page.isDone) break;
     cursor = page.continueCursor;
   } while (cursor);
+  if (inactive) return inactive;
+  if (includeInactive) {
+    cursor = null;
+    do {
+      const page: any = await ctx.db.query("workers")
+        .withIndex("by_active", (q: any) => q.eq("active", false)).paginate({ cursor, numItems: 500 });
+      const match = page.page.find((candidate: any) => normalizeEmployeeId(candidate.employeeId) === normalized);
+      if (match) return match;
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    } while (cursor);
+  }
   return null;
 }
 
 export const list = query({
-  args: { includeEncodings: v.optional(v.boolean()) },
+  args: { includeEncodings: v.optional(v.boolean()), active: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     await assertPortalRole(
       ctx,
-      args.includeEncodings ? ["admin", "enrollment"] : ["admin", "enrollment", "viewer"],
+      args.active === false ? ["admin"] : args.includeEncodings ? ["admin", "enrollment"] : ["admin", "enrollment", "viewer"],
     );
     const workers = await ctx.db
       .query("workers")
-      .withIndex("by_active", (q) => q.eq("active", true))
+      .withIndex("by_active", (q) => q.eq("active", args.active ?? true))
       .collect();
     return workers.map((w) => {
       const encodingStatus = getEncodingStatus(w.faceEncoding);
@@ -94,7 +131,7 @@ export const list = query({
         has_face_encoding: encodingStatus === "valid",
         encoding_status: encodingStatus,
         enrolled_at: w.enrolledAt,
-        active: 1,
+        active: w.active ? 1 : 0,
       };
     });
   },
@@ -127,6 +164,8 @@ const createWorkerArgs = {
   department: v.optional(v.string()),
   faceEncoding: v.array(v.float64()),
   photoStorageIds: v.optional(v.array(v.id("_storage"))),
+  // ISO timestamp of the biometric consent acknowledgement captured at enrollment.
+  consentAt: v.optional(v.string()),
 };
 
 const createWorkerResult = v.object({
@@ -136,7 +175,7 @@ const createWorkerResult = v.object({
   department: v.string(),
 });
 
-async function createWorker(ctx: any, args: any) {
+async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
     const name = normalizeName(args.name);
     if (!name) {
       throw new Error("Worker name is required");
@@ -144,20 +183,26 @@ async function createWorker(ctx: any, args: any) {
     if (!isSupportedFaceEncoding(args.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values");
     }
+    assertBiometricConsent(args.consentAt);
+    assertPhotoLimit(args.photoStorageIds);
     const now = new Date().toISOString();
     const employeeId = normalizeEmployeeId(args.employeeId);
     const department = normalizeDepartment(args.department);
-    const existing = await findWorkerByName(ctx, name);
-    const existingEmployeeId = await findWorkerByEmployeeId(ctx, employeeId);
+    const existingName = await findWorkerByName(ctx, name);
+    const existingEmployeeId = await findWorkerByEmployeeId(ctx, employeeId, true);
+    // A name is not a stable identity. Only a matching employee ID can
+    // restore an inactive worker and retain that person's attendance history.
+    const existing = existingEmployeeId;
 
-    if (existing?.active) {
+    if (existingName?.active) {
       throw new Error("Worker name already exists");
     }
-    if (existingEmployeeId?.active && existingEmployeeId._id !== existing?._id) {
+    if (existingEmployeeId?.active) {
       throw new Error(`Employee ID ${employeeId} already belongs to ${existingEmployeeId.name}`);
     }
 
     if (existing && !existing.active) {
+      await deleteReplacedPhotos(ctx, existing.photoStorageIds, args.photoStorageIds);
       await ctx.db.patch(existing._id, {
         name,
         employeeId,
@@ -167,7 +212,12 @@ async function createWorker(ctx: any, args: any) {
         enrolledAt: now,
         updatedAt: now,
         active: true,
+        consentAt: now,
+        consentRecordedBy: actorUserId,
+        // A fresh enrollment supersedes any earlier purge marker.
+        biometricsPurgedAt: undefined,
       });
+      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: now }) });
       return { id: existing._id, name, employeeId, department };
     }
 
@@ -180,7 +230,10 @@ async function createWorker(ctx: any, args: any) {
       enrolledAt: now,
       updatedAt: now,
       active: true,
+      consentAt: now,
+      consentRecordedBy: actorUserId,
     });
+    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: now }) });
     return { id, name, employeeId, department };
 }
 
@@ -188,8 +241,8 @@ export const create = mutation({
   args: createWorkerArgs,
   returns: createWorkerResult,
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin"]);
-    return await createWorker(ctx, args);
+    const member = await assertPortalRole(ctx, ["admin"]);
+    return await createWorker(ctx, args, member.userId);
   },
 });
 
@@ -198,10 +251,11 @@ export const createFromRoster = mutation({
     employeeId: v.string(),
     faceEncoding: v.array(v.float64()),
     photoStorageIds: v.optional(v.array(v.id("_storage"))),
+    consentAt: v.optional(v.string()),
   },
   returns: createWorkerResult,
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const member = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const employee = findEmployeeDirectoryById(args.employeeId);
     if (!employee) throw new Error("Employee must be selected from the company roster");
     return await createWorker(ctx, {
@@ -210,7 +264,8 @@ export const createFromRoster = mutation({
       department: employee.department,
       faceEncoding: args.faceEncoding,
       photoStorageIds: args.photoStorageIds,
-    });
+      consentAt: args.consentAt,
+    }, member.userId);
   },
 });
 
@@ -253,11 +308,24 @@ export const update = mutation({
     faceEncoding: v.optional(v.array(v.float64())),
     photoStorageIds: v.optional(v.array(v.id("_storage"))),
     enrolledAt: v.optional(v.string()),
+    consentAt: v.optional(v.string()),
   },
   returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const member = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const { id, ...fields } = args;
+    const worker = await ctx.db.get(id);
+    if (!worker || !worker.active) throw new Error("Active worker not found; use enrollment to restore a worker by employee ID");
+    if (member.role === "enrollment" && (
+      (fields.name !== undefined && normalizeName(fields.name) !== normalizeName(worker.name)) ||
+      (fields.employeeId !== undefined && normalizeEmployeeId(fields.employeeId) !== normalizeEmployeeId(worker.employeeId)) ||
+      (fields.department !== undefined && normalizeDepartment(fields.department) !== normalizeDepartment(worker.department))
+    )) {
+      throw new Error("Only admins may change worker identity or department");
+    }
+    const writesBiometrics = fields.faceEncoding !== undefined || fields.photoStorageIds !== undefined;
+    if (writesBiometrics) assertBiometricConsent(fields.consentAt);
+    assertPhotoLimit(fields.photoStorageIds);
     const updates: Record<string, unknown> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values");
@@ -284,9 +352,25 @@ export const update = mutation({
     if (fields.department !== undefined) updates.department = normalizeDepartment(fields.department);
     if (fields.faceEncoding !== undefined) updates.faceEncoding = fields.faceEncoding;
     if (fields.photoStorageIds !== undefined) updates.photoStorageIds = fields.photoStorageIds;
-    if (fields.enrolledAt !== undefined) updates.enrolledAt = fields.enrolledAt;
+    if (fields.faceEncoding !== undefined) updates.enrolledAt = new Date().toISOString();
+    if (writesBiometrics) {
+      updates.consentAt = new Date().toISOString();
+      updates.consentRecordedBy = member.userId;
+      // An updated template supersedes its old enrollment photographs too.
+      await deleteReplacedPhotos(ctx, worker.photoStorageIds, fields.photoStorageIds);
+      updates.photoStorageIds = fields.photoStorageIds;
+    }
+    if (fields.faceEncoding !== undefined) {
+      // Re-enrollment restores biometric data, so clear any earlier purge marker.
+      updates.biometricsPurgedAt = undefined;
+    }
     updates.updatedAt = new Date().toISOString();
     await ctx.db.patch(id, updates);
+    if (fields.name !== undefined || fields.employeeId !== undefined || fields.department !== undefined) {
+      await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.updateIdentity", targetTable: "workers", targetId: id,
+        details: JSON.stringify({ before: { name: worker.name, employeeId: worker.employeeId, department: worker.department }, after: { name: updates.name ?? worker.name, employeeId: fields.employeeId === undefined ? worker.employeeId : updates.employeeId, department: updates.department ?? worker.department } }) });
+    }
+    if (writesBiometrics) await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: updates.consentAt }) });
     return { ok: true };
   },
 });
@@ -294,9 +378,71 @@ export const update = mutation({
 export const remove = mutation({
   args: { id: v.id("workers") },
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin"]);
+    const member = await assertPortalRole(ctx, ["admin"]);
+    const worker = await ctx.db.get(args.id);
+    if (!worker) throw new Error("Worker not found");
     await ctx.db.patch(args.id, { active: false, updatedAt: new Date().toISOString() });
+    await writeAuditLog(ctx, {
+      actorUserId: member.userId,
+      action: "workers.remove",
+      targetTable: "workers",
+      targetId: args.id,
+      details: JSON.stringify({ name: worker.name, employeeId: worker.employeeId ?? null }),
+    });
     return { ok: true };
+  },
+});
+
+/**
+ * Permanently delete a worker's biometric data (face template + enrollment
+ * photos). The worker is also deactivated: kiosks only drop a worker from
+ * their local roster when the sync row says inactive, and `sync.py` skips
+ * rows with a null face_encoding, so a purged-but-active worker would keep
+ * matching at the door from the cached template. See RETENTION.md.
+ */
+export const purgeBiometrics = mutation({
+  args: { id: v.id("workers"), reason: v.string() },
+  returns: v.object({ ok: v.boolean(), photosDeleted: v.number(), purgedAt: v.string() }),
+  handler: async (ctx, args) => {
+    const member = await assertPortalRole(ctx, ["admin"]);
+    const reason = args.reason.trim();
+    if (!reason) {
+      throw new Error("A reason is required to purge face data");
+    }
+    const worker = await ctx.db.get(args.id);
+    if (!worker) throw new Error("Worker not found");
+
+    let photosDeleted = 0;
+    for (const storageId of new Set(worker.photoStorageIds ?? [])) {
+      await ctx.storage.delete(storageId);
+      photosDeleted += 1;
+    }
+
+    const now = new Date().toISOString();
+    await ctx.db.patch(args.id, {
+      faceEncoding: undefined,
+      photoStorageIds: undefined,
+      active: false,
+      updatedAt: now,
+      biometricsPurgedAt: now,
+    });
+
+    await writeAuditLog(ctx, {
+      actorUserId: member.userId,
+      action: "workers.purgeBiometrics",
+      targetTable: "workers",
+      targetId: args.id,
+      reason,
+      details: JSON.stringify({
+        name: worker.name,
+        employeeId: worker.employeeId ?? null,
+        hadFaceEncoding: Boolean(worker.faceEncoding),
+        photosDeleted,
+        wasActive: worker.active,
+      }),
+    });
+
+    return { ok: true, photosDeleted, purgedAt: now };
   },
 });
 

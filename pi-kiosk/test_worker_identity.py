@@ -30,6 +30,14 @@ class WorkerIdentityTests(unittest.TestCase):
         self.assertEqual(database.get_worker_by_name('Alex')['id'], first)
         self.assertEqual(self._row(log_id)['server_worker_id'], SERVER_ID)
 
+    def test_same_name_local_worker_with_different_employee_id_is_not_adopted(self):
+        first = database.add_worker('Alex', ENCODING, employee_id='FW-1')
+        logged = database.log_attendance(first, 'Alex', 'clock_in')
+        second = database.add_worker('Alex', -ENCODING, employee_id='FW-2', server_id=SERVER_ID)
+        self.assertNotEqual(first, second)
+        self.assertIsNone(database.get_worker_by_id(first)['server_id'])
+        self.assertIsNone(self._row(logged)['server_worker_id'])
+
     def test_server_rename_keeps_local_identity_even_when_name_collides(self):
         first = database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
         second = database.add_worker('Taylor', ENCODING, server_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
@@ -60,6 +68,25 @@ class WorkerIdentityTests(unittest.TestCase):
             database.remove_worker_by_server_id(SERVER_ID)
             self.assertFalse(photo.exists())
             self.assertTrue(legacy.exists())
+
+    def test_deactivation_cleans_owned_legacy_photo_but_preserves_shared_and_external_files(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import config
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'photos'
+            root.mkdir()
+            owned, shared, external = root / 'Alex.jpg', root / 'Shared.jpg', Path(tmp) / 'external.jpg'
+            for path in (owned, shared, external):
+                path.write_bytes(b'photo')
+            with mock.patch.object(config, 'PHOTO_DIR', str(root)):
+                database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(owned), str(shared), str(external)])
+                database.add_worker('Taylor', ENCODING, server_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', photo_paths=[str(shared)])
+                database.remove_worker_by_server_id(SERVER_ID)
+                self.assertFalse(owned.exists())
+                self.assertTrue(shared.exists())
+                self.assertTrue(external.exists())
 
     def test_legacy_unique_name_schema_migrates_without_reusing_deleted_ids(self):
         conn = database._get_conn()

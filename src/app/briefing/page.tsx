@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { getLocalDateString } from '@/lib/date';
+import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import {
   DepartmentCoverageStatus,
@@ -208,7 +208,7 @@ function getRoleSafeRiskHref(risk: ShiftTrustBriefRisk, role: PortalRole | undef
 
 function ShiftBriefingPageContent() {
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const queryDepartment = searchParams.get('department') || 'all';
   const queryStatus = validWorkerStatusParam(searchParams.get('status'));
   const currentRole = usePortalRole();

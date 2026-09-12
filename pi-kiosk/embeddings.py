@@ -9,16 +9,18 @@ roster never mixes embedding models: a 128-dim dlib enrollment would make the
 from __future__ import annotations
 
 import logging
-import urllib.request
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 
+from model_pinning import MODEL_COMMIT, REC_MODEL_SHA256, REC_MODEL_URL, ensure_pinned_model
+
 logger = logging.getLogger(__name__)
 
-REC_MODEL_URL = "https://huggingface.co/immich-app/buffalo_s/resolve/main/recognition/model.onnx"
+# REC_MODEL_URL / REC_MODEL_SHA256 pin immich-app/buffalo_s @ MODEL_COMMIT.
+# Re-pin instructions live in model_pinning.py (kiosk and face service must match).
 REC_MODEL_PATH = Path("data/models/mobilefacenet.onnx")
 EXPECTED_EMBEDDING_DIM = 512
 
@@ -26,20 +28,28 @@ _rec_session = None
 
 
 def ensure_rec_model() -> bool:
-    REC_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not REC_MODEL_PATH.exists():
-        try:
-            logger.info("Downloading MobileFaceNet model (13MB)...")
-            urllib.request.urlretrieve(REC_MODEL_URL, str(REC_MODEL_PATH))
-            logger.info("Downloaded MobileFaceNet to %s", REC_MODEL_PATH)
-        except Exception as exc:
-            logger.error("Failed to download MobileFaceNet model: %s", exc)
-            return False
+    """Download the pinned MobileFaceNet model if missing and verify its digest.
+
+    A cached file that fails verification is deleted and re-fetched; a download
+    that fails verification is discarded. Returns False (after logging) when the
+    model cannot be made available, so callers keep the kiosk degraded rather
+    than scanning with an unknown model.
+    """
+    try:
+        ensure_pinned_model(
+            REC_MODEL_URL,
+            REC_MODEL_PATH,
+            REC_MODEL_SHA256,
+            label=f"MobileFaceNet (buffalo_s@{MODEL_COMMIT[:12]})",
+        )
+    except Exception as exc:
+        logger.error("MobileFaceNet model unavailable: %s", exc)
+        return False
     return True
 
 
 def model_ready() -> bool:
-    """Ensure the model file exists AND loads in the installed runtime.
+    """Ensure the model file exists, matches its pinned digest, AND loads.
 
     A present-but-corrupt/truncated file must not report a working scanner;
     this also warms the session so the first scan doesn't pay the load cost.

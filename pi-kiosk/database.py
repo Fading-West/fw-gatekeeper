@@ -321,9 +321,13 @@ def add_worker(
         # Names are labels, not identity. Only adopt a single local-only row;
         # a different server id must always receive its own local worker id.
         matches = conn.execute(
-            "SELECT id, server_id FROM workers WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
+            "SELECT id, server_id, employee_id FROM workers WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
             (normalized_name,),
         ).fetchall()
+        matches = [candidate for candidate in matches if not (
+            normalized_employee_id and candidate["employee_id"]
+            and normalized_employee_id != candidate["employee_id"]
+        )]
         if len(matches) > 1:
             raise ValueError("Several local workers share this name; select a worker id.")
         row = matches[0] if matches else None
@@ -380,24 +384,29 @@ def remove_worker(name: str) -> bool:
 def remove_worker_by_server_id(server_id: str) -> bool:
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
+    rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
     if cursor.rowcount:
-        # New thumbnails are isolated by immutable server id. Do not guess at
-        # legacy name-based paths, which may be shared by same-name workers.
-        photo_root = Path(config.PHOTO_DIR).resolve()
-        candidate = (photo_root / f"{server_id}.jpg").resolve()
-        if candidate.parent == photo_root:
-            try:
-                remaining_paths = conn.execute("SELECT photo_paths FROM workers").fetchall()
-                referenced = any(
-                    candidate == Path(path).resolve()
-                    for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
-                )
-                if not referenced:
+        # Only delete files owned by the removed row, within the configured
+        # photo directory, and no longer referenced by any remaining worker.
+        # This includes legacy name-based thumbnails after a schema upgrade.
+        try:
+            photo_root = Path(config.PHOTO_DIR).resolve()
+            owned = {photo_root / f"{server_id}.jpg"}
+            for row in rows:
+                owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+            remaining_paths = conn.execute("SELECT photo_paths FROM workers").fetchall()
+            referenced = {
+                Path(path).resolve()
+                for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
+            }
+            for path in owned:
+                candidate = path.resolve()
+                if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
                     candidate.unlink(missing_ok=True)
-            except (OSError, ValueError, TypeError) as exc:
-                logger.warning("Could not remove retired worker thumbnail: %s", exc)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Could not remove retired worker thumbnail: %s", exc)
     return cursor.rowcount > 0
 
 

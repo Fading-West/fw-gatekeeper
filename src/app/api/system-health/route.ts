@@ -251,7 +251,8 @@ async function fetchFaceHealth(url: string): Promise<FaceServiceHealth> {
       body = null;
     }
 
-    const modelReady = Boolean(body?.det_exists && body?.rec_exists);
+    // Detection runs on OpenCV's bundled Haar cascade; only the recognition model is downloaded.
+    const modelReady = Boolean(body?.rec_exists);
     const healthy = res.ok && (!body?.status || body.status === 'ok') && modelReady;
     return {
       status: healthy ? 'online' : 'degraded',

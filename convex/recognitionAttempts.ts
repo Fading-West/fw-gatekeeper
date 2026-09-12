@@ -1,3 +1,4 @@
+import { getFactoryLocalDateKey } from "./localDate";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
@@ -312,7 +313,7 @@ export const listByDate = query({
   },
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
-    const date = args.date || new Date().toISOString().slice(0, 10);
+    const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
     return await listRecognitionAttemptsByFactoryDate(ctx, {
       date,
       kioskId: args.kioskId,
