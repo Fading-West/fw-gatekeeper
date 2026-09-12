@@ -1,3 +1,6 @@
+import { validateReceiptDigests } from "./attendance";
+import { ConvexError } from "convex/values";
+import { validateAttendanceBatch, validateAttendanceEvent } from "./attendanceValidation";
 import { httpRouter } from 'convex/server';
 import { auth } from './auth';
 import { internal } from './_generated/api';
@@ -137,11 +140,34 @@ const attendanceBulkIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'events array required' }, 400);
   }
 
-  const result = await ctx.runMutation(internal.attendance.bulkCreateFromHttp, {
-    events: body.events,
-  });
-  console.info('secured_ingest_attendance', { received: body.events.length, synced: result.synced });
-  return jsonResponse(result);
+  try {
+    const events = validateAttendanceBatch(body.events);
+    if (body.checkpoint !== undefined && typeof body.checkpoint !== "boolean") {
+      return jsonResponse({ error: 'checkpoint must be a boolean' }, 400);
+    }
+    const receiptHash = body.checkpoint ? Array.from(new Uint8Array(await crypto.subtle.digest(
+      'SHA-256', new TextEncoder().encode(JSON.stringify(events)),
+    )), byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
+    const result = await ctx.runMutation(internal.attendance.bulkCreateFromHttp, { events, receiptHash });
+    console.info('secured_ingest_attendance', { received: events.length, synced: result.synced });
+    return jsonResponse(result);
+  } catch (error) {
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    throw error;
+  }
+});
+
+const attendanceReceiptStatus = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  try {
+    const digests = validateReceiptDigests(body?.digests);
+    const acknowledged = await ctx.runQuery(internal.attendance.receiptStatus, { digests });
+    return jsonResponse({ acknowledged });
+  } catch (error) {
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    throw error;
+  }
 });
 
 const attendanceIngest = httpAction(async (ctx, request) => {
@@ -154,15 +180,21 @@ const attendanceIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'workerId and eventType required' }, 400);
   }
 
-  const result = await ctx.runMutation(internal.attendance.createFromHttp, {
-    workerId: body.workerId,
-    eventType: body.eventType,
-    kioskId: typeof body.kioskId === 'string' ? body.kioskId : undefined,
-    timestamp: typeof body.timestamp === 'string' ? body.timestamp : undefined,
-    idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
-  });
-  console.info('secured_ingest_attendance_single', { workerId: body.workerId });
-  return jsonResponse(result, 201);
+  try {
+    const event = validateAttendanceEvent({ ...body, timestamp: body.timestamp ?? new Date().toISOString() });
+    const result = await ctx.runMutation(internal.attendance.createFromHttp, {
+      workerId: event.workerId,
+      eventType: event.eventType,
+      kioskId: event.kioskId,
+      timestamp: body.timestamp === undefined ? undefined : event.timestamp,
+      idempotencyKey: event.idempotencyKey,
+    });
+    console.info('secured_ingest_attendance_single', { workerId: event.workerId });
+    return jsonResponse(result, 201);
+  } catch (error) {
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    throw error;
+  }
 });
 
 const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
@@ -217,6 +249,7 @@ const workerSyncRead = httpAction(async (ctx, request) => {
   return jsonResponse({ workers });
 });
 
+http.route({ path: '/api/ingest/attendance/receipts', method: 'POST', handler: attendanceReceiptStatus });
 http.route({ path: '/api/ingest/attendance', method: 'POST', handler: attendanceIngest });
 http.route({ path: '/api/ingest/attendance/bulk', method: 'POST', handler: attendanceBulkIngest });
 http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', handler: recognitionAttemptsBulkIngest });

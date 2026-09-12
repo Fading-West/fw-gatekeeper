@@ -1,7 +1,8 @@
 import { getFactoryLocalDateKey } from "./localDate";
-import { internalMutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { validateAttendanceBatch, validateAttendanceEvent, type AttendanceEvent } from "./attendanceValidation";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
 import {
   buildConservativeFactoryLocalTimestampRanges,
@@ -144,28 +145,6 @@ export const list = query({
   },
 });
 
-export const createFromHttp = internalMutation({
-  args: {
-    workerId: v.string(),
-    eventType: v.string(),
-    kioskId: v.optional(v.string()),
-    timestamp: v.optional(v.string()),
-    idempotencyKey: v.optional(v.string()),
-  },
-  returns: v.object({ id: v.id("attendance") }),
-  handler: async (ctx, args) => {
-    const id = await ctx.db.insert("attendance", {
-      workerId: args.workerId,
-      eventType: args.eventType,
-      kioskId: args.kioskId,
-      timestamp: args.timestamp || new Date().toISOString(),
-      idempotencyKey: args.idempotencyKey,
-      synced: false,
-    });
-    return { id };
-  },
-});
-
 const attendanceEventInput = v.object({
   id: v.optional(v.string()),
   workerId: v.string(),
@@ -178,58 +157,97 @@ const attendanceEventInput = v.object({
   livenessConfirmed: v.optional(v.boolean()),
 });
 
-const bulkCreateResult = v.object({ synced: v.number() });
-
-async function createAttendanceBatch(ctx: MutationCtx, args: {
-  events: Array<{
-    id?: string;
-    workerId: string;
-    eventType: string;
-    kioskId?: string;
-    timestamp: string;
-    idempotencyKey?: string;
-    workerName?: string;
-    confidence?: number;
-    livenessConfirmed?: boolean;
-  }>;
-}) {
-    const seenKeys = new Set<string>();
-    let count = 0;
-    for (const e of args.events) {
-      const dedupeKey = `${e.workerId}:${e.timestamp}`;
-      if (seenKeys.has(dedupeKey)) {
-        continue;
+async function insertAttendanceEvent(ctx: MutationCtx, event: AttendanceEvent) {
+  const workerId = ctx.db.normalizeId("workers", event.workerId);
+  if (!workerId || !(await ctx.db.get(workerId))) {
+    throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "workerId must identify an existing worker" });
+  }
+  // Inactive workers' offline evidence is still valid and must not be lost.
+  if (event.idempotencyKey) {
+    const existing = await ctx.db.query("attendance")
+      .withIndex("by_kiosk_and_idempotency_key", (q) => q.eq("kioskId", event.kioskId).eq("idempotencyKey", event.idempotencyKey))
+      .first();
+    if (existing) {
+      if (existing.workerId !== event.workerId || existing.eventType !== event.eventType || existing.timestamp !== event.timestamp) {
+        throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "An idempotency key cannot be reused for different attendance evidence" });
       }
-      seenKeys.add(dedupeKey);
-
-      const existing = await ctx.db
-        .query("attendance")
-        .withIndex("by_worker_and_timestamp", (q) =>
-          q.eq("workerId", e.workerId).eq("timestamp", e.timestamp),
-        )
-        .first();
-      if (existing) {
-        continue;
-      }
-
-      await ctx.db.insert("attendance", {
-        workerId: e.workerId,
-        eventType: e.eventType,
-        kioskId: e.kioskId,
-        timestamp: e.timestamp,
-        idempotencyKey: e.idempotencyKey || e.id,
-        synced: true,
-        workerName: e.workerName,
-        confidence: e.confidence,
-        livenessConfirmed: e.livenessConfirmed,
-      });
-      count++;
+      return { id: existing._id, inserted: false };
     }
-    return { synced: count };
+  }
+  const sameEvent = await ctx.db.query("attendance")
+    .withIndex("by_worker_timestamp_type_kiosk", (q) => q.eq("workerId", event.workerId).eq("timestamp", event.timestamp).eq("eventType", event.eventType).eq("kioskId", event.kioskId))
+    .first();
+  // Legacy events without stable keys retain exact-event deduplication. Two
+  // independently keyed scans at the same instant remain distinct evidence.
+  if (sameEvent && (!event.idempotencyKey || !sameEvent.idempotencyKey)) {
+    if (event.idempotencyKey) await ctx.db.patch(sameEvent._id, { idempotencyKey: event.idempotencyKey });
+    return { id: sameEvent._id, inserted: false };
+  }
+  const id = await ctx.db.insert("attendance", { ...event, synced: true });
+  return { id, inserted: true };
 }
 
+export const createFromHttp = internalMutation({
+  args: {
+    workerId: v.string(),
+    eventType: v.string(),
+    kioskId: v.optional(v.string()),
+    timestamp: v.optional(v.string()),
+    idempotencyKey: v.optional(v.string()),
+  },
+  returns: v.object({ id: v.id("attendance") }),
+  handler: async (ctx, args) => {
+    const kioskId = args.kioskId?.trim() || undefined;
+    const idempotencyKey = args.idempotencyKey?.trim() || undefined;
+    const existing = idempotencyKey ? await ctx.db.query("attendance")
+      .withIndex("by_kiosk_and_idempotency_key", (q) => q.eq("kioskId", kioskId).eq("idempotencyKey", idempotencyKey)).first() : null;
+    const event = validateAttendanceEvent({ ...args, timestamp: args.timestamp ?? existing?.timestamp ?? new Date().toISOString() });
+    const result = await insertAttendanceEvent(ctx, event);
+    return { id: result.id };
+  },
+});
+
 export const bulkCreateFromHttp = internalMutation({
-  args: { events: v.array(attendanceEventInput) },
-  returns: bulkCreateResult,
-  handler: createAttendanceBatch,
+  args: { events: v.array(attendanceEventInput), receiptHash: v.optional(v.string()) },
+  returns: v.object({ synced: v.number(), acknowledged: v.number() }),
+  handler: async (ctx, args) => {
+    const events = validateAttendanceBatch(args.events);
+    if (args.receiptHash !== undefined) {
+      validateReceiptDigests([args.receiptHash]);
+      const receipt = await ctx.db.query("attendanceIngestReceipts")
+        .withIndex("by_digest", q => q.eq("digest", args.receiptHash!)).first();
+      if (receipt) {
+        if (receipt.acknowledged !== events.length) throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "Receipt size mismatch" });
+        return { synced: 0, acknowledged: receipt.acknowledged };
+      }
+    }
+    let synced = 0;
+    for (const event of events) {
+      if ((await insertAttendanceEvent(ctx, event)).inserted) synced++;
+    }
+    if (args.receiptHash !== undefined) {
+      await ctx.db.insert("attendanceIngestReceipts", { digest: args.receiptHash, acknowledged: events.length });
+    }
+    // Acknowledgement includes existing rows. The transaction rejects the
+    // entire batch if any event is invalid; callers can safely retry it.
+    return { synced, acknowledged: events.length };
+  },
+});
+
+
+export function validateReceiptDigests(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 500 || value.some(digest => typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))) {
+    throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "digests must contain at most 500 lowercase SHA-256 hashes" });
+  }
+  return value;
+}
+
+export const receiptStatus = internalQuery({
+  args: { digests: v.array(v.string()) },
+  returns: v.array(v.boolean()),
+  handler: async (ctx, args) => {
+    const digests = validateReceiptDigests(args.digests);
+    return await Promise.all(digests.map(async digest => Boolean(await ctx.db.query("attendanceIngestReceipts")
+      .withIndex("by_digest", q => q.eq("digest", digest)).first())));
+  },
 });

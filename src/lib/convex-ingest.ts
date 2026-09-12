@@ -44,8 +44,8 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
   }
 }
 
-export function ingestAttendanceBatch(events: unknown[]) {
-  return postSecuredIngest<{ synced: number }>('/api/ingest/attendance/bulk', { events });
+export function ingestAttendanceBatch(events: unknown[], checkpoint = false) {
+  return postSecuredIngest<{ synced: number; acknowledged: number }>('/api/ingest/attendance/bulk', { events, ...(checkpoint ? { checkpoint: true } : {}) });
 }
 
 export function ingestAttendanceEvent(event: {
@@ -86,4 +86,8 @@ export function updateKioskLastSync(kioskId: string, lastSync: string, health?: 
 
 export function fetchWorkersForSync(since: string) {
   return postSecuredIngest<{ workers: unknown[] }>('/api/ingest/workers/sync', { since });
+}
+
+export function getAttendanceReceiptStatus(digests: string[]) {
+  return postSecuredIngest<{ acknowledged: boolean[] }>('/api/ingest/attendance/receipts', { digests });
 }
