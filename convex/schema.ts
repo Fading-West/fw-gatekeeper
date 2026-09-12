@@ -60,7 +60,9 @@ export default defineSchema({
     livenessConfirmed: v.optional(v.boolean()),
   }).index("by_timestamp", ["timestamp"])
     .index("by_worker", ["workerId"])
-    .index("by_worker_and_timestamp", ["workerId", "timestamp"]),
+    .index("by_worker_and_timestamp", ["workerId", "timestamp"])
+    .index("by_kiosk_and_idempotency_key", ["kioskId", "idempotencyKey"])
+    .index("by_worker_timestamp_type_kiosk", ["workerId", "timestamp", "eventType", "kioskId"]),
 
   attendanceCorrections: defineTable({
     date: v.string(),

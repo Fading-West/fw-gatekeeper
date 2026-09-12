@@ -45,7 +45,7 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
 }
 
 export function ingestAttendanceBatch(events: unknown[]) {
-  return postSecuredIngest<{ synced: number }>('/api/ingest/attendance/bulk', { events });
+  return postSecuredIngest<{ synced: number; acknowledged: number }>('/api/ingest/attendance/bulk', { events });
 }
 
 export function ingestAttendanceEvent(event: {
