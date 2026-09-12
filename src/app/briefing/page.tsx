@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useSelectedData } from '@/hooks/useSelectedData';
 import {
   DepartmentCoverageStatus,
   ShiftBriefingActionItem,
@@ -213,9 +214,6 @@ function ShiftBriefingPageContent() {
   const queryStatus = validWorkerStatusParam(searchParams.get('status'));
   const currentRole = usePortalRole();
   const [date, setDate] = useState(queryDate);
-  const [payload, setPayload] = useState<ShiftBriefingResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [department, setDepartment] = useState(queryDepartment);
   const [status, setStatus] = useState<WorkerCoverageStatus | 'all'>(queryStatus);
 
@@ -225,25 +223,16 @@ function ShiftBriefingPageContent() {
     setStatus(queryStatus);
   }, [queryDate, queryDepartment, queryStatus]);
 
-  const fetchBriefing = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetch(`/api/shift-briefing?date=${date}`, { cache: 'no-store' });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || 'Failed to load shift briefing');
-      setPayload(body);
-    } catch (err) {
-      setPayload(null);
-      setError(err instanceof Error ? err.message : 'Failed to load shift briefing');
-    } finally {
-      setLoading(false);
-    }
+  const loadBriefing = useCallback(async (signal: AbortSignal): Promise<ShiftBriefingResponse> => {
+    const res = await fetch(`/api/shift-briefing?date=${date}`, { cache: 'no-store', signal });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error || 'Failed to load shift briefing');
+    if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    return body;
   }, [date]);
+  const { data: payload, loading, error, refresh: fetchBriefing } = useSelectedData(date, loadBriefing);
+  const dataReady = Boolean(payload && !loading && !error);
 
-  useEffect(() => {
-    fetchBriefing();
-  }, [fetchBriefing]);
 
   const departments = useMemo(() => {
     const values = payload?.departments.map((row) => row.department) || [];
@@ -282,6 +271,7 @@ function ShiftBriefingPageContent() {
   }, [currentRole, date, department]);
 
   function exportCsv() {
+    if (!dataReady) return;
     const csv = briefingCsv(date, filteredWorkers, payload?.action_items || [], currentRole);
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -305,7 +295,7 @@ function ShiftBriefingPageContent() {
           ? 'Review before shift'
           : 'Coverage on track';
   const nextStep = getBriefingNextStep(payload, currentRole, date);
-  const hasExportableBriefing = filteredWorkers.length > 0 || Boolean(payload?.action_items.length);
+  const hasExportableBriefing = dataReady && (filteredWorkers.length > 0 || Boolean(payload?.action_items.length));
   const readinessLabel = trustBrief ? titleCase(trustBrief.readiness_status) : riskLabel;
   const readinessTone = trustBrief ? readinessStyles[trustBrief.readiness_status] : 'bg-slate-400/10 text-slate-300 border-slate-400/20';
 

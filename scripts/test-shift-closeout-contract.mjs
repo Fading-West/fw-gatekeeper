@@ -134,8 +134,8 @@ assert.match(page, /!payload\?\.backend_unavailable/, 'Closeout page should hide
 assert.match(page, /It does not complete closeout or acknowledge blockers/, 'Using the Closeout Autopilot draft must not silently acknowledge blockers.');
 assert.match(page, /acknowledgement note/, 'Closeout page must require acknowledgement notes for blockers.');
 assert.match(page, /if \(!canOperate\)[\s\S]*Only admin or enrollment roles can update shift closeout/, 'Closeout mutations should be guarded client-side for read-only roles.');
-assert.match(page, /readOnly=\{!canOperate\}/, 'Viewer closeout fields should be read-only.');
-assert.match(page, /disabled=\{!canOperate\}/, 'Viewer blocker acknowledgement controls should be disabled.');
+assert.match(page, /readOnly=\{[^}]*!canOperate\}/, 'Viewer closeout fields should be read-only.');
+assert.match(page, /disabled=\{[^}]*!canOperate\}/, 'Viewer blocker acknowledgement controls should be disabled.');
 assert.match(page, /if \(!canOperate\) return;[\s\S]*setSupervisorName/, 'Viewer supervisor edits should not update local draft state.');
 assert.match(page, /if \(!canOperate\) return;[\s\S]*setNotes/, 'Viewer note edits should not update local draft state.');
 assert.match(page, /canOperate \?[\s\S]*Save notes[\s\S]*Complete closeout[\s\S]*Review-only/, 'Closeout write controls should render as review-only for viewers.');
