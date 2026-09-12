@@ -29,6 +29,7 @@ class FaceRecognizer:
         self._encodings: list[np.ndarray] = []
         self._ids: list[int] = []
         self._names: list[str] = []
+        self._server_ids: dict[int, str | None] = {}
 
         self.liveness_checker = None
 
@@ -60,13 +61,18 @@ class FaceRecognizer:
     def load_faces(self):
         """Load all worker encodings from SQLite."""
         with self._lock:
-            self._encodings, self._ids, self._names = database.get_worker_encodings()
+            self._encodings, self._ids, self._names, self._server_ids = database.get_worker_roster()
         logger.info("Loaded %d known face encodings", len(self._encodings))
 
     def reload_faces(self):
         self.load_faces()
 
     def snapshot_known_faces(self):
-        """Return a consistent (encodings, ids, names) copy for matching."""
+        """Return one consistent roster snapshot for matching and attribution."""
         with self._lock:
-            return list(self._encodings), list(self._ids), list(self._names)
+            return (
+                list(self._encodings),
+                list(self._ids),
+                list(self._names),
+                dict(self._server_ids),
+            )

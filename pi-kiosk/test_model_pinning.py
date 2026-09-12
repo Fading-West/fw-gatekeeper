@@ -2,6 +2,8 @@
 """Behavioral coverage for the commit-pinned, digest-verified recognition model."""
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import io
 import re
 import sys
@@ -45,6 +47,19 @@ class ModelPinningTests(unittest.TestCase):
         self.payload = b"not really an onnx graph, but deterministic bytes\n" * 2048
         self.path.write_bytes(self.payload)
         self.expected = hashlib.sha256(self.payload).hexdigest()
+
+    def test_concurrent_downloads_use_separate_files(self):
+        self.path.unlink()
+        barrier = Barrier(2)
+        def download(_url, destination):
+            destination.write_bytes(self.payload)
+            barrier.wait(timeout=5)
+        with patch("model_pinning._download", side_effect=download):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: ensure_pinned_model("https://example.invalid/model", self.path, self.expected), range(2)))
+        self.assertEqual(results, [self.path, self.path])
+        self.assertEqual(self.path.read_bytes(), self.payload)
+        self.assertEqual(list(self.path.parent.glob("*.part")), [])
 
     def test_sha256_helper_matches_hashlib(self):
         self.assertEqual(sha256_of_file(self.path), self.expected)

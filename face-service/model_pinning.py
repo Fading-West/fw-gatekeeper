@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import shutil
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -92,7 +93,9 @@ def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, lab
         except ModelDigestMismatch as exc:
             logger.warning("Cached %s failed verification, re-downloading: %s", label, exc)
 
-    partial = path.with_name(path.name + ".part")
+    # Concurrent cold-start requests must never share a partial download.
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".part", delete=False) as handle:
+        partial = Path(handle.name)
     logger.info("Downloading %s from %s", label, url)
     try:
         _download(url, partial)

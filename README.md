@@ -29,7 +29,7 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 
 | Component | Technology |
 |-----------|-----------|
-| Dashboard | Next.js 14 + Tailwind CSS |
+| Dashboard | Next.js 16 + Tailwind CSS |
 | Database | Convex (cloud) |
 | Face Encoding | ArcFace ONNX (512-dim embeddings) |
 | Face Detection (Pi) | dlib HOG + Haar cascade |
@@ -220,7 +220,7 @@ libcamera-hello --timeout 5000
 Before the kiosks can recognize anyone, enroll workers:
 
 1. Go to https://fw-gatekeeper.onrender.com
-2. Enter PIN: **4729**
+2. Sign in with the portal account provided by your administrator.
 3. Click **Enroll Face** in the sidebar
 4. Enter the worker's name and department
 5. Capture 3 photos (look straight at camera, good lighting)

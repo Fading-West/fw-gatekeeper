@@ -16,6 +16,73 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function publicJsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
+}
+
+type PublicKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
+
+function publicKioskStatus(lastSync: string | null, now: number): PublicKioskStatus {
+  if (!lastSync) return 'never_synced';
+  const ageMs = now - new Date(lastSync).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= 15 * 60 * 1000) return 'online';
+  if (ageMs <= 60 * 60 * 1000) return 'stale';
+  return 'offline';
+}
+
+const publicKioskHealth = httpAction(async (ctx) => {
+  const checkedAtMs = Date.now();
+  const kioskPage = await ctx.runQuery(internal.kiosks.internalHealthSnapshot, {});
+  const inventoryTruncated = kioskPage.length > 100;
+  const kiosks = kioskPage.slice(0, 100);
+  const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
+  let reportingDeviceHealth = 0;
+  let missingDeviceHealth = 0;
+  let staleDeviceHealth = 0;
+  let deviceIssues = 0;
+  let queuedRecords = 0;
+
+  for (const kiosk of kiosks) {
+    counts[publicKioskStatus(kiosk.last_sync, checkedAtMs)] += 1;
+    if (!kiosk.health) {
+      missingDeviceHealth += 1;
+      continue;
+    }
+    const healthAgeMs = checkedAtMs - new Date(kiosk.health.reported_at).getTime();
+    if (!Number.isFinite(healthAgeMs) || healthAgeMs < 0 || healthAgeMs > 15 * 60 * 1000) {
+      staleDeviceHealth += 1;
+      continue;
+    }
+    if (kiosk.health.camera_ok === false || kiosk.health.model_ok === false || kiosk.health.degraded_reason) deviceIssues += 1;
+    queuedRecords += Math.max(0, kiosk.health.queued_logs ?? 0) + Math.max(0, kiosk.health.queued_attempts ?? 0);
+    if (typeof kiosk.health.camera_ok !== 'boolean' || typeof kiosk.health.model_ok !== 'boolean') {
+      missingDeviceHealth += 1;
+      continue;
+    }
+    reportingDeviceHealth += 1;
+  }
+
+  const degraded = kiosks.length === 0 || inventoryTruncated
+    || counts.stale + counts.offline + counts.never_synced > 0
+    || missingDeviceHealth + staleDeviceHealth > 0 || deviceIssues > 0 || queuedRecords > 0;
+  return publicJsonResponse({
+    status: degraded ? 'degraded' : 'healthy',
+    timestamp: new Date(checkedAtMs).toISOString(),
+    kiosks: {
+      total: kiosks.length,
+      ...counts,
+      reporting_device_health: reportingDeviceHealth,
+      missing_device_health: missingDeviceHealth,
+      stale_device_health: staleDeviceHealth,
+      device_issues: deviceIssues,
+      queued_records: queuedRecords,
+      inventory_truncated: inventoryTruncated,
+    },
+  });
+});
+
 function hasValidIngestCredential(request: Request) {
   const expected = process.env.CONVEX_INGEST_KEY?.trim();
   if (!expected) {
@@ -155,5 +222,6 @@ http.route({ path: '/api/ingest/attendance/bulk', method: 'POST', handler: atten
 http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', handler: recognitionAttemptsBulkIngest });
 http.route({ path: '/api/ingest/kiosks/last-sync', method: 'POST', handler: kioskLastSyncIngest });
 http.route({ path: '/api/ingest/workers/sync', method: 'POST', handler: workerSyncRead });
+http.route({ path: '/api/public/kiosk-health', method: 'GET', handler: publicKioskHealth });
 
 export default http;

@@ -41,7 +41,7 @@ app.add_middleware(
     allow_headers=["Content-Type", FACE_SERVICE_KEY_HEADER],
 )
 
-MODEL_DIR = Path("/app/models")
+MODEL_DIR = Path(os.environ.get("FACE_MODEL_DIR", "/app/models"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # InsightFace buffalo_s models from HuggingFace (Immich mirror), pinned to
