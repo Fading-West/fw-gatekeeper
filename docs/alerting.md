@@ -110,7 +110,7 @@ box, etc.) at these two URLs and alert on anything other than HTTP 200:
 | Target | URL | Healthy response |
 |--------|-----|------------------|
 | Dashboard + Convex | `https://fw-gatekeeper.onrender.com/api/health` | `200`, body contains `"convex":"ok"` |
-| Face service | `https://fw-face-service.onrender.com/health` | `200`, body contains `"det_exists":true` and `"rec_exists":true` |
+| Face service | `https://fw-face-service.onrender.com/health` | `200`, body contains `"rec_exists":true` |
 
 Recommended settings: check every 1-5 minutes, require two consecutive failures before
 paging (Render free-tier cold starts can exceed 5 seconds), and use a keyword/body match

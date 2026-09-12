@@ -83,6 +83,12 @@ export default defineSchema({
     .index("by_kiosk_and_idempotency_key", ["kioskId", "idempotencyKey"])
     .index("by_worker_timestamp_type_kiosk", ["workerId", "timestamp", "eventType", "kioskId"]),
 
+  // Durable chunk acknowledgements let unchanged kiosks resume large uploads.
+  attendanceIngestReceipts: defineTable({
+    digest: v.string(),
+    acknowledged: v.number(),
+  }).index("by_digest", ["digest"]),
+
   attendanceCorrections: defineTable({
     date: v.string(),
     workerId: v.string(),
