@@ -432,7 +432,7 @@ done
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `NODE_ENV` | `production` | Required; outside production an unset `KIOSK_API_KEY` fails open |
+| `NODE_ENV` | `production` | Required. Missing kiosk credentials fail closed; local development requires an explicit `FW_ALLOW_UNCONFIGURED_KIOSK_KEY=true` override, which production ignores. |
 | `NODE_VERSION` | `22` | Node major for Render builds (matches `.node-version` and `package.json` engines) |
 | `NEXT_PUBLIC_CONVEX_URL` | `https://modest-bat-146.convex.cloud` | Convex prod URL |
 | `CONVEX_INGEST_URL` | `https://modest-bat-146.convex.site` | Convex HTTP-actions host for secured ingest |
