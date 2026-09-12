@@ -5,6 +5,7 @@ import { api } from '../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
+import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
@@ -84,21 +85,15 @@ function getKioskStatus(lastSync: string | null): KioskStatus {
   return 'offline';
 }
 
-const DEGRADED_REASON_LABELS: Record<string, string> = {
-  camera_error: 'camera failure — the kiosk cannot scan',
-  model_error: 'recognition model failed to load — all scans are rejected',
-  encoding_mismatch: 'face encodings do not match the kiosk model — all workers are rejected',
-  no_workers_synced: 'no workers synced — every scan is rejected',
-  liveness_unavailable: 'blink verification unavailable — scans are recorded unverified',
-};
+
 
 function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
   if (!health) return [];
   const issues: string[] = [];
-  if (health.camera_ok === false) issues.push(DEGRADED_REASON_LABELS.camera_error);
-  if (health.model_ok === false) issues.push(DEGRADED_REASON_LABELS.model_error);
+  if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
+  if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
   if (health.degraded_reason && health.degraded_reason !== 'camera_error' && health.degraded_reason !== 'model_error') {
-    issues.push(DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
+    issues.push(KIOSK_DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
   }
   if ((health.queued_logs ?? 0) > 0) {
     issues.push(`${health.queued_logs} attendance record${health.queued_logs === 1 ? '' : 's'} queued on-device`);
