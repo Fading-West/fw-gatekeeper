@@ -69,7 +69,27 @@ with `photos` and `disagreeing_pairs`, and the enrollment page lists them under 
 Both thresholds are read at startup, so they can be tuned on the deployment without a
 rebuild. `GET /health` echoes the active values.
 
-## Run
+## Reproducible production install
+
+The Docker image installs `requirements.lock` with SHA-256 verification. It locks
+all 26 runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
+editable direct-dependency input. The image and OS packages remain separately
+maintained. On another OS, use the development inputs below instead of this
+platform-specific production lock.
+
+Regenerate both server and Pi locks with uv 0.12.13, from the repository root:
+
+```bash
+bash scripts/lock-python-dependencies.sh
+# Deliberate upgrades: edit the input requirements files first; to refresh
+# transitive versions, remove the corresponding .lock file before regenerating.
+```
+
+Review the generated diff, install into a fresh Python 3.11 environment with
+`pip install --require-hashes --only-binary=:all: -r requirements.lock`, run the
+face-service tests, and load the pinned ONNX model before rollout.
+
+## Development run
 
 ```bash
 export FACE_SERVICE_KEY="replace-with-a-long-random-secret"
