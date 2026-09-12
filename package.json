@@ -13,7 +13,7 @@
     "test:employee-directory": "vitest run src/lib/employee-directory.test.ts",
     "test:app-guides": "vitest run src/lib/app-guides.test.ts && node scripts/test-app-guides-contract.mjs",
     "test:kiosk-sync-auth": "python3 pi-kiosk/test_sync_auth.py",
-    "test:kiosk-sync-mapping": "python3 pi-kiosk/test_sync_mapping.py",
+    "test:kiosk-sync-mapping": "python3 pi-kiosk/test_sync_mapping.py && python3 pi-kiosk/test_worker_identity.py",
     "test:kiosk-ui-auth": "python3 pi-kiosk/test_kiosk_ui_auth.py",
     "test:face-service-auth": "python3 face-service/test_face_auth.py && node scripts/test-face-service-auth-contract.mjs",
     "test:login-error-copy": "node scripts/test-login-error-copy.mjs",

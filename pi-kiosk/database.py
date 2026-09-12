@@ -80,6 +80,38 @@ def _migrate_sync_state(conn: sqlite3.Connection):
     logger.info("Migrated sync_state to keyed schema (last_worker_sync=%s)", old_value)
 
 
+def _migrate_worker_identity(conn: sqlite3.Connection):
+    """Remove legacy name uniqueness without changing any local worker ids."""
+    name_is_unique = any(
+        index["unique"] and [row["name"] for row in conn.execute(
+            f"PRAGMA index_info('{index['name']}')"
+        )] == ["name"]
+        for index in conn.execute("PRAGMA index_list(workers)").fetchall()
+    )
+    if name_is_unique:
+        # Rebuilding is necessary: SQLite cannot drop a UNIQUE table constraint.
+        # Keep sqlite_sequence too; a deleted worker id must never be reused.
+        sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'workers'").fetchone()
+        with conn:
+            conn.execute("""CREATE TABLE workers_identity_migration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE, employee_id TEXT,
+                encoding_blob BLOB NOT NULL,
+                enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
+                photo_count INTEGER NOT NULL DEFAULT 0,
+                photo_paths TEXT NOT NULL DEFAULT '[]', server_id TEXT
+            )""")
+            conn.execute("""INSERT INTO workers_identity_migration
+                SELECT id, name, employee_id, COALESCE(encoding_blob, X''), COALESCE(enrolled_at, datetime('now')),
+                       photo_count, photo_paths, server_id FROM workers""")
+            conn.execute("DROP TABLE workers")
+            conn.execute("ALTER TABLE workers_identity_migration RENAME TO workers")
+            if sequence:
+                conn.execute("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'workers'", (sequence[0],))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_workers_name ON workers(name COLLATE NOCASE)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workers_server_id ON workers(server_id) WHERE server_id IS NOT NULL AND server_id != ''")
+
+
 def init_db():
     """Create and migrate required tables."""
     conn = _get_conn()
@@ -88,7 +120,7 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS workers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            name TEXT NOT NULL COLLATE NOCASE,
             employee_id TEXT,
             encoding_blob BLOB NOT NULL,
             enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -146,6 +178,22 @@ def init_db():
     _ensure_column(conn, "workers", "photo_count", "photo_count INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "workers", "photo_paths", "photo_paths TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(conn, "workers", "server_id", "server_id TEXT")
+    worker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)").fetchall()}
+    if "face_encoding" in worker_columns:
+        rows = conn.execute(
+            "SELECT id, face_encoding, encoding_blob FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
+        ).fetchall()
+        for row in rows:
+            old_value = row["face_encoding"]
+            if old_value is None:
+                continue
+            try:
+                converted = _serialize_encoding(np.array(json.loads(old_value), dtype=np.float64))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
+
+    _migrate_worker_identity(conn)
 
     _ensure_column(
         conn,
@@ -163,8 +211,8 @@ def init_db():
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
     # server id onto that worker's queued attendance rows.
-    # Replace the trigger on every startup so kiosks with the earlier
-    # fill-empty-only definition receive the corrected behavior. A savepoint
+    # Replace the trigger on startup: the event's original identity is
+    # immutable, so deletion only fills missing snapshots on legacy rows. A savepoint
     # keeps DROP + CREATE atomic even when init_db is called with no pending
     # DML transaction.
     conn.execute("SAVEPOINT install_attendance_delete_trigger")
@@ -177,7 +225,8 @@ def init_db():
             WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
             BEGIN
                 UPDATE attendance_log SET server_worker_id = OLD.server_id
-                WHERE worker_id = OLD.id AND synced = 0;
+                WHERE worker_id = OLD.id AND synced = 0
+                  AND (server_worker_id IS NULL OR server_worker_id = '');
             END
             """
         )
@@ -200,21 +249,6 @@ def init_db():
     _ensure_column(conn, "recognition_attempts", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "recognition_attempts", "model_version", "model_version TEXT")
     _ensure_column(conn, "recognition_attempts", "synced", "synced INTEGER NOT NULL DEFAULT 0")
-
-    worker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)").fetchall()}
-    if "face_encoding" in worker_columns:
-        rows = conn.execute(
-            "SELECT id, face_encoding, encoding_blob FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
-        ).fetchall()
-        for row in rows:
-            old_value = row["face_encoding"]
-            if old_value is None:
-                continue
-            try:
-                converted = _serialize_encoding(np.array(json.loads(old_value), dtype=np.float64))
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
 
     # Copy old attendance event_type to action if needed.
     attendance_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)").fetchall()}
@@ -284,7 +318,15 @@ def add_worker(
     if server_id is not None:
         row = conn.execute("SELECT id, server_id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
     if row is None:
-        row = conn.execute("SELECT id, server_id FROM workers WHERE lower(name) = lower(?)", (normalized_name,)).fetchone()
+        # Names are labels, not identity. Only adopt a single local-only row;
+        # a different server id must always receive its own local worker id.
+        matches = conn.execute(
+            "SELECT id, server_id FROM workers WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
+            (normalized_name,),
+        ).fetchall()
+        if len(matches) > 1:
+            raise ValueError("Several local workers share this name; select a worker id.")
+        row = matches[0] if matches else None
     stored_server_id = server_id
     if row:
         worker_id = int(row["id"])
@@ -327,7 +369,10 @@ def remove_worker(name: str) -> bool:
     The attendance_keep_server_id_before_worker_delete trigger snapshots the
     worker's server id onto queued attendance rows before the row goes."""
     conn = _get_conn()
-    cursor = conn.execute("DELETE FROM workers WHERE lower(name) = lower(?)", (name.strip(),))
+    worker = get_worker_by_name(name)
+    if worker is None:
+        return False
+    cursor = conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
     conn.commit()
     return cursor.rowcount > 0
 
@@ -337,18 +382,37 @@ def remove_worker_by_server_id(server_id: str) -> bool:
     conn = _get_conn()
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
+    if cursor.rowcount:
+        # New thumbnails are isolated by immutable server id. Do not guess at
+        # legacy name-based paths, which may be shared by same-name workers.
+        photo_root = Path(config.PHOTO_DIR).resolve()
+        candidate = (photo_root / f"{server_id}.jpg").resolve()
+        if candidate.parent == photo_root:
+            try:
+                remaining_paths = conn.execute("SELECT photo_paths FROM workers").fetchall()
+                referenced = any(
+                    candidate == Path(path).resolve()
+                    for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
+                )
+                if not referenced:
+                    candidate.unlink(missing_ok=True)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning("Could not remove retired worker thumbnail: %s", exc)
     return cursor.rowcount > 0
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:
     """Fetch worker by name (case-insensitive)."""
     conn = _get_conn()
-    row = conn.execute(
-        "SELECT id, name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id FROM workers WHERE lower(name)=lower(?)",
+    rows = conn.execute(
+        "SELECT id, name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id FROM workers WHERE name = ? COLLATE NOCASE LIMIT 2",
         (name.strip(),),
-    ).fetchone()
-    if not row:
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError("Several workers share this name; select their employee ID from the roster.")
+    if not rows:
         return None
+    row = rows[0]
     encoding = _deserialize_encoding(row["encoding_blob"])
     return {
         "id": int(row["id"]),

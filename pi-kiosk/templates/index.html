@@ -235,7 +235,7 @@
             gap: 6px;
         }
 
-        .manual input {
+        .manual select {
             background: #0f1114;
             border: 1px solid var(--line);
             color: var(--ink);
@@ -473,7 +473,7 @@
                 font-size: 0.72rem;
             }
 
-            .manual input,
+            .manual select,
             .manual button,
             .admin-toggle {
                 font-size: 0.78rem;
@@ -521,7 +521,7 @@
             <div id="adminControls" class="admin-controls">
                 <h2>Manual Clock</h2>
                 <div class="manual">
-                    <input id="manualName" type="text" placeholder="Worker name">
+                    <select id="manualName" aria-label="Worker"><option value="">Select a worker</option></select>
                     <button id="manualBtn">Submit</button>
                 </div>
                 <div id="manualResult" class="manual-result"></div>
@@ -740,6 +740,11 @@
 
         function renderAdmin(admin) {
             const workers = admin.workers || [];
+            const selectedWorker = manualName.value;
+            manualName.replaceChildren(new Option("Select a worker", ""), ...workers.map(
+                worker => new Option(`${worker.name} — ID: ${worker.employee_id || worker.id}`, String(worker.id))
+            ));
+            manualName.value = selectedWorker;
             const rows = workers.slice(0, 30).map((worker) => {
                 return `
                     <div class="worker-row">
@@ -782,9 +787,9 @@
         }
 
         async function submitManualClock() {
-            const name = manualName.value.trim();
-            if (!name) {
-                manualResult.textContent = "Enter a worker name.";
+            const workerId = manualName.value;
+            if (!workerId) {
+                manualResult.textContent = "Select a worker.";
                 manualResult.style.color = "#ff9e8f";
                 return;
             }
@@ -794,7 +799,7 @@
                 const response = await fetch("/manual-clock", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name })
+                    body: JSON.stringify({ worker_id: Number(workerId) })
                 });
                 const data = await response.json();
                 if (!response.ok || !data.success) {

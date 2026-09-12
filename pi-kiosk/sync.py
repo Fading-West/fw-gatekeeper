@@ -67,26 +67,15 @@ _SERVER_ID_RE = re.compile(r"[a-z0-9]{20,64}")
 
 
 def _resolve_log_server_id(log: dict) -> Optional[str]:
-    """Server id to send a queued log under.
-
-    The live workers row wins so a worker re-created on the server keeps the
-    current id; the snapshot taken at write time covers rows whose worker has
-    since been removed.
-    """
-    live = database.get_server_id(int(log["worker_id"]))
-    if live:
-        return str(live)
+    """Use the identity captured with the event; live lookup is legacy fallback."""
     snapshot = str(log.get("server_worker_id") or "").strip()
-    if not snapshot:
+    if snapshot:
+        if _SERVER_ID_RE.fullmatch(snapshot):
+            return snapshot
+        logger.error("Attendance log %s has invalid server_worker_id=%r; leaving it queued", log.get("id"), snapshot)
         return None
-    if not _SERVER_ID_RE.fullmatch(snapshot):
-        logger.error(
-            "Attendance log %s has server_worker_id=%r which is not a server worker id; leaving it queued",
-            log.get("id"),
-            snapshot,
-        )
-        return None
-    return snapshot
+    live = database.get_server_id(int(log["worker_id"]))
+    return str(live) if live else None
 
 
 def _track_orphans(orphans: list[dict], total: int) -> None:
@@ -305,7 +294,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             # Download photo if provided
             photo_path = None
             if photo_url:
-                photo_path = _download_photo(name, photo_url)
+                photo_path = _download_photo(str(server_id), photo_url)
 
             database.add_worker(
                 name=name,
