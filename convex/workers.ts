@@ -57,17 +57,20 @@ async function findWorkerByName(ctx: any, name: string) {
     return null;
   }
   let cursor: string | null = null;
+  let inactiveMatch = null;
   do {
     const page: any = await ctx.db.query("workers").paginate({ cursor, numItems: 500 });
-    const worker = page.page.find((candidate: any) => candidate.name.trim().toLocaleLowerCase() === normalizedLower);
-    if (worker) return worker;
-    if (page.isDone) return null;
+    const matches = page.page.filter((candidate: any) => normalizeName(candidate.name).toLocaleLowerCase() === normalizedLower);
+    const activeMatch = matches.find((candidate: any) => candidate.active);
+    if (activeMatch) return activeMatch;
+    inactiveMatch ??= matches[0] ?? null;
+    if (page.isDone) return inactiveMatch;
     cursor = page.continueCursor;
   } while (cursor);
   return null;
 }
 
-async function findWorkerByEmployeeId(ctx: any, employeeId?: string) {
+async function findWorkerByEmployeeId(ctx: any, employeeId?: string, includeInactive = false) {
   const normalized = normalizeEmployeeId(employeeId);
   if (!normalized) return null;
   const exact = await ctx.db
@@ -75,6 +78,8 @@ async function findWorkerByEmployeeId(ctx: any, employeeId?: string) {
     .withIndex("by_employee_id_and_active", (q: any) => q.eq("employeeId", normalized).eq("active", true))
     .first();
   if (exact) return exact;
+  const inactive = includeInactive ? await ctx.db.query("workers")
+    .withIndex("by_employee_id_and_active", (q: any) => q.eq("employeeId", normalized).eq("active", false)).first() : null;
 
   // Compatibility for records created before IDs were normalized on write.
   let cursor: string | null = null;
@@ -85,9 +90,21 @@ async function findWorkerByEmployeeId(ctx: any, employeeId?: string) {
       .paginate({ cursor, numItems: 500 });
     const worker = page.page.find((candidate: any) => normalizeEmployeeId(candidate.employeeId) === normalized);
     if (worker) return worker;
-    if (page.isDone) return null;
+    if (page.isDone) break;
     cursor = page.continueCursor;
   } while (cursor);
+  if (inactive) return inactive;
+  if (includeInactive) {
+    cursor = null;
+    do {
+      const page: any = await ctx.db.query("workers")
+        .withIndex("by_active", (q: any) => q.eq("active", false)).paginate({ cursor, numItems: 500 });
+      const match = page.page.find((candidate: any) => normalizeEmployeeId(candidate.employeeId) === normalized);
+      if (match) return match;
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    } while (cursor);
+  }
   return null;
 }
 
@@ -171,13 +188,16 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
     const now = new Date().toISOString();
     const employeeId = normalizeEmployeeId(args.employeeId);
     const department = normalizeDepartment(args.department);
-    const existing = await findWorkerByName(ctx, name);
-    const existingEmployeeId = await findWorkerByEmployeeId(ctx, employeeId);
+    const existingName = await findWorkerByName(ctx, name);
+    const existingEmployeeId = await findWorkerByEmployeeId(ctx, employeeId, true);
+    // A name is not a stable identity. Only a matching employee ID can
+    // restore an inactive worker and retain that person's attendance history.
+    const existing = existingEmployeeId;
 
-    if (existing?.active) {
+    if (existingName?.active) {
       throw new Error("Worker name already exists");
     }
-    if (existingEmployeeId?.active && existingEmployeeId._id !== existing?._id) {
+    if (existingEmployeeId?.active) {
       throw new Error(`Employee ID ${employeeId} already belongs to ${existingEmployeeId.name}`);
     }
 
@@ -295,7 +315,14 @@ export const update = mutation({
     const member = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const { id, ...fields } = args;
     const worker = await ctx.db.get(id);
-    if (!worker) throw new Error("Worker not found");
+    if (!worker || !worker.active) throw new Error("Active worker not found; use enrollment to restore a worker by employee ID");
+    if (member.role === "enrollment" && (
+      (fields.name !== undefined && normalizeName(fields.name) !== normalizeName(worker.name)) ||
+      (fields.employeeId !== undefined && normalizeEmployeeId(fields.employeeId) !== normalizeEmployeeId(worker.employeeId)) ||
+      (fields.department !== undefined && normalizeDepartment(fields.department) !== normalizeDepartment(worker.department))
+    )) {
+      throw new Error("Only admins may change worker identity or department");
+    }
     const writesBiometrics = fields.faceEncoding !== undefined || fields.photoStorageIds !== undefined;
     if (writesBiometrics) assertBiometricConsent(fields.consentAt);
     assertPhotoLimit(fields.photoStorageIds);
@@ -325,7 +352,7 @@ export const update = mutation({
     if (fields.department !== undefined) updates.department = normalizeDepartment(fields.department);
     if (fields.faceEncoding !== undefined) updates.faceEncoding = fields.faceEncoding;
     if (fields.photoStorageIds !== undefined) updates.photoStorageIds = fields.photoStorageIds;
-    if (fields.enrolledAt !== undefined) updates.enrolledAt = fields.enrolledAt;
+    if (fields.faceEncoding !== undefined) updates.enrolledAt = new Date().toISOString();
     if (writesBiometrics) {
       updates.consentAt = new Date().toISOString();
       updates.consentRecordedBy = member.userId;
@@ -339,6 +366,10 @@ export const update = mutation({
     }
     updates.updatedAt = new Date().toISOString();
     await ctx.db.patch(id, updates);
+    if (fields.name !== undefined || fields.employeeId !== undefined || fields.department !== undefined) {
+      await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.updateIdentity", targetTable: "workers", targetId: id,
+        details: JSON.stringify({ before: { name: worker.name, employeeId: worker.employeeId, department: worker.department }, after: { name: updates.name ?? worker.name, employeeId: fields.employeeId === undefined ? worker.employeeId : updates.employeeId, department: updates.department ?? worker.department } }) });
+    }
     if (writesBiometrics) await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: updates.consentAt }) });
     return { ok: true };
   },
