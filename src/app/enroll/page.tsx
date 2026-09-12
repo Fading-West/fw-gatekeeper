@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 // Type-only import: the directory data itself stays server-side (served via
 // /api/employee-directory) so the roster never ships in the client bundle.
@@ -45,9 +45,16 @@ function describePhotoIssues(photos: unknown, disagreeingPairs: unknown): string
 
 function EnrollPageContent() {
   const currentRole = usePortalRole();
+  const router = useRouter();
+  const canEnroll = currentRole === 'admin' || currentRole === 'enrollment';
   const searchParams = useSearchParams();
   const workerId = searchParams.get('worker_id') || '';
   const [step, setStep] = useState<Step>('name');
+  const [cameraOpening, setCameraOpening] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const cameraOpeningRef = useRef(false);
+  const cameraRequestRef = useRef(0);
+  const mountedRef = useRef(true);
   const [name, setName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [department, setDepartment] = useState('');
@@ -153,6 +160,8 @@ function EnrollPageContent() {
   };
 
   const stopCamera = useCallback(() => {
+    cameraRequestRef.current += 1;
+    cameraOpeningRef.current = false;
     if (captureTimerRef.current) {
       clearTimeout(captureTimerRef.current);
       captureTimerRef.current = null;
@@ -164,7 +173,11 @@ function EnrollPageContent() {
   }, []);
 
   useEffect(() => {
-    return () => stopCamera();
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stopCamera();
+    };
   }, [stopCamera]);
 
   useEffect(() => {
@@ -191,16 +204,31 @@ function EnrollPageContent() {
   }, [workerId]);
 
   const startCamera = async () => {
+    if (!canEnroll || cameraOpeningRef.current) return;
     setConsentConfirmed(false);
+    cameraOpeningRef.current = true;
+    setCameraOpening(true);
+    setCameraReady(false);
+    const request = ++cameraRequestRef.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
       });
+      if (!mountedRef.current || request !== cameraRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       setStep('camera');
     } catch {
+      if (!mountedRef.current || request !== cameraRequestRef.current) return;
       setErrorMsg('Camera access denied. Please allow camera permissions and try again.');
       setStep('error');
+    } finally {
+      if (mountedRef.current && request === cameraRequestRef.current) {
+        cameraOpeningRef.current = false;
+        setCameraOpening(false);
+      }
     }
   };
 
@@ -213,13 +241,14 @@ function EnrollPageContent() {
   }, [step]);
 
   const captureFrame = useCallback((): string | null => {
-    if (!videoRef.current) return null;
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
     const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 480;
+    canvas.width = Math.min(video.videoWidth, 640);
+    canvas.height = Math.round(video.videoHeight * canvas.width / video.videoWidth);
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    ctx.drawImage(videoRef.current, 0, 0, 640, 480);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL('image/jpeg', 0.85);
   }, []);
 
@@ -248,17 +277,19 @@ function EnrollPageContent() {
       }
 
       const result = await res.json();
+      if (!mountedRef.current) return;
       stopCamera();
       setResultMsg(`Face encoding saved. ${result.photosCount} photos captured.`);
       setStep('done');
       try {
         const progressRes = await fetch('/api/employee-directory?status=not_enrolled');
         const progressBody = progressRes.ok ? await progressRes.json() : null;
-        if (progressBody?.summary) setCompletionSummary(progressBody.summary);
+        if (mountedRef.current && progressBody?.summary) setCompletionSummary(progressBody.summary);
       } catch {
         // Enrollment succeeded; progress copy can gracefully omit fresh totals.
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       stopCamera();
       setErrorMsg(err instanceof Error ? err.message : 'Enrollment failed');
       setStep('error');
@@ -269,15 +300,19 @@ function EnrollPageContent() {
 
   const startCapturing = useCallback(() => {
     if (!consentConfirmed) return;
+    if (!cameraReady || captureTimerRef.current) return;
     setStep('capturing');
     setCaptureCount(0);
     setPhotos([]);
 
     const captured: string[] = [];
     let count = 0;
+    let attempts = 0;
 
     const doCapture = () => {
-      const frame = captureFrame();
+      attempts += 1;
+      let frame: string | null = null;
+      try { frame = captureFrame(); } catch { /* Retry a transient video frame failure. */ }
       if (frame) {
         captured.push(frame);
         count++;
@@ -286,16 +321,45 @@ function EnrollPageContent() {
       }
 
       if (count >= CAPTURES_REQUIRED) {
+        stopCamera();
         setStep('processing');
         submitEnrollmentRef.current(captured);
         return;
       }
 
+      if (attempts >= 6) {
+        stopCamera();
+        setErrorMsg('The camera stopped providing images. Reconnect it and try again.');
+        setStep('error');
+        return;
+      }
       captureTimerRef.current = setTimeout(doCapture, CAPTURE_INTERVAL_MS);
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [captureFrame, consentConfirmed]);
+  }, [cameraReady, captureFrame, consentConfirmed, stopCamera]);
+
+  const enrollNext = () => {
+    stopCamera();
+    setStep('name');
+    setName('');
+    setEmployeeId('');
+    setDepartment('');
+    setSelectedEmployee(null);
+    setManualEntry(false);
+    setPhotos([]);
+    setCaptureCount(0);
+    setCameraReady(false);
+    setCameraOpening(false);
+    setErrorMsg('');
+    setResultMsg('');
+    setConsentConfirmed(false);
+    setPhotoIssues([]);
+    setCompletionSummary(null);
+    setStatusFilter('remaining');
+    setShowSuggestions(true);
+    router.replace('/enroll');
+  };
 
   // Viewers cannot submit enrollments (the API rejects them), so stop them
   // here instead of letting them capture photos that will 401 on save.
@@ -537,10 +601,10 @@ function EnrollPageContent() {
 
             <button
               onClick={startCamera}
-              disabled={!name.trim() || (!workerId && !selectedEmployee && !manualEntry)}
+              disabled={!canEnroll || cameraOpening || !name.trim() || (!workerId && !selectedEmployee && !manualEntry)}
               className="btn-primary w-full py-3.5 text-base flex items-center justify-center gap-2"
             >
-              {selectedEmployee?.workerId || workerId ? 'Continue to Re-enrollment' : 'Continue to Camera'}
+              {cameraOpening ? 'Opening camera…' : selectedEmployee?.workerId || workerId ? 'Continue to Re-enrollment' : 'Continue to Camera'}
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
               </svg>
@@ -570,6 +634,7 @@ function EnrollPageContent() {
           <div className="relative rounded-2xl overflow-hidden border-2 border-navy-600/50 mb-5 glass-card">
             <video
               ref={videoRef}
+              onLoadedData={() => setCameraReady(Boolean(videoRef.current && videoRef.current.readyState >= 2 && videoRef.current.videoWidth))}
               autoPlay
               playsInline
               muted
@@ -609,13 +674,13 @@ function EnrollPageContent() {
           <div className="space-y-3">
             <button
               onClick={startCapturing}
-              disabled={!consentConfirmed}
+              disabled={!cameraReady || !consentConfirmed}
               className="btn-primary w-full py-3.5 text-base flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
               </svg>
-              Start Capture
+              {cameraReady ? 'Start Capture' : 'Waiting for camera…'}
             </button>
             <button
               onClick={() => { stopCamera(); setStep('name'); }}
@@ -727,12 +792,12 @@ function EnrollPageContent() {
           )}
 
           <div className="space-y-3">
-            <Link href="/enroll" className="btn-primary w-full py-3.5 text-base block text-center">
+            <button type="button" onClick={enrollNext} className="btn-primary w-full py-3.5 text-base block text-center">
               Enroll Next Employee
-            </Link>
-            <Link href="/enroll" className="btn-secondary block w-full text-center">
+            </button>
+            <button type="button" onClick={enrollNext} className="btn-secondary block w-full text-center">
               Return to Remaining Roster
-            </Link>
+            </button>
             <Link href="/workers" className="btn-secondary block w-full text-center">
               View Enrolled Employees
             </Link>
@@ -786,10 +851,15 @@ function EnrollPageContent() {
   );
 }
 
+function EnrollmentSession() {
+  const searchParams = useSearchParams();
+  return <EnrollPageContent key={searchParams.get('worker_id') || 'new'} />;
+}
+
 export default function EnrollPage() {
   return (
     <Suspense fallback={null}>
-      <EnrollPageContent />
+      <EnrollmentSession />
     </Suspense>
   );
 }
