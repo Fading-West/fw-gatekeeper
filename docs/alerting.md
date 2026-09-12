@@ -23,7 +23,7 @@ the dashboard does.
 | `stale` | `lastSync` is older than 15 minutes | Cleared automatically (no recovery notice) if the kiosk escalates to `offline`. |
 | `offline` | `lastSync` is older than 60 minutes | `stale` is never reported alongside `offline` for the same kiosk. |
 | `never_synced` | The kiosk has no `lastSync` at all | Usually a freshly registered kiosk whose `KIOSK_ID` does not match. |
-| `device_fault` | `health.cameraOk === false`, `health.modelOk === false`, or `health.degradedReason` is one of `camera_error`, `model_error`, `encoding_mismatch`, `no_workers_synced` | These are the faults that block every scan. `liveness_unavailable` is shown on the dashboard but does not page anyone. |
+| `device_fault` | `health.cameraOk === false`, `health.modelOk === false`, or `health.degradedReason` is one of `camera_error`, `model_error`, `encoding_mismatch`, `no_workers_synced`, `liveness_required_unavailable` | These are the faults that block every scan. `liveness_unavailable` is shown on the dashboard but does not page anyone. |
 | `queue_backlog` | `health.queuedLogs >= 50` | The kiosk is scanning but cannot upload attendance. |
 
 Inactive kiosks (`active: false`) are ignored.
@@ -102,7 +102,7 @@ check and each kiosk's `check_server()` poll. It now performs one tiny unauthent
 Convex query (`health:ping`) with a 5-second timeout:
 
 - `200 {"status":"ok","convex":"ok","timestamp":...}` when Convex answered.
-- `503 {"status":"degraded","convex":"unreachable","error":...}` when it did not.
+- `503 {"status":"degraded","convex":"unreachable"}` when it did not.
 
 Point an external monitor (UptimeRobot, Better Stack, Healthchecks.io, a cron on another
 box, etc.) at these two URLs and alert on anything other than HTTP 200:
@@ -118,3 +118,16 @@ rather than status code alone so a cached or proxied `200` does not hide a real 
 
 Note that the monitor tells you the cloud side is up; the kiosk cron tells you the
 factory side is syncing. You need both.
+
+## Delivery and recovery failures
+
+Each email/webhook request has a 10-second timeout. Failed alert delivery is retried
+on the next cron run; a cleared alert is also retained until its recovery notice is
+delivered. A successful channel counts as delivery when both channels are configured.
+Malformed or future sync timestamps produce a stale alert instead of reporting healthy.
+Required-liveness failures (`liveness_required_unavailable`) count as device faults.
+The public health endpoint returns a generic 503 during backend failures; diagnostics
+stay in server logs. No health probe updates kiosk sync timestamps.
+
+Deactivated or removed kiosks stop producing alerts; their old alerts close silently.
+Retirement is never announced as a recovered device.

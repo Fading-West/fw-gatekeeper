@@ -62,6 +62,11 @@ describe("evaluateKioskAlerts", () => {
     expect(conditionsFor(boundary)).toEqual(["stale"]);
   });
 
+  it("does not report malformed or future sync times as healthy", () => {
+    expect(conditionsFor(kiosk({ lastSync: "not-a-date" }))).toContain("stale");
+    expect(conditionsFor(kiosk({ lastSync: new Date(NOW + HOUR).toISOString() }))).toContain("stale");
+  });
+
   it("flags never_synced when there is no lastSync", () => {
     expect(conditionsFor(kiosk({ lastSync: undefined, health: undefined }))).toEqual(["never_synced"]);
   });
@@ -301,4 +306,42 @@ describe("alertState recording", () => {
     expect(fourth).toMatchObject({ alerts: 0, recoveries: 0, delivered: 0 });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
+  it("retries failed recovery delivery without repeating a successful recovery", async () => {
+    vi.stubEnv("RESEND_API_KEY", "");
+    vi.stubEnv("ALERT_WEBHOOK_URL", "https://example.test/hook");
+    const fetchSpy = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const t = await seedStaleKiosk(2 * HOUR);
+    await t.action(internal.alerts.checkKiosks, {});
+    await t.run(async (ctx) => {
+      const [row] = await ctx.db.query("kiosks").collect();
+      await ctx.db.patch(row._id, { lastSync: new Date().toISOString() });
+    });
+    fetchSpy.mockResolvedValueOnce(new Response("failed", { status: 503 }));
+    expect(await t.action(internal.alerts.checkKiosks, {})).toMatchObject({ recoveries: 1, delivered: 0 });
+    const pending = await t.run((ctx) => ctx.db.query("alertState").collect());
+    expect(pending[0].resolvedAt).toBeUndefined();
+    expect(await t.action(internal.alerts.checkKiosks, {})).toMatchObject({ recoveries: 1, delivered: 1 });
+    expect(await t.action(internal.alerts.checkKiosks, {})).toMatchObject({ recoveries: 0, delivered: 0 });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("retires deactivated kiosk alerts without announcing a recovery", async () => {
+    vi.stubEnv("RESEND_API_KEY", "");
+    vi.stubEnv("ALERT_WEBHOOK_URL", "https://example.test/hook");
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const t = await seedStaleKiosk(2 * HOUR);
+    await t.action(internal.alerts.checkKiosks, {});
+    await t.run(async (ctx) => {
+      const [row] = await ctx.db.query("kiosks").collect();
+      await ctx.db.patch(row._id, { active: false });
+    });
+    expect(await t.action(internal.alerts.checkKiosks, {})).toMatchObject({ kiosks: 0, recoveries: 0, delivered: 0 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [state] = await t.run((ctx) => ctx.db.query("alertState").collect());
+    expect(state.resolvedAt).toBeDefined();
+  });
+
 });

@@ -42,7 +42,7 @@ export async function GET() {
     const message = describeError(error);
     console.error('health_convex_unreachable', { error: message });
     return NextResponse.json(
-      { status: 'degraded', convex: 'unreachable', error: message, timestamp },
+      { status: 'degraded', convex: 'unreachable', timestamp },
       { status: 503 },
     );
   } finally {

@@ -8,6 +8,10 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 - The camera runs continuously; dlib HOG finds faces, MobileFaceNet ONNX
   encodes them as 512-dim embeddings (the same model family the server uses),
   and matching is cosine similarity against locally cached worker encodings.
+  Each accepted scan must match the current camera frame. Temporal smoothing
+  only combines consecutive frames of the same worker and clears when the
+  face, roster encoding, or frame sequence changes; an unknown face cannot
+  inherit a previous worker's strong match.
 - A Flask web UI on port `5555` (loopback by default) shows the live camera
   feed, status messages, and today's log; Firefox ESR in kiosk mode displays it
   fullscreen on the attached monitor via XDG autostart.
@@ -17,10 +21,16 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
   attendance and recognition-telemetry records, and reports kiosk health
   (camera/model/liveness state, queue depths) to the dashboard. The on-screen
   sync chip shows online/offline state and how many records are queued.
+  Attendance uploads use at most 100 records per request and 10 pages per
+  cycle. A saved cursor keeps unmapped rows from blocking newer attendance;
+  failed requests and incomplete acknowledgements leave records queued for
+  retry. Larger offline backlogs drain over subsequent sync cycles.
 - Blink liveness is **optional and off by default** (`LIVENESS_REQUIRED = False`).
   When enabled, a matched worker must blink before the clock event is recorded;
-  if the landmark model is missing, the kiosk keeps working, records events as
-  unverified, and reports itself degraded.
+  if the landmark model is missing or corrupt, automatic attendance is blocked
+  and the display asks the worker to contact a supervisor. The camera, UI, and
+  offline queue sync keep running. Model loading is retried every 30 seconds;
+  installing the predictor restores scanning without restarting the kiosk.
 - Supervisor controls (manual clock-in/out) are behind a separate PIN
   (`KIOSK_SUPERVISOR_PIN`) with a five-minute session and attempt lockout.
 
@@ -112,6 +122,36 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
+| "queued logs have no server worker mapping" | Queued rows whose worker row was removed before this release; see *Stranded attendance rows* below |
+
+### Stranded attendance rows
+
+Each attendance row stores the worker's Convex id (`server_worker_id`) when it is
+written. Recognition carries the id from the same roster snapshot as the match,
+including through a blink wait. Sync always preserves a captured server identity. A schema trigger fills missing
+identities before deletion. Startup migrates older schemas without changing local
+worker IDs; workers with the same name remain separate and supervisor selection
+shows employee IDs. Rows written by older releases
+whose worker was already removed have no id to recover and stay queued until an
+operator resolves them. They still count in `queued_logs` on the health endpoint.
+
+```bash
+cd /opt/fw-gatekeeper/pi-kiosk
+sqlite3 data/attendance.db ".backup data/attendance.db.bak-$(date +%Y%m%d)"
+sqlite3 -header data/attendance.db \
+  "SELECT id, worker_id, worker_name, action, timestamp FROM attendance_log WHERE synced = 0;"
+```
+
+Then either delete the rows if they are test data, or attach the worker's Convex
+id and the next sync cycle sends them. The Convex id is the 32-character
+lowercase id in the worker's dashboard URL, not the employee ID; the kiosk
+refuses to send anything that does not look like one, since the server stores
+whatever worker id it is given:
+
+```sql
+UPDATE attendance_log SET server_worker_id = '<convex worker id>'
+WHERE synced = 0 AND worker_id = <local worker id>;
+```
 
 ## Architecture
 

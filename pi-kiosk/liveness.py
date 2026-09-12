@@ -56,6 +56,7 @@ class LivenessChecker:
             raise FileNotFoundError(self._missing_model_message(path))
 
         self._predictor = dlib.shape_predictor(str(path))
+        self.failed = False
         self._current_ear = 0.0
         self.reset()
 
@@ -119,7 +120,11 @@ class LivenessChecker:
         try:
             shape = self._predictor(gray, rect)
         except RuntimeError:
-            logger.debug("Predictor failed for supplied face rectangle.")
+            # Surface a broken predictor to the kiosk policy so it can block
+            # attendance and reload the model instead of timing out forever.
+            self.failed = True
+            self.reset()
+            logger.warning("Liveness predictor failed for supplied face rectangle.")
             return False
 
         landmarks = _shape_to_np(shape)

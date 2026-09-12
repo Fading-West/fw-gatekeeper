@@ -4,8 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
+from collections import Counter
 from datetime import datetime
 from typing import Optional
 
@@ -53,34 +55,99 @@ def _build_attempt_idempotency_key(attempt: dict) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
+# Orphaned attendance rows (no server worker mapping) are reported when the
+# set changes and then once an hour, not once per row per 30-second cycle.
+_last_orphan_signature: Optional[tuple] = None
+_last_orphan_warned_at: float = 0.0
+ORPHAN_REWARN_SEC = 3600
+# Convex document ids as the server hands them out. A hand-entered value that
+# does not look like one (an employee id, a name) must not be sent, because
+# the server stores whatever worker id it is given.
+_SERVER_ID_RE = re.compile(r"[a-z0-9]{20,64}")
+
+
+def _resolve_log_server_id(log: dict) -> Optional[str]:
+    """Use the identity captured with the event; live lookup is legacy fallback."""
+    snapshot = str(log.get("server_worker_id") or "").strip()
+    if snapshot:
+        if _SERVER_ID_RE.fullmatch(snapshot):
+            return snapshot
+        logger.error("Attendance log %s has invalid server_worker_id=%r; leaving it queued", log.get("id"), snapshot)
+        return None
+    live = database.get_server_id(int(log["worker_id"]))
+    return str(live) if live else None
+
+
+def _track_orphans(orphans: list[dict], total: int) -> None:
+    """Warn when the set of stuck rows changes, and hourly while it persists."""
+    global _last_orphan_signature, _last_orphan_warned_at
+    signature = tuple(int(o["id"]) for o in orphans) or None
+    changed = signature != _last_orphan_signature
+    _last_orphan_signature = signature
+    if not signature:
+        return
+    now = time.monotonic()
+    if not changed and now - _last_orphan_warned_at < ORPHAN_REWARN_SEC:
+        logger.debug("Attendance sync: %d of %d queued logs still have no server worker mapping", len(orphans), total)
+        return
+    _last_orphan_warned_at = now
+    by_worker = Counter(f"local_worker_id={o['worker_id']} name={o.get('worker_name')}" for o in orphans)
+    logger.warning(
+        "Attendance sync: %d of %d queued logs have no server worker mapping and will stay queued "
+        "until server_worker_id is set or the rows are removed (%s); log ids=%s%s",
+        len(orphans),
+        total,
+        "; ".join(f"{k} x{n}" for k, n in by_worker.items()),
+        list(signature[:20]),
+        f" (+{len(signature) - 20} more)" if len(signature) > 20 else "",
+    )
+
+
+ATTENDANCE_BATCH_SIZE = 100
+ATTENDANCE_PAGES_PER_CYCLE = 10
+
+
+def _attendance_acknowledged(response, submitted: int) -> bool:
+    """Accept full-batch acknowledgements, including legacy retry responses.
+
+    Legacy servers return the count of NEW inserts, so synced=0 is valid on
+    retry. New servers explicitly count all acknowledged (inserted + existing)
+    events; any partial acknowledgement must leave the batch queued.
+    """
+    try:
+        data = response.json()
+    except (ValueError, requests.RequestException):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if "acknowledged" in data:
+        count = data["acknowledged"]
+        return type(count) is int and count == submitted
+    count = data.get("synced")
+    return type(count) is int and 0 <= count <= submitted
+
+
 def sync_attendance() -> bool:
-    """POST unsynced gatekeeper logs to server. Returns True on success."""
-    logs = database.get_unsynced_logs()
-    if not logs:
-        return True
-
-    payload_logs = []
-    synced_log_ids = []
-    missing_mappings = 0
-    server_id_cache: dict[int, Optional[str]] = {}
-
-    for log in logs:
-        local_worker_id = int(log["worker_id"])
-        if local_worker_id not in server_id_cache:
-            server_id_cache[local_worker_id] = database.get_server_id(local_worker_id)
-        server_id = server_id_cache[local_worker_id]
-        if not server_id:
-            missing_mappings += 1
-            logger.error(
-                "Skipping attendance log %s: no server_id for local worker_id=%s worker_name=%s",
-                log["id"],
-                local_worker_id,
-                log.get("worker_name"),
-            )
-            continue
-
-        payload_logs.append(
-            {
+    """Drain bounded, acknowledged pages; retain every failed or unmapped row."""
+    # Persist the scan position so many unmapped rows cannot starve later
+    # attendance. Wrap at the end, revisiting unresolved rows on later cycles.
+    cursor = int(database.get_sync_state("attendance_scan_after") or 0)
+    orphans: list[dict] = []
+    examined = 0
+    for _ in range(ATTENDANCE_PAGES_PER_CYCLE):
+        logs = database.get_unsynced_logs(limit=ATTENDANCE_BATCH_SIZE, after_id=cursor)
+        if not logs:
+            database.set_sync_state("attendance_scan_after", "0")
+            break
+        examined += len(logs)
+        payload_logs = []
+        synced_log_ids = []
+        for log in logs:
+            server_id = _resolve_log_server_id(log)
+            if not server_id:
+                orphans.append(log)
+                continue
+            payload_logs.append({
                 "worker_id": server_id,
                 "worker_name": log.get("worker_name"),
                 "event_type": log.get("event_type") or log.get("action"),
@@ -91,42 +158,29 @@ def sync_attendance() -> bool:
                 "confidence": log.get("confidence"),
                 "kiosk_id": log.get("kiosk_id") or config.KIOSK_ID,
                 "note": log.get("note"),
-            }
-        )
-        synced_log_ids.append(int(log["id"]))
-
-    if not payload_logs:
-        logger.error(
-            "Attendance sync aborted: %d unsynced logs found, but none had a server_id mapping",
-            len(logs),
-        )
-        return False
-
-    try:
-        r = requests.post(
-            f"{config.SERVER_URL}/api/attendance/bulk",
-            json={"kiosk_id": config.KIOSK_ID, "logs": payload_logs},
-            headers=_auth_headers(),
-            timeout=15,
-        )
-        if r.status_code == 200:
-            database.mark_synced(synced_log_ids)
-            logger.info(
-                "Synced %d gatekeeper logs to server%s",
-                len(synced_log_ids),
-                f"; {missing_mappings} still waiting for worker mappings" if missing_mappings else "",
-            )
-            return missing_mappings == 0
-        else:
-            logger.error(
-                "Attendance sync failed with status=%d body=%s",
-                r.status_code,
-                r.text[:1000],
-            )
-            return False
-    except requests.RequestException:
-        logger.exception("Attendance sync request failed")
-        return False
+            })
+            synced_log_ids.append(int(log["id"]))
+        if payload_logs:
+            try:
+                response = requests.post(
+                    f"{config.SERVER_URL}/api/attendance/bulk",
+                    json={"kiosk_id": config.KIOSK_ID, "logs": payload_logs},
+                    headers=_auth_headers(), timeout=15,
+                )
+                if response.status_code != 200 or not _attendance_acknowledged(response, len(payload_logs)):
+                    logger.error("Attendance batch not acknowledged (status=%d); keeping %d rows queued", response.status_code, len(payload_logs))
+                    _track_orphans(orphans, examined)
+                    return False
+                database.mark_synced(synced_log_ids)
+                logger.info("Synced %d gatekeeper logs to server", len(synced_log_ids))
+            except requests.RequestException:
+                logger.exception("Attendance sync request failed; retaining unacknowledged batch")
+                _track_orphans(orphans, examined)
+                return False
+        cursor = int(logs[-1]["id"])
+        database.set_sync_state("attendance_scan_after", str(cursor))
+    _track_orphans(orphans, examined)
+    return database.count_unsynced_logs() == 0
 
 
 def sync_recognition_attempts() -> bool:
@@ -260,7 +314,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             # Download photo if provided
             photo_path = None
             if photo_url:
-                photo_path = _download_photo(name, photo_url)
+                photo_path = _download_photo(str(server_id), photo_url)
 
             database.add_worker(
                 name=name,

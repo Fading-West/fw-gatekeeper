@@ -27,6 +27,7 @@ describe("worker identity safeguards", () => {
       employeeId: "f-2",
       department: "Area Manager",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     });
 
     await expect(admin.mutation(api.workers.create, {
@@ -34,6 +35,7 @@ describe("worker identity safeguards", () => {
       employeeId: "F-2",
       department: "Area Manager",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     })).rejects.toThrow("Employee ID F-2 already belongs to Alex Gonzalez");
     await expect(admin.query(api.workers.findByEmployeeId, { employeeId: "f-2" })).resolves.toMatchObject({ name: "Alex Gonzalez", active: 1 });
   });
@@ -45,12 +47,14 @@ describe("worker identity safeguards", () => {
       employeeId: "F-1",
       department: "Operations",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     });
     const second = await admin.mutation(api.workers.create, {
       name: "Second Worker",
       employeeId: "F-2",
       department: "Operations",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     });
 
     await expect(admin.mutation(api.workers.update, { id: second.id, employeeId: "f-1" }))
@@ -79,6 +83,7 @@ describe("worker identity safeguards", () => {
       employeeId: "F-999",
       department: "Operations",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     })).rejects.toThrow("Worker name already exists");
   });
 
@@ -96,11 +101,13 @@ describe("worker identity safeguards", () => {
       employeeId: "OTHER-1",
       department: "Unknown",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     })).rejects.toThrow("Insufficient permissions");
 
     await expect(enrollment.mutation(api.workers.createFromRoster, {
       employeeId: "f-2",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     })).resolves.toMatchObject({
       name: "Alex Gonzalez",
       employeeId: "F-2",
@@ -110,6 +117,7 @@ describe("worker identity safeguards", () => {
     await expect(enrollment.mutation(api.workers.createFromRoster, {
       employeeId: "OTHER-1",
       faceEncoding: encoding,
+      consentAt: new Date().toISOString(),
     })).rejects.toThrow("Employee must be selected from the company roster");
   });
 });

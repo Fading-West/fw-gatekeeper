@@ -17,6 +17,7 @@ import config
 import database
 from embeddings import EXPECTED_EMBEDDING_DIM
 from liveness import LivenessChecker
+from liveness_policy import LivenessPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -29,20 +30,16 @@ class FaceRecognizer:
         self._encodings: list[np.ndarray] = []
         self._ids: list[int] = []
         self._names: list[str] = []
+        self._server_ids: dict[int, str | None] = {}
 
-        self.liveness_checker = None
+        self.liveness_policy = LivenessPolicy(
+            required=getattr(config, "LIVENESS_REQUIRED", False), factory=LivenessChecker,
+        )
+        self.liveness_policy.refresh()
 
-        # Only load the (large) landmark model when this kiosk actually
-        # enforces blink verification; it is off by default.
-        if getattr(config, "LIVENESS_REQUIRED", False):
-            try:
-                self.liveness_checker = LivenessChecker()
-            except FileNotFoundError as exc:
-                logger.error(str(exc))
-                logger.error(
-                    "Blink verification is unavailable; clock events will be recorded "
-                    "without liveness and the kiosk will report itself degraded."
-                )
+    @property
+    def liveness_checker(self):
+        return self.liveness_policy.refresh()
 
     @property
     def known_count(self) -> int:
@@ -60,13 +57,18 @@ class FaceRecognizer:
     def load_faces(self):
         """Load all worker encodings from SQLite."""
         with self._lock:
-            self._encodings, self._ids, self._names = database.get_worker_encodings()
+            self._encodings, self._ids, self._names, self._server_ids = database.get_worker_roster()
         logger.info("Loaded %d known face encodings", len(self._encodings))
 
     def reload_faces(self):
         self.load_faces()
 
     def snapshot_known_faces(self):
-        """Return a consistent (encodings, ids, names) copy for matching."""
+        """Return one consistent roster snapshot for matching and attribution."""
         with self._lock:
-            return list(self._encodings), list(self._ids), list(self._names)
+            return (
+                list(self._encodings),
+                list(self._ids),
+                list(self._names),
+                dict(self._server_ids),
+            )

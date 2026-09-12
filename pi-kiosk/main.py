@@ -10,7 +10,6 @@ import logging
 import os
 import time
 import threading
-from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -20,7 +19,8 @@ import face_recognition as fr
 
 import config
 import database
-from embeddings import embed_face, model_ready as recognition_model_ready, normalize_embedding
+from embeddings import embed_face, model_ready as recognition_model_ready
+from matching import FreshFaceMatcher
 from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
@@ -224,14 +224,13 @@ def run(args):
     recognizer.load_faces()
     logger.info("Loaded %d known faces", recognizer.known_count)
 
-    # Blink verification. If the shape predictor is missing, keep the door
-    # working but record events as unverified and report the kiosk degraded —
-    # never claim liveness we don't have.
+    # Required verification fails closed. The camera, UI and offline sync
+    # keep running while the landmark model is retried in the background.
     liveness = recognizer.liveness_checker if config.LIVENESS_REQUIRED else None
     if config.LIVENESS_REQUIRED and liveness is None:
         logger.critical(
-            "Liveness model missing: clock events will be recorded WITHOUT blink "
-            "verification and this kiosk will report itself degraded."
+            "Required liveness model unavailable: automatic attendance is blocked "
+            "until blink verification recovers."
         )
 
     # An empty or model-incompatible roster rejects every scan; the dashboard
@@ -242,7 +241,7 @@ def run(args):
     elif recognizer.usable_count == 0:
         startup_degraded = "encoding_mismatch"
     elif config.LIVENESS_REQUIRED and liveness is None:
-        startup_degraded = "liveness_unavailable"
+        startup_degraded = "liveness_required_unavailable"
 
     web_app.update_health(
         model_ok=model_ready,
@@ -270,7 +269,7 @@ def run(args):
             # every scan will be rejected until re-enrollment.
             return "encoding_mismatch"
         if config.LIVENESS_REQUIRED and liveness is None:
-            return "liveness_unavailable"
+            return "liveness_required_unavailable"
         return None
 
     sync_worker = (
@@ -321,7 +320,7 @@ def run(args):
 
     def detection_loop():
         logger.info("Detection thread started")
-        embedding_history = deque(maxlen=config.RECOGNITION_EMBEDDING_WINDOW)
+        embedding_history = FreshFaceMatcher(config.RECOGNITION_EMBEDDING_WINDOW, config.RECOGNITION_MATCH_THRESHOLD)
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -366,18 +365,15 @@ def run(args):
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding")
                     continue
 
-                embedding_history.append(embedding)
-                smoothed_embedding = normalize_embedding(np.mean(np.stack(embedding_history), axis=0))
-
                 # Match against known workers
-                known_encs, known_ids, known_names = recognizer.snapshot_known_faces()
+                known_encs, known_ids, known_names, known_server_ids = recognizer.snapshot_known_faces()
                 matched = None
                 conf = 0.0
                 best_idx = None
                 second_score = None
 
                 if known_encs:
-                    cand_dim = len(smoothed_embedding)
+                    cand_dim = len(embedding)
                     # Validate every roster row, not just the first: legacy
                     # 128-dim entries can coexist with 512-dim ones (server and
                     # local stores both still accept them), and an unchecked
@@ -401,22 +397,26 @@ def run(args):
                         current_result[0] = _empty_recognition_result(face_loc, decision="rejected_dim_mismatch")
                         continue
 
-                    scores = []
-                    for i, known in compatible:
-                        sim = cosine_sim(np.array(known), smoothed_embedding)
-                        scores.append((sim, i))
-                    scores.sort(reverse=True, key=lambda item: item[0])
+                    scores, frame_accepted = embedding_history.match(
+                        embedding, compatible, known_ids, known_server_ids, frame_ts,
+                    )
                     best_sim, best_idx = scores[0]
                     if len(scores) > 1:
                         second_score = scores[1][0]
                     conf = best_sim
                     logger.info("Match: sim=%.3f name=%s window=%d", conf, known_names[best_idx], len(embedding_history))
-                    if conf >= config.RECOGNITION_MATCH_THRESHOLD:
+                    if frame_accepted:
                         matched = known_names[best_idx]
 
                 margin = conf - second_score if second_score is not None else None
                 candidate_worker_id = known_ids[best_idx] if best_idx is not None else None
                 candidate_worker_name = known_names[best_idx] if best_idx is not None else None
+                candidate_server_worker_id = (
+                    known_server_ids.get(candidate_worker_id) if candidate_worker_id is not None else None
+                )
+                candidate_encoding = (
+                    np.array(known_encs[best_idx], copy=True) if best_idx is not None else None
+                )
                 decision = "accepted" if matched else "rejected_unknown"
                 if (
                     matched is None
@@ -432,6 +432,8 @@ def run(args):
                     "confidence": conf,
                     "candidate_worker_id": candidate_worker_id,
                     "candidate_worker_name": candidate_worker_name,
+                    "server_worker_id": candidate_server_worker_id,
+                    "candidate_encoding": candidate_encoding,
                     "best_score": conf if best_idx is not None else None,
                     "second_best_score": second_score,
                     "score_margin": margin,
@@ -443,6 +445,7 @@ def run(args):
 
             except Exception as e:
                 logger.error("Detection error: %s", e, exc_info=True)
+                embedding_history.clear()
                 current_result[0] = None
 
     det_thread = threading.Thread(target=detection_loop, daemon=True, name="face-detect")
@@ -455,7 +458,8 @@ def run(args):
     # Liveness wait state: set when a matched worker still needs to blink.
     pending_clock = [None]
 
-    def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed):
+    def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
+                     server_worker_id=None):
         """Log the clock event + telemetry, update the display. Returns True on success."""
         if config.KIOSK_TYPE == "entry":
             action = "clock_in"
@@ -467,9 +471,11 @@ def run(args):
 
         result["liveness_confirmed"] = liveness_confirmed
         try:
-            database.log_attendance(
+            recognizer.liveness_policy.record(
+                database.log_attendance,
                 worker_id=worker_id, worker_name=display_name,
                 action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
+                server_worker_id=server_worker_id,
             )
             _log_recognition_attempt(result, "accepted")
         except Exception as e:
@@ -507,6 +513,17 @@ def run(args):
     roster_fault = startup_degraded if startup_degraded in ("no_workers_synced", "encoding_mismatch") else None
     try:
         while True:
+            active_liveness = recognizer.liveness_checker
+            if active_liveness is not liveness:
+                liveness = active_liveness
+                # A recovered/replaced checker starts a new verification;
+                # an earlier blink can never authorize attendance after loss.
+                pending_clock[0] = None
+                current_result[0] = None
+                web_app.update_health(
+                    liveness_available=liveness is not None,
+                    degraded_reason=base_degraded_reason(),
+                )
             try:
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
@@ -532,6 +549,23 @@ def run(args):
                 if pending_frame[0] is None:
                     pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now)
 
+            if config.LIVENESS_REQUIRED and liveness is None:
+                # Roster sync may have recovered since startup while this
+                # early branch is skipping normal recognition health updates.
+                web_app.update_health(liveness_available=False, degraded_reason=base_degraded_reason())
+                pending_clock[0] = None
+                current_result[0] = None
+                box_loc = None
+                box_label = None
+                web_app.update_status(
+                    state="SERVICE_DEGRADED",
+                    message="Blink verification unavailable - please ask your supervisor",
+                    worker_id=None, worker_name=None, face_detected=False,
+                    known_workers=recognizer.known_count,
+                )
+                time.sleep(0.05)
+                continue
+
             # 3. Skip during display hold; drop results that land mid-hold so a
             #    lingering face can't re-trigger off stale data every cycle.
             if now < display_until[0]:
@@ -550,13 +584,9 @@ def run(args):
                 identity_changed = False
                 if fresh is not None:
                     current_result[0] = None
-                    fresh_name = fresh.get("name")
-                    fresh_worker_id = None
-                    if fresh_name is not None:
-                        _, fresh_ids, fresh_names = recognizer.snapshot_known_faces()
-                        if fresh_name in fresh_names:
-                            fresh_worker_id = fresh_ids[fresh_names.index(fresh_name)]
-                    if fresh_worker_id != pending["worker_id"]:
+                    fresh_identity = (fresh.get("candidate_worker_id"), fresh.get("server_worker_id"))
+                    pending_identity = (pending["worker_id"], pending["server_worker_id"])
+                    if fresh.get("name") is None or fresh_identity != pending_identity:
                         identity_changed = True
                     else:
                         # The post-blink confirmation must come from a frame
@@ -604,7 +634,7 @@ def run(args):
                         return cosine_sim(pending["encoding"], emb) >= config.RECOGNITION_MATCH_THRESHOLD
 
                     blink_ok = (
-                        liveness.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
+                        recognizer.liveness_policy.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
                         if box_loc is not None
                         else False
                     )
@@ -623,6 +653,7 @@ def run(args):
                     recorded = record_clock(
                         pending["result"], pending["worker_id"], pending["display_name"],
                         pending["display_id"], pending["confidence"], liveness_confirmed=True,
+                        server_worker_id=pending["server_worker_id"],
                     )
                     liveness.reset()
                     display_until[0] = now + (config.DISPLAY_TIME_SUCCESS_SEC if recorded else 2)
@@ -745,20 +776,24 @@ def run(args):
             unknown_streak = 0
             box_color = GREEN
 
-            known_encs, known_ids, known_names = recognizer.snapshot_known_faces()
-            worker_id = None
+            worker_id = result.get("candidate_worker_id")
+            server_worker_id = result.get("server_worker_id")
             worker_encoding = None
-            if name in known_names:
-                idx = known_names.index(name)
-                worker_id = known_ids[idx]
-                worker_encoding = np.array(known_encs[idx])
+            if worker_id is not None:
+                # The candidate encoding is from the same immutable detection
+                # result identity; a later roster reload cannot remap by name.
+                worker_encoding = result.get("candidate_encoding")
 
             if worker_id is None:
                 continue
 
             worker = database.get_worker_by_id(worker_id)
-            display_id = format_worker_display_id(worker, worker_id)
-            display_name = worker["name"] if worker else name
+            # Only use mutable worker metadata if it is still the same server
+            # identity that produced the match. The recognition name and id
+            # remain authoritative across a concurrent delete/reload.
+            same_worker = worker and (worker["server_id"] or None) == server_worker_id
+            display_id = format_worker_display_id(worker if same_worker else None, worker_id)
+            display_name = name
             id_suffix = f" | ID: {display_id}" if display_id else ""
             box_label = f"{display_name}{id_suffix}"
 
@@ -792,6 +827,7 @@ def run(args):
                     "display_name": display_name,
                     "display_id": display_id,
                     "confidence": confidence,
+                    "server_worker_id": server_worker_id,
                     "encoding": worker_encoding,
                     "deadline": now + config.LIVENESS_WAIT_SEC,
                     "blink_confirmed": False,
@@ -806,7 +842,7 @@ def run(args):
                 continue
 
             recorded = record_clock(result, worker_id, display_name, display_id, confidence,
-                                    liveness_confirmed=False)
+                                    liveness_confirmed=False, server_worker_id=server_worker_id)
             display_until[0] = now + (config.DISPLAY_TIME_SUCCESS_SEC if recorded else 2)
 
     except KeyboardInterrupt:

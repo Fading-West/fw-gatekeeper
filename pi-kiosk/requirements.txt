@@ -1,10 +1,31 @@
-face_recognition
-numpy
-Pillow
+# FW Gatekeeper kiosk - pinned Python dependencies.
+#
+# Policy: direct dependencies are pinned with == for consistent native packages.
+# Transitive dependencies and system packages can still change.
+# Target: Raspberry Pi OS Bookworm (64-bit) = CPython 3.11, aarch64, glibc 2.36.
+# numpy MUST stay <2: numpy 2.x breaks the dlib/face_recognition ABI.
+#
+# Wheel availability for cp311 aarch64 was verified (2026-09-05) with:
+#   pip download --only-binary=:all: --platform manylinux2014_aarch64 \
+#     --platform manylinux_2_28_aarch64 --python-version 3.11 \
+#     --implementation cp --no-deps <pkg>==<ver>
+# dlib and face_recognition_models publish no aarch64 wheels and build from
+# source on the Pi (slow; setup.sh installs cmake/openblas for this).
+# picamera2 is intentionally unpinned: it comes from the apt package
+# python3-picamera2 via the venv's --system-site-packages.
+#
+# To re-pin: on a known-good kiosk run `./venv/bin/pip freeze`, copy the new
+# versions here, re-run the pip download check above for each wheel package,
+# and re-provision one kiosk before rolling out to the rest.
+
+numpy==1.26.4
+scipy==1.17.1
+Pillow==12.3.0
+requests==2.34.2
+flask==3.1.3
+opencv-python-headless==4.11.0.86
+onnxruntime==1.29.0
+dlib==20.0.1
+face_recognition==1.3.0
+face_recognition_models==0.3.0
 picamera2; platform_machine == "aarch64"
-requests
-flask
-opencv-python-headless
-dlib
-scipy
-onnxruntime

@@ -235,7 +235,7 @@
             gap: 6px;
         }
 
-        .manual input {
+        .manual select {
             background: #0f1114;
             border: 1px solid var(--line);
             color: var(--ink);
@@ -473,7 +473,7 @@
                 font-size: 0.72rem;
             }
 
-            .manual input,
+            .manual select,
             .manual button,
             .admin-toggle {
                 font-size: 0.78rem;
@@ -521,7 +521,7 @@
             <div id="adminControls" class="admin-controls">
                 <h2>Manual Clock</h2>
                 <div class="manual">
-                    <input id="manualName" type="text" placeholder="Worker name">
+                    <select id="manualName" aria-label="Worker"><option value="">Select a worker</option></select>
                     <button id="manualBtn">Submit</button>
                 </div>
                 <div id="manualResult" class="manual-result"></div>
@@ -553,6 +553,7 @@
         <span id="lastUpdated">Last update: --</span>
     </footer>
 
+    <script src="{{ url_for('static', filename='rendering.js') }}"></script>
     <script>
         const statusText = document.getElementById("statusText");
         const statusGlyph = document.getElementById("statusGlyph");
@@ -702,7 +703,7 @@
                     livenessNote.textContent = "Blink verification required before recognition";
                     livenessNote.style.color = "";
                 } else if (data.liveness_required) {
-                    livenessNote.textContent = "Blink verification unavailable - scans recorded unverified";
+                    livenessNote.textContent = "Blink verification unavailable - automatic scans paused";
                     livenessNote.style.color = "#e0a343";
                 } else {
                     livenessNote.textContent = "";
@@ -740,51 +741,28 @@
 
         function renderAdmin(admin) {
             const workers = admin.workers || [];
-            const rows = workers.slice(0, 30).map((worker) => {
-                return `
-                    <div class="worker-row">
-                        <span>${worker.name}</span>
-                        <span>${worker.photo_count} photos</span>
-                        <span>ID: ${worker.employee_id || worker.id}</span>
-                    </div>
-                `;
-            }).join("");
-            adminPanel.innerHTML = `
-                <div style="margin-bottom:8px;color:#f0d18b;">
-                    Workers: ${admin.worker_count || 0} | Photos: ${admin.total_photos || 0}
-                </div>
-                ${rows || "<div>No workers enrolled.</div>"}
-            `;
+            const selectedWorker = manualName.value;
+            manualName.replaceChildren(new Option("Select a worker", ""), ...workers.map(
+                worker => new Option(`${worker.name} — ID: ${worker.employee_id || worker.id}`, String(worker.id))
+            ));
+            manualName.value = selectedWorker;
+            adminPanel.innerHTML = KioskRendering.roster(admin);
         }
 
         async function fetchLog() {
             try {
                 const response = await fetch("/log", { cache: "no-store" });
                 const logs = await response.json();
-                const rows = logs.slice(0, 6).map((item) => {
-                    const ts = new Date(item.timestamp);
-                    const time = isNaN(ts.getTime()) ? item.timestamp : ts.toLocaleTimeString("en-US", {
-                        hour: "2-digit",
-                        minute: "2-digit"
-                    });
-                    return `
-                        <div class="log-item">
-                            <span class="pill ${item.action}">${item.action.replace("_", " ")}</span>
-                            <span>${item.worker_name}</span>
-                            <span>${time}</span>
-                        </div>
-                    `;
-                }).join("");
-                logList.innerHTML = rows || `<div class="log-item"><span>No activity today.</span></div>`;
+                logList.innerHTML = KioskRendering.attendance(logs);
             } catch (error) {
                 logList.innerHTML = `<div class="log-item"><span>Unable to load logs.</span></div>`;
             }
         }
 
         async function submitManualClock() {
-            const name = manualName.value.trim();
-            if (!name) {
-                manualResult.textContent = "Enter a worker name.";
+            const workerId = manualName.value;
+            if (!workerId) {
+                manualResult.textContent = "Select a worker.";
                 manualResult.style.color = "#ff9e8f";
                 return;
             }
@@ -794,7 +772,7 @@
                 const response = await fetch("/manual-clock", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name })
+                    body: JSON.stringify({ worker_id: Number(workerId) })
                 });
                 const data = await response.json();
                 if (!response.ok || !data.success) {

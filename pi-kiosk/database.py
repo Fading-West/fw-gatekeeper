@@ -80,6 +80,38 @@ def _migrate_sync_state(conn: sqlite3.Connection):
     logger.info("Migrated sync_state to keyed schema (last_worker_sync=%s)", old_value)
 
 
+def _migrate_worker_identity(conn: sqlite3.Connection):
+    """Remove legacy name uniqueness without changing any local worker ids."""
+    name_is_unique = any(
+        index["unique"] and [row["name"] for row in conn.execute(
+            f"PRAGMA index_info('{index['name']}')"
+        )] == ["name"]
+        for index in conn.execute("PRAGMA index_list(workers)").fetchall()
+    )
+    if name_is_unique:
+        # Rebuilding is necessary: SQLite cannot drop a UNIQUE table constraint.
+        # Keep sqlite_sequence too; a deleted worker id must never be reused.
+        sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'workers'").fetchone()
+        with conn:
+            conn.execute("""CREATE TABLE workers_identity_migration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE, employee_id TEXT,
+                encoding_blob BLOB NOT NULL,
+                enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
+                photo_count INTEGER NOT NULL DEFAULT 0,
+                photo_paths TEXT NOT NULL DEFAULT '[]', server_id TEXT
+            )""")
+            conn.execute("""INSERT INTO workers_identity_migration
+                SELECT id, name, employee_id, COALESCE(encoding_blob, X''), COALESCE(enrolled_at, datetime('now')),
+                       photo_count, photo_paths, server_id FROM workers""")
+            conn.execute("DROP TABLE workers")
+            conn.execute("ALTER TABLE workers_identity_migration RENAME TO workers")
+            if sequence:
+                conn.execute("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'workers'", (sequence[0],))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_workers_name ON workers(name COLLATE NOCASE)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workers_server_id ON workers(server_id) WHERE server_id IS NOT NULL AND server_id != ''")
+
+
 def init_db():
     """Create and migrate required tables."""
     conn = _get_conn()
@@ -88,7 +120,7 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS workers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            name TEXT NOT NULL COLLATE NOCASE,
             employee_id TEXT,
             encoding_blob BLOB NOT NULL,
             enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -146,33 +178,6 @@ def init_db():
     _ensure_column(conn, "workers", "photo_count", "photo_count INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "workers", "photo_paths", "photo_paths TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(conn, "workers", "server_id", "server_id TEXT")
-
-    _ensure_column(
-        conn,
-        "attendance_log",
-        "action",
-        "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
-    )
-    _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
-    _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(conn, "attendance_log", "note", "note TEXT")
-
-    _ensure_column(conn, "recognition_attempts", "timestamp", "timestamp TEXT NOT NULL DEFAULT (datetime('now'))")
-    _ensure_column(conn, "recognition_attempts", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "recognition_attempts", "face_detected", "face_detected INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(conn, "recognition_attempts", "candidate_worker_id", "candidate_worker_id INTEGER")
-    _ensure_column(conn, "recognition_attempts", "candidate_worker_name", "candidate_worker_name TEXT")
-    _ensure_column(conn, "recognition_attempts", "best_score", "best_score REAL")
-    _ensure_column(conn, "recognition_attempts", "second_best_score", "second_best_score REAL")
-    _ensure_column(conn, "recognition_attempts", "score_margin", "score_margin REAL")
-    _ensure_column(conn, "recognition_attempts", "decision", "decision TEXT NOT NULL DEFAULT 'unknown'")
-    _ensure_column(conn, "recognition_attempts", "threshold", "threshold REAL")
-    _ensure_column(conn, "recognition_attempts", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(conn, "recognition_attempts", "model_version", "model_version TEXT")
-    _ensure_column(conn, "recognition_attempts", "synced", "synced INTEGER NOT NULL DEFAULT 0")
-
     worker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)").fetchall()}
     if "face_encoding" in worker_columns:
         rows = conn.execute(
@@ -188,13 +193,102 @@ def init_db():
                 continue
             conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
 
+    _migrate_worker_identity(conn)
+
+    _ensure_column(
+        conn,
+        "attendance_log",
+        "action",
+        "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
+    )
+    _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
+    _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "attendance_log", "note", "note TEXT")
+    _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
+    # Enforced in the schema, not by convention: any DELETE FROM workers
+    # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
+    # server id onto that worker's queued attendance rows.
+    # Replace the trigger on startup: the event's original identity is
+    # immutable, so deletion only fills missing snapshots on legacy rows. A savepoint
+    # keeps DROP + CREATE atomic even when init_db is called with no pending
+    # DML transaction.
+    conn.execute("SAVEPOINT install_attendance_delete_trigger")
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS attendance_keep_server_id_before_worker_delete")
+        conn.execute(
+            """
+            CREATE TRIGGER attendance_keep_server_id_before_worker_delete
+            BEFORE DELETE ON workers FOR EACH ROW
+            WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
+            BEGIN
+                UPDATE attendance_log SET server_worker_id = OLD.server_id
+                WHERE worker_id = OLD.id AND synced = 0
+                  AND (server_worker_id IS NULL OR server_worker_id = '');
+            END
+            """
+        )
+        conn.execute("RELEASE SAVEPOINT install_attendance_delete_trigger")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT install_attendance_delete_trigger")
+        conn.execute("RELEASE SAVEPOINT install_attendance_delete_trigger")
+        raise
+
+    _ensure_column(conn, "recognition_attempts", "timestamp", "timestamp TEXT NOT NULL DEFAULT (datetime('now'))")
+    _ensure_column(conn, "recognition_attempts", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "recognition_attempts", "face_detected", "face_detected INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "recognition_attempts", "candidate_worker_id", "candidate_worker_id INTEGER")
+    _ensure_column(conn, "recognition_attempts", "candidate_worker_name", "candidate_worker_name TEXT")
+    _ensure_column(conn, "recognition_attempts", "best_score", "best_score REAL")
+    _ensure_column(conn, "recognition_attempts", "second_best_score", "second_best_score REAL")
+    _ensure_column(conn, "recognition_attempts", "score_margin", "score_margin REAL")
+    _ensure_column(conn, "recognition_attempts", "decision", "decision TEXT NOT NULL DEFAULT 'unknown'")
+    _ensure_column(conn, "recognition_attempts", "threshold", "threshold REAL")
+    _ensure_column(conn, "recognition_attempts", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "recognition_attempts", "model_version", "model_version TEXT")
+    _ensure_column(conn, "recognition_attempts", "synced", "synced INTEGER NOT NULL DEFAULT 0")
+
     # Copy old attendance event_type to action if needed.
     attendance_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)").fetchall()}
     if "event_type" in attendance_columns:
         conn.execute("UPDATE attendance_log SET action = event_type WHERE action IS NULL OR action = ''")
 
+    # Rows written before server_worker_id existed still resolve through the
+    # workers table today; freeze that mapping now so a later deactivation
+    # cannot strand them.
+    backfilled = _backfill_attendance_server_ids(conn)
+    if backfilled:
+        logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
+
     conn.commit()
     logger.info("Database initialized at %s", config.DB_PATH)
+
+
+def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
+    """Copy workers.server_id onto queued attendance rows that have no snapshot yet.
+
+    Only unsynced rows matter: synced rows never need the mapping again, so
+    this stays cheap no matter how much history the kiosk holds. Returns the
+    number of rows updated.
+    """
+    cursor = conn.execute(
+        """
+        UPDATE attendance_log
+        SET server_worker_id = (
+            SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
+        )
+        WHERE synced = 0
+          AND (server_worker_id IS NULL OR server_worker_id = '')
+          AND EXISTS (
+            SELECT 1 FROM workers
+            WHERE workers.id = attendance_log.worker_id
+              AND workers.server_id IS NOT NULL AND workers.server_id != ''
+          )
+        """
+    )
+    return cursor.rowcount
 
 
 def add_worker(
@@ -224,7 +318,19 @@ def add_worker(
     if server_id is not None:
         row = conn.execute("SELECT id, server_id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
     if row is None:
-        row = conn.execute("SELECT id, server_id FROM workers WHERE lower(name) = lower(?)", (normalized_name,)).fetchone()
+        # Names are labels, not identity. Only adopt a single local-only row;
+        # a different server id must always receive its own local worker id.
+        matches = conn.execute(
+            "SELECT id, server_id, employee_id FROM workers WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
+            (normalized_name,),
+        ).fetchall()
+        matches = [candidate for candidate in matches if not (
+            normalized_employee_id and candidate["employee_id"]
+            and normalized_employee_id != candidate["employee_id"]
+        )]
+        if len(matches) > 1:
+            raise ValueError("Several local workers share this name; select a worker id.")
+        row = matches[0] if matches else None
     stored_server_id = server_id
     if row:
         worker_id = int(row["id"])
@@ -262,30 +368,60 @@ def add_worker(
 
 
 def remove_worker(name: str) -> bool:
-    """Remove a worker by case-insensitive name."""
+    """Remove a worker by case-insensitive name.
+
+    The attendance_keep_server_id_before_worker_delete trigger snapshots the
+    worker's server id onto queued attendance rows before the row goes."""
     conn = _get_conn()
-    cursor = conn.execute("DELETE FROM workers WHERE lower(name) = lower(?)", (name.strip(),))
+    worker = get_worker_by_name(name)
+    if worker is None:
+        return False
+    cursor = conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
     conn.commit()
     return cursor.rowcount > 0
 
 
 def remove_worker_by_server_id(server_id: str) -> bool:
-    """Remove a worker by server_id."""
+    """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
+    rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
+    if cursor.rowcount:
+        # Only delete files owned by the removed row, within the configured
+        # photo directory, and no longer referenced by any remaining worker.
+        # This includes legacy name-based thumbnails after a schema upgrade.
+        try:
+            photo_root = Path(config.PHOTO_DIR).resolve()
+            owned = {photo_root / f"{server_id}.jpg"}
+            for row in rows:
+                owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+            remaining_paths = conn.execute("SELECT photo_paths FROM workers").fetchall()
+            referenced = {
+                Path(path).resolve()
+                for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
+            }
+            for path in owned:
+                candidate = path.resolve()
+                if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
+                    candidate.unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Could not remove retired worker thumbnail: %s", exc)
     return cursor.rowcount > 0
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:
     """Fetch worker by name (case-insensitive)."""
     conn = _get_conn()
-    row = conn.execute(
-        "SELECT id, name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id FROM workers WHERE lower(name)=lower(?)",
+    rows = conn.execute(
+        "SELECT id, name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id FROM workers WHERE name = ? COLLATE NOCASE LIMIT 2",
         (name.strip(),),
-    ).fetchone()
-    if not row:
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError("Several workers share this name; select their employee ID from the roster.")
+    if not rows:
         return None
+    row = rows[0]
     encoding = _deserialize_encoding(row["encoding_blob"])
     return {
         "id": int(row["id"]),
@@ -381,12 +517,19 @@ def has_workers_missing_employee_id() -> bool:
     return row is not None
 
 
-def get_worker_encodings() -> tuple[list[np.ndarray], list[int], list[str]]:
-    """Return tuples of encodings, ids, and names."""
+def get_worker_roster() -> tuple[list[np.ndarray], list[int], list[str], dict[int, Optional[str]]]:
+    """Return encodings, ids, names, and a local-id -> server-id map from one read."""
     workers = get_all_workers()
     encodings = [worker["encoding_blob"] for worker in workers]
     ids = [worker["id"] for worker in workers]
     names = [worker["name"] for worker in workers]
+    server_ids = {worker["id"]: (worker["server_id"] or None) for worker in workers}
+    return encodings, ids, names, server_ids
+
+
+def get_worker_encodings() -> tuple[list[np.ndarray], list[int], list[str]]:
+    """Return tuples of encodings, ids, and names."""
+    encodings, ids, names, _ = get_worker_roster()
     return encodings, ids, names
 
 
@@ -405,16 +548,25 @@ def log_attendance(
     confidence: float = 0.0,
     timestamp: Optional[str] = None,
     note: Optional[str] = None,
+    server_worker_id: Optional[str] = None,
 ) -> int:
-    """Create a gatekeeper log entry and return log id."""
+    """Create a gatekeeper log entry and return log id.
+
+    The worker's Convex id is snapshotted onto the row at write time so the
+    event can still be synced if the local worker row is later removed.
+    Callers that already hold the id (recognizer roster, manual clock) pass
+    it in; otherwise it is looked up from the workers table.
+    """
     conn = _get_conn()
     normalized_action = _normalize_action(action)
     timestamp = timestamp or datetime.now().isoformat(timespec="seconds")
+    server_worker_id = server_worker_id or get_server_id(worker_id) or None
     cursor = conn.execute(
         """
         INSERT INTO attendance_log
-            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
+             server_worker_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         """,
         (
             int(worker_id),
@@ -425,6 +577,7 @@ def log_attendance(
             float(confidence),
             config.KIOSK_ID,
             note,
+            server_worker_id,
         ),
     )
     conn.commit()
@@ -486,16 +639,19 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     return logs
 
 
-def get_unsynced_logs() -> list[dict]:
+def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0) -> list[dict]:
     """Return unsynced gatekeeper logs for optional server sync."""
     conn = _get_conn()
     rows = conn.execute(
         """
-        SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note
+        SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note,
+               server_worker_id
         FROM attendance_log
-        WHERE synced = 0
+        WHERE synced = 0 AND id > ?
         ORDER BY id ASC
-        """
+        LIMIT ?
+        """,
+        (int(after_id), max(1, int(limit)) if limit is not None else -1),
     ).fetchall()
     logs = []
     for row in rows:
