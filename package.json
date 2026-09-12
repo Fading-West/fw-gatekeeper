@@ -33,6 +33,7 @@
     "test:python": "node scripts/run-python-tests.mjs",
     "test:contracts": "node scripts/run-contract-tests.mjs",
     "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit",
+    "test:workers-purge": "vitest run convex/workers.purge.test.ts",
     "test:shift-exceptions-behavior": "vitest run convex/shiftExceptions.test.ts"
   },
   "dependencies": {

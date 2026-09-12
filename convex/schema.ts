@@ -24,9 +24,29 @@ export default defineSchema({
     enrolledAt: v.string(),
     updatedAt: v.optional(v.string()),
     active: v.boolean(),
+    // ISO timestamp of the most recent biometric consent acknowledgement
+    // captured at enrollment (refreshed on re-enrollment).
+    consentAt: v.optional(v.string()),
+    consentRecordedBy: v.optional(v.id("users")),
+    // Set when an admin purged faceEncoding + photos; see RETENTION.md.
+    biometricsPurgedAt: v.optional(v.string()),
   })
     .index("by_active", ["active"])
     .index("by_employee_id_and_active", ["employeeId", "active"]),
+
+  // Append-only trail of privileged or privacy-relevant actions
+  // (worker deactivation, biometric purge). Never edited or deleted.
+  auditLog: defineTable({
+    actorUserId: v.id("users"),
+    action: v.string(),
+    targetTable: v.string(),
+    targetId: v.string(),
+    reason: v.optional(v.string()),
+    details: v.optional(v.string()),
+    createdAt: v.string(),
+  })
+    .index("by_target", ["targetTable", "targetId"])
+    .index("by_created", ["createdAt"]),
 
   attendance: defineTable({
     workerId: v.string(),

@@ -228,6 +228,8 @@ Before the kiosks can recognize anyone, enroll workers:
 > 💡 **Tip:** Enroll in a well-lit area. Have workers remove hats/sunglasses. 3 slightly different angles (straight, slight left, slight right) improves recognition.
 >
 > If face encoding is unavailable, enrollment now fails instead of creating an unusable worker record.
+>
+> Enrollment requires confirming the worker's biometric consent. See [RETENTION.md](RETENTION.md) for what face data is stored, how long, and how an admin purges it.
 
 ## Step 7: Start the Kiosks
 

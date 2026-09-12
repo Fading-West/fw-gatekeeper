@@ -15,13 +15,23 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId } = body as {
+    const { name, employeeId, department, photos, workerId, consent } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
+      consent?: boolean;
     };
+
+    // Biometric consent must be acknowledged on every enrollment and
+    // re-enrollment before any photo is processed. See RETENTION.md.
+    if (consent !== true) {
+      return NextResponse.json(
+        { error: 'Biometric consent must be confirmed before enrolling a face.' },
+        { status: 400 },
+      );
+    }
 
     let normalizedName = name?.trim();
     let employeeIdForSave = employeeId?.trim() || undefined;
@@ -132,6 +142,7 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date().toISOString();
+    const consentAt = now;
     const result = workerId
       ? await convex.mutation(api.workers.update, {
           id: workerId as any,
@@ -141,6 +152,7 @@ export async function POST(req: NextRequest) {
           faceEncoding,
           photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
           enrolledAt: now,
+          consentAt,
         })
       : isAdminSession
         ? await convex.mutation(api.workers.create, {
@@ -149,11 +161,13 @@ export async function POST(req: NextRequest) {
             department: departmentForSave,
             faceEncoding,
             photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+            consentAt,
           })
         : await convex.mutation(api.workers.createFromRoster, {
             employeeId: employeeIdForSave!,
             faceEncoding,
             photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+            consentAt,
           });
 
     return NextResponse.json(
