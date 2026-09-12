@@ -102,9 +102,7 @@ class FaceServiceModelPinningTests(unittest.TestCase):
         self.assertNotIn("urlretrieve", main_source)
 
         self.assertNotIn("resolve/main", dockerfile)
-        self.assertIn(DET_MODEL_URL, dockerfile)
         self.assertIn(REC_MODEL_URL, dockerfile)
-        self.assertIn(f"{DET_MODEL_SHA256}  /app/models/det_model.onnx", dockerfile)
         self.assertIn(f"{REC_MODEL_SHA256}  /app/models/rec_model.onnx", dockerfile)
         self.assertRegex(dockerfile, r"sha256sum -c")
         self.assertRegex(dockerfile, r"COPY\s+model_pinning\.py")

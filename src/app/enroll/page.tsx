@@ -17,6 +17,32 @@ type Step = 'name' | 'camera' | 'capturing' | 'processing' | 'done' | 'error';
 const CAPTURES_REQUIRED = 3;
 const CAPTURE_INTERVAL_MS = 1500;
 
+// Per-photo verdicts from the face service's enrollment quality gate (422 detail).
+type EnrollmentPhotoResult = { index: number; ok: boolean; reason: string };
+
+const PHOTO_REASON_LABELS: Record<string, string> = {
+  no_face: 'no face detected',
+  multiple_faces: 'more than one face in frame',
+  decode_error: 'image could not be read',
+};
+
+function describePhotoIssues(photos: unknown, disagreeingPairs: unknown): string[] {
+  const lines: string[] = [];
+  if (Array.isArray(photos)) {
+    for (const photo of photos as EnrollmentPhotoResult[]) {
+      if (!photo || photo.ok || typeof photo.index !== 'number') continue;
+      lines.push(`Photo ${photo.index + 1}: ${PHOTO_REASON_LABELS[photo.reason] || photo.reason || 'unusable'}`);
+    }
+  }
+  if (Array.isArray(disagreeingPairs)) {
+    for (const pair of disagreeingPairs) {
+      if (!Array.isArray(pair) || typeof pair[0] !== 'number' || typeof pair[1] !== 'number') continue;
+      lines.push(`Photos ${pair[0] + 1} and ${pair[1] + 1} do not look like the same person`);
+    }
+  }
+  return lines;
+}
+
 function EnrollPageContent() {
   const currentRole = usePortalRole();
   const searchParams = useSearchParams();
@@ -38,6 +64,7 @@ function EnrollPageContent() {
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
+  const [photoIssues, setPhotoIssues] = useState<string[]>([]);
   const [resultMsg, setResultMsg] = useState('');
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -216,6 +243,7 @@ function EnrollPageContent() {
 
       if (!res.ok) {
         const data = await res.json();
+        setPhotoIssues(describePhotoIssues(data.photos, data.disagreeing_pairs));
         throw new Error(data.error || 'Enrollment failed');
       }
 
@@ -724,7 +752,17 @@ function EnrollPageContent() {
           </svg>
         </div>
         <h2 className="page-title mb-2 text-slate-100">Enrollment Failed</h2>
-        <p className="text-slate-400 mb-8 text-sm">{errorMsg}</p>
+        <p className={`text-slate-400 text-sm ${photoIssues.length > 0 ? 'mb-4' : 'mb-8'}`}>{errorMsg}</p>
+        {photoIssues.length > 0 && (
+          <ul className="glass-card mb-8 p-4 text-left text-sm text-slate-300 space-y-1" aria-label="Photo problems">
+            {photoIssues.map((issue) => (
+              <li key={issue} className="flex gap-2">
+                <span className="text-amber-400" aria-hidden="true">-</span>
+                <span>{issue}</span>
+              </li>
+            ))}
+          </ul>
+        )}
 
         <div className="space-y-3">
           <button
@@ -732,6 +770,7 @@ function EnrollPageContent() {
               setPhotos([]);
               setCaptureCount(0);
               setErrorMsg('');
+              setPhotoIssues([]);
               setStep('name');
             }}
             className="btn-primary w-full py-3.5 text-base"

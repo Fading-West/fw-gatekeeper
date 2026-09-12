@@ -60,9 +60,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
 
-    if (!photos || photos.length < 3) {
+    if (!Array.isArray(photos) || photos.length < 3 || photos.length > 6 ||
+        photos.some((photo) => typeof photo !== 'string' || photo.length === 0 || photo.length > 4_000_000)) {
       return NextResponse.json(
-        { error: 'At least 3 photos required for enrollment' },
+        { error: 'Provide 3 to 6 photos, each no larger than 4 MB, for enrollment' },
         { status: 400 }
       );
     }
@@ -82,6 +83,7 @@ export async function POST(req: NextRequest) {
     }
 
     let faceEncoding: number[] | undefined;
+    let acceptedPhotos = photos;
     try {
       const encodeUrl = process.env.FACE_ENCODE_URL || 'http://localhost:5557/encode';
       const faceServiceKey = process.env.FACE_SERVICE_KEY?.trim();
@@ -100,9 +102,37 @@ export async function POST(req: NextRequest) {
       const encodeBody = await encodeRes.json();
       if (encodeRes.ok) {
         faceEncoding = encodeBody.encoding;
+        if (!Array.isArray(encodeBody.used_photo_indexes)) {
+          throw new Error('Face service must support enrollment quality before accepting photos');
+        }
+        {
+          const indexes = encodeBody.used_photo_indexes;
+          if (indexes.length < 2 || new Set(indexes).size !== indexes.length ||
+              indexes.some((index: unknown) => typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= photos.length)) {
+            throw new Error('Face service returned invalid accepted photo indexes');
+          }
+          acceptedPhotos = indexes.map((index: number) => photos[index]);
+        }
       } else {
+        // The face service's quality gate returns 422 with a structured detail
+        // ({ message, photos, disagreeing_pairs }); other failures use a string detail.
+        const detail = encodeBody?.detail;
+        const qualityDetail = detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : null;
+        const detailMessage = typeof detail === 'string' ? detail : undefined;
         return NextResponse.json(
-          { error: encodeBody?.detail || encodeBody?.error || 'Face encoding service rejected the enrollment photos' },
+          {
+            error:
+              qualityDetail?.message ||
+              detailMessage ||
+              encodeBody?.error ||
+              'Face encoding service rejected the enrollment photos',
+            ...(qualityDetail
+              ? {
+                  photos: Array.isArray(qualityDetail.photos) ? qualityDetail.photos : [],
+                  disagreeing_pairs: Array.isArray(qualityDetail.disagreeing_pairs) ? qualityDetail.disagreeing_pairs : [],
+                }
+              : {}),
+          },
           { status: encodeRes.status === 422 ? 422 : 503 }
         );
       }
@@ -119,7 +149,9 @@ export async function POST(req: NextRequest) {
     }
 
     const storageIds: string[] = [];
-    for (const photo of photos) {
+    // Store only frames the quality gate used for the reference encoding.
+    // A rejected/outlier frame must not become the worker's dashboard photo.
+    for (const photo of acceptedPhotos) {
       try {
         const uploadUrl = await convex.mutation(api.workers.generateUploadUrl, {});
         const base64Data = photo.replace(/^data:image\/\w+;base64,/, '');
