@@ -1,6 +1,7 @@
 import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { isValidFactoryLocalDateKey } from "./localDate";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { buildShiftBriefing } from "./shiftBriefing";
 import { assertPortalRole } from "./access";
@@ -419,18 +420,30 @@ export const save = mutation({
     notes: v.optional(v.string()),
     acknowledgedBlockers: v.optional(v.boolean()),
   },
+  returns: v.object({ id: v.id("shiftCloseouts"), status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")) }),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
-    const current = await buildCloseoutPayload(ctx, args.date);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
+    if (!isValidFactoryLocalDateKey(args.date)) throw new ConvexError("date must use YYYY-MM-DD format");
     const existing = await ctx.db
       .query("shiftCloseouts")
       .withIndex("by_date", (q: any) => q.eq("date", args.date))
       .first();
+    if (existing?.status === "completed" && args.action === "complete") {
+      // Network retries cannot rewrite the signed snapshot or its timestamp.
+      return { id: existing._id, status: existing.status };
+    }
+    if (existing?.status === "completed" && args.action === "save") {
+      throw new ConvexError("Reopen the completed closeout before changing notes.");
+    }
+    if (args.action === "reopen" && existing?.status !== "completed") {
+      throw new ConvexError("Only a completed closeout can be reopened.");
+    }
+    const current = await buildCloseoutPayload(ctx, args.date);
     const now = new Date().toISOString();
-    const supervisorName = normalizeText(args.supervisorName);
+    const supervisorName = args.supervisorName === undefined ? existing?.supervisorName : normalizeText(args.supervisorName);
     const hasNotesArg = Object.prototype.hasOwnProperty.call(args, "notes");
     const notes = normalizeText(args.notes);
-    const acknowledgedBlockers = args.acknowledgedBlockers ?? existing?.acknowledgedBlockers ?? false;
+    const acknowledgedBlockers = args.action === "reopen" ? false : args.acknowledgedBlockers ?? existing?.acknowledgedBlockers ?? false;
     const nextNotes = notes || (hasNotesArg ? undefined : normalizeText(existing?.notes));
     const hasSourceBlockers = Boolean(
       current.summary.critical_exceptions ||
@@ -468,15 +481,18 @@ export const save = mutation({
       updatedAt: now,
     };
 
-    if (existing) {
-      await ctx.db.patch(existing._id, patch);
-      return { id: existing._id, ...patch };
+    const before = existing ? (({ _id, _creationTime, ...record }) => record)(existing) : undefined;
+    const after = args.action === "reopen" && before
+      ? { ...before, status, acknowledgedBlockers: false, reopenedAt: now, updatedAt: now }
+      : { ...patch, createdAt: existing?.createdAt || now };
+    const id = existing?._id || await ctx.db.insert("shiftCloseouts", after);
+    if (existing) await ctx.db.patch(id, after);
+    if (args.action === "complete" || args.action === "reopen") {
+      await ctx.db.insert("shiftCloseoutHistory", {
+        closeoutId: id, actorUserId: actor.userId, action: args.action,
+        occurredAt: now, before, after,
+      });
     }
-
-    const id = await ctx.db.insert("shiftCloseouts", {
-      ...patch,
-      createdAt: now,
-    });
-    return { id, ...patch };
+    return { id, status };
   },
 });

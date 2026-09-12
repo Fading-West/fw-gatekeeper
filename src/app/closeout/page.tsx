@@ -50,26 +50,27 @@ function checklistExportLine(item: ShiftCloseoutChecklistItem) {
 }
 
 function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string) {
+  const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
     `Status: ${payload.closeout?.status || 'open'}`,
     `Supervisor: ${supervisorName || payload.closeout?.supervisor_name || 'Not set'}`,
     `Completed: ${formatDateTime(payload.closeout?.completed_at)}`,
     '',
-    'Summary',
-    `Expected: ${payload.summary.expected}`,
-    `Present: ${payload.summary.present}`,
-    `Late: ${payload.summary.late}`,
-    `Missing: ${payload.summary.missing}`,
-    `Open exceptions: ${payload.summary.open_exceptions}`,
-    `Critical exceptions: ${payload.summary.critical_exceptions}`,
-    `Kiosk warnings: ${payload.summary.kiosk_warnings}`,
-    `Attendance corrections: ${payload.summary.attendance_corrections}`,
+    payload.closeout?.status === 'completed' ? 'Signed summary' : 'Current summary',
+    `Expected: ${summary.expected}`,
+    `Present: ${summary.present}`,
+    `Late: ${summary.late}`,
+    `Missing: ${summary.missing}`,
+    `Open exceptions: ${summary.open_exceptions}`,
+    `Critical exceptions: ${summary.critical_exceptions}`,
+    `Kiosk warnings: ${summary.kiosk_warnings}`,
+    `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
     '',
-    'Checklist',
+    'Current checklist',
     ...payload.checklist.map(checklistExportLine),
     '',
-    'Closeout Autopilot Draft',
+    'Current closeout draft',
     payload.closeout_draft?.narrative || 'No closeout draft available.',
     '',
     'Notes',
@@ -411,7 +412,7 @@ function ShiftCloseoutPageContent() {
           <section className="glass-card p-5 space-y-4">
             <div>
               <h2 className="font-display font-semibold text-slate-100">Supervisor signoff</h2>
-              <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close.</p>
+              <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
             <label className="space-y-1.5 block">
               <span className="section-label block">Date</span>
@@ -426,7 +427,7 @@ function ShiftCloseoutPageContent() {
                   setSupervisorName(event.target.value);
                 }}
                 placeholder="Supervisor name"
-                readOnly={!dataReady || isPending || !canOperate}
+                readOnly={completed || !dataReady || isPending || !canOperate}
                 className="input-field"
               />
             </label>
@@ -519,7 +520,7 @@ function ShiftCloseoutPageContent() {
                   setNotes(event.target.value);
                 }}
                 placeholder={canOperate ? 'Document exceptions reviewed, kiosk caveats, or follow-up needed.' : 'Closeout notes'}
-                readOnly={!dataReady || isPending || !canOperate}
+                readOnly={completed || !dataReady || isPending || !canOperate}
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
@@ -541,7 +542,7 @@ function ShiftCloseoutPageContent() {
             <div className="flex flex-wrap gap-2">
               {canOperate ? (
                 <>
-                  <button type="button" className="btn-secondary" onClick={() => updateCloseout('save')} disabled={!dataReady || isPending || !payload}>
+                  <button type="button" className="btn-secondary" onClick={() => updateCloseout('save')} disabled={completed || !dataReady || isPending || !payload}>
                     Save notes
                   </button>
                   {completed ? (
