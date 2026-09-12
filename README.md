@@ -110,7 +110,7 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 ## Step 1: Flash Raspberry Pi OS
 
 1. Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-2. Choose **Raspberry Pi OS with Desktop (64-bit)** — NOT Lite (we need a desktop session + browser for the monitor display)
+2. Choose **Raspberry Pi OS Bookworm with Desktop (64-bit, Python 3.11)** — NOT Lite (we need a desktop session + browser for the monitor display)
 3. Click the ⚙️ gear icon and configure:
    - **Hostname:** `fw-kiosk-1` (increment for each Pi: `fw-kiosk-2`, etc.)
    - **Enable SSH:** Yes, use password authentication
@@ -401,7 +401,8 @@ ssh pi@fw-kiosk-1.local
 cd /opt/fw-gatekeeper
 sudo git pull origin master
 cd pi-kiosk
-./venv/bin/pip install -r requirements.txt
+./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
+PATH="$PWD/venv/bin:$PATH" ./venv/bin/python -m pip install --require-hashes --no-build-isolation -r requirements.lock
 sudo systemctl restart fw-gatekeeper-kiosk
 ```
 

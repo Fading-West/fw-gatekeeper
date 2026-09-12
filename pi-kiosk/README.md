@@ -32,13 +32,13 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 
 - Raspberry Pi 4 recommended (3B works, slower); Pi Camera Module or USB webcam
 - HDMI display at the door
-- microSD (16GB+) with **Raspberry Pi OS with Desktop (64-bit)** — not Lite.
+- microSD (16GB+) with **Raspberry Pi OS Bookworm with Desktop (64-bit)** — not Lite.
   The kiosk shows a fullscreen browser on the monitor, which needs the desktop
   session that Desktop images ship preconfigured.
 
 ## Setup
 
-1. Flash **Raspberry Pi OS with Desktop (64-bit)** with Raspberry Pi Imager
+1. Flash **Raspberry Pi OS Bookworm with Desktop (64-bit)** with Raspberry Pi Imager
    (enable SSH, set WiFi, hostname e.g. `fw-kiosk`).
 2. SSH in (`ssh pi@fw-kiosk.local`) or open a terminal on the desktop.
 3. Run the setup script:
@@ -66,6 +66,29 @@ liveness. To install it, rerun setup with `ENABLE_LIVENESS=1`, then set
    encodings on the next sync cycle (≤30 seconds).
 5. `sudo reboot` — the scanner service and fullscreen display start
    automatically.
+
+## Locked Python dependencies
+
+Setup targets CPython 3.11 on aarch64 and rejects other Python/architecture
+combinations before changing the machine. `requirements.lock` pins all 24 pip
+runtime packages and their distribution hashes. `requirements-build.lock` pins
+the four tools used to build dlib and face_recognition_models from source;
+setup disables build isolation so it cannot silently fetch newer build tools.
+`setuptools==80.9.0` supplies the legacy `pkg_resources` API used by the model
+package.
+
+Picamera2, libcamera, and their OS dependencies stay under apt management and
+are visible through the virtual environment's `--system-site-packages`. They
+are intentionally absent from pip inputs and locks. OS libraries, compilers,
+and firmware remain outside the Python lock; validate a provisioned Pi before
+rolling changes out to the fleet.
+
+To regenerate, edit the direct inputs (`requirements.txt` or
+`requirements-build.txt`), then run `bash scripts/lock-python-dependencies.sh`
+from the repository root using uv 0.12.13. Existing lock versions are retained
+when compatible; remove the corresponding lock first for an intentional full
+transitive refresh. Review all version/hash changes, validate a fresh server
+install, and provision one Bookworm kiosk before rollout.
 
 ## Configuration
 
