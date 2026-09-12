@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
-    "test": "npm run test:convex-auth && npm run test:workers && npm run test:employee-directory && npm run test:app-guides && npm run test:kiosk-sync-auth && npm run test:kiosk-sync-mapping && npm run test:kiosk-ui-auth && npm run test:face-service-auth && npm run test:login-error-copy && npm run test:worker-ui && npm run test:enrollment-permissions && npm run test:kiosk-readiness && npm run test:recognition-attempts && npm run test:secured-ingest && npm run test:dashboard-partial-data && npm run test:shift-exceptions && npm run test:shift-briefing && npm run test:shift-closeout && npm run test:proactive-actions && npm run test:attendance-corrections && npm run test:date && npm run test:convex-local-date",
+    "test": "vitest run && npm run test:python && npm run test:contracts",
     "start": "next start",
     "test:convex-auth": "vitest run convex/access.test.ts",
     "test:workers": "vitest run convex/workers.test.ts",
@@ -29,7 +29,10 @@
     "test:proactive-actions": "node scripts/test-proactive-actions-contract.mjs",
     "test:attendance-corrections": "node scripts/test-attendance-corrections-contract.mjs",
     "test:date": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-date-contract.mjs",
-    "test:convex-local-date": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-convex-local-date-contract.mjs"
+    "test:convex-local-date": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-convex-local-date-contract.mjs",
+    "test:python": "node scripts/run-python-tests.mjs",
+    "test:contracts": "node scripts/run-contract-tests.mjs",
+    "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.95",
