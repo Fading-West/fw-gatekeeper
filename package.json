@@ -37,7 +37,8 @@
     "test:contracts": "node scripts/run-contract-tests.mjs",
     "typecheck": "tsc --noEmit && tsc -p convex/tsconfig.json --noEmit",
     "test:workers-purge": "vitest run convex/workers.purge.test.ts",
-    "test:shift-exceptions-behavior": "vitest run convex/shiftExceptions.test.ts"
+    "test:shift-exceptions-behavior": "vitest run convex/shiftExceptions.test.ts",
+    "test:kiosk-sync-batches": "python3 pi-kiosk/test_sync_batches.py"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.95",

@@ -103,21 +103,51 @@ def _track_orphans(orphans: list[dict], total: int) -> None:
     )
 
 
+ATTENDANCE_BATCH_SIZE = 100
+ATTENDANCE_PAGES_PER_CYCLE = 10
+
+
+def _attendance_acknowledged(response, submitted: int) -> bool:
+    """Accept full-batch acknowledgements, including legacy retry responses.
+
+    Legacy servers return the count of NEW inserts, so synced=0 is valid on
+    retry. New servers explicitly count all acknowledged (inserted + existing)
+    events; any partial acknowledgement must leave the batch queued.
+    """
+    try:
+        data = response.json()
+    except (ValueError, requests.RequestException):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if "acknowledged" in data:
+        count = data["acknowledged"]
+        return type(count) is int and count == submitted
+    count = data.get("synced")
+    return type(count) is int and 0 <= count <= submitted
+
+
 def sync_attendance() -> bool:
-    """POST unsynced gatekeeper logs to server. Returns True when nothing is left queued."""
-    logs = database.get_unsynced_logs()
-    payload_logs = []
-    synced_log_ids = []
+    """Drain bounded, acknowledged pages; retain every failed or unmapped row."""
+    # Persist the scan position so many unmapped rows cannot starve later
+    # attendance. Wrap at the end, revisiting unresolved rows on later cycles.
+    cursor = int(database.get_sync_state("attendance_scan_after") or 0)
     orphans: list[dict] = []
-
-    for log in logs:
-        server_id = _resolve_log_server_id(log)
-        if not server_id:
-            orphans.append(log)
-            continue
-
-        payload_logs.append(
-            {
+    examined = 0
+    for _ in range(ATTENDANCE_PAGES_PER_CYCLE):
+        logs = database.get_unsynced_logs(limit=ATTENDANCE_BATCH_SIZE, after_id=cursor)
+        if not logs:
+            database.set_sync_state("attendance_scan_after", "0")
+            break
+        examined += len(logs)
+        payload_logs = []
+        synced_log_ids = []
+        for log in logs:
+            server_id = _resolve_log_server_id(log)
+            if not server_id:
+                orphans.append(log)
+                continue
+            payload_logs.append({
                 "worker_id": server_id,
                 "worker_name": log.get("worker_name"),
                 "event_type": log.get("event_type") or log.get("action"),
@@ -128,39 +158,29 @@ def sync_attendance() -> bool:
                 "confidence": log.get("confidence"),
                 "kiosk_id": log.get("kiosk_id") or config.KIOSK_ID,
                 "note": log.get("note"),
-            }
-        )
-        synced_log_ids.append(int(log["id"]))
-
-    _track_orphans(orphans, len(logs))
-    if not payload_logs:
-        return not orphans
-
-    try:
-        r = requests.post(
-            f"{config.SERVER_URL}/api/attendance/bulk",
-            json={"kiosk_id": config.KIOSK_ID, "logs": payload_logs},
-            headers=_auth_headers(),
-            timeout=15,
-        )
-        if r.status_code == 200:
-            database.mark_synced(synced_log_ids)
-            logger.info(
-                "Synced %d gatekeeper logs to server%s",
-                len(synced_log_ids),
-                f"; {len(orphans)} still waiting for worker mappings" if orphans else "",
-            )
-            return not orphans
-        else:
-            logger.error(
-                "Attendance sync failed with status=%d body=%s",
-                r.status_code,
-                r.text[:1000],
-            )
-            return False
-    except requests.RequestException:
-        logger.exception("Attendance sync request failed")
-        return False
+            })
+            synced_log_ids.append(int(log["id"]))
+        if payload_logs:
+            try:
+                response = requests.post(
+                    f"{config.SERVER_URL}/api/attendance/bulk",
+                    json={"kiosk_id": config.KIOSK_ID, "logs": payload_logs},
+                    headers=_auth_headers(), timeout=15,
+                )
+                if response.status_code != 200 or not _attendance_acknowledged(response, len(payload_logs)):
+                    logger.error("Attendance batch not acknowledged (status=%d); keeping %d rows queued", response.status_code, len(payload_logs))
+                    _track_orphans(orphans, examined)
+                    return False
+                database.mark_synced(synced_log_ids)
+                logger.info("Synced %d gatekeeper logs to server", len(synced_log_ids))
+            except requests.RequestException:
+                logger.exception("Attendance sync request failed; retaining unacknowledged batch")
+                _track_orphans(orphans, examined)
+                return False
+        cursor = int(logs[-1]["id"])
+        database.set_sync_state("attendance_scan_after", str(cursor))
+    _track_orphans(orphans, examined)
+    return database.count_unsynced_logs() == 0
 
 
 def sync_recognition_attempts() -> bool:

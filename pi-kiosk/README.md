@@ -17,6 +17,10 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
   attendance and recognition-telemetry records, and reports kiosk health
   (camera/model/liveness state, queue depths) to the dashboard. The on-screen
   sync chip shows online/offline state and how many records are queued.
+  Attendance uploads use at most 100 records per request and 10 pages per
+  cycle. A saved cursor keeps unmapped rows from blocking newer attendance;
+  failed requests and incomplete acknowledgements leave records queued for
+  retry. Larger offline backlogs drain over subsequent sync cycles.
 - Blink liveness is **optional and off by default** (`LIVENESS_REQUIRED = False`).
   When enabled, a matched worker must blink before the clock event is recorded;
   if the landmark model is missing, the kiosk keeps working, records events as
