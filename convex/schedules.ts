@@ -71,7 +71,7 @@ export const update = mutation({
     days: v.optional(v.string()),
     startTime: v.optional(v.string()),
     endTime: v.optional(v.string()),
-    department: v.optional(v.string()),
+    department: v.optional(v.union(v.string(), v.null())),
   },
   returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
