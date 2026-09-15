@@ -57,7 +57,13 @@ class FaceRecognizer:
     def load_faces(self):
         """Load all worker encodings from SQLite."""
         with self._lock:
-            self._encodings, self._ids, self._names, self._server_ids = database.get_worker_roster()
+            try:
+                self._encodings, self._ids, self._names, self._server_ids = database.get_worker_roster()
+            except Exception:
+                # The cached roster may now include deactivated workers. Fail
+                # closed until a later successful reload restores current data.
+                self._encodings, self._ids, self._names, self._server_ids = [], [], [], {}
+                raise
         logger.info("Loaded %d known face encodings", len(self._encodings))
 
     def reload_faces(self):
