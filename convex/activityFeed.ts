@@ -55,7 +55,14 @@ function isValidTimestamp(value: string) {
 }
 
 function limitCharacters(value: string, maximum: number) {
-  return Array.from(value).slice(0, maximum).join("");
+  if (value.length <= maximum) return value;
+  let end = maximum;
+  const finalCodeUnit = value.charCodeAt(end - 1);
+  const nextCodeUnit = value.charCodeAt(end);
+  const endsWithHighSurrogate = finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff;
+  const nextIsLowSurrogate = nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff;
+  if (endsWithHighSurrogate && nextIsLowSurrogate) end -= 1;
+  return value.slice(0, end);
 }
 
 function recordedActorLabel(user: Doc<"users"> | null) {

@@ -1,6 +1,6 @@
 # Command Center activity feed
 
-FW Gateway exposes the version-1 operational activity contract at `GET /api/activity` on the dashboard origin. The endpoint is read-only, sends `Cache-Control: no-store`, and accepts only `Authorization: Bearer <token>`. It returns no more than 100 events and 256,000 bytes from the last 30 days, setting `hasMore` if either limit truncates the window. Actor and action text are capped at 160 characters and subject text at 240 characters; immutable IDs and original timestamps are not changed. The response `asOf` records the live Convex query time and is returned only when that query succeeds; backend failures are non-2xx and are never represented as a successful empty feed.
+FW Gateway exposes the version-1 operational activity contract at `GET /api/activity` on the dashboard origin. The endpoint is read-only, sends `Cache-Control: no-store`, and accepts only `Authorization: Bearer <token>`. It returns no more than 100 events and 256,000 bytes from the last 30 days, setting `hasMore` if either limit truncates the window. Actor and action text are capped at 160 JavaScript UTF-16 code units and subject text at 240 without splitting surrogate pairs; immutable IDs and original timestamps are not changed. The response `asOf` records the live Convex query time and is returned only when that query succeeds; backend failures are non-2xx and are never represented as a successful empty feed.
 
 ## Source configuration
 

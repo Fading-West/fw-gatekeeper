@@ -10,6 +10,18 @@ const modules = import.meta.glob("./**/*.ts");
 const TOKEN = "activity-test-token-that-is-long-enough-12345";
 const NOW = new Date("2026-09-14T18:00:00.000Z");
 
+// Mirrors Command Center server/activity/router.mjs: its limits use JavaScript
+// UTF-16 string length, not Unicode code-point count.
+function directoryTextValidatorAccepts(value: unknown, maximum: number) {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maximum;
+}
+
+function expectDirectoryTextAcceptance(item: { actor: string; action: string; subject: string }) {
+  expect(directoryTextValidatorAccepts(item.actor, 160)).toBe(true);
+  expect(directoryTextValidatorAccepts(item.action, 160)).toBe(true);
+  expect(directoryTextValidatorAccepts(item.subject, 240)).toBe(true);
+}
+
 type SetupOptions = { active?: boolean; role?: "admin" | "enrollment" | "viewer" };
 
 async function setup(options: SetupOptions = {}) {
@@ -172,9 +184,53 @@ describe("Gateway activity HTTP endpoint", () => {
     const item = (await (await request(t)).json()).items[0];
 
     expect(item).toEqual(expect.objectContaining({ id, occurredAt }));
-    expect(Array.from(item.actor)).toHaveLength(160);
-    expect(Array.from(item.subject)).toHaveLength(240);
-    expect(Array.from(item.action).length).toBeLessThanOrEqual(160);
+    expect(item.actor).toHaveLength(160);
+    expect(item.subject).toHaveLength(240);
+    expect(item.action.length).toBeLessThanOrEqual(160);
+    expectDirectoryTextAcceptance(item);
+  });
+
+  it("keeps complete emoji at exact UTF-16 boundaries accepted by the directory validator", async () => {
+    const { t, actorId, workerId } = await setup();
+    const actorName = `${"a".repeat(158)}😀`;
+    const subjectName = `${"s".repeat(238)}🚪`;
+    expect(actorName).toHaveLength(160);
+    expect(subjectName).toHaveLength(240);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(actorId, { name: actorName });
+      await ctx.db.patch(workerId, { name: subjectName });
+    });
+    const occurredAt = "2026-09-14T17:00:00.000Z";
+    const id = await insertAudit(t, { actorUserId: actorId, action: "workers.remove", targetId: workerId, createdAt: occurredAt });
+    const item = (await (await request(t)).json()).items[0];
+
+    expect(item).toEqual(expect.objectContaining({ id, occurredAt, actor: actorName, subject: subjectName }));
+    expect(item.actor).toHaveLength(160);
+    expect(item.subject).toHaveLength(240);
+    expectDirectoryTextAcceptance(item);
+  });
+
+  it("does not split surrogate pairs when mixed text crosses UTF-16 boundaries", async () => {
+    const { t, actorId, workerId } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(actorId, { name: `${"a".repeat(159)}😀 after` });
+      await ctx.db.patch(workerId, { name: `${"s".repeat(239)}🛠️ after` });
+    });
+    const occurredAt = "2026-09-14T17:00:00.000Z";
+    const id = await insertAudit(t, { actorUserId: actorId, action: "workers.updateIdentity", targetId: workerId, createdAt: occurredAt });
+    const item = (await (await request(t)).json()).items[0];
+
+    expect(item).toEqual(expect.objectContaining({
+      id,
+      occurredAt,
+      actor: "a".repeat(159),
+      subject: "s".repeat(239),
+    }));
+    expect(item.actor).toHaveLength(159);
+    expect(item.subject).toHaveLength(239);
+    expect(item.actor.isWellFormed()).toBe(true);
+    expect(item.subject.isWellFormed()).toBe(true);
+    expectDirectoryTextAcceptance(item);
   });
 
   it("orders newest first, caps at 100, reports truncation, and omits unsafe timestamps and out-of-window rows", async () => {
