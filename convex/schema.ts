@@ -91,6 +91,7 @@ export default defineSchema({
   }).index("by_digest", ["digest"]),
 
   attendanceCorrections: defineTable({
+    requestId: v.optional(v.string()),
     date: v.string(),
     workerId: v.string(),
     action: v.union(v.literal("add_clock_in"), v.literal("add_clock_out"), v.literal("void_event")),
@@ -105,7 +106,8 @@ export default defineSchema({
   })
     .index("by_date", ["date"])
     .index("by_worker_date", ["workerId", "date"])
-    .index("by_original_attendance", ["originalAttendanceId"]),
+    .index("by_original_attendance", ["originalAttendanceId"])
+    .index("by_requestId", ["requestId"]),
 
   recognitionAttempts: defineTable({
     timestamp: v.string(),

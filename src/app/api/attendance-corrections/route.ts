@@ -61,6 +61,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const requestId = body.request_id ?? body.requestId;
+    if (requestId !== undefined && (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 200)) {
+      return NextResponse.json({ error: 'request_id must be a nonempty string of at most 200 characters' }, { status: 400 });
+    }
     const date = optionalString(body.date);
     const workerId = optionalString(body.worker_id) || optionalString(body.workerId);
     const action = optionalString(body.action);
@@ -87,6 +91,7 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await convex.mutation((api as any).attendanceCorrections.create, {
+      requestId,
       date,
       workerId,
       action,

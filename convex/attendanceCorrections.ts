@@ -86,6 +86,7 @@ export const list = query({
 
 export const create = mutation({
   args: {
+    requestId: v.optional(v.string()),
     date: v.string(),
     workerId: v.string(),
     action: v.union(v.literal("add_clock_in"), v.literal("add_clock_out"), v.literal("void_event")),
@@ -104,12 +105,37 @@ export const create = mutation({
       throw new Error("Correction reason is required.");
     }
 
+    const requestId = args.requestId;
+    if (requestId !== undefined && (!requestId.trim() || requestId.length > 200)) {
+      throw new Error("requestId must be a nonempty string of at most 200 characters.");
+    }
+    const correctedTimestamp = normalizeText(args.correctedTimestamp);
+    const evidence = {
+      date: args.date,
+      workerId: args.workerId,
+      action: args.action,
+      correctedTimestamp: args.action === "void_event" ? undefined : correctedTimestamp,
+      originalAttendanceId: args.originalAttendanceId,
+      relatedExceptionKey: normalizeText(args.relatedExceptionKey),
+      reason,
+      supervisorName: normalizeText(args.supervisorName),
+    };
+    if (requestId !== undefined) {
+      const existing = await ctx.db.query("attendanceCorrections")
+        .withIndex("by_requestId", (q) => q.eq("requestId", requestId)).unique();
+      if (existing) {
+        if (Object.entries(evidence).some(([key, value]) => existing[key as keyof typeof evidence] !== value)) {
+          throw new Error("Correction requestId was already used with different details.");
+        }
+        return { id: existing._id, createdAt: existing.createdAt };
+      }
+    }
+
     const worker = await ctx.db.get(args.workerId as any).catch(() => null);
     if (!worker) {
       throw new Error("Worker not found.");
     }
 
-    const correctedTimestamp = normalizeText(args.correctedTimestamp);
     if (args.action === "void_event") {
       if (!args.originalAttendanceId) {
         throw new Error("originalAttendanceId is required when voiding an event.");
@@ -135,15 +161,9 @@ export const create = mutation({
     const now = new Date().toISOString();
     const eventType = getEventTypeForAction(args.action);
     const id = await ctx.db.insert("attendanceCorrections", {
-      date: args.date,
-      workerId: args.workerId,
-      action: args.action,
+      ...evidence,
+      requestId,
       eventType,
-      correctedTimestamp: args.action === "void_event" ? undefined : correctedTimestamp,
-      originalAttendanceId: args.originalAttendanceId,
-      relatedExceptionKey: normalizeText(args.relatedExceptionKey),
-      reason,
-      supervisorName: normalizeText(args.supervisorName),
       createdAt: now,
       updatedAt: now,
     });
