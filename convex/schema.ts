@@ -34,6 +34,12 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_active", ["active"]),
 
+  pendingEnrollmentPhotos: defineTable({
+    storageId: v.id("_storage"),
+    ownerId: v.id("users"),
+    expiresAt: v.number(),
+  }).index("by_storageId", ["storageId"]),
+
   workers: defineTable({
     name: v.string(),
     employeeId: v.optional(v.string()),

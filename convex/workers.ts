@@ -4,6 +4,7 @@ import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
+import { consumeEnrollmentPhotos } from "./enrollmentPhotos";
 import { findEmployeeDirectoryById } from "../src/lib/employee-directory";
 
 // The kiosk matches exclusively 512-dim MobileFaceNet embeddings; legacy
@@ -185,6 +186,7 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
     }
     assertBiometricConsent(args.consentAt);
     assertPhotoLimit(args.photoStorageIds);
+    await consumeEnrollmentPhotos(ctx, args.photoStorageIds, actorUserId);
     const now = new Date().toISOString();
     const employeeId = normalizeEmployeeId(args.employeeId);
     const department = normalizeDepartment(args.department);
@@ -326,6 +328,7 @@ export const update = mutation({
     const writesBiometrics = fields.faceEncoding !== undefined || fields.photoStorageIds !== undefined;
     if (writesBiometrics) assertBiometricConsent(fields.consentAt);
     assertPhotoLimit(fields.photoStorageIds);
+    await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId);
     const updates: Record<string, unknown> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values");
