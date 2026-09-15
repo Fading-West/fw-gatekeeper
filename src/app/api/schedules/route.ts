@@ -43,7 +43,7 @@ export async function PATCH(req: NextRequest) {
     if (days !== undefined) updates.days = typeof days === 'string' ? days : JSON.stringify(days);
     if (start_time !== undefined) updates.startTime = start_time;
     if (end_time !== undefined) updates.endTime = end_time;
-    if (department !== undefined) updates.department = department || undefined;
+    if (department !== undefined) updates.department = department;
 
     await convex.mutation(api.schedules.update, updates as any);
     return NextResponse.json({ ok: true });
