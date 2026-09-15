@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ingestRecognitionAttemptBatch } from '@/lib/convex-ingest';
+import { ingestRecognitionAttemptBatch, SecuredIngestError } from '@/lib/convex-ingest';
 import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
 
 function optionalString(value: unknown): string | undefined {
@@ -31,6 +31,7 @@ function normalizeAttempt(raw: any, bulkKioskId?: string) {
       optionalString(raw.idempotency_key) ||
       optionalString(raw.idempotencyKey) ||
       optionalString(raw.id),
+    legacySourceAttemptId: optionalString(raw.legacy_source_attempt_id) || optionalString(raw.legacySourceAttemptId),
     kioskId: optionalString(raw.kiosk_id) || optionalString(raw.kioskId) || bulkKioskId || 'unknown-kiosk',
     timestamp: optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt) || new Date().toISOString(),
     faceDetected:
@@ -94,6 +95,9 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof SecuredIngestError && error.status === 409) {
+      return NextResponse.json({ error: 'Recognition attempt ID was reused with different evidence.', code: 'RECOGNITION_ATTEMPT_CONFLICT' }, { status: 409 });
+    }
     console.error('Recognition attempts bulk POST error:', error);
     return NextResponse.json({ error: 'Failed to record recognition attempt batch' }, { status: 500 });
   }

@@ -1,7 +1,7 @@
 import { getFactoryLocalDateKey } from "./localDate";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   buildConservativeFactoryLocalTimestampRanges,
   timestampBelongsToFactoryLocalDate,
@@ -12,6 +12,7 @@ const attemptInput = v.object({
   timestamp: v.string(),
   kioskId: v.string(),
   sourceAttemptId: v.optional(v.string()),
+  legacySourceAttemptId: v.optional(v.string()),
   faceDetected: v.boolean(),
   candidateWorkerId: v.optional(v.string()),
   candidateWorkerName: v.optional(v.string()),
@@ -96,6 +97,7 @@ function normalizeAttempt(attempt: {
   timestamp: string;
   kioskId: string;
   sourceAttemptId?: string;
+  legacySourceAttemptId?: string;
   faceDetected: boolean;
   candidateWorkerId?: string;
   candidateWorkerName?: string;
@@ -120,6 +122,7 @@ function normalizeAttempt(attempt: {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),
     kioskId: normalizeRequiredText(attempt.kioskId, "kioskId"),
     sourceAttemptId: normalizeOptionalText(attempt.sourceAttemptId),
+    legacySourceAttemptId: normalizeOptionalText(attempt.legacySourceAttemptId),
     faceDetected: attempt.faceDetected,
     candidateWorkerId: normalizeOptionalText(attempt.candidateWorkerId),
     candidateWorkerName: normalizeOptionalText(attempt.candidateWorkerName),
@@ -139,6 +142,19 @@ function normalizeAttempt(attempt: {
     reviewedNote: normalizeOptionalText(attempt.reviewedNote),
     reviewedAt: reviewed ? normalizeOptionalText(attempt.reviewedAt) : undefined,
   };
+}
+
+// Review annotations are mutable portal state, not original kiosk evidence.
+const evidenceFields = [
+  "timestamp", "kioskId", "faceDetected", "candidateWorkerId", "candidateWorkerName",
+  "bestScore", "secondBestScore", "scoreMargin", "decision", "threshold",
+  "livenessConfirmed", "modelVersion", "imageQuality", "faceQuality", "brightness", "blur",
+] as const;
+function sameEvidence(
+  existing: Partial<ReturnType<typeof normalizeAttempt>>,
+  incoming: ReturnType<typeof normalizeAttempt>,
+) {
+  return evidenceFields.every(field => existing[field] === incoming[field]);
 }
 
 async function listRangeInternal(
@@ -236,6 +252,7 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
     timestamp: string;
     kioskId: string;
     sourceAttemptId?: string;
+    legacySourceAttemptId?: string;
     faceDetected: boolean;
     candidateWorkerId?: string;
     candidateWorkerName?: string;
@@ -256,35 +273,63 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
     reviewedAt?: string;
   }>;
 }) {
-    const seenKeys = new Set<string>();
+    const seenLegacyKeys = new Set<string>();
     const insertedIds = [];
     let skipped = 0;
     const now = new Date().toISOString();
 
     for (const attempt of args.attempts) {
       const normalized = normalizeAttempt(attempt);
-      const dedupeKey =
-        normalized.sourceAttemptId ||
-        `${normalized.kioskId}:${normalized.timestamp}:${normalized.candidateWorkerId || ""}:${normalized.decision}`;
-      if (seenKeys.has(dedupeKey)) {
-        skipped++;
-        continue;
-      }
-      seenKeys.add(dedupeKey);
-
       if (normalized.sourceAttemptId) {
+        // Reads see earlier inserts in this transaction, so conflicting keys in
+        // one batch receive the same checks as a later network retry.
         const existing = await ctx.db
           .query("recognitionAttempts")
           .withIndex("by_source_attempt_id", (q) => q.eq("sourceAttemptId", normalized.sourceAttemptId))
+          .first() || await ctx.db
+          .query("recognitionAttempts")
+          .withIndex("by_legacy_source_attempt_id", (q) => q.eq("legacySourceAttemptId", normalized.sourceAttemptId))
           .first();
         if (existing) {
+          if (!sameEvidence(existing, normalized)) {
+            throw new ConvexError({
+              code: "RECOGNITION_ATTEMPT_CONFLICT",
+              message: "Recognition attempt ID was reused with different evidence.",
+            });
+          }
           skipped++;
           continue;
         }
+        if (normalized.legacySourceAttemptId) {
+          const legacy = await ctx.db.query("recognitionAttempts")
+            .withIndex("by_source_attempt_id", (q) => q.eq("sourceAttemptId", normalized.legacySourceAttemptId))
+            .first();
+          // Only adopt an exact old upload. A row number reused after a reset
+          // is distinct evidence and must be inserted under its new UUID.
+          if (legacy && sameEvidence(legacy, normalized)) {
+            await ctx.db.patch(legacy._id, {
+              sourceAttemptId: normalized.sourceAttemptId,
+              legacySourceAttemptId: normalized.legacySourceAttemptId,
+            });
+            skipped++;
+            continue;
+          }
+        }
+      } else {
+        // Preserve the previous behavior for unkeyed legacy clients.
+        const key = `${normalized.kioskId}:${normalized.timestamp}:${normalized.candidateWorkerId || ""}:${normalized.decision}`;
+        if (seenLegacyKeys.has(key)) {
+          skipped++;
+          continue;
+        }
+        seenLegacyKeys.add(key);
       }
 
       const id = await ctx.db.insert("recognitionAttempts", {
         ...normalized,
+        // Only adopted records retain aliases, so an unrelated reset attempt
+        // cannot claim the old event's identity.
+        legacySourceAttemptId: undefined,
         reviewedAt: normalized.reviewed ? normalized.reviewedAt || now : undefined,
         createdAt: now,
       });

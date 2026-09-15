@@ -119,6 +119,7 @@ export default defineSchema({
     timestamp: v.string(),
     kioskId: v.string(),
     sourceAttemptId: v.optional(v.string()),
+    legacySourceAttemptId: v.optional(v.string()),
     faceDetected: v.boolean(),
     candidateWorkerId: v.optional(v.string()),
     candidateWorkerName: v.optional(v.string()),
@@ -144,7 +145,8 @@ export default defineSchema({
     .index("by_kiosk_timestamp", ["kioskId", "timestamp"])
     .index("by_reviewed_timestamp", ["reviewed", "timestamp"])
     .index("by_kiosk_reviewed_timestamp", ["kioskId", "reviewed", "timestamp"])
-    .index("by_source_attempt_id", ["sourceAttemptId"]),
+    .index("by_source_attempt_id", ["sourceAttemptId"])
+    .index("by_legacy_source_attempt_id", ["legacySourceAttemptId"]),
 
   exceptionReviews: defineTable({
     exceptionKey: v.string(),
