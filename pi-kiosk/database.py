@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -249,6 +250,9 @@ def init_db():
     _ensure_column(conn, "recognition_attempts", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "recognition_attempts", "model_version", "model_version TEXT")
     _ensure_column(conn, "recognition_attempts", "synced", "synced INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "recognition_attempts", "source_attempt_id", "source_attempt_id TEXT")
+    _ensure_column(conn, "recognition_attempts", "legacy_source_attempt_id", "legacy_source_attempt_id TEXT")
+    _ensure_column(conn, "recognition_attempts", "candidate_server_worker_id", "candidate_server_worker_id TEXT")
 
     # Copy old attendance event_type to action if needed.
     attendance_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)").fetchall()}
@@ -715,9 +719,9 @@ def log_recognition_attempt(
             (
                 timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
                 best_score, second_best_score, score_margin, decision, threshold,
-                liveness_confirmed, model_version, synced
+                liveness_confirmed, model_version, source_attempt_id, candidate_server_worker_id, synced
             )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         """,
         (
             timestamp,
@@ -732,6 +736,8 @@ def log_recognition_attempt(
             _optional_float(threshold),
             1 if liveness_confirmed else 0,
             model_version,
+            str(uuid.uuid4()),
+            get_server_id(candidate_worker_id) if candidate_worker_id is not None else None,
         ),
     )
     conn.commit()
@@ -754,7 +760,7 @@ def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
         SELECT
             id, timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
             best_score, second_best_score, score_margin, decision, threshold,
-            liveness_confirmed, model_version
+            liveness_confirmed, model_version, source_attempt_id, legacy_source_attempt_id, candidate_server_worker_id
         FROM recognition_attempts
         WHERE synced = 0
         ORDER BY id ASC
@@ -762,9 +768,31 @@ def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
         """,
         (int(limit),),
     ).fetchall()
+    # Legacy queued attempts may have reached the server before an acknowledgement
+    # was lost. Keep their old identity as a migration alias, but persist a UUID
+    # before any upload so retries and local database recreation cannot reuse IDs.
+    with conn:
+        for row in rows:
+            if not row["source_attempt_id"]:
+                conn.execute(
+                    "UPDATE recognition_attempts SET source_attempt_id = ?, legacy_source_attempt_id = ?, "
+                    "kiosk_id = ?, candidate_server_worker_id = ? "
+                    "WHERE id = ? AND (source_attempt_id IS NULL OR source_attempt_id = '')",
+                    (str(uuid.uuid4()), f"{row['kiosk_id'] or config.KIOSK_ID}:{row['id']}",
+                     row["kiosk_id"] or config.KIOSK_ID,
+                     get_server_id(row["candidate_worker_id"]) if row["candidate_worker_id"] is not None else None,
+                     row["id"]),
+                )
     attempts: list[dict] = []
     for row in rows:
         item = dict(row)
+        if not item["source_attempt_id"]:
+            identity = conn.execute(
+                "SELECT source_attempt_id, legacy_source_attempt_id, kiosk_id, candidate_server_worker_id "
+                "FROM recognition_attempts WHERE id = ?",
+                (item["id"],),
+            ).fetchone()
+            item.update(dict(identity))
         item["face_detected"] = bool(item["face_detected"])
         item["liveness_confirmed"] = bool(item["liveness_confirmed"])
         attempts.append(item)
