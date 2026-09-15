@@ -29,9 +29,21 @@ Before photo capture can start, the enrolling operator must confirm a required c
 ## How long it is kept
 
 - Deactivation stops recognition after kiosks sync, but keeps cloud biometric data until an admin explicitly purges it.
-- It is **purged on request or on termination** using the admin "Purge face data" action (below). There is no automatic time-based expiry; purge is an explicit, audited action.
+- It is **purged on request or on termination** using the admin "Purge face data" action (below). Enrolled worker data has no automatic time-based expiry; purge is an explicit, audited action. Incomplete uploads have a separate cleanup policy below.
 - Online kiosks remove cached templates on their next successful sync after deactivation. Offline devices retain cached data until connectivity returns. Existing kiosk versions may retain thumbnail files on disk; operators must remove those cached files during device cleanup and verify each device separately.
 - Attendance history (non-biometric) is retained for operational and payroll reconciliation and is not deleted by a purge.
+
+## Incomplete enrollment uploads
+
+The enrollment API stores each accepted photo through an authenticated Convex action. Before returning its storage ID, the action records an owner-bound pending receipt and schedules cleanup after **one hour**. A successful worker save consumes those receipts in the same transaction that attaches the photos. Immediate cleanup after the request deletes only uploads still pending for that operator; it cannot delete attached photos even when the save committed but its response was lost.
+
+An abandoned request, lost upload response, or failed immediate cleanup leaves pending photos eligible for scheduled deletion after the one-hour grace period. Expired or already-deleted photos cannot be attached by a late save. This expiry applies only to incomplete uploads, not enrolled workers' retained photos. Scheduled execution can run later than its target time during outages.
+
+This protects new uploads through the enrollment API. It does not identify or retroactively purge pre-existing orphan files, or track legacy uploads made directly through `workers.generateUploadUrl`. File storage and database registration are separate operations: a hard process termination between storing a file and registering its receipt can still leave an unidentified orphan. Ordinary registration failures trigger immediate deletion; failed deletion is logged for operator investigation.
+
+### Deployment order
+
+Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations, and updated worker mutations to Convex before deploying the portal enrollment route that calls them. Keep the portal's automatic Render deployment skipped until the backend deployment is verified. Existing worker photo references remain compatible; cleanup never deletes untracked storage IDs.
 
 ## How to purge a worker's face data
 

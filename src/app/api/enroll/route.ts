@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
     return unauthorizedApiResponse();
   }
 
+  const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
     const { name, employeeId, department, photos, workerId, consent } = body as {
@@ -148,26 +149,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: getEncodingValidationMessage('Face encoding') }, { status: 422 });
     }
 
-    const storageIds: string[] = [];
     // Store only frames the quality gate used for the reference encoding.
     // A rejected/outlier frame must not become the worker's dashboard photo.
     for (const photo of acceptedPhotos) {
       try {
-        const uploadUrl = await convex.mutation(api.workers.generateUploadUrl, {});
         const base64Data = photo.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Buffer.from(base64Data, 'base64');
-        const blob = new Blob([buffer], { type: 'image/jpeg' });
-
-        const uploadRes = await fetch(uploadUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'image/jpeg' },
-          body: blob,
+        const storageId = await convex.action(api.enrollmentPhotos.upload, {
+          photo: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
         });
-
-        if (uploadRes.ok) {
-          const { storageId } = await uploadRes.json();
-          storageIds.push(storageId);
-        }
+        storageIds.push(storageId);
       } catch (uploadErr) {
         console.error('Failed to upload photo:', uploadErr);
       }
@@ -215,5 +206,15 @@ export async function POST(req: NextRequest) {
     console.error('Enrollment error:', error);
     const message = error instanceof Error ? error.message : 'Internal server error';
     return NextResponse.json({ error: message }, { status: 500 });
+  } finally {
+    if (storageIds.length > 0) {
+      try {
+        // The mutation deletes only still-pending uploads owned by this caller.
+        // A save that committed before a lost response has already consumed them.
+        await convex.mutation(api.enrollmentPhotos.cleanup, { storageIds: storageIds as any });
+      } catch (cleanupError) {
+        console.error('Enrollment photo cleanup deferred to expiry:', cleanupError);
+      }
+    }
   }
 }
