@@ -1,7 +1,8 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { timestampBelongsToFactoryLocalDate } from "./localDate";
+import { isValidAttendanceTimestamp } from "./attendanceValidation";
 
 const nullableString = v.union(v.string(), v.null());
 
@@ -108,6 +109,7 @@ export const create = mutation({
       throw new Error("Worker not found.");
     }
 
+    const correctedTimestamp = normalizeText(args.correctedTimestamp);
     if (args.action === "void_event") {
       if (!args.originalAttendanceId) {
         throw new Error("originalAttendanceId is required when voiding an event.");
@@ -122,10 +124,12 @@ export const create = mutation({
       if (!timestampBelongsToFactoryLocalDate(original.timestamp, args.date)) {
         throw new Error("Original attendance event is not on the correction date.");
       }
-    } else if (!args.correctedTimestamp) {
+    } else if (!correctedTimestamp) {
       throw new Error("correctedTimestamp is required when adding an event.");
-    } else if (!timestampBelongsToFactoryLocalDate(args.correctedTimestamp, args.date)) {
-      throw new Error("correctedTimestamp must be on the correction date.");
+    } else if (!isValidAttendanceTimestamp(correctedTimestamp)) {
+      throw new ConvexError({ code: "INVALID_CORRECTION_TIMESTAMP", message: "correctedTimestamp must be a valid ISO date and time, with optional UTC offset." });
+    } else if (!timestampBelongsToFactoryLocalDate(correctedTimestamp, args.date)) {
+      throw new ConvexError({ code: "INVALID_CORRECTION_TIMESTAMP", message: "correctedTimestamp must be on the correction date." });
     }
 
     const now = new Date().toISOString();
@@ -135,7 +139,7 @@ export const create = mutation({
       workerId: args.workerId,
       action: args.action,
       eventType,
-      correctedTimestamp: args.action === "void_event" ? undefined : args.correctedTimestamp,
+      correctedTimestamp: args.action === "void_event" ? undefined : correctedTimestamp,
       originalAttendanceId: args.originalAttendanceId,
       relatedExceptionKey: normalizeText(args.relatedExceptionKey),
       reason,

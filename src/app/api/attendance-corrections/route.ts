@@ -1,5 +1,6 @@
 export const dynamic = 'force-dynamic';
 
+import { ConvexError } from 'convex/values';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
 import { unauthorizedApiResponse } from '@/lib/auth';
@@ -98,6 +99,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true }, { status: 201 });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'INVALID_CORRECTION_TIMESTAMP') {
+      return NextResponse.json({ error: error.data.message }, { status: 400 });
+    }
     console.error('Attendance corrections POST error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to create attendance correction' },
