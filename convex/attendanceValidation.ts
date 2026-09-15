@@ -29,6 +29,14 @@ function text(value: unknown, field: string, required = false, max = 256): strin
   return result || undefined;
 }
 
+export function isValidAttendanceTimestamp(timestamp: string): boolean {
+  // Pi clocks use factory-local timestamps; explicit UTC/offset inputs remain
+  // supported. Validate the whole value so date-only/overflow strings cannot
+  // enter attendance and disappear from daily reports.
+  const match = /^(\d{4}-\d{2}-\d{2})[T ]([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
+  return Boolean(match && isValidFactoryLocalDateKey(match[1]) && (!match[5] || Number.isFinite(Date.parse(timestamp))));
+}
+
 export function validateAttendanceEvent(value: unknown): AttendanceEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Each attendance event must be an object");
   const event = value as Record<string, unknown>;
@@ -36,11 +44,7 @@ export function validateAttendanceEvent(value: unknown): AttendanceEvent {
   const eventType = text(event.eventType, "eventType", true);
   if (eventType !== "clock_in" && eventType !== "clock_out") invalid("eventType must be clock_in or clock_out");
   const timestamp = text(event.timestamp, "timestamp", true, 64)!;
-  // Pi clocks use factory-local timestamps; explicit UTC/offset inputs remain
-  // supported. Validate the whole value so date-only/overflow strings cannot
-  // enter attendance and disappear from daily reports.
-  const match = /^(\d{4}-\d{2}-\d{2})[T ]([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
-  if (!match || !isValidFactoryLocalDateKey(match[1]) || (match[5] && !Number.isFinite(Date.parse(timestamp)))) {
+  if (!isValidAttendanceTimestamp(timestamp)) {
     invalid("timestamp must be a valid ISO date and time, with optional UTC offset");
   }
   if (event.confidence !== undefined && (typeof event.confidence !== "number" || !Number.isFinite(event.confidence) || event.confidence < -1e-12 || event.confidence > 1 + 1e-12)) {
