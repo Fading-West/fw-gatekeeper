@@ -33,14 +33,17 @@ export const get = query({
 
     const today = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
 
-    const allWorkers = await ctx.db
+    const activeWorkers = await ctx.db
       .query("workers")
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
-    const totalWorkers = allWorkers.length;
+    const totalWorkers = activeWorkers.length;
+    const activeWorkerIds = new Set<string>(activeWorkers.map((worker) => String(worker._id)));
 
-    // Get today's records
-    const todayAttendance = await listEffectiveAttendanceByTimestampRange(ctx, today);
+    // All dashboard metrics use the current active roster, including historical dates.
+    // Filter only this summary; attendance history still retains inactive workers.
+    const todayAttendance = (await listEffectiveAttendanceByTimestampRange(ctx, today))
+      .filter((record) => activeWorkerIds.has(record.workerId));
 
     // Latest event per worker
     const workerStatus = new Map<string, { eventType: string; timestamp: string }>();
