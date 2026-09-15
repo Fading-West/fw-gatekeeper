@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
+import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 import { createLocalIsoTimestamp, getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -402,25 +403,28 @@ function ExceptionsPageContent() {
       return;
     }
 
+    const request = {
+      date,
+      worker_id: correctionDraft.exception.worker_id,
+      action: correctionDraft.action,
+      corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
+      original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
+      related_exception_key: correctionDraft.sourceExceptionKey,
+      reason: correctionDraft.reason.trim(),
+      supervisor_name: correctionDraft.supervisorName.trim(),
+    };
+
     correctionPendingRef.current = true;
     setSavingCorrection(true);
     try {
       const res = await fetch('/api/attendance-corrections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          date,
-          worker_id: correctionDraft.exception.worker_id,
-          action: correctionDraft.action,
-          corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
-          original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
-          related_exception_key: correctionDraft.sourceExceptionKey,
-          reason: correctionDraft.reason,
-          supervisor_name: correctionDraft.supervisorName,
-        }),
+        body: JSON.stringify({ ...request, request_id: correctionRequestId(request) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || 'Failed to save correction');
+      acknowledgeCorrectionRequest(request);
       toast('Attendance correction saved');
       setCorrectionDraft(null);
       await fetchExceptions();
