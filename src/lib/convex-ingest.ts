@@ -1,3 +1,9 @@
+export class SecuredIngestError extends Error {
+  constructor(readonly status: number) {
+    super(`Secured Convex ingest failed with status ${status}.`);
+  }
+}
+
 const INGEST_TIMEOUT_MS = 10_000;
 
 function getConvexIngestBaseUrl() {
@@ -35,7 +41,7 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
     });
 
     if (!response.ok) {
-      throw new Error(`Secured Convex ingest failed with status ${response.status}.`);
+      throw new SecuredIngestError(response.status);
     }
 
     return await response.json() as T;

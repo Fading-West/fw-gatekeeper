@@ -191,25 +191,19 @@ def sync_recognition_attempts() -> bool:
 
     payload_attempts = []
     synced_attempt_ids = []
-    server_id_cache: dict[int, Optional[str]] = {}
-
     for attempt in attempts:
         local_worker_id = attempt.get("candidate_worker_id")
-        candidate_server_id = None
-        if local_worker_id is not None:
-            local_worker_id = int(local_worker_id)
-            if local_worker_id not in server_id_cache:
-                server_id_cache[local_worker_id] = database.get_server_id(local_worker_id)
-            candidate_server_id = server_id_cache[local_worker_id]
 
         payload_attempts.append(
             {
                 "localAttemptId": attempt.get("id"),
-                "sourceAttemptId": f"{attempt.get('kiosk_id') or config.KIOSK_ID}:{attempt.get('id')}",
+                "sourceAttemptId": attempt["source_attempt_id"],
+                **({"legacySourceAttemptId": attempt["legacy_source_attempt_id"]}
+                   if attempt.get("legacy_source_attempt_id") else {}),
                 "timestamp": attempt.get("timestamp"),
                 "kioskId": attempt.get("kiosk_id") or config.KIOSK_ID,
                 "faceDetected": attempt.get("face_detected"),
-                "candidateWorkerId": candidate_server_id,
+                "candidateWorkerId": attempt.get("candidate_server_worker_id"),
                 "candidateLocalWorkerId": local_worker_id,
                 "candidateWorkerName": attempt.get("candidate_worker_name"),
                 "bestScore": attempt.get("best_score"),

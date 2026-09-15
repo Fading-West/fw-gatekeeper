@@ -265,15 +265,22 @@ const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'attempts array required' }, 400);
   }
 
-  const result = await ctx.runMutation(internal.recognitionAttempts.bulkIngestFromHttp, {
-    attempts: body.attempts,
-  });
-  console.info('secured_ingest_recognition', {
-    received: body.attempts.length,
-    ingested: result.ingested,
-    skipped: result.skipped,
-  });
-  return jsonResponse(result, 201);
+  try {
+    const result = await ctx.runMutation(internal.recognitionAttempts.bulkIngestFromHttp, {
+      attempts: body.attempts,
+    });
+    console.info('secured_ingest_recognition', {
+      received: body.attempts.length,
+      ingested: result.ingested,
+      skipped: result.skipped,
+    });
+    return jsonResponse(result, 201);
+  } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'RECOGNITION_ATTEMPT_CONFLICT') {
+      return jsonResponse({ error: error.data.message, code: error.data.code }, 409);
+    }
+    throw error;
+  }
 });
 
 const kioskLastSyncIngest = httpAction(async (ctx, request) => {
