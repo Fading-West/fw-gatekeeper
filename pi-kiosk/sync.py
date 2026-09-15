@@ -410,10 +410,15 @@ class SyncWorker:
                             }
                         except Exception as e:
                             logger.debug("Health provider failed: %s", e)
-                    workers_synced = sync_workers(health=health)
-                    if workers_synced:
+                    try:
+                        workers_synced = sync_workers(health=health)
+                    finally:
+                        # A failed response can still have committed earlier roster
+                        # changes, including deactivations. Publish those changes
+                        # even when the sync watermark must remain unchanged.
                         if self._recognizer:
                             self._recognizer.reload_faces()
+                    if workers_synced:
                         self._report(last_sync_at=datetime.now().isoformat(timespec="seconds"))
                     sync_attendance()
                     sync_recognition_attempts()
