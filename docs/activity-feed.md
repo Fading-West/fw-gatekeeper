@@ -1,6 +1,6 @@
 # Command Center activity feed
 
-FW Gateway exposes the version-1 operational activity contract at `GET /api/activity` on the dashboard origin. The endpoint is read-only, sends `Cache-Control: no-store`, and accepts only `Authorization: Bearer <token>`. It returns no more than 100 events and 256 KB from the last 30 days, setting `hasMore` if either limit truncates the window. The response `asOf` records the live Convex query time and is returned only when that query succeeds; backend failures are non-2xx and are never represented as a successful empty feed.
+FW Gateway exposes the version-1 operational activity contract at `GET /api/activity` on the dashboard origin. The endpoint is read-only, sends `Cache-Control: no-store`, and accepts only `Authorization: Bearer <token>`. It returns no more than 100 events and 256,000 bytes from the last 30 days, setting `hasMore` if either limit truncates the window. Actor and action text are capped at 160 characters and subject text at 240 characters; immutable IDs and original timestamps are not changed. The response `asOf` records the live Convex query time and is returned only when that query succeeds; backend failures are non-2xx and are never represented as a successful empty feed.
 
 ## Source configuration
 
@@ -21,6 +21,8 @@ The allowlist includes only audit rows whose target is `workers` and whose actio
 
 - `workers.updateIdentity` → `updated worker record`
 - `workers.remove` → `deactivated worker`
+
+Each allowlisted action is selected through the compound `(targetTable, action, createdAt)` index with a fixed scan ceiling. Excluded actions do not consume that ceiling. If malformed rows exhaust a bounded allowlisted scan before the source can prove whether another eligible event exists, the endpoint fails closed with a non-2xx response instead of guessing `hasMore`.
 
 These mutations append their audit row transactionally after the operational change, so the outcome is `succeeded`. Immutable audit document IDs and original audit timestamps are preserved. Actor names (falling back to the source-recorded account email) come from the recorded `actorUserId`. Worker names are resolved only after the mapped account passes the current admin authorization check. Links point to the protected `/workers` source page, which enforces normal portal login and role authorization.
 

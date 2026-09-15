@@ -65,7 +65,8 @@ export default defineSchema({
     createdAt: v.string(),
   })
     .index("by_target", ["targetTable", "targetId"])
-    .index("by_created", ["createdAt"]),
+    .index("by_created", ["createdAt"])
+    .index("by_target_table_and_action_and_created_at", ["targetTable", "action", "createdAt"]),
 
   attendance: defineTable({
     workerId: v.string(),

@@ -143,6 +143,40 @@ describe("Gateway activity HTTP endpoint", () => {
     }
   });
 
+  it("preserves actor and subject text at the exact contract boundaries", async () => {
+    const { t, actorId, workerId } = await setup();
+    const actorName = "a".repeat(160);
+    const subjectName = "s".repeat(240);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(actorId, { name: actorName });
+      await ctx.db.patch(workerId, { name: subjectName });
+    });
+    const id = await insertAudit(t, { actorUserId: actorId, action: "workers.remove", targetId: workerId, createdAt: "2026-09-14T17:00:00.000Z" });
+
+    expect((await (await request(t)).json()).items[0]).toEqual(expect.objectContaining({
+      id,
+      actor: actorName,
+      subject: subjectName,
+      action: "deactivated worker",
+    }));
+  });
+
+  it("caps oversized actor and subject names without changing the event ID or timestamp", async () => {
+    const { t, actorId, workerId } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(actorId, { name: "a".repeat(161) });
+      await ctx.db.patch(workerId, { name: "s".repeat(241) });
+    });
+    const occurredAt = "2026-09-14T17:00:00.000Z";
+    const id = await insertAudit(t, { actorUserId: actorId, action: "workers.updateIdentity", targetId: workerId, createdAt: occurredAt });
+    const item = (await (await request(t)).json()).items[0];
+
+    expect(item).toEqual(expect.objectContaining({ id, occurredAt }));
+    expect(Array.from(item.actor)).toHaveLength(160);
+    expect(Array.from(item.subject)).toHaveLength(240);
+    expect(Array.from(item.action).length).toBeLessThanOrEqual(160);
+  });
+
   it("orders newest first, caps at 100, reports truncation, and omits unsafe timestamps and out-of-window rows", async () => {
     const { t, actorId, workerId } = await setup();
     const ids: string[] = [];
@@ -174,15 +208,64 @@ describe("Gateway activity HTTP endpoint", () => {
     expect((await (await request(t)).json()).items[0]).toEqual(expect.objectContaining({ id, actor: "Actor not recorded", subject: "Worker record" }));
   });
 
-  it("never returns a successful body larger than the contract limit", async () => {
+  it("finds eligible events after many newer excluded audit actions and computes hasMore from eligible rows", async () => {
     const { t, actorId, workerId } = await setup();
     await t.run(async (ctx) => {
-      await ctx.db.patch(actorId, { name: "x".repeat(300_000) });
+      for (let index = 0; index < 750; index += 1) {
+        await ctx.db.insert("auditLog", {
+          actorUserId: actorId,
+          action: index % 2 === 0 ? "workers.enroll" : "workers.purgeBiometrics",
+          targetTable: "workers",
+          targetId: workerId,
+          createdAt: "2026-09-14T17:30:00.000Z",
+        });
+      }
+    });
+    const newerId = await insertAudit(t, { actorUserId: actorId, action: "workers.remove", targetId: workerId, createdAt: "2026-09-14T17:00:00.000Z" });
+    const olderId = await insertAudit(t, { actorUserId: actorId, action: "workers.updateIdentity", targetId: workerId, createdAt: "2026-09-14T16:00:00.000Z" });
+
+    const payload = await (await request(t)).json();
+    expect(payload.items.map((item: { id: string }) => item.id)).toEqual([newerId, olderId]);
+    expect(payload.hasMore).toBe(false);
+  });
+
+  it("fails closed when the bounded allowlisted scan cannot determine eligible pagination", async () => {
+    const { t, actorId, workerId } = await setup();
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 501; index += 1) {
+        await ctx.db.insert("auditLog", {
+          actorUserId: actorId,
+          action: "workers.remove",
+          targetTable: "workers",
+          targetId: workerId,
+          createdAt: "2026-09-14T17:59:59.000Z-invalid",
+        });
+      }
     });
     await insertAudit(t, { actorUserId: actorId, action: "workers.remove", targetId: workerId, createdAt: "2026-09-14T17:00:00.000Z" });
+
+    const response = await request(t);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Activity feed unavailable" });
+  });
+
+  it("never returns a successful body larger than the literal 256,000-byte contract limit", async () => {
+    const { t, actorId, workerId } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(actorId, { name: "\u0000".repeat(160) });
+      await ctx.db.patch(workerId, { name: "\u0000".repeat(240) });
+    });
+    for (let index = 0; index < 101; index += 1) {
+      await insertAudit(t, {
+        actorUserId: actorId,
+        action: "workers.remove",
+        targetId: workerId,
+        createdAt: new Date(NOW.getTime() - index * 60_000).toISOString(),
+      });
+    }
     const response = await request(t);
     const body = await response.text();
-    expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(256 * 1024);
-    expect(JSON.parse(body)).toMatchObject({ items: [], hasMore: true });
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(256_000);
+    expect(JSON.parse(body)).toMatchObject({ hasMore: true });
   });
 });
