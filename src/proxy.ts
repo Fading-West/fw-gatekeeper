@@ -3,7 +3,9 @@ import { NextFetchEvent, NextRequest, NextResponse } from 'next/server';
 import { hasValidKioskKey, isKioskRequestAllowed, unauthorizedApiResponse } from '@/lib/auth';
 import { hasPortalMemberAccess, type PortalMemberRole } from '@/lib/portal-member';
 
-const PUBLIC_PATHS = ['/login', '/api/convex-auth', '/api/health'];
+// /api/activity has its own dedicated bearer authentication. It must not use
+// browser cookies, but the route and its Convex data path both remain protected.
+const PUBLIC_PATHS = ['/login', '/api/convex-auth', '/api/health', '/api/activity'];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));

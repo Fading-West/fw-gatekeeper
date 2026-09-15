@@ -25,6 +25,60 @@ function publicJsonResponse(body: unknown) {
   });
 }
 
+function activityJsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+async function hasValidActivityCredential(request: Request) {
+  const expected = process.env.ACTIVITY_FW_GATEWAY_TOKEN?.trim();
+  if (!expected || expected.length < 32) return false;
+  const authorization = request.headers.get('authorization');
+  if (!authorization?.startsWith('Bearer ')) return false;
+  const presented = authorization.slice('Bearer '.length).trim();
+  if (presented.length !== expected.length) return false;
+
+  const encoder = new TextEncoder();
+  const [presentedDigest, expectedDigest] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(presented)),
+    crypto.subtle.digest('SHA-256', encoder.encode(expected)),
+  ]);
+  const presentedBytes = new Uint8Array(presentedDigest);
+  const expectedBytes = new Uint8Array(expectedDigest);
+  let difference = 0;
+  for (let index = 0; index < presentedBytes.length; index += 1) {
+    difference |= presentedBytes[index] ^ expectedBytes[index];
+  }
+  return difference === 0;
+}
+
+const activityFeedRead = httpAction(async (ctx, request) => {
+  const expected = process.env.ACTIVITY_FW_GATEWAY_TOKEN?.trim();
+  const sourceAccountId = process.env.ACTIVITY_FW_GATEWAY_ACCOUNT_ID?.trim();
+  if (!expected || expected.length < 32 || !sourceAccountId) {
+    console.error('activity_feed_unconfigured');
+    return activityJsonResponse({ error: 'Activity feed is not configured' }, 503);
+  }
+  if (!(await hasValidActivityCredential(request))) {
+    return activityJsonResponse({ error: 'Unauthorized' }, 401);
+  }
+
+  const result = await ctx.runQuery(internal.activityFeed.read, {
+    sourceAccountId,
+    queriedAt: new Date().toISOString(),
+  });
+  if (!result.authorized) {
+    const status = result.reason === 'mapping_missing' ? 503 : 403;
+    return activityJsonResponse({ error: status === 503 ? 'Activity source account is not configured' : 'Forbidden' }, status);
+  }
+  return activityJsonResponse(result.payload);
+});
+
 type PublicKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
 function publicKioskStatus(lastSync: string | null, now: number): PublicKioskStatus {
@@ -256,5 +310,6 @@ http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', hand
 http.route({ path: '/api/ingest/kiosks/last-sync', method: 'POST', handler: kioskLastSyncIngest });
 http.route({ path: '/api/ingest/workers/sync', method: 'POST', handler: workerSyncRead });
 http.route({ path: '/api/public/kiosk-health', method: 'GET', handler: publicKioskHealth });
+http.route({ path: '/api/internal/activity', method: 'GET', handler: activityFeedRead });
 
 export default http;
