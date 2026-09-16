@@ -1,7 +1,7 @@
 import { internalQuery, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
 import { consumeEnrollmentPhotos } from "./enrollmentPhotos";
@@ -71,42 +71,39 @@ async function findWorkerByName(ctx: any, name: string) {
   return null;
 }
 
-async function findWorkerByEmployeeId(ctx: any, employeeId?: string, includeInactive = false) {
+async function findWorkerByEmployeeId(ctx: QueryCtx, employeeId?: string, includeInactive = false): Promise<Doc<"workers"> | null> {
   const normalized = normalizeEmployeeId(employeeId);
   if (!normalized) return null;
-  const exact = await ctx.db
-    .query("workers")
-    .withIndex("by_employee_id_and_active", (q: any) => q.eq("employeeId", normalized).eq("active", true))
-    .first();
-  if (exact) return exact;
-  const inactive = includeInactive ? await ctx.db.query("workers")
-    .withIndex("by_employee_id_and_active", (q: any) => q.eq("employeeId", normalized).eq("active", false)).first() : null;
+  let match: Doc<"workers"> | null = null;
+  const recordMatch = (candidate: Doc<"workers">) => {
+    if (match && match._id !== candidate._id) {
+      throw new Error(`Employee ID ${normalized} belongs to multiple workers; resolve the duplicate identities before enrollment`);
+    }
+    match = candidate;
+  };
+  for (const active of includeInactive ? [true, false] : [true]) {
+    const exact = await ctx.db.query("workers")
+      .withIndex("by_employee_id_and_active", (q) => q.eq("employeeId", normalized).eq("active", active))
+      .take(2);
+    exact.forEach(recordMatch);
 
-  // Compatibility for records created before IDs were normalized on write.
-  let cursor: string | null = null;
-  do {
-    const page: any = await ctx.db
-      .query("workers")
-      .withIndex("by_active", (q: any) => q.eq("active", true))
-      .paginate({ cursor, numItems: 500 });
-    const worker = page.page.find((candidate: any) => normalizeEmployeeId(candidate.employeeId) === normalized);
-    if (worker) return worker;
-    if (page.isDone) break;
-    cursor = page.continueCursor;
-  } while (cursor);
-  if (inactive) return inactive;
-  if (includeInactive) {
-    cursor = null;
+    // Legacy IDs may have whitespace or different casing. Check them even
+    // when an exact match exists so an ambiguous identity never gets restored.
+    let cursor: string | null = null;
     do {
-      const page: any = await ctx.db.query("workers")
-        .withIndex("by_active", (q: any) => q.eq("active", false)).paginate({ cursor, numItems: 500 });
-      const match = page.page.find((candidate: any) => normalizeEmployeeId(candidate.employeeId) === normalized);
-      if (match) return match;
+      const page = await ctx.db.query("workers")
+        .withIndex("by_active", (q) => q.eq("active", active))
+        .paginate({ cursor, numItems: 500 });
+      for (const candidate of page.page) {
+        if (candidate.employeeId !== normalized && normalizeEmployeeId(candidate.employeeId) === normalized) {
+          recordMatch(candidate);
+        }
+      }
       if (page.isDone) break;
       cursor = page.continueCursor;
     } while (cursor);
   }
-  return null;
+  return match;
 }
 
 export const list = query({
@@ -346,8 +343,8 @@ export const update = mutation({
     }
     if (fields.employeeId !== undefined) {
       const normalizedEmployeeId = normalizeEmployeeId(fields.employeeId);
-      const existingEmployeeId = await findWorkerByEmployeeId(ctx, normalizedEmployeeId);
-      if (existingEmployeeId && existingEmployeeId._id !== id && existingEmployeeId.active) {
+      const existingEmployeeId = await findWorkerByEmployeeId(ctx, normalizedEmployeeId, true);
+      if (existingEmployeeId && existingEmployeeId._id !== id) {
         throw new Error(`Employee ID ${normalizedEmployeeId} already belongs to ${existingEmployeeId.name}`);
       }
       updates.employeeId = normalizedEmployeeId;
