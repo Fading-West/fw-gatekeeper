@@ -212,11 +212,30 @@ export async function listRecognitionAttemptsByFactoryDate(
     kioskId?: string;
     reviewed?: boolean;
     limit?: number;
+    decision?: string;
+    confidenceBand?: string;
+    reviewStatus?: string;
   },
 ) {
   const rows = await listAllRecognitionAttemptsByFactoryDate(ctx, args);
   const limit = clampLimit(args.limit);
-  return rows.slice(0, limit);
+  // Apply portal filters to the full date selection before imposing the display
+  // cap. Otherwise newer nonmatching scans hide older matching evidence.
+  const matches = rows.filter((row) => {
+    const decision = args.decision;
+    const decisionMatches = !decision || decision === "all" || row.decision === decision ||
+      ((decision === "accepted" || decision === "rejected") && row.decision.startsWith(decision));
+    const score = row.best_score;
+    const band = typeof score !== "number" || !Number.isFinite(score)
+      ? null : score >= 0.45 ? "high" : score >= 0.3 ? "medium" : "low";
+    const confidenceMatches = !args.confidenceBand || args.confidenceBand === "all" || band === args.confidenceBand;
+    const label = row.reviewed_label ?? "confirmed";
+    const reviewStatus = !row.reviewed ? "unreviewed"
+      : ["confirmed", "corrected", "ignored"].includes(label) ? label : "unreviewed";
+    const reviewMatches = !args.reviewStatus || args.reviewStatus === "all" || reviewStatus === args.reviewStatus;
+    return decisionMatches && confidenceMatches && reviewMatches;
+  });
+  return matches.slice(0, limit);
 }
 
 export async function listAllRecognitionAttemptsByFactoryDate(
@@ -362,7 +381,36 @@ export const listByDate = query({
     kioskId: v.optional(v.string()),
     reviewed: v.optional(v.boolean()),
     limit: v.optional(v.float64()),
+    decision: v.optional(v.string()),
+    confidenceBand: v.optional(v.string()),
+    reviewStatus: v.optional(v.string()),
   },
+  returns: v.array(v.object({
+    id: v.id("recognitionAttempts"),
+    timestamp: v.string(),
+    kiosk_id: v.string(),
+    source_attempt_id: v.union(v.string(), v.null()),
+    face_detected: v.number(),
+    candidate_worker_id: v.union(v.string(), v.null()),
+    candidate_worker_name: v.union(v.string(), v.null()),
+    best_score: v.union(v.number(), v.null()),
+    second_best_score: v.union(v.number(), v.null()),
+    score_margin: v.union(v.number(), v.null()),
+    decision: v.string(),
+    threshold: v.number(),
+    liveness_confirmed: v.union(v.number(), v.null()),
+    model_version: v.union(v.string(), v.null()),
+    image_quality: v.union(v.number(), v.null()),
+    face_quality: v.union(v.number(), v.null()),
+    brightness: v.union(v.number(), v.null()),
+    blur: v.union(v.number(), v.null()),
+    reviewed: v.number(),
+    reviewed_label: v.union(v.string(), v.null()),
+    reviewed_note: v.union(v.string(), v.null()),
+    reviewed_at: v.union(v.string(), v.null()),
+    created_at: v.string(),
+    updated_at: v.union(v.string(), v.null()),
+  })),
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
     const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
@@ -371,6 +419,9 @@ export const listByDate = query({
       kioskId: args.kioskId,
       reviewed: args.reviewed,
       limit: args.limit,
+      decision: args.decision,
+      confidenceBand: args.confidenceBand,
+      reviewStatus: args.reviewStatus,
     });
   },
 });
