@@ -60,6 +60,7 @@ export function ingestAttendanceEvent(event: {
   kioskId?: string;
   timestamp?: string;
   idempotencyKey?: string;
+  note?: string;
 }) {
   return postSecuredIngest<{ id: string }>('/api/ingest/attendance', event);
 }

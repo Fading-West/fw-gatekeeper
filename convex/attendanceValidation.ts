@@ -11,6 +11,7 @@ export type AttendanceEvent = {
   workerName?: string;
   confidence?: number;
   livenessConfirmed?: boolean;
+  note?: string;
 };
 
 function invalid(message: string): never {
@@ -58,6 +59,7 @@ export function validateAttendanceEvent(value: unknown): AttendanceEvent {
     kioskId: text(event.kioskId, "kioskId", false, 128),
     idempotencyKey: text(event.idempotencyKey ?? event.id, "idempotencyKey"),
     workerName: text(event.workerName, "workerName", false, 200),
+    note: text(event.note, "note", false, 500),
     // Floating-point cosine division can exceed 1 by a few ulps.
     confidence: event.confidence === undefined ? undefined : Math.max(0, Math.min(1, event.confidence as number)),
     livenessConfirmed: event.livenessConfirmed as boolean | undefined,

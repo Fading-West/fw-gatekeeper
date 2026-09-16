@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
       kioskId: kiosk_id || undefined,
       timestamp: timestamp ?? new Date().toISOString(),
       idempotencyKey: body.idempotency_key ?? body.idempotencyKey,
+      note: body.note,
     });
     const result = await ingestAttendanceEvent({ ...validated, timestamp: timestamp ?? undefined });
 

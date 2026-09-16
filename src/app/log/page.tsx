@@ -142,9 +142,9 @@ function LogPageContent() {
   };
 
   const exportCSV = () => {
-    const header = 'Time,Worker,Department,Event,Kiosk,Source,Correction Reason\n';
+    const header = 'Time,Worker,Department,Event,Kiosk,Source,Correction Reason,Note\n';
     const rows = events.map((e) =>
-      [e.timestamp, e.worker_name, e.worker_department, e.event_type, e.kiosk_name || '', e.source || 'kiosk', e.correction_reason || ''].map(csvField).join(',')
+      [e.timestamp, e.worker_name, e.worker_department, e.event_type, e.kiosk_name || '', e.source || 'kiosk', e.correction_reason || '', e.note || ''].map(csvField).join(',')
     ).join('\n');
     downloadCSV(header + rows, `gatekeeper-${date}.csv`);
   };

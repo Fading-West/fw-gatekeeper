@@ -30,3 +30,13 @@ it('rejects an unauthorized legacy request before ingest', async () => {
   expect((await POST(request({ logs: [log] }))).status).toBe(401);
   expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
 });
+
+it('preserves manual clock provenance from the Pi wire format', async () => {
+  vi.mocked(ingestAttendanceBacklog).mockResolvedValue({ synced: 1, acknowledged: 1 });
+  expect((await POST(request({ logs: [{ ...log, note: 'manual_clock' }] }))).status).toBe(200);
+  expect(vi.mocked(ingestAttendanceBacklog).mock.calls[0][0][0]).toMatchObject({ note: 'manual_clock' });
+});
+it.each([42, {}, 'x'.repeat(501)])('rejects invalid notes before forwarding: %s', async note => {
+  expect((await POST(request({ logs: [{ ...log, note }] }))).status).toBe(400);
+  expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
+});

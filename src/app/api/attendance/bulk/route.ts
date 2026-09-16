@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
         idempotencyKey: e.idempotency_key || e.idempotencyKey || e.id || undefined,
         workerName: e.worker_name || e.workerName || undefined,
         confidence: e.confidence,
+        note: e.note,
         livenessConfirmed:
           typeof e.liveness_confirmed === 'boolean'
             ? e.liveness_confirmed
