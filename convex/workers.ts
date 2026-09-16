@@ -52,56 +52,37 @@ function getEncodingStatus(encoding?: number[]) {
   return isSupportedFaceEncoding(encoding) ? "valid" as const : "invalid" as const;
 }
 
-async function findWorkerByName(ctx: any, name: string) {
-  const normalizedLower = normalizeName(name).toLocaleLowerCase();
-  if (!normalizedLower) {
-    return null;
+// Legacy names and employee IDs are not normalized consistently on disk.
+// Keep this compatibility scan bounded and share its result within mutations.
+// A larger roster needs an indexed, normalized identity migration first.
+const MAX_IDENTITY_SCAN_WORKERS = 1000;
+
+async function readWorkerIdentities(ctx: QueryCtx) {
+  const workers = await ctx.db.query("workers").take(MAX_IDENTITY_SCAN_WORKERS + 1);
+  if (workers.length > MAX_IDENTITY_SCAN_WORKERS) {
+    throw new Error("Worker identity lookup limit exceeded; migrate legacy identities before enrolling or changing identities");
   }
-  let cursor: string | null = null;
-  let inactiveMatch = null;
-  do {
-    const page: any = await ctx.db.query("workers").paginate({ cursor, numItems: 500 });
-    const matches = page.page.filter((candidate: any) => normalizeName(candidate.name).toLocaleLowerCase() === normalizedLower);
-    const activeMatch = matches.find((candidate: any) => candidate.active);
-    if (activeMatch) return activeMatch;
-    inactiveMatch ??= matches[0] ?? null;
-    if (page.isDone) return inactiveMatch;
-    cursor = page.continueCursor;
-  } while (cursor);
-  return null;
+  return workers;
 }
 
-async function findWorkerByEmployeeId(ctx: QueryCtx, employeeId?: string, includeInactive = false): Promise<Doc<"workers"> | null> {
+async function findWorkerByName(ctx: QueryCtx, name: string, workers?: Doc<"workers">[]) {
+  const normalizedLower = normalizeName(name).toLocaleLowerCase();
+  if (!normalizedLower) return null;
+  const matches = (workers ?? await readWorkerIdentities(ctx))
+    .filter(candidate => normalizeName(candidate.name).toLocaleLowerCase() === normalizedLower);
+  return matches.find(candidate => candidate.active) ?? matches[0] ?? null;
+}
+
+async function findWorkerByEmployeeId(ctx: QueryCtx, employeeId?: string, includeInactive = false, workers?: Doc<"workers">[]) {
   const normalized = normalizeEmployeeId(employeeId);
   if (!normalized) return null;
   let match: Doc<"workers"> | null = null;
-  const recordMatch = (candidate: Doc<"workers">) => {
-    if (match && match._id !== candidate._id) {
+  for (const candidate of workers ?? await readWorkerIdentities(ctx)) {
+    if ((!candidate.active && !includeInactive) || normalizeEmployeeId(candidate.employeeId) !== normalized) continue;
+    if (match) {
       throw new Error(`Employee ID ${normalized} belongs to multiple workers; resolve the duplicate identities before enrollment`);
     }
     match = candidate;
-  };
-  for (const active of includeInactive ? [true, false] : [true]) {
-    const exact = await ctx.db.query("workers")
-      .withIndex("by_employee_id_and_active", (q) => q.eq("employeeId", normalized).eq("active", active))
-      .take(2);
-    exact.forEach(recordMatch);
-
-    // Legacy IDs may have whitespace or different casing. Check them even
-    // when an exact match exists so an ambiguous identity never gets restored.
-    let cursor: string | null = null;
-    do {
-      const page = await ctx.db.query("workers")
-        .withIndex("by_active", (q) => q.eq("active", active))
-        .paginate({ cursor, numItems: 500 });
-      for (const candidate of page.page) {
-        if (candidate.employeeId !== normalized && normalizeEmployeeId(candidate.employeeId) === normalized) {
-          recordMatch(candidate);
-        }
-      }
-      if (page.isDone) break;
-      cursor = page.continueCursor;
-    } while (cursor);
   }
   return match;
 }
@@ -187,8 +168,9 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
     const now = new Date().toISOString();
     const employeeId = normalizeEmployeeId(args.employeeId);
     const department = normalizeDepartment(args.department);
-    const existingName = await findWorkerByName(ctx, name);
-    const existingEmployeeId = await findWorkerByEmployeeId(ctx, employeeId, true);
+    const identities = await readWorkerIdentities(ctx);
+    const existingName = await findWorkerByName(ctx, name, identities);
+    const existingEmployeeId = await findWorkerByEmployeeId(ctx, employeeId, true, identities);
     // A name is not a stable identity. Only a matching employee ID can
     // restore an inactive worker and retain that person's attendance history.
     const existing = existingEmployeeId;
@@ -330,12 +312,14 @@ export const update = mutation({
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values");
     }
+    const identities = fields.name !== undefined || fields.employeeId !== undefined
+      ? await readWorkerIdentities(ctx) : undefined;
     if (fields.name !== undefined) {
       const trimmedName = normalizeName(fields.name);
       if (!trimmedName) {
         throw new Error("Worker name is required");
       }
-      const existing = await findWorkerByName(ctx, trimmedName);
+      const existing = await findWorkerByName(ctx, trimmedName, identities);
       if (existing && existing._id !== id && existing.active) {
         throw new Error("Worker name already exists");
       }
@@ -343,7 +327,7 @@ export const update = mutation({
     }
     if (fields.employeeId !== undefined) {
       const normalizedEmployeeId = normalizeEmployeeId(fields.employeeId);
-      const existingEmployeeId = await findWorkerByEmployeeId(ctx, normalizedEmployeeId, true);
+      const existingEmployeeId = await findWorkerByEmployeeId(ctx, normalizedEmployeeId, true, identities);
       if (existingEmployeeId && existingEmployeeId._id !== id) {
         throw new Error(`Employee ID ${normalizedEmployeeId} already belongs to ${existingEmployeeId.name}`);
       }

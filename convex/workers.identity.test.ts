@@ -81,6 +81,19 @@ describe('worker identity and enrollment permissions', () => {
     await expect(admin.mutation(api.workers.update, { id: first.id, employeeId: 'F-99' })).resolves.toEqual({ ok: true });
   });
 
+  it('fails closed when legacy identity checks exceed the bounded roster', async () => {
+    const { t, admin } = await setup();
+    await t.run(async ctx => {
+      for (let i = 0; i < 1000; i++) {
+        await ctx.db.insert('workers', { name: `Legacy ${i}`, employeeId: `L-${i}`, department: '', active: i === 999, enrolledAt: consentAt });
+      }
+    });
+    await expect(admin.query(api.workers.findByEmployeeId, { employeeId: 'L-999' })).resolves.toMatchObject({ name: 'Legacy 999', active: 1 });
+    await t.run(ctx => ctx.db.insert('workers', { name: 'Over Limit', department: '', active: false, enrolledAt: consentAt }));
+    await expect(admin.mutation(api.workers.create, { name: 'New Person', employeeId: 'NEW-1', faceEncoding, consentAt })).rejects.toThrow('Worker identity lookup limit exceeded');
+    expect(await t.run(ctx => ctx.db.query('workers').take(1002))).toHaveLength(1001);
+  });
+
   it('blocks direct enrollment-role metadata rewrites but allows unchanged enrollment metadata', async () => {
     const { admin, enrollment } = await setup();
     const worker = await admin.mutation(api.workers.create, { name: 'Roster Person', employeeId: 'F-77', department: 'Operations', faceEncoding, consentAt });
