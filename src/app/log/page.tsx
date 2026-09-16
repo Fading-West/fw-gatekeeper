@@ -6,7 +6,8 @@ import { useSearchParams } from 'next/navigation';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
-import { DEFAULT_FACTORY_TIME_ZONE, getFactoryLocalDateString } from '@/lib/date';
+import { getFactoryLocalDateString } from '@/lib/date';
+import { createAttendanceClock } from '@/lib/attendance-time';
 
 function correctionLabel(action: string) {
   return action.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -88,42 +89,6 @@ function LogPageContent() {
     document.getElementById(attendanceRowId(queryAttendanceId))?.scrollIntoView({ block: 'center' });
   }, [events, queryAttendanceId]);
 
-  // Kiosk timestamps are factory-local wall-clock strings without an offset.
-  // Duration math must resolve them to real instants IN THE FACTORY TIMEZONE:
-  // browser-local parsing would shift with the viewer's DST, and plain
-  // wall-clock subtraction drops the extra/missing hour of a shift spanning a
-  // factory DST transition. Timestamps carrying an explicit offset parse
-  // absolutely.
-  const factoryWallClockAt = (epochMs: number) => {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: DEFAULT_FACTORY_TIME_ZONE,
-      hour12: false,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).formatToParts(new Date(epochMs));
-    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
-    return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
-  };
-
-  // Known limitation: kiosks record naive local timestamps, so the two
-  // occurrences of the repeated fall-back hour are indistinguishable in the
-  // stored data - an interval contained entirely within that one repeated
-  // hour per year cannot be ordered or measured exactly by ANY consumer
-  // until kiosks record absolute instants (tracked in REMEDIATION P2-5).
-  // Shifts merely spanning a transition are computed correctly.
-  const instantMs = (timestamp: string) => {
-    const match = timestamp.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/);
-    if (!match) return new Date(timestamp).getTime();
-    const wallMs = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +(match[6] || 0));
-    // Two-pass inversion: find the epoch whose factory wall-clock equals the
-    // target, converging across DST offset changes.
-    let guess = wallMs;
-    for (let i = 0; i < 2; i += 1) {
-      guess = wallMs - (factoryWallClockAt(guess) - guess);
-    }
-    return guess;
-  };
-
   // Quote/escape a value for CSV so names or departments containing commas,
   // quotes, or newlines cannot shift columns in the exported file.
   const csvField = (value: unknown) => {
@@ -174,9 +139,10 @@ function LogPageContent() {
       return;
     }
 
+    const clock = createAttendanceClock();
     const startsOnSelectedDate = (timestamp: string) => timestamp.startsWith(date);
     const byWorker = new Map<string, { name: string; department: string; events: AttendanceWithWorker[] }>();
-    for (const event of [...events, ...boundaryEvents].sort((a, b) => a.timestamp.localeCompare(b.timestamp))) {
+    for (const event of [...events, ...boundaryEvents].sort(clock.compare)) {
       const entry = byWorker.get(event.worker_id) || {
         name: event.worker_name || event.worker_id,
         department: event.worker_department || '',
@@ -191,7 +157,7 @@ function LogPageContent() {
       let totalMs = 0;
       let firstIn: string | null = null;
       let lastOut: string | null = null;
-      let openIn: string | null = null;
+      let openIn: AttendanceWithWorker | null = null;
       for (const event of entry.events) {
         if (event.event_type === 'clock_in') {
           // Only shifts STARTING on the selected date belong to this export
@@ -199,12 +165,12 @@ function LogPageContent() {
           // unmatched clock-in: entry kiosks can emit repeat clock_ins, and
           // replacing the open interval's start would undercount hours.
           if (!openIn && startsOnSelectedDate(event.timestamp)) {
-            openIn = event.timestamp;
+            openIn = event;
             if (!firstIn) firstIn = event.timestamp;
           }
         } else if (event.event_type === 'clock_out' && openIn) {
           // A clock_out closes the open interval even after midnight.
-          totalMs += instantMs(event.timestamp) - instantMs(openIn);
+          totalMs += clock.instantMs(event) - clock.instantMs(openIn);
           lastOut = event.timestamp;
           openIn = null;
         }

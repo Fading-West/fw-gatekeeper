@@ -45,13 +45,11 @@ export const get = query({
     const todayAttendance = (await listEffectiveAttendanceByTimestampRange(ctx, today))
       .filter((record) => activeWorkerIds.has(record.workerId));
 
+    // The helper orders by instant, including offsets and subsecond precision.
     // Latest event per worker
     const workerStatus = new Map<string, { eventType: string; timestamp: string }>();
     for (const a of todayAttendance) {
-      const existing = workerStatus.get(a.workerId);
-      if (!existing || a.timestamp > existing.timestamp) {
-        workerStatus.set(a.workerId, { eventType: a.eventType, timestamp: a.timestamp });
-      }
+      workerStatus.set(a.workerId, { eventType: a.eventType, timestamp: a.timestamp });
     }
 
     let clockedIn = 0;
@@ -66,8 +64,7 @@ export const get = query({
     const firstIns = new Map<string, string>();
     for (const a of todayAttendance) {
       if (a.eventType === "clock_in") {
-        const existing = firstIns.get(a.workerId);
-        if (!existing || a.timestamp < existing) {
+        if (!firstIns.has(a.workerId)) {
           firstIns.set(a.workerId, a.timestamp);
         }
       }
