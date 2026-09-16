@@ -24,7 +24,7 @@ The dashboard HTTP worker responses expose readiness metadata (`has_face_encodin
 
 ## How consent is captured
 
-Before photo capture can start, the enrolling operator must confirm a required checkbox stating that the worker has been told a facial template will be stored for attendance and has agreed. The enrollment API rejects requests without this acknowledgement (HTTP 400). The Convex mutations also require consent confirmation for every template or photo write. The server records its receipt time as `consentAt`, the authenticated operator as `consentRecordedBy`, and an immutable audit row on every enrollment; it does not trust a client-supplied time as the receipt time. Re-enrollment deletes superseded cloud photos.
+Before photo capture can start, the enrolling operator must confirm a required checkbox stating that the worker has been told a facial template will be stored for attendance and has agreed. The enrollment API rejects requests without this acknowledgement (HTTP 400). The Convex mutations also require consent confirmation for every template or photo write. The server records its receipt time as `consentAt`, the authenticated operator as `consentRecordedBy`, and an immutable audit row on every enrollment; it does not trust a client-supplied time as the receipt time. Re-enrollment deletes superseded cloud photos unless another worker still references them (see the legacy reference check below).
 
 ## How long it is kept
 
@@ -39,6 +39,10 @@ The enrollment API stores each accepted photo through an authenticated Convex ac
 
 An abandoned request, lost upload response, or failed immediate cleanup leaves pending photos eligible for scheduled deletion after the one-hour grace period. Expired or already-deleted photos cannot be attached by a late save. This expiry applies only to incomplete uploads, not enrolled workers' retained photos. Scheduled execution can run later than its target time during outages.
 
+A save accepts only unexpired pending uploads owned by the operator, or photos already attached to the same worker. Existing legacy attachments can be retained on that worker, including employee-ID restoration, but cannot be copied to another worker.
+
+Before deleting detached photos on replacement or purge, the server checks both active and inactive workers for legacy shared references. Shared files remain until their last worker reference is removed; `photosDeleted` counts only files actually deleted. This check is bounded to **1,000 total workers**. Above that limit, operations detaching photos fail with an explicit error and roll back all changes; metadata edits, retaining the same photos, and purges without photos still work. Deploy an indexed ownership migration before exceeding this limit to keep photo replacement and purge available.
+
 This protects new uploads through the enrollment API. It does not identify or retroactively purge pre-existing orphan files, or track legacy uploads made directly through `workers.generateUploadUrl`. File storage and database registration are separate operations: a hard process termination between storing a file and registering its receipt can still leave an unidentified orphan. Ordinary registration failures trigger immediate deletion; failed deletion is logged for operator investigation.
 
 ### Deployment order
@@ -51,7 +55,7 @@ Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations
 2. Find the worker and click **Purge face data**. If already deactivated, enable **Show inactive workers** first.
 3. Enter a reason (for example, "Terminated 2026-09-01" or "Worker requested deletion"). The reason is required.
 4. Confirm. The system then, in one transaction:
-   - deletes every enrollment photo from Convex file storage,
+   - deletes enrollment photos from Convex file storage when no other worker references them,
    - removes the template and photo references from the worker record,
    - marks the worker inactive and sets `biometricsPurgedAt`,
    - writes an `auditLog` row recording who purged, which worker, when, and why.

@@ -24,11 +24,25 @@ function assertBiometricConsent(consentAt?: string) {
   }
 }
 
-async function deleteReplacedPhotos(ctx: MutationCtx, previous: Id<"_storage">[] | undefined, next: Id<"_storage">[] | undefined) {
+// Legacy data can contain shared photo IDs. Until those references have an
+// indexed ownership representation, inspect a bounded roster and fail closed
+// if it cannot be checked safely in a single transaction.
+const PHOTO_REFERENCE_SCAN_LIMIT = 1000;
+
+async function deleteReplacedPhotos(ctx: MutationCtx, workerId: Id<"workers">, previous: Id<"_storage">[] | undefined, next: Id<"_storage">[] | undefined) {
   const retained = new Set(next ?? []);
-  for (const id of new Set(previous ?? [])) {
-    if (!retained.has(id)) await ctx.storage.delete(id);
+  const removed = new Set((previous ?? []).filter((id) => !retained.has(id)));
+  if (removed.size === 0) return 0;
+  const workers = await ctx.db.query("workers").take(PHOTO_REFERENCE_SCAN_LIMIT + 1);
+  if (workers.length > PHOTO_REFERENCE_SCAN_LIMIT) {
+    throw new Error("Cannot safely delete enrollment photos: worker reference scan exceeds 1000 workers; no changes saved");
   }
+  for (const worker of workers) {
+    if (worker._id === workerId) continue;
+    for (const id of worker.photoStorageIds ?? []) removed.delete(id);
+  }
+  for (const id of removed) await ctx.storage.delete(id);
+  return removed.size;
 }
 
 function assertPhotoLimit(photos?: Id<"_storage">[]) {
@@ -164,7 +178,6 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
     }
     assertBiometricConsent(args.consentAt);
     assertPhotoLimit(args.photoStorageIds);
-    await consumeEnrollmentPhotos(ctx, args.photoStorageIds, actorUserId);
     const now = new Date().toISOString();
     const employeeId = normalizeEmployeeId(args.employeeId);
     const department = normalizeDepartment(args.department);
@@ -182,8 +195,10 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       throw new Error(`Employee ID ${employeeId} already belongs to ${existingEmployeeId.name}`);
     }
 
+    await consumeEnrollmentPhotos(ctx, args.photoStorageIds, actorUserId, existing?.photoStorageIds);
+
     if (existing && !existing.active) {
-      await deleteReplacedPhotos(ctx, existing.photoStorageIds, args.photoStorageIds);
+      await deleteReplacedPhotos(ctx, existing._id, existing.photoStorageIds, args.photoStorageIds);
       await ctx.db.patch(existing._id, {
         name,
         employeeId,
@@ -307,7 +322,7 @@ export const update = mutation({
     const writesBiometrics = fields.faceEncoding !== undefined || fields.photoStorageIds !== undefined;
     if (writesBiometrics) assertBiometricConsent(fields.consentAt);
     assertPhotoLimit(fields.photoStorageIds);
-    await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId);
+    await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId, worker.photoStorageIds);
     const updates: Record<string, unknown> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values");
@@ -341,7 +356,7 @@ export const update = mutation({
       updates.consentAt = new Date().toISOString();
       updates.consentRecordedBy = member.userId;
       // An updated template supersedes its old enrollment photographs too.
-      await deleteReplacedPhotos(ctx, worker.photoStorageIds, fields.photoStorageIds);
+      await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, fields.photoStorageIds);
       updates.photoStorageIds = fields.photoStorageIds;
     }
     if (fields.faceEncoding !== undefined) {
@@ -396,11 +411,7 @@ export const purgeBiometrics = mutation({
     const worker = await ctx.db.get(args.id);
     if (!worker) throw new Error("Worker not found");
 
-    let photosDeleted = 0;
-    for (const storageId of new Set(worker.photoStorageIds ?? [])) {
-      await ctx.storage.delete(storageId);
-      photosDeleted += 1;
-    }
+    const photosDeleted = await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, undefined);
 
     const now = new Date().toISOString();
     await ctx.db.patch(args.id, {

@@ -48,16 +48,20 @@ export const upload = action({
 
 // Called in the same transaction that attaches the photos to a worker. Either
 // both the attachment and receipt removal commit, or neither does.
-export async function consumeEnrollmentPhotos(ctx: MutationCtx, ids: Id<"_storage">[] | undefined, ownerId: Id<"users">) {
+export async function consumeEnrollmentPhotos(ctx: MutationCtx, ids: Id<"_storage">[] | undefined, ownerId: Id<"users">, existingIds?: Id<"_storage">[]) {
+  const retained = new Set(existingIds ?? []);
   for (const storageId of new Set(ids ?? [])) {
+    // Existence is not permission to attach a file: only a fresh upload or a
+    // photo already on this worker may be used, including legacy attachments.
+    if (!(await ctx.storage.getUrl(storageId))) throw new Error("Enrollment photo no longer exists; retry enrollment");
     const pending = await ctx.db.query("pendingEnrollmentPhotos").withIndex("by_storageId", (q) => q.eq("storageId", storageId)).unique();
     if (pending) {
       if (pending.ownerId !== ownerId) throw new Error("Enrollment photo belongs to another user");
       if (pending.expiresAt <= Date.now()) throw new Error("Enrollment photo expired; retry enrollment");
       await ctx.db.delete(pending._id);
+    } else if (!retained.has(storageId)) {
+      throw new Error("Enrollment photo is not an upload owned by you or already attached to this worker");
     }
-    // Also reject a late worker-save retry after cleanup removed the photo.
-    if (!(await ctx.storage.getUrl(storageId))) throw new Error("Enrollment photo no longer exists; retry enrollment");
   }
 }
 

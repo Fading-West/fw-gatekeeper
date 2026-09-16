@@ -203,12 +203,9 @@ it("lets admins find inactive workers for purge without exposing the archive to 
 
 
 it("accepts up to six quality-approved photos and rejects larger sets", async () => {
-  const { actor, test, workerId } = await setup("admin");
-  const photos = await test.run(async ctx => {
-    const result = [];
-    for (let i = 0; i < 7; i++) result.push(await ctx.storage.store(new Blob([String(i)], { type: "image/jpeg" })));
-    return result;
-  });
+  const { actor, workerId } = await setup("admin");
+  const photos = [];
+  for (let i = 0; i < 7; i++) photos.push(await actor.action(api.enrollmentPhotos.upload, { photo: new TextEncoder().encode(String(i)).buffer }));
   await expect(actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, photoStorageIds: photos.slice(0, 6), consentAt: new Date().toISOString() })).resolves.toEqual({ ok: true });
   await expect(actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, photoStorageIds: photos, consentAt: new Date().toISOString() })).rejects.toThrow("At most 6");
 });
