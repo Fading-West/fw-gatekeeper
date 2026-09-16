@@ -59,3 +59,12 @@ it('retrieves exact older attempts despite incompatible list filters', async () 
   expect(response.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
   expect(response.summary.total).toBe(1);
 });
+it.each(['confirmed', 'corrected', 'ignored'])('excludes %s near misses from review backlog', async reviewedLabel => {
+  await test.run(async ctx => {
+    await ctx.db.insert('recognitionAttempts', { ...base, decision: 'near_miss', reviewedLabel });
+    await ctx.db.insert('recognitionAttempts', { ...base, decision: 'near_miss', reviewed: false });
+  });
+  const response = await get('decision=near_miss');
+  expect(response.attempts).toHaveLength(2);
+  expect(response.summary.review_backlog).toBe(1);
+});

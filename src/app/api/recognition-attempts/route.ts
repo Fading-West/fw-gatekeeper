@@ -90,7 +90,7 @@ function summarize(attempts: RecognitionAttempt[]): RecognitionAttemptSummary {
       (attempt) => attempt.decision.startsWith('accepted') && typeof attempt.margin === 'number' && attempt.margin <= LOW_MARGIN_THRESHOLD,
     ).length,
     median_score: median(scores),
-    review_backlog: attempts.filter((attempt) => attempt.review_status === 'unreviewed' || attempt.decision === 'near_miss').length,
+    review_backlog: attempts.filter((attempt) => attempt.review_status === 'unreviewed').length,
     total: attempts.length,
   };
 }

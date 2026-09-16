@@ -133,3 +133,42 @@ describe("legacy unsupported schedules", () => {
     expect(payload.exceptions[0]).toMatchObject({ type: "unsupported_schedule", severity: "critical", scheduled_start: "22:00", suggested_resolution: { action: "review_only", can_apply: false, corrected_time: null, href: "/schedules" } });
   });
 });
+
+describe("recognition review completion", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each(["near_miss", "rejected_unknown", "accepted"])("closes %s reviews and honors the latest explicit reopen", async (decision) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${DATE}T15:00:00Z`));
+    const admin = await seedShift();
+    const id = await admin.run(ctx => ctx.db.insert("recognitionAttempts", {
+      timestamp: `${DATE}T09:00:00`, kioskId: "entry", faceDetected: true,
+      decision, scoreMargin: 0.01, threshold: 0.3, reviewed: false, createdAt: `${DATE}T14:00:00Z`,
+    }));
+    const exceptionKey = `${DATE}:recognition_review:${id}`;
+    const status = async () => (await admin.query(api.shiftExceptions.summary, { date: DATE })).exceptions.find(row => row.key === exceptionKey);
+    expect(await status()).toMatchObject({ status: "open" });
+    await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "open" });
+    for (const label of ["confirmed", "corrected", "ignored"]) {
+      vi.advanceTimersByTime(1000);
+      await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: label, reviewedNote: `Reviewed ${label}` });
+      expect(await status()).toMatchObject({ status: label === "ignored" ? "ignored" : "reviewed", review_note: `Reviewed ${label}` });
+    }
+    vi.advanceTimersByTime(1000);
+    await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "open", note: "Recheck" });
+    expect(await status()).toMatchObject({ status: "open", review_note: "Recheck" });
+    expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(1);
+    expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(1);
+    vi.advanceTimersByTime(1000);
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed" });
+    expect(await status()).toMatchObject({ status: "reviewed" });
+    expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(0);
+    expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(0);
+    vi.advanceTimersByTime(1000);
+    await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "resolved" });
+    expect(await status()).toMatchObject({ status: "resolved" });
+    vi.advanceTimersByTime(1000);
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewed: false });
+    expect(await status()).toMatchObject({ status: "open", reviewed_at: null });
+  });
+});
