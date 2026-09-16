@@ -39,7 +39,7 @@ function getEventTypeForAction(action: "add_clock_in" | "add_clock_out" | "void_
 export const list = query({
   args: {
     date: v.string(),
-    workerId: v.optional(v.string()),
+    workerId: v.optional(v.id("workers")),
   },
   returns: v.array(attendanceCorrectionResult),
   handler: async (ctx, args) => {
@@ -57,7 +57,8 @@ export const list = query({
 
     const rows = [];
     for (const correction of corrections) {
-      const worker = correction.workerId ? await ctx.db.get(correction.workerId as any).catch(() => null) : null;
+      const workerId = ctx.db.normalizeId("workers", correction.workerId);
+      const worker = workerId ? await ctx.db.get(workerId) : null;
       const original = correction.originalAttendanceId
         ? await ctx.db.get(correction.originalAttendanceId).catch(() => null)
         : null;
@@ -65,8 +66,8 @@ export const list = query({
         id: String(correction._id),
         date: correction.date,
         worker_id: correction.workerId,
-        worker_name: (worker as any)?.name || "",
-        worker_department: (worker as any)?.department || "",
+        worker_name: worker?.name || "",
+        worker_department: worker?.department || "",
         action: correction.action,
         event_type: correction.eventType || getEventTypeForAction(correction.action) || null,
         corrected_timestamp: correction.correctedTimestamp || null,
@@ -88,7 +89,7 @@ export const create = mutation({
   args: {
     requestId: v.optional(v.string()),
     date: v.string(),
-    workerId: v.string(),
+    workerId: v.id("workers"),
     action: v.union(v.literal("add_clock_in"), v.literal("add_clock_out"), v.literal("void_event")),
     correctedTimestamp: v.optional(v.string()),
     originalAttendanceId: v.optional(v.id("attendance")),
@@ -131,7 +132,7 @@ export const create = mutation({
       }
     }
 
-    const worker = await ctx.db.get(args.workerId as any).catch(() => null);
+    const worker = await ctx.db.get(args.workerId);
     if (!worker) {
       throw new Error("Worker not found.");
     }
