@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
-import { findActiveKioskByIdentifier } from "./kioskLookup";
+import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
@@ -551,11 +551,12 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
   }
 
+  const resolveKiosk = createActiveKioskResolver(ctx);
   const kioskNameCache = new Map<string, string | null>();
   async function resolveKioskName(kioskId?: string | null) {
     if (!kioskId) return null;
     if (kioskNameCache.has(kioskId)) return kioskNameCache.get(kioskId) || null;
-    const kiosk = await findActiveKioskByIdentifier(ctx, kioskId);
+    const kiosk = await resolveKiosk(kioskId);
     const name = kiosk?.name || null;
     kioskNameCache.set(kioskId, name);
     return name;

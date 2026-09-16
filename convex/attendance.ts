@@ -4,7 +4,7 @@ import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { validateAttendanceBatch, validateAttendanceEvent, type AttendanceEvent } from "./attendanceValidation";
-import { findActiveKioskByIdentifier } from "./kioskLookup";
+import { createActiveKioskResolver } from "./kioskLookup";
 import {
   buildConservativeFactoryLocalTimestampRanges,
   getFactoryLocalTimestamp,
@@ -133,9 +133,10 @@ export const list = query({
 
     // Join worker and kiosk data
     const result: any[] = [];
+    const resolveKiosk = createActiveKioskResolver(ctx);
     for (const a of records) {
       const worker = a.workerId ? await ctx.db.get(a.workerId as any).catch(() => null) : null;
-      const kiosk = await findActiveKioskByIdentifier(ctx, a.kioskId);
+      const kiosk = await resolveKiosk(a.kioskId);
       result.push({
         id: a._id,
         worker_id: a.workerId,
