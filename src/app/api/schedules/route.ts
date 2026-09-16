@@ -1,4 +1,5 @@
 export const dynamic = 'force-dynamic';
+import { ConvexError } from 'convex/values';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
@@ -28,6 +29,9 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === "INVALID_SCHEDULE_TIMES") {
+      return NextResponse.json({ error: error.data.message }, { status: 400 });
+    }
     console.error('Schedules POST error:', error);
     return NextResponse.json({ error: 'Failed to create schedule' }, { status: 500 });
   }
@@ -48,6 +52,9 @@ export async function PATCH(req: NextRequest) {
     await convex.mutation(api.schedules.update, updates as any);
     return NextResponse.json({ ok: true });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === "INVALID_SCHEDULE_TIMES") {
+      return NextResponse.json({ error: error.data.message }, { status: 400 });
+    }
     console.error('Schedules PATCH error:', error);
     return NextResponse.json({ error: 'Failed to update schedule' }, { status: 500 });
   }

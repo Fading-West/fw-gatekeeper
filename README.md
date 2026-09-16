@@ -5,6 +5,10 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 **Live Dashboard:** https://fw-gatekeeper.onrender.com  
 **Convex Dashboard:** https://dashboard.convex.dev/t/thiesnoah/fw-gatekeeper
 
+## Schedule support
+
+Schedules must start and end on the same factory-local calendar day, with an end later than the start (`HH:MM`). Overnight and 24-hour schedules are unsupported. Existing unsupported schedules remain visible with a warning and produce a critical configuration exception for assigned workers; schedule-based attendance checks and suggested corrections are disabled until an administrator repairs or removes that schedule. Raw attendance remains available for manual review.
+
 ## Architecture
 
 ```

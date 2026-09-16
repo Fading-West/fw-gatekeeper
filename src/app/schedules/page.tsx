@@ -5,6 +5,8 @@ import { Schedule } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
 
+import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
+
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function SchedulesPage() {
@@ -91,6 +93,7 @@ export default function SchedulesPage() {
     }
 
     try {
+      if (!isSupportedScheduleTimeRange(startTime, endTime)) throw new Error(SCHEDULE_TIME_ERROR);
       const body = { id: editId, name, days, start_time: startTime, end_time: endTime, department: department || null };
 
       if (editId) {
@@ -280,6 +283,7 @@ export default function SchedulesPage() {
                     <span className="text-xs font-mono text-slate-400">{parseDays(s.days)}</span>
                     <span className="text-slate-600">&middot;</span>
                     <span className="text-xs font-mono text-gold tabular-nums">{s.start_time} &ndash; {s.end_time}</span>
+                    {!isSupportedScheduleTimeRange(s.start_time, s.end_time) && <p role="alert" className="text-sm text-red-400 mt-2">Unsupported schedule: {SCHEDULE_TIME_ERROR}</p>}
                     {s.department && (
                       <>
                         <span className="text-slate-600">&middot;</span>
