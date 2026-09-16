@@ -6,6 +6,8 @@ import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 
+import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+
 const LOW_MARGIN_THRESHOLD = 0.08;
 
 type ExceptionStatus = "open" | "reviewed" | "ignored" | "resolved";
@@ -212,6 +214,12 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
   const workerMissing = !exception.worker_id;
   const workerDisabledReason = "A worker-backed exception is required before an attendance correction can be created.";
 
+  if (exception.type === "unsupported_schedule") {
+    return { ...base, action: "review_only", label: "Fix schedule", cta: "Open schedules",
+      reason: SCHEDULE_TIME_ERROR, href: exception.links.schedules || null,
+      source_href: exception.links.schedules || null, disabled_reason: SCHEDULE_TIME_ERROR };
+  }
+
   if (exception.type === "missing_arrival") {
     const correctedTime = exception.scheduled_start || "06:00";
     return {
@@ -386,7 +394,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   for (const worker of workers) {
-    const schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
+    let schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
     const workerId = String(worker._id);
     const workerEvents = [...(eventsByWorker.get(workerId) || [])].sort((a, b) =>
       a.timestamp.localeCompare(b.timestamp),
@@ -403,6 +411,22 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       worker: `/workers`,
       schedules: "/schedules",
     };
+
+    if (schedule && !isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
+      exceptions.push(createException({
+        key: `${date}:unsupported_schedule:${workerId}`,
+        date, type: "unsupported_schedule", severity: "critical",
+        title: `${workerName} has an unsupported schedule`,
+        description: `${schedule.name}: ${SCHEDULE_TIME_ERROR} Schedule-based attendance checks are unavailable until an administrator fixes the schedule.`,
+        worker_id: workerId, worker_name: workerName, department,
+        kiosk_id: null, kiosk_name: null,
+        first_seen: firstIn?.timestamp || null, last_seen: lastEvent?.timestamp || null,
+        schedule_name: schedule.name, scheduled_start: schedule.startTime, scheduled_end: schedule.endTime,
+        event_count: workerEvents.length, links: baseLinks,
+      }));
+      // Keep scan-based checks, but never suggest a same-day correction from this range.
+      schedule = null;
+    }
 
     if (schedule && !firstIn && scheduleTimeHasPassed(date, schedule.startTime, factoryNow)) {
       const key = `${date}:missing_arrival:${workerId}`;

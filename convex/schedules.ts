@@ -1,6 +1,14 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
+
+import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+
+function validateTimes(start: string, end: string) {
+  if (!isSupportedScheduleTimeRange(start, end)) {
+    throw new ConvexError({ code: "INVALID_SCHEDULE_TIMES", message: SCHEDULE_TIME_ERROR });
+  }
+}
 
 const scheduleResult = v.object({
   id: v.id("schedules"),
@@ -51,6 +59,7 @@ export const create = mutation({
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin"]);
 
+    validateTimes(args.startTime, args.endTime);
     const id = await ctx.db.insert("schedules", {
       name: args.name,
       days: args.days,
@@ -78,6 +87,9 @@ export const update = mutation({
     await assertPortalRole(ctx, ["admin"]);
 
     const { id, ...fields } = args;
+    const existing = await ctx.db.get(id);
+    if (!existing) throw new Error("Schedule not found");
+    validateTimes(fields.startTime ?? existing.startTime, fields.endTime ?? existing.endTime);
     const updates: Record<string, unknown> = {};
     if (fields.name !== undefined) updates.name = fields.name;
     if (fields.days !== undefined) updates.days = fields.days;

@@ -111,3 +111,25 @@ describe("missing clock-out timing uses the factory-local day", () => {
     expect(payload.exceptions.filter((row: any) => row.type === "missing_arrival")).toHaveLength(expected);
   });
 });
+
+
+describe("legacy unsupported schedules", () => {
+  afterEach(() => vi.useRealTimers());
+  it.each([true, false])("blocks schedule-based corrections with clock-in=%s", async (hasClockIn) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-04T04:00:00Z")); // 23:00 Central
+    const admin = await seedShift();
+    await admin.run(async ctx => {
+      const schedule = (await ctx.db.query("schedules").collect())[0];
+      await ctx.db.patch(schedule._id, { startTime: "22:00", endTime: "06:00", department: "Operations" });
+      await ctx.db.insert("schedules", { name: "General shift", days: "[1,2,3,4,5]", startTime: "06:00", endTime: "14:30", active: true, createdAt: new Date().toISOString() });
+      for (const event of await ctx.db.query("attendance").collect()) {
+        if (hasClockIn) await ctx.db.patch(event._id, { timestamp: `${DATE}T22:00:00` });
+        else await ctx.db.delete(event._id);
+      }
+    });
+    const payload = await admin.query(api.shiftExceptions.summary, { date: DATE });
+    expect(payload.exceptions).toHaveLength(1);
+    expect(payload.exceptions[0]).toMatchObject({ type: "unsupported_schedule", severity: "critical", scheduled_start: "22:00", suggested_resolution: { action: "review_only", can_apply: false, corrected_time: null, href: "/schedules" } });
+  });
+});
