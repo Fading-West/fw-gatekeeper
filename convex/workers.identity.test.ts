@@ -44,6 +44,56 @@ describe('worker identity and enrollment permissions', () => {
     await expect(admin.mutation(api.workers.create, { name: 'Same Name', employeeId: 'F-99', faceEncoding, consentAt })).rejects.toThrow('Worker name already exists');
   });
 
+  it.each(['F-77', ' f-77 '])('reserves inactive employee IDs, including legacy spelling %s', async (storedId) => {
+    const { t, admin } = await setup();
+    const retired = await admin.mutation(api.workers.create, { name: 'Retired Person', employeeId: 'F-77', faceEncoding, consentAt });
+    await admin.mutation(api.workers.remove, { id: retired.id });
+    await t.run(ctx => ctx.db.patch(retired.id, { employeeId: storedId }));
+    const other = await admin.mutation(api.workers.create, { name: 'Other Person', employeeId: 'F-88', faceEncoding, consentAt });
+    await expect(admin.mutation(api.workers.update, { id: other.id, employeeId: ' f-77 ' })).rejects.toThrow('already belongs to Retired Person');
+    expect(await t.run(ctx => ctx.db.get(other.id))).toMatchObject({ employeeId: 'F-88' });
+    await expect(admin.mutation(api.workers.update, { id: other.id, employeeId: ' f-88 ' })).resolves.toEqual({ ok: true });
+    const restored = await admin.mutation(api.workers.create, { name: 'Returning Person', employeeId: 'F-77', faceEncoding, consentAt });
+    expect(restored.id).toBe(retired.id);
+  });
+
+  it.each(['F-77', ' f-77 '])('rejects ambiguous inactive identities with spelling %s without restoring either history', async (duplicateId) => {
+    const { t, admin } = await setup();
+    const first = await admin.mutation(api.workers.create, { name: 'First Person', employeeId: 'F-77', faceEncoding, consentAt });
+    const second = await admin.mutation(api.workers.create, { name: 'Second Person', employeeId: 'F-88', faceEncoding, consentAt });
+    await admin.mutation(api.workers.remove, { id: first.id });
+    await admin.mutation(api.workers.remove, { id: second.id });
+    await t.run(ctx => ctx.db.patch(second.id, { employeeId: duplicateId }));
+    await expect(admin.mutation(api.workers.create, { name: 'Returning Person', employeeId: 'F-77', faceEncoding, consentAt })).rejects.toThrow('belongs to multiple workers');
+    for (const worker of [first, second]) {
+      expect(await t.run(ctx => ctx.db.get(worker.id))).toMatchObject({ active: false, name: worker.name });
+    }
+  });
+
+  it('does not let an exact self match hide another legacy identity during an update', async () => {
+    const { t, admin } = await setup();
+    const first = await admin.mutation(api.workers.create, { name: 'First Person', employeeId: 'F-77', faceEncoding, consentAt });
+    const second = await admin.mutation(api.workers.create, { name: 'Second Person', employeeId: 'F-88', faceEncoding, consentAt });
+    await admin.mutation(api.workers.remove, { id: second.id });
+    await t.run(ctx => ctx.db.patch(second.id, { employeeId: ' f-77 ' }));
+    await expect(admin.mutation(api.workers.update, { id: first.id, employeeId: 'F-77' })).rejects.toThrow('belongs to multiple workers');
+    // An administrator can still repair the collision by assigning a free ID.
+    await expect(admin.mutation(api.workers.update, { id: first.id, employeeId: 'F-99' })).resolves.toEqual({ ok: true });
+  });
+
+  it('fails closed when legacy identity checks exceed the bounded roster', async () => {
+    const { t, admin } = await setup();
+    await t.run(async ctx => {
+      for (let i = 0; i < 1000; i++) {
+        await ctx.db.insert('workers', { name: `Legacy ${i}`, employeeId: `L-${i}`, department: '', active: i === 999, enrolledAt: consentAt });
+      }
+    });
+    await expect(admin.query(api.workers.findByEmployeeId, { employeeId: 'L-999' })).resolves.toMatchObject({ name: 'Legacy 999', active: 1 });
+    await t.run(ctx => ctx.db.insert('workers', { name: 'Over Limit', department: '', active: false, enrolledAt: consentAt }));
+    await expect(admin.mutation(api.workers.create, { name: 'New Person', employeeId: 'NEW-1', faceEncoding, consentAt })).rejects.toThrow('Worker identity lookup limit exceeded');
+    expect(await t.run(ctx => ctx.db.query('workers').take(1002))).toHaveLength(1001);
+  });
+
   it('blocks direct enrollment-role metadata rewrites but allows unchanged enrollment metadata', async () => {
     const { admin, enrollment } = await setup();
     const worker = await admin.mutation(api.workers.create, { name: 'Roster Person', employeeId: 'F-77', department: 'Operations', faceEncoding, consentAt });
