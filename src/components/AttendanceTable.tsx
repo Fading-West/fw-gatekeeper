@@ -82,6 +82,11 @@ export default function AttendanceTable({
                 </td>
                 <td className="py-3 px-4 text-xs font-mono text-slate-500">
                   {e.kiosk_name || '—'}
+                  {e.note === 'manual_clock' && (
+                    <span className="ml-2 rounded-full border border-gold/20 bg-gold/10 px-2 py-0.5 text-[10px] text-gold">
+                      Manual clock
+                    </span>
+                  )}
                   {e.source === 'correction' && (
                     <span className="ml-2 rounded-full border border-gold/20 bg-gold/10 px-2 py-0.5 text-[10px] text-gold">
                       corrected

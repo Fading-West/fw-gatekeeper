@@ -246,6 +246,7 @@ const attendanceIngest = httpAction(async (ctx, request) => {
       kioskId: event.kioskId,
       timestamp: body.timestamp === undefined ? undefined : event.timestamp,
       idempotencyKey: event.idempotencyKey,
+      note: event.note,
     });
     console.info('secured_ingest_attendance_single', { workerId: event.workerId });
     return jsonResponse(result, 201);

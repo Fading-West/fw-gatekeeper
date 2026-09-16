@@ -1,5 +1,6 @@
 import { getFactoryLocalDateKey } from "./localDate";
 import { internalMutation, internalQuery, query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { validateAttendanceBatch, validateAttendanceEvent, type AttendanceEvent } from "./attendanceValidation";
@@ -135,6 +136,7 @@ export const list = query({
         confidence: a.confidence || 0,
         liveness_confirmed: a.livenessConfirmed ? 1 : 0,
         source: a.source || "kiosk",
+        note: a.note || null,
         corrected: Boolean(a.corrected),
         correction_id: a.correctionId || null,
         correction_reason: a.correctionReason || null,
@@ -155,7 +157,18 @@ const attendanceEventInput = v.object({
   workerName: v.optional(v.string()),
   confidence: v.optional(v.float64()),
   livenessConfirmed: v.optional(v.boolean()),
+  note: v.optional(v.string()),
 });
+
+// A retry can restore metadata dropped by older ingest versions, but cannot
+// change a recorded note. Older clients may omit notes without erasing them.
+async function preserveAttendanceNote(ctx: MutationCtx, existing: { _id: Id<"attendance">; note?: string }, event: AttendanceEvent) {
+  if (event.note === undefined) return;
+  if (existing.note !== undefined && existing.note !== event.note) {
+    throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "A retry cannot change the attendance note" });
+  }
+  if (existing.note === undefined) await ctx.db.patch(existing._id, { note: event.note });
+}
 
 async function insertAttendanceEvent(ctx: MutationCtx, event: AttendanceEvent) {
   const workerId = ctx.db.normalizeId("workers", event.workerId);
@@ -171,6 +184,7 @@ async function insertAttendanceEvent(ctx: MutationCtx, event: AttendanceEvent) {
       if (existing.workerId !== event.workerId || existing.eventType !== event.eventType || existing.timestamp !== event.timestamp) {
         throw new ConvexError({ code: "INVALID_ATTENDANCE", message: "An idempotency key cannot be reused for different attendance evidence" });
       }
+      await preserveAttendanceNote(ctx, existing, event);
       return { id: existing._id, inserted: false };
     }
   }
@@ -180,6 +194,7 @@ async function insertAttendanceEvent(ctx: MutationCtx, event: AttendanceEvent) {
   // Legacy events without stable keys retain exact-event deduplication. Two
   // independently keyed scans at the same instant remain distinct evidence.
   if (sameEvent && (!event.idempotencyKey || !sameEvent.idempotencyKey)) {
+    await preserveAttendanceNote(ctx, sameEvent, event);
     if (event.idempotencyKey) await ctx.db.patch(sameEvent._id, { idempotencyKey: event.idempotencyKey });
     return { id: sameEvent._id, inserted: false };
   }
@@ -193,6 +208,7 @@ export const createFromHttp = internalMutation({
     eventType: v.string(),
     kioskId: v.optional(v.string()),
     timestamp: v.optional(v.string()),
+    note: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()),
   },
   returns: v.object({ id: v.id("attendance") }),

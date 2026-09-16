@@ -18,6 +18,7 @@ export interface AttendanceEvent {
   timestamp: string;
   synced: number;
   source?: 'kiosk' | 'correction';
+  note?: string | null;
   corrected?: boolean;
   correction_id?: string | null;
   correction_reason?: string | null;

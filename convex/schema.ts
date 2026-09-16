@@ -84,6 +84,7 @@ export default defineSchema({
     workerName: v.optional(v.string()),
     confidence: v.optional(v.float64()),
     livenessConfirmed: v.optional(v.boolean()),
+    note: v.optional(v.string()),
   }).index("by_timestamp", ["timestamp"])
     .index("by_worker", ["workerId"])
     .index("by_worker_and_timestamp", ["workerId", "timestamp"])
