@@ -1,4 +1,6 @@
 """Durable recognition telemetry identities backed by real SQLite."""
+import ast
+from pathlib import Path
 import unittest
 import uuid
 from unittest import mock
@@ -68,6 +70,47 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
         self.assertEqual(first['sourceAttemptId'], persisted['source_attempt_id'])
         self.assertNotIn('legacySourceAttemptId', first)
         self.assertEqual(database.count_unsynced_recognition_attempts(), 1)
+
+    def _write_result(self, result):
+        # Execute the production writer without importing camera/model hardware.
+        tree = ast.parse(Path(__file__).with_name("main.py").read_text())
+        writer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "_write_recognition_attempt")
+        namespace = {"database": database, "config": config,
+                     "_now_iso": lambda: "2026-09-01T08:00:00"}
+        exec(compile(ast.Module(body=[writer], type_ignores=[]), "main.py", "exec"), namespace)
+        namespace["_write_recognition_attempt"](result, "accepted")
+
+    def test_captured_identity_survives_deletion_before_write_and_upload_retry(self):
+        worker = database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
+        result = {"candidate_worker_id": worker, "candidate_worker_name": "Alex",
+                  "server_worker_id": SERVER_ID}
+        database.remove_worker_by_server_id(SERVER_ID)
+        self._write_result(result)
+        self.assertEqual(database.get_unsynced_recognition_attempts()[0]
+                         ["candidate_server_worker_id"], SERVER_ID)
+        with mock.patch.object(sync.requests, 'post', side_effect=sync.requests.Timeout()) as post:
+            self.assertFalse(sync.sync_recognition_attempts())
+            first = post.call_args.kwargs['json']['attempts'][0]
+        self.assertEqual(first['candidateWorkerId'], SERVER_ID)
+        self._close_db()
+        database.init_db()
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200)) as post:
+            self.assertTrue(sync.sync_recognition_attempts())
+            self.assertEqual(post.call_args.kwargs['json']['attempts'][0], first)
+
+    def test_captured_missing_identity_is_not_replaced_by_later_roster_adoption(self):
+        worker = database.add_worker('Alex', ENCODING)
+        result = {"candidate_worker_id": worker, "candidate_worker_name": "Alex",
+                  "server_worker_id": None}
+        adopted = database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
+        self.assertEqual(adopted, worker)
+        self._write_result(result)
+        self.assertIsNone(database.get_unsynced_recognition_attempts()[0]
+                          ["candidate_server_worker_id"])
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200)) as post:
+            self.assertTrue(sync.sync_recognition_attempts())
+            self.assertIsNone(post.call_args.kwargs['json']['attempts'][0]['candidateWorkerId'])
 
     def test_upgrade_adds_identity_columns_without_rewriting_synced_history(self):
         conn = database._get_conn()

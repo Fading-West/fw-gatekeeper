@@ -17,6 +17,7 @@ import config
 
 logger = logging.getLogger(__name__)
 _local = threading.local()
+_IDENTITY_NOT_CAPTURED = object()
 
 
 def _serialize_encoding(encoding: np.ndarray) -> bytes:
@@ -703,6 +704,7 @@ def log_recognition_attempt(
     face_detected: bool = False,
     candidate_worker_id: Optional[int] = None,
     candidate_worker_name: Optional[str] = None,
+    candidate_server_worker_id: Optional[str] | object = _IDENTITY_NOT_CAPTURED,
     best_score: Optional[float] = None,
     second_best_score: Optional[float] = None,
     score_margin: Optional[float] = None,
@@ -710,7 +712,15 @@ def log_recognition_attempt(
     liveness_confirmed: bool = False,
     model_version: Optional[str] = None,
 ) -> int:
-    """Store a non-image recognition telemetry attempt for calibration sync."""
+    """Store telemetry using the recognition snapshot when supplied.
+
+    Explicit None means the matched roster entry had no server identity. Only
+    legacy callers that omit the snapshot may resolve the current local mapping.
+    """
+    if candidate_server_worker_id is _IDENTITY_NOT_CAPTURED:
+        candidate_server_worker_id = (
+            get_server_id(candidate_worker_id) if candidate_worker_id is not None else None
+        )
     conn = _get_conn()
     timestamp = timestamp or datetime.now().isoformat(timespec="seconds")
     cursor = conn.execute(
@@ -737,7 +747,7 @@ def log_recognition_attempt(
             1 if liveness_confirmed else 0,
             model_version,
             str(uuid.uuid4()),
-            get_server_id(candidate_worker_id) if candidate_worker_id is not None else None,
+            candidate_server_worker_id,
         ),
     )
     conn.commit()

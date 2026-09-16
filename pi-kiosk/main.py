@@ -172,6 +172,7 @@ def _write_recognition_attempt(result, decision):
         face_detected=bool(result and result.get("face_loc") is not None),
         candidate_worker_id=result.get("candidate_worker_id") if result else None,
         candidate_worker_name=result.get("candidate_worker_name") if result else None,
+        candidate_server_worker_id=result.get("server_worker_id") if result else None,
         best_score=result.get("best_score") if result else None,
         second_best_score=result.get("second_best_score") if result else None,
         score_margin=result.get("score_margin") if result else None,
