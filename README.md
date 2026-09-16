@@ -9,6 +9,8 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 
 Schedules must start and end on the same factory-local calendar day, with an end later than the start (`HH:MM`). Overnight and 24-hour schedules are unsupported. Existing unsupported schedules remain visible with a warning and produce a critical configuration exception for assigned workers; schedule-based attendance checks and suggested corrections are disabled until an administrator repairs or removes that schedule. Raw attendance remains available for manual review.
 
+Scan-sequence exceptions are reviewed per attendance event (including added correction events). After upgrading from timestamp-based exception keys, existing scan-sequence issues require a fresh review: legacy reviews cannot identify which same-time event was reviewed. Historical review and correction records remain stored, but legacy exception links no longer identify a current issue; reopen the date in Shift Exceptions. Other exception reviews are unchanged.
+
 ## Architecture
 
 ```
