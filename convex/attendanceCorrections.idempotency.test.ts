@@ -31,7 +31,8 @@ describe('attendance correction request identity', () => {
   it.each(['date', 'workerId', 'action', 'correctedTimestamp', 'relatedExceptionKey', 'reason', 'supervisorName'] as const)('rejects changed %s with the same key', async (field) => {
     const { admin, args } = await setup();
     await admin.mutation(api.attendanceCorrections.create, args);
-    const changed = { ...args, [field]: field === 'action' ? 'add_clock_out' : 'different' };
+    const otherWorkerId = await admin.run((ctx) => ctx.db.insert('workers', { name: 'Other worker', department: 'Operations', active: true, enrolledAt: '2026-09-01' }));
+    const changed = { ...args, [field]: field === 'action' ? 'add_clock_out' : field === 'workerId' ? otherWorkerId : 'different' };
     await expect(admin.mutation(api.attendanceCorrections.create, changed)).rejects.toThrow('different details');
     expect(await admin.query(api.attendanceCorrections.list, { date: args.date })).toHaveLength(1);
   });
