@@ -489,9 +489,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
 
       expected += 1;
       const workerId = String(worker._id);
-      const events = [...(eventsByWorker.get(workerId) || [])].sort((a, b) =>
-        a.timestamp.localeCompare(b.timestamp),
-      );
+      const events = eventsByWorker.get(workerId) || []; // Already chronological.
       const firstIn = events.find((event) => event.eventType === "clock_in") || null;
       const lastEvent = events[events.length - 1] || null;
       const status = getWorkerStatus({ schedule, firstIn, lastEvent });

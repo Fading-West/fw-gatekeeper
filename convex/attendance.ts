@@ -11,13 +11,24 @@ import {
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
+import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
 
-function withFactoryLocalTimestamp(record: any) {
-  const timestamp = getFactoryLocalTimestamp(record?.timestamp);
-  if (!timestamp || timestamp === record?.timestamp) {
-    return record;
-  }
-  return { ...record, timestamp };
+// Keep the instant separate from the factory wall time used by schedule rules
+// and API display. In a repeated DST hour, wall time alone reverses scans.
+function withFactoryLocalTimestamp(record: any, sortKey: (timestamp: string) => string) {
+  const originalTimestamp = record.timestamp;
+  const localTimestamp = getFactoryLocalTimestamp(originalTimestamp) || originalTimestamp;
+  const fraction = originalTimestamp.match(/\.([0-9]+)/)?.[1];
+  const timestamp = fraction && !localTimestamp.includes(".")
+    ? `${localTimestamp}.${fraction}`
+    : localTimestamp;
+  return { ...record, timestamp, chronologicalKey: sortKey(originalTimestamp) };
+}
+
+function compareAttendance(a: any, b: any) {
+  const left = a.chronologicalKey || "~";
+  const right = b.chronologicalKey || "~";
+  return left < right ? -1 : left > right ? 1 : String(a._id).localeCompare(String(b._id));
 }
 
 export async function listAttendanceByTimestampRange(
@@ -26,6 +37,7 @@ export async function listAttendanceByTimestampRange(
   workerId?: string,
 ) {
   const rowsById = new Map<string, any>();
+  const sortKey = createRecognitionTimestampSortKey();
   for (const range of buildConservativeFactoryLocalTimestampRanges(date)) {
     const query = workerId
       ? ctx.db
@@ -38,11 +50,11 @@ export async function listAttendanceByTimestampRange(
     const rows = await query.collect();
     for (const row of rows) {
       if (timestampBelongsToFactoryLocalDate(row.timestamp, date)) {
-        rowsById.set(String(row._id), withFactoryLocalTimestamp(row));
+        rowsById.set(String(row._id), withFactoryLocalTimestamp(row, sortKey));
       }
     }
   }
-  return Array.from(rowsById.values());
+  return Array.from(rowsById.values()).sort(compareAttendance);
 }
 
 export async function listEffectiveAttendanceByTimestampRange(
@@ -78,15 +90,16 @@ export async function listEffectiveAttendanceByTimestampRange(
       source: "kiosk",
     }));
 
+  const sortKey = createRecognitionTimestampSortKey();
   for (const correction of corrections) {
     if (correction.action !== "add_clock_in" && correction.action !== "add_clock_out") continue;
     if (!correction.correctedTimestamp || !correction.eventType) continue;
-    effective.push({
+    effective.push(withFactoryLocalTimestamp({
       _id: `correction:${String(correction._id)}`,
       workerId: correction.workerId,
       eventType: correction.eventType,
       kioskId: "supervisor_correction",
-      timestamp: getFactoryLocalTimestamp(correction.correctedTimestamp) || correction.correctedTimestamp,
+      timestamp: correction.correctedTimestamp,
       idempotencyKey: `correction:${String(correction._id)}`,
       synced: true,
       workerName: undefined,
@@ -97,10 +110,10 @@ export async function listEffectiveAttendanceByTimestampRange(
       correctionSupervisorName: correction.supervisorName,
       corrected: true,
       source: "correction",
-    });
+    }, sortKey));
   }
 
-  effective.sort((a: any, b: any) => a.timestamp.localeCompare(b.timestamp));
+  effective.sort(compareAttendance);
   return effective;
 }
 
@@ -116,7 +129,7 @@ export const list = query({
     const records: any[] = args.includeCorrections === false
       ? await listAttendanceByTimestampRange(ctx, date, args.workerId)
       : await listEffectiveAttendanceByTimestampRange(ctx, date, args.workerId);
-    records.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    records.reverse(); // Helpers return chronological order; display newest first.
 
     // Join worker and kiosk data
     const result: any[] = [];
@@ -129,6 +142,7 @@ export const list = query({
         event_type: a.eventType,
         kiosk_id: a.kioskId || null,
         timestamp: a.timestamp,
+        timestamp_utc: a.chronologicalKey ? `${a.chronologicalKey}Z`.replace(".Z", "Z") : null,
         synced: a.synced ? 1 : 0,
         worker_name: (worker as any)?.name || a.workerName || "",
         worker_department: (worker as any)?.department || "",

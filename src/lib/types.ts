@@ -16,6 +16,7 @@ export interface AttendanceEvent {
   event_type: 'clock_in' | 'clock_out';
   kiosk_id: string | null;
   timestamp: string;
+  timestamp_utc?: string | null;
   synced: number;
   source?: 'kiosk' | 'correction';
   note?: string | null;

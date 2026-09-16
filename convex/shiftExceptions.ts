@@ -396,9 +396,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   for (const worker of workers) {
     let schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
     const workerId = String(worker._id);
-    const workerEvents = [...(eventsByWorker.get(workerId) || [])].sort((a, b) =>
-      a.timestamp.localeCompare(b.timestamp),
-    );
+    const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const clockOuts = workerEvents.filter((event) => event.eventType === "clock_out");
     const firstIn = clockIns[0] || null;
