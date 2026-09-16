@@ -1,5 +1,5 @@
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
 
@@ -111,15 +111,33 @@ export const create = mutation({
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin"]);
 
+    const name = args.name.trim();
+    if (!name) {
+      throw new ConvexError({ code: "INVALID_KIOSK_NAME", message: "Kiosk name required" });
+    }
     const kioskId = normalizeOptionalText(args.kioskId);
+    // Legacy names and sync IDs are case-insensitive aliases. Check the whole
+    // bounded active fleet in this transaction so concurrent creates conflict.
+    const kiosks = await ctx.db.query("kiosks")
+      .withIndex("by_active", (q) => q.eq("active", true))
+      .take(1001);
+    if (kiosks.length >= 1000) {
+      throw new ConvexError({ code: "KIOSK_FLEET_LIMIT", message: "Kiosk registration supports up to 1,000 active kiosks. Contact an administrator before adding more." });
+    }
+    const aliases = new Set([name, kioskId].filter((value): value is string => !!value)
+      .map((value) => value.toLowerCase()));
+    if (kiosks.some((kiosk) => [kiosk.name, kiosk.kioskId, kiosk._id]
+      .some((value) => value && aliases.has(value.trim().toLowerCase())))) {
+      throw new ConvexError({ code: "KIOSK_IDENTIFIER_CONFLICT", message: "Kiosk name or sync ID is already used by another active kiosk. Choose a unique name and sync ID." });
+    }
     const id = await ctx.db.insert("kiosks", {
-      name: args.name.trim(),
+      name,
       kioskId,
       type: args.type.trim(),
       location: normalizeOptionalText(args.location) || "",
       active: true,
     });
-    return { id, name: args.name, type: args.type };
+    return { id, name, type: args.type.trim() };
   },
 });
 
