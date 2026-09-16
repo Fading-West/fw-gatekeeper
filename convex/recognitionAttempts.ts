@@ -7,6 +7,7 @@ import {
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
+import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
 
 const attemptInput = v.object({
   timestamp: v.string(),
@@ -243,8 +244,14 @@ export async function listAllRecognitionAttemptsByFactoryDate(
     }
   }
 
+  const timestampKey = createRecognitionTimestampSortKey();
   return Array.from(rowsById.values())
-    .sort((a: any, b: any) => String(b.timestamp).localeCompare(String(a.timestamp)));
+    .map(row => ({ row, key: timestampKey(row.timestamp) }))
+    .sort((a, b) => {
+      if (a.key !== b.key) return a.key < b.key ? 1 : -1;
+      return String(a.row.id).localeCompare(String(b.row.id));
+    })
+    .map(({ row }) => row);
 }
 
 async function ingestAttemptBatch(ctx: MutationCtx, args: {
