@@ -521,7 +521,10 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       const firstEventIsOut = index === 0 && event.eventType === "clock_out";
       if (!repeated && !firstEventIsOut) continue;
 
-      const key = `${date}:scan_sequence:${workerId}:${event.timestamp}:${event.eventType}`;
+      // Use the source ID, including synthetic correction IDs: independent scans
+      // can share a timestamp and type. Timestamp-only legacy reviews cannot be
+      // safely attributed after later scans/corrections, so they are not reused.
+      const key = `${date}:scan_sequence:${workerId}:${event._id}`;
       exceptions.push(createException({
         key,
         date,
