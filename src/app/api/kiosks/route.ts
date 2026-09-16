@@ -1,4 +1,5 @@
 export const dynamic = 'force-dynamic';
+import { ConvexError } from 'convex/values';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
@@ -20,11 +21,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'type must be entry or exit' }, { status: 400 });
   }
 
-  const result = await convex.mutation(api.kiosks.create, {
-    name,
-    kioskId: kiosk_id || kioskId || undefined,
-    type,
-    location: location || undefined,
-  });
-  return NextResponse.json(result, { status: 201 });
+  try {
+    const result = await convex.mutation(api.kiosks.create, {
+      name,
+      kioskId: kiosk_id || kioskId || undefined,
+      type,
+      location: location || undefined,
+    });
+    return NextResponse.json(result, { status: 201 });
+  } catch (error) {
+    if (error instanceof ConvexError) {
+      const status = error.data?.code === 'KIOSK_IDENTIFIER_CONFLICT' ? 409
+        : ['INVALID_KIOSK_NAME', 'KIOSK_FLEET_LIMIT'].includes(error.data?.code) ? 400 : null;
+      if (status) return NextResponse.json({ error: error.data.message }, { status });
+    }
+    console.error('Kiosks POST error:', error);
+    return NextResponse.json({ error: 'Failed to register kiosk' }, { status: 500 });
+  }
 }

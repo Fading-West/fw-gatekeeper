@@ -460,6 +460,8 @@ Set these on the Convex deployment (`npx convex env set NAME value` or the Conve
 
 ### Kiosk Setup Variables
 
+Kiosk registration supports up to 1,000 active kiosks. Each active kiosk must have a unique name and sync ID across both fields (ignoring case and surrounding spaces), because older devices can sync using their kiosk name. Names and sync IDs must also avoid another active kiosk’s document ID. Registration rejects conflicts; inactive aliases may be reused.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KIOSK_ID` | `kiosk-1` | Unique identifier for this kiosk |
