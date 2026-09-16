@@ -592,11 +592,26 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       decision === "rejected_unknown" ||
       decision === "unknown" ||
       decision.startsWith("rejected");
-    if (reviewed && !lowMarginAccepted && !riskyDecision) continue;
-    if (!riskyDecision && !lowMarginAccepted && reviewed) continue;
-
     const attemptId = String(attempt.id || attempt._id);
     const key = `${date}:recognition_review:${attemptId}`;
+    const label = recognitionText(attempt, "reviewed_label", "reviewedLabel") || "confirmed";
+    const completed = reviewed && ["confirmed", "corrected", "ignored"].includes(label);
+    const attemptReviewedAt = recognitionText(attempt, "reviewed_at", "reviewedAt");
+    const attemptUpdatedAt = recognitionText(attempt, "updated_at", "updatedAt") || attemptReviewedAt;
+    const explicitReview = reviewsByKey.get(key) as { updatedAt: string } | undefined;
+    // Both screens can review or reopen an exception. The latest action wins;
+    // an old exception disposition must not undo a newer Recognition Lab review.
+    const explicitIsNewer = explicitReview && (
+      !attemptUpdatedAt || Date.parse(explicitReview.updatedAt) > Date.parse(attemptUpdatedAt)
+    );
+    if (!explicitIsNewer) {
+      reviewsByKey.set(key, {
+        status: completed ? (label === "ignored" ? "ignored" : "reviewed") : "open",
+        note: recognitionText(attempt, "reviewed_note", "reviewedNote"),
+        reviewedAt: completed ? attemptReviewedAt : null,
+      });
+    }
+    if (completed && !lowMarginAccepted && !riskyDecision && !explicitReview) continue;
     const candidate = candidateWorkerName || "Unknown person";
     const kioskName = await resolveKioskName(kioskId);
     exceptions.push(createException({
