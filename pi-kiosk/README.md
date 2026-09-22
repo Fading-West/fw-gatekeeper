@@ -50,7 +50,7 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 3. Run the setup script:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nztinversive/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
+curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
 sudo KIOSK_API_KEY="replace-with-the-server-key" \
   KIOSK_UI_KEY="$(openssl rand -hex 24)" \
   KIOSK_SUPERVISOR_PIN="<set-a-separate-supervisor-passcode>" \

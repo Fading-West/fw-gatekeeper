@@ -103,7 +103,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   git checkout -- pi-kiosk/config.py 2>/dev/null || true
   git pull origin master
 else
-  git clone https://github.com/nztinversive/fw-gatekeeper.git "$INSTALL_DIR"
+  git clone https://github.com/Fading-West/fw-gatekeeper.git "$INSTALL_DIR"
 fi
 
 cd "$INSTALL_DIR/pi-kiosk"
