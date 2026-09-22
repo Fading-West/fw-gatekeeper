@@ -173,14 +173,14 @@ Once you have a terminal open (either on the Pi desktop or via SSH), run these c
 For the **first kiosk** (Main Entry):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nztinversive/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
+curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
 sudo KIOSK_ID=kiosk-entry-1 KIOSK_NAME="Main Entry" KIOSK_TYPE=entry bash setup.sh
 ```
 
 For the **second kiosk** (Side Entry):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nztinversive/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
+curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
 sudo KIOSK_ID=kiosk-entry-2 KIOSK_NAME="Side Entry" KIOSK_TYPE=entry bash setup.sh
 ```
 
@@ -201,7 +201,7 @@ EOF
 
 > ⏱ Setup takes **15-25 minutes** per Pi (mostly compiling dlib). Go set up the next Pi while this one builds.
 > 
-> 💡 **Tip:** If typing long commands on the Pi is annoying, you can open Firefox on the Pi desktop, go to the [README on GitHub](https://github.com/nztinversive/fw-gatekeeper), and copy-paste the commands from there.
+> 💡 **Tip:** If typing long commands on the Pi is annoying, you can open Firefox on the Pi desktop, go to the [README on GitHub](https://github.com/Fading-West/fw-gatekeeper), and copy-paste the commands from there.
 
 ## Step 5: Connect the Hardware
 
