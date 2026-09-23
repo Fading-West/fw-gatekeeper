@@ -4,7 +4,7 @@
 # picamera2/libcamera are apt-only, visible through --system-site-packages.
 # Never add picamera2 here: pip must not replace the OS camera stack.
 # numpy must remain <2 and match the face service.
-numpy==1.26.4
+numpy==2.5.3
 scipy==1.17.1
 Pillow==12.3.0
 requests==2.34.2
