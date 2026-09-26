@@ -152,7 +152,9 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 The server may reject one invalid event in an otherwise valid batch. The kiosk
 isolates that event and keeps its original SQLite row, validation reason, and
 original row snapshot in `attendance_rejections`. Other events continue syncing.
-Rejected events remain in the `queued_logs` health count and do not retry until
+Rejected events remain in the `queued_logs` health count, while `rejected_logs`
+and `retryable_logs` distinguish paused evidence from uploads that can drain.
+The kiosk displays Needs attention for rejected records. They do not retry until
 an operator reviews them. Authentication, network, and server failures remain
 in the normal retry queue.
 
@@ -179,6 +181,9 @@ Use the rejection id from `list` for `retry`, and the log id for the SQL edit.
 The original snapshot, rejection reason, release time, and operator note stay
 in `attendance_rejections` after retry. If the event still fails validation,
 the kiosk records a new rejection; do not delete the evidence to clear an alert.
+If an attendance row was deleted, `list` still shows its rejection and original
+snapshot. `retry` refuses to release it until the row is restored from a backup
+or the snapshot under supervisor review.
 
 ### Stranded attendance rows
 

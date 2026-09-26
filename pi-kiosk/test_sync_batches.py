@@ -90,6 +90,8 @@ class AttendanceBatchTests(unittest.TestCase):
             self.assertFalse(sync.sync_attendance())
         self.assertLessEqual(len(post.call_args_list), sync.ATTENDANCE_REQUESTS_PER_CYCLE)
         self.assertEqual(database.count_unsynced_logs(), 1)
+        self.assertEqual(database.count_rejected_logs(), 1)
+        self.assertEqual(database.count_retryable_logs(), 0)
         rejection = database.list_attendance_rejections()[0]
         self.assertEqual(rejection['log_id'], 37)
         self.assertIn('"timestamp": "bad"', rejection['original_log_json'])
@@ -107,6 +109,23 @@ class AttendanceBatchTests(unittest.TestCase):
             self.assertTrue(sync.sync_attendance())
         self.assertEqual(database.list_attendance_rejections(), [])
         self.assertEqual(conn.execute('SELECT synced FROM attendance_log WHERE id = 37').fetchone()[0], 1)
+
+    def test_deleted_attendance_row_keeps_rejection_visible_and_cannot_be_released(self):
+        self.enqueue(1)
+        database.reject_attendance(1, 'Invalid timestamp')
+        conn = database._get_conn()
+        conn.execute('DELETE FROM attendance_log WHERE id = 1')
+        conn.commit()
+        rejection = database.list_attendance_rejections()[0]
+        self.assertEqual(rejection['log_id'], 1)
+        self.assertIsNone(rejection['timestamp'])
+        self.assertIn('"worker_name": "Alex"', rejection['original_log_json'])
+        self.assertEqual(database.count_unsynced_logs(), 1)
+        self.assertEqual(database.count_rejected_logs(), 1)
+        self.assertEqual(database.count_retryable_logs(), 0)
+        with self.assertRaisesRegex(ValueError, 'restore the original evidence'):
+            database.retry_attendance_rejection(rejection['id'], 'Cannot retry an orphan')
+        self.assertEqual(len(database.list_attendance_rejections()), 1)
 
     def test_transient_and_auth_errors_never_quarantine(self):
         self.enqueue(2)

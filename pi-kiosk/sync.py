@@ -441,8 +441,11 @@ class SyncWorker:
         while self._running:
             try:
                 queued_logs = database.count_unsynced_logs()
+                retryable_logs = database.count_retryable_logs()
+                rejected_logs = database.count_rejected_logs()
                 queued_attempts = database.count_unsynced_recognition_attempts()
-                self._report(queued_logs=queued_logs, queued_attempts=queued_attempts)
+                self._report(queued_logs=queued_logs, retryable_logs=retryable_logs,
+                             rejected_logs=rejected_logs, queued_attempts=queued_attempts)
 
                 self.server_online = check_server()
                 self._report(sync_online=self.server_online)
@@ -471,6 +474,8 @@ class SyncWorker:
                     sync_recognition_attempts()
                     self._report(
                         queued_logs=database.count_unsynced_logs(),
+                        retryable_logs=database.count_retryable_logs(),
+                        rejected_logs=database.count_rejected_logs(),
                         queued_attempts=database.count_unsynced_recognition_attempts(),
                     )
                 else:
