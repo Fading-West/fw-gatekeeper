@@ -210,7 +210,7 @@ const attendanceBulkIngest = httpAction(async (ctx, request) => {
     console.info('secured_ingest_attendance', { received: events.length, synced: result.synced });
     return jsonResponse(result);
   } catch (error) {
-    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message, code: error.data.code }, 400);
     throw error;
   }
 });

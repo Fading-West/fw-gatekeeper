@@ -1,5 +1,5 @@
 export class SecuredIngestError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code?: string, readonly detail?: string) {
     super(`Secured Convex ingest failed with status ${status}.`);
   }
 }
@@ -41,7 +41,12 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
     });
 
     if (!response.ok) {
-      throw new SecuredIngestError(response.status);
+      const body = await response.json().catch(() => null) as { code?: unknown; error?: unknown } | null;
+      throw new SecuredIngestError(
+        response.status,
+        typeof body?.code === 'string' ? body.code : undefined,
+        typeof body?.error === 'string' ? body.error : undefined,
+      );
     }
 
     return await response.json() as T;

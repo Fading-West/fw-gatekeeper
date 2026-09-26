@@ -12,6 +12,10 @@ def response(data):
     return mock.Mock(status_code=200, json=lambda: data)
 
 
+def rejected(reason='timestamp must be a valid ISO date and time, with optional UTC offset'):
+    return mock.Mock(status_code=400, json=lambda: {'error': reason, 'code': 'INVALID_ATTENDANCE'})
+
+
 class AttendanceBatchTests(unittest.TestCase):
     setUp = mapping.AttendanceServerIdMappingTests.setUp
     _close_db = staticmethod(mapping.AttendanceServerIdMappingTests._close_db)
@@ -71,6 +75,72 @@ class AttendanceBatchTests(unittest.TestCase):
         conn.commit()
         with mock.patch.object(sync.requests, 'post', return_value=response({'acknowledged': 5})):
             self.assertTrue(sync.sync_attendance())
+
+    def test_poisoned_row_is_isolated_while_later_pages_sync(self):
+        self.enqueue(235)
+        conn = database._get_conn()
+        conn.execute("UPDATE attendance_log SET timestamp = 'bad' WHERE id = 37")
+        conn.commit()
+
+        def server(*args, **kwargs):
+            logs = kwargs['json']['logs']
+            return rejected() if any(log['timestamp'] == 'bad' for log in logs) else response({'acknowledged': len(logs)})
+
+        with mock.patch.object(sync.requests, 'post', side_effect=server) as post:
+            self.assertFalse(sync.sync_attendance())
+        self.assertLessEqual(len(post.call_args_list), sync.ATTENDANCE_REQUESTS_PER_CYCLE)
+        self.assertEqual(database.count_unsynced_logs(), 1)
+        rejection = database.list_attendance_rejections()[0]
+        self.assertEqual(rejection['log_id'], 37)
+        self.assertIn('"timestamp": "bad"', rejection['original_log_json'])
+        self.assertEqual(conn.execute('SELECT synced FROM attendance_log WHERE id = 37').fetchone()[0], 0)
+
+        # Restart preserves the quarantine and allows a documented repair/retry.
+        self._close_db()
+        database.init_db()
+        self.assertEqual(len(database.list_attendance_rejections()), 1)
+        conn = database._get_conn()
+        conn.execute("UPDATE attendance_log SET timestamp = '2026-06-01T09:00:00' WHERE id = 37")
+        conn.commit()
+        database.retry_attendance_rejection(rejection['id'], 'Corrected malformed local timestamp after review')
+        with mock.patch.object(sync.requests, 'post', side_effect=server):
+            self.assertTrue(sync.sync_attendance())
+        self.assertEqual(database.list_attendance_rejections(), [])
+        self.assertEqual(conn.execute('SELECT synced FROM attendance_log WHERE id = 37').fetchone()[0], 1)
+
+    def test_transient_and_auth_errors_never_quarantine(self):
+        self.enqueue(2)
+        failures = [
+            mock.Mock(status_code=400, json=lambda: {'error': 'Bad Request'}),
+            mock.Mock(status_code=401, json=lambda: {'error': 'Unauthorized'}),
+            mock.Mock(status_code=403, json=lambda: {'error': 'Forbidden'}),
+            mock.Mock(status_code=500, json=lambda: {'error': 'server failed'}),
+        ]
+        for failure in failures:
+            with self.subTest(status=failure.status_code), mock.patch.object(sync.requests, 'post', return_value=failure):
+                self.assertFalse(sync.sync_attendance())
+                self.assertEqual(database.count_unsynced_logs(), 2)
+                self.assertEqual(database.list_attendance_rejections(), [])
+        with mock.patch.object(sync.requests, 'post', return_value=response({'acknowledged': 2})):
+            self.assertTrue(sync.sync_attendance())
+
+    def test_transient_error_during_isolation_keeps_remaining_rows_retryable(self):
+        self.enqueue(4)
+        conn = database._get_conn()
+        conn.execute("UPDATE attendance_log SET timestamp = 'bad' WHERE id = 1")
+        conn.commit()
+        transient = mock.Mock(status_code=503, json=lambda: {'error': 'Retry pending'})
+        with mock.patch.object(sync.requests, 'post', side_effect=[rejected(), rejected(), rejected(), transient]):
+            self.assertFalse(sync.sync_attendance())
+        self.assertEqual([r['log_id'] for r in database.list_attendance_rejections()], [1])
+        self.assertEqual(database.count_unsynced_logs(), 4)
+
+        def server(*args, **kwargs):
+            logs = kwargs['json']['logs']
+            return response({'acknowledged': len(logs)})
+        with mock.patch.object(sync.requests, 'post', side_effect=server):
+            self.assertFalse(sync.sync_attendance())
+        self.assertEqual(database.count_unsynced_logs(), 1)
 
 
 if __name__ == '__main__':

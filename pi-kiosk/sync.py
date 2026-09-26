@@ -105,6 +105,65 @@ def _track_orphans(orphans: list[dict], total: int) -> None:
 
 ATTENDANCE_BATCH_SIZE = 100
 ATTENDANCE_PAGES_PER_CYCLE = 10
+ATTENDANCE_REQUESTS_PER_CYCLE = 64
+ATTENDANCE_CYCLE_SECONDS = 60
+
+
+def _rejection_reason(response) -> Optional[str]:
+    """Only a server-identified attendance validation error is permanent."""
+    if response.status_code != 400:
+        return None
+    try:
+        body = response.json()
+    except (ValueError, requests.RequestException):
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("error"), str):
+        return None
+    reason = body["error"].strip()
+    if body.get("code") == "INVALID_ATTENDANCE":
+        return reason or "Invalid attendance"
+    # Older servers returned only the validator's message. Keep these retries
+    # compatible without interpreting arbitrary HTTP 400s as bad evidence.
+    legacy_prefixes = (
+        "workerId ", "eventType ", "timestamp ", "confidence ",
+        "livenessConfirmed ", "idempotencyKey ", "workerName ",
+        "note ", "kioskId ", "Each attendance event ",
+        "A retry cannot change the attendance note",
+        "An idempotency key cannot be reused",
+    )
+    return reason if reason.startswith(legacy_prefixes) or reason == "workerId must identify an existing worker" else None
+
+
+def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int], deadline: float) -> bool:
+    """Split validated rejections, retaining every unresolved event for retry."""
+    if budget[0] <= 0 or time.monotonic() >= deadline:
+        logger.warning("Attendance isolation limit reached; remaining rows stay queued")
+        return False
+    budget[0] -= 1
+    try:
+        response = requests.post(
+            f"{config.SERVER_URL}/api/attendance/bulk",
+            json={"kiosk_id": config.KIOSK_ID, "logs": payload},
+            headers=_auth_headers(), timeout=15,
+        )
+    except requests.RequestException:
+        logger.exception("Attendance sync request failed; retaining unacknowledged batch")
+        return False
+    if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
+        database.mark_synced(log_ids)
+        logger.info("Synced %d gatekeeper logs to server", len(log_ids))
+        return True
+    reason = _rejection_reason(response)
+    if reason:
+        if len(log_ids) == 1:
+            database.reject_attendance(log_ids[0], reason)
+            logger.error("Quarantined attendance log %s: %s", log_ids[0], reason)
+            return True
+        midpoint = len(log_ids) // 2
+        return (_upload_attendance(log_ids[:midpoint], payload[:midpoint], budget, deadline)
+                and _upload_attendance(log_ids[midpoint:], payload[midpoint:], budget, deadline))
+    logger.error("Attendance batch not acknowledged (status=%d); keeping %d rows queued", response.status_code, len(payload))
+    return False
 
 
 def _attendance_acknowledged(response, submitted: int) -> bool:
@@ -134,6 +193,8 @@ def sync_attendance() -> bool:
     cursor = int(database.get_sync_state("attendance_scan_after") or 0)
     orphans: list[dict] = []
     examined = 0
+    request_budget = [ATTENDANCE_REQUESTS_PER_CYCLE]
+    deadline = time.monotonic() + ATTENDANCE_CYCLE_SECONDS
     for _ in range(ATTENDANCE_PAGES_PER_CYCLE):
         logs = database.get_unsynced_logs(limit=ATTENDANCE_BATCH_SIZE, after_id=cursor)
         if not logs:
@@ -161,20 +222,7 @@ def sync_attendance() -> bool:
             })
             synced_log_ids.append(int(log["id"]))
         if payload_logs:
-            try:
-                response = requests.post(
-                    f"{config.SERVER_URL}/api/attendance/bulk",
-                    json={"kiosk_id": config.KIOSK_ID, "logs": payload_logs},
-                    headers=_auth_headers(), timeout=15,
-                )
-                if response.status_code != 200 or not _attendance_acknowledged(response, len(payload_logs)):
-                    logger.error("Attendance batch not acknowledged (status=%d); keeping %d rows queued", response.status_code, len(payload_logs))
-                    _track_orphans(orphans, examined)
-                    return False
-                database.mark_synced(synced_log_ids)
-                logger.info("Synced %d gatekeeper logs to server", len(synced_log_ids))
-            except requests.RequestException:
-                logger.exception("Attendance sync request failed; retaining unacknowledged batch")
+            if not _upload_attendance(synced_log_ids, payload_logs, request_budget, deadline):
                 _track_orphans(orphans, examined)
                 return False
         cursor = int(logs[-1]["id"])

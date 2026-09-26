@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { POST } from './route';
 import { hasValidKioskKey } from '@/lib/auth';
 import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from '@/lib/attendance-backlog';
+import { SecuredIngestError } from '@/lib/convex-ingest';
 vi.mock('@/lib/auth', () => ({ hasValidKioskKey: vi.fn(() => true), unauthorizedApiResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }) }));
 vi.mock('@/lib/attendance-backlog', () => ({ AttendanceBacklogPendingError: class extends Error {}, ingestAttendanceBacklog: vi.fn() }));
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(hasValidKioskKey).mockReturnValue(true); });
@@ -18,7 +19,18 @@ it('preserves the old Pi wire format and returns full acknowledgement for 501 lo
 it('rejects a malformed final row before forwarding any events', async () => {
   const response = await POST(request({ logs: [...Array(500).fill(log), { ...log, timestamp: 'bad' }] }));
   expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ code: 'INVALID_ATTENDANCE' });
   expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
+});
+it('propagates a permanent Convex validation rejection to the kiosk', async () => {
+  vi.mocked(ingestAttendanceBacklog).mockRejectedValue(new SecuredIngestError(400, 'INVALID_ATTENDANCE', 'workerId must identify an existing worker'));
+  const response = await POST(request({ logs: [log] }));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ code: 'INVALID_ATTENDANCE', error: 'workerId must identify an existing worker' });
+});
+it('keeps an unrelated upstream 400 retryable', async () => {
+  vi.mocked(ingestAttendanceBacklog).mockRejectedValue(new SecuredIngestError(400, undefined, 'Bad Request'));
+  expect((await POST(request({ logs: [log] }))).status).toBe(500);
 });
 it('never returns success for a partially processed backlog', async () => {
   vi.mocked(ingestAttendanceBacklog).mockRejectedValue(new AttendanceBacklogPendingError('Retry pending'));
