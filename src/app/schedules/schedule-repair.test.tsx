@@ -1,15 +1,34 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, expect, it, vi } from 'vitest';
 import SchedulesPage from './page';
 import type { Schedule } from '@/lib/types';
 
-vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'admin' }));
+const role = vi.hoisted(() => ({ current: 'admin' }));
+vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => role.current }));
 
 let tree: ReactTestRenderer | undefined;
 afterEach(async () => {
   if (tree) await act(async () => tree!.unmount());
   tree = undefined;
+  role.current = 'admin';
   vi.unstubAllGlobals();
+});
+
+it('shows malformed stored weekdays as escaped text to review-only users', async () => {
+  role.current = 'viewer';
+  const legacyDays = '<script>alert(1)</script>';
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true, json: async () => [schedule('legacy', legacyDays)],
+  })));
+  await act(async () => { tree = create(<SchedulesPage />); });
+
+  const days = tree!.root.findAllByType('span').find(node =>
+    text(node).includes('Invalid days:'))!;
+  expect(text(days)).toContain(`Invalid days: ${legacyDays}`);
+  expect(renderToStaticMarkup(<span>{days.props.children}</span>)).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  expect(tree!.root.findAllByType('script')).toHaveLength(0);
+  expect(tree!.root.findAllByType('button').some(node => node.props.className === 'btn-ghost text-xs')).toBe(false);
 });
 
 const text = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(text).join('');

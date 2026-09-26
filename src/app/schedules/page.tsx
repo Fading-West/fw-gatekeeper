@@ -135,7 +135,7 @@ export default function SchedulesPage() {
 
   const parseDays = (daysJson: string): string => {
     const days = parseScheduleDays(daysJson);
-    return days ? days.map((d) => DAY_LABELS[d]).join(', ') : 'Invalid days';
+    return days ? days.map((d) => DAY_LABELS[d]).join(', ') : `Invalid days: ${daysJson}`;
   };
 
   return (
