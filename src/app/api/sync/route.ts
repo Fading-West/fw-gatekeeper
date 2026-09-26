@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
     // Issue before reading the complete roster: the receipt's Convex clock
     // cannot certify a purge that raced the roster download afterward.
     try {
-      const issued = await issueRosterReceipt(kioskId);
+      const issued = await issueRosterReceipt(identity!.documentId);
       const forceFull = req.nextUrl.searchParams.get('full_roster') === '1';
       const { workers } = await fetchWorkersForSync(forceFull ? '' : issued.since ?? '', true);
       return NextResponse.json({ workers, synced_at: issued.issuedAt, roster_receipt: issued.receipt,

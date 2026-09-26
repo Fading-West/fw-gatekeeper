@@ -237,11 +237,11 @@ export const revokeCredential = mutation({
 });
 
 export const issueRosterReceiptFromHttp = internalMutation({
-  args: { kioskId: v.string() },
+  args: { documentId: v.id("kiosks") },
   returns: v.union(v.object({ receipt: v.id("kioskRosterReceipts"), issuedAt: v.string(), since: v.union(v.string(), v.null()) }), v.null()),
   handler: async (ctx, args) => {
-    const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
-    if (!kiosk) return null;
+    const kiosk = await ctx.db.get(args.documentId);
+    if (!kiosk?.active || !kiosk.credentialHash) return null;
     const pending = await ctx.db.query("kioskRosterReceipts")
       .withIndex("by_kiosk", q => q.eq("kioskId", kiosk._id)).first();
     if (pending) return { receipt: pending._id, issuedAt: pending.issuedAt, since: kiosk.rosterAppliedAt ?? null };
@@ -252,11 +252,11 @@ export const issueRosterReceiptFromHttp = internalMutation({
 });
 
 export const acknowledgeRosterReceiptFromHttp = internalMutation({
-  args: { kioskId: v.string(), receipt: v.id("kioskRosterReceipts") },
+  args: { documentId: v.id("kiosks"), receipt: v.id("kioskRosterReceipts") },
   returns: v.object({ acknowledged: v.boolean(), appliedAt: v.union(v.string(), v.null()) }),
   handler: async (ctx, args) => {
-    const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
-    if (!kiosk) return { acknowledged: false, appliedAt: null };
+    const kiosk = await ctx.db.get(args.documentId);
+    if (!kiosk?.active || !kiosk.credentialHash) return { acknowledged: false, appliedAt: null };
     if (kiosk.lastRosterReceiptId === args.receipt) {
       return { acknowledged: true, appliedAt: kiosk.rosterAppliedAt ?? null };
     }

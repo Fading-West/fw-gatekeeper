@@ -113,6 +113,60 @@ class RosterReceiptTests(unittest.TestCase):
             self.assertEqual(posted.call_count, 1)
             self.assertFalse(legacy.exists())
 
+    def test_invalid_update_preserves_existing_photo_and_reference(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            photo = Path(tmp) / f'{SERVER_ID}.jpg'
+            photo.write_bytes(b'original photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(photo)])
+            invalid = {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+                       'face_encoding': [0.1], 'photo_url': 'https://photo.invalid/new'}
+            posted, _ = self.cycle(roster([invalid]))
+            posted.assert_not_called()
+            self.assertEqual(photo.read_bytes(), b'original photo')
+            self.assertEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(photo)])
+
+    def test_malformed_full_response_cannot_delete_roster_or_ack(self):
+        database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
+        missing_workers = mock.Mock(status_code=200, json=lambda: {
+            'roster_receipt': 'receipt-one', 'synced_at': '2026-09-25T12:00:00Z', 'full_roster': True,
+        })
+        malformed_rows = [
+            {'id': SERVER_ID},
+            {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'photo_url': None},
+            {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'face_encoding': ENCODING.tolist()},
+            {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'face_encoding': [float('nan')] * 512, 'photo_url': None},
+        ]
+        for response in (missing_workers, *(roster([row], full=True) for row in malformed_rows)):
+            with self.subTest(response=response):
+                posted, _ = self.cycle(response)
+                posted.assert_not_called()
+                self.assertIsNotNone(database.get_worker_by_name('Alex'))
+                self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+
+    def test_explicit_null_template_removes_cached_template_before_ack(self):
+        database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
+        row = {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+               'face_encoding': None, 'photo_url': None}
+        posted, recognizer = self.cycle(roster([row]), post=lambda *a, **kw: ack())
+        self.assertEqual(posted.call_count, 1)
+        recognizer.reload_faces.assert_called_once()
+        self.assertIsNone(database.get_worker_by_name('Alex'))
+
+    def test_failed_photo_publish_keeps_prior_file_and_no_ack(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            photo = Path(tmp) / f'{SERVER_ID}.jpg'
+            photo.write_bytes(b'original photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(photo)])
+            updated = {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+                       'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid/new'}
+            response = roster([updated])
+            response.content = b'new photo'
+            with mock.patch.object(sync.os, 'replace', side_effect=PermissionError('publish failed')):
+                posted, _ = self.cycle(response)
+            posted.assert_not_called()
+            self.assertEqual(photo.read_bytes(), b'original photo')
+            self.assertEqual(list(Path(tmp).glob('*.tmp')), [])
+
 
 if __name__ == '__main__':
     unittest.main()

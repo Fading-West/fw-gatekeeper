@@ -104,12 +104,12 @@ export function fetchWorkersForSync(since: string, inclusive = false) {
   return postSecuredIngest<{ workers: unknown[] }>('/api/ingest/workers/sync', { since, ...(inclusive ? { inclusive: true } : {}) });
 }
 
-export function issueRosterReceipt(kioskId: string) {
-  return postSecuredIngest<{ receipt: string; issuedAt: string; since: string | null }>('/api/ingest/kiosks/roster-receipt/issue', { kioskId });
+export function issueRosterReceipt(documentId: string) {
+  return postSecuredIngest<{ receipt: string; issuedAt: string; since: string | null }>('/api/ingest/kiosks/roster-receipt/issue', { documentId });
 }
 
-export function acknowledgeRosterReceipt(kioskId: string, receipt: string) {
-  return postSecuredIngest<{ acknowledged: boolean; appliedAt: string | null }>('/api/ingest/kiosks/roster-receipt/ack', { kioskId, receipt });
+export function acknowledgeRosterReceipt(documentId: string, receipt: string) {
+  return postSecuredIngest<{ acknowledged: boolean; appliedAt: string | null }>('/api/ingest/kiosks/roster-receipt/ack', { documentId, receipt });
 }
 
 export function getAttendanceReceiptStatus(digests: string[]) {

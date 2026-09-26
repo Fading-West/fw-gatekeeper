@@ -332,22 +332,26 @@ const workerSyncRead = httpAction(async (ctx, request) => {
 const rosterReceiptIssue = httpAction(async (ctx, request) => {
   if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
   const body = await readJsonBody(request);
-  if (!body || typeof body.kioskId !== 'string' || !body.kioskId.trim()) {
-    return jsonResponse({ error: 'kioskId required' }, 400);
+  if (!body || typeof body.documentId !== 'string' || !body.documentId.trim()) {
+    return jsonResponse({ error: 'documentId required' }, 400);
   }
-  const issued = await ctx.runMutation(internal.kiosks.issueRosterReceiptFromHttp, { kioskId: body.kioskId });
-  return issued ? jsonResponse(issued) : jsonResponse({ error: 'Registered kiosk required' }, 404);
+  try {
+    const issued = await ctx.runMutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: body.documentId as any });
+    return issued ? jsonResponse(issued) : jsonResponse({ error: 'Credentialed kiosk required' }, 404);
+  } catch {
+    return jsonResponse({ error: 'Invalid kiosk document ID' }, 400);
+  }
 });
 
 const rosterReceiptAck = httpAction(async (ctx, request) => {
   if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
   const body = await readJsonBody(request);
-  if (!body || typeof body.kioskId !== 'string' || typeof body.receipt !== 'string' || !body.receipt.trim()) {
-    return jsonResponse({ error: 'kioskId and receipt required' }, 400);
+  if (!body || typeof body.documentId !== 'string' || typeof body.receipt !== 'string' || !body.receipt.trim()) {
+    return jsonResponse({ error: 'documentId and receipt required' }, 400);
   }
   try {
     const result = await ctx.runMutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, {
-      kioskId: body.kioskId, receipt: body.receipt as any,
+      documentId: body.documentId as any, receipt: body.receipt as any,
     });
     return result.acknowledged ? jsonResponse(result) : jsonResponse({ error: 'Receipt is not pending for this kiosk' }, 409);
   } catch {

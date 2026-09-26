@@ -63,6 +63,8 @@ Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations
 
 The server issues one pending receipt per kiosk before reading that kiosk's roster changes. A receipt-capable kiosk sends the receipt back only after every row is persisted, retired files are removed, and its recognizer reloads successfully. Failed downloads, partial writes, cleanup errors, reload errors, and lost acknowledgements leave the purge unconfirmed; retries reapply changes safely. The server owns the acknowledged cursor. Initial sync downloads the full roster, and later syncs include the cursor boundary to avoid missing equal-timestamp updates. Older kiosks can still use the legacy sync response but do not create purge acknowledgements.
 
+Applied-roster confirmation requires a registered device credential. Deploy the cloud protocol first, issue and configure each kiosk's device credential, then update the kiosk software. A kiosk still using the legacy shared key can continue roster downloads but remains unconfirmed; an admin roster read never creates a device receipt.
+
 An unmanaged local worker profile with no server ID, or a thumbnail stored outside the configured kiosk photo directory, also blocks acknowledgement. Review and map or remove that profile and its files on the device; keep its attendance evidence for reconciliation. The kiosk log names the condition that needs repair.
 
 Purging is irreversible. If the person later returns to work, enroll them again from scratch (new consent, new photos, new template).

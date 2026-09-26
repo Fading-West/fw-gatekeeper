@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import tempfile
 import time
 from collections import Counter
 from datetime import datetime
@@ -344,10 +345,20 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         if receipt_protocol and (not isinstance(receipt, str) or not receipt or
                                  not isinstance(data.get("synced_at"), str) or not data["synced_at"]):
             raise ValueError("Invalid roster receipt response")
+        if receipt_protocol and "workers" not in data:
+            raise ValueError("Receipt sync response is missing workers")
         full_roster = receipt_protocol and data.get("full_roster") is True
         if receipt_protocol and not database.get_sync_state("last_roster_applied_at") and not full_roster:
             raise ValueError("Initial receipt sync must include full roster")
         seen_server_ids: set[str] = set()
+
+        if receipt_protocol:
+            for w in workers:
+                if (not isinstance(w, dict) or not w.get("id") or
+                    type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
+                    raise ValueError("Receipt sync worker row is missing id or active state")
+                if w["active"] and ("face_encoding" not in w or "photo_url" not in w):
+                    raise ValueError("Active receipt sync row is missing face_encoding or photo_url")
 
         for w in workers:
             if not isinstance(w, dict):
@@ -384,25 +395,36 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                 continue
 
             encoding = np.array(encoding_data, dtype=np.float64)
+            if receipt_protocol and (encoding.ndim != 1 or encoding.size not in {128, 512} or not np.isfinite(encoding).all()):
+                raise ValueError("Worker encoding must be a 128-dim or 512-dim vector")
 
             # Download photo if provided
             photo_path = None
+            staged_photo = None
             if photo_url:
-                photo_path = _download_photo(str(server_id), photo_url)
-                if receipt_protocol and not photo_path:
+                photo_download = _download_photo(str(server_id), photo_url)
+                if photo_download:
+                    staged_photo, photo_path = photo_download
+                elif receipt_protocol:
                     raise ValueError(f"Worker photo download failed for {server_id}")
 
-            if receipt_protocol:
-                database.cleanup_replaced_worker_photos(str(server_id), [photo_path] if photo_path else [])
+            try:
+                if receipt_protocol:
+                    database.cleanup_replaced_worker_photos(str(server_id), [photo_path] if photo_path else [])
 
-            database.add_worker(
-                name=name,
-                encoding=encoding,
-                photo_paths=[photo_path] if photo_path else [],
-                enrolled_at=enrolled_at,
-                server_id=str(server_id),
-                employee_id=employee_id,
-            )
+                database.add_worker(
+                    name=name,
+                    encoding=encoding,
+                    photo_paths=[photo_path] if photo_path else [],
+                    enrolled_at=enrolled_at,
+                    server_id=str(server_id),
+                    employee_id=employee_id,
+                )
+                if staged_photo:
+                    os.replace(staged_photo, photo_path)
+            finally:
+                if staged_photo and os.path.exists(staged_photo):
+                    os.unlink(staged_photo)
             logger.info("Synced worker: %s (server_id=%s)", name, server_id)
 
         if full_roster:
@@ -463,18 +485,25 @@ def acknowledge_applied_roster() -> bool:
         return False
 
 
-def _download_photo(name: str, url: str) -> Optional[str]:
-    """Download a worker photo and save locally."""
+def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
+    """Stage a worker photo; caller publishes it after row validation."""
+    staged = None
     try:
         os.makedirs(config.PHOTO_DIR, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
         path = os.path.join(config.PHOTO_DIR, f"{safe_name}.jpg")
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
-            with open(path, "wb") as f:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=config.PHOTO_DIR, prefix=f".{safe_name}-", suffix=".tmp", delete=False) as f:
+                staged = f.name
                 f.write(r.content)
-            return path
+            return staged, path
     except Exception as e:
+        if staged:
+            try:
+                os.unlink(staged)
+            except OSError:
+                logger.warning("Could not remove incomplete staged photo: %s", staged)
         logger.warning("Failed to download photo for %s: %s", name, e)
     return None
 
