@@ -137,6 +137,37 @@ it('reports a competing operator reversal without claiming this request succeede
   }
 });
 
+it('treats an HTTP 200 unavailable-history fallback as an unknown save status', async () => {
+  const correction = {
+    id: 'correction-4', date: '2026-09-14', worker_id: 'worker-1', worker_name: 'Worker', worker_department: 'Assembly',
+    action: 'add_clock_in', event_type: 'clock_in', corrected_timestamp: '2026-09-14T08:00:00',
+    original_attendance_id: null, original_timestamp: null, original_event_type: null, related_exception_key: null,
+    reason: 'Missed scan', supervisor_name: 'Supervisor', created_at: '2026-09-14T08:00:00', updated_at: '2026-09-14T08:00:00',
+  };
+  let attempted = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      attempted = true;
+      throw new Error('Connection lost after save');
+    }
+    if (url.startsWith('/api/attendance-corrections')) return { ok: true, json: async () => attempted
+      ? { corrections: [], backend_unavailable: true }
+      : { corrections: [correction] } };
+    return { ok: true, json: async () => [] };
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<LogPage />); });
+  try {
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Reverse'))!.props.onClick());
+    await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Wrong scan' } }));
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Confirm reversal'))!.props.onClick());
+    expect(toast).toHaveBeenCalledWith('Connection lost after save Save status is unknown; refresh history before editing the reason or retrying.', 'error');
+    expect(tree.root.findAllByType('textarea')).toHaveLength(1);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
 it('discards a reversal draft when the selected date changes', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
     ok: true,

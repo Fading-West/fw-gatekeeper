@@ -79,6 +79,7 @@ function LogPageContent() {
         if (!attendanceRes.ok || !correctionsRes.ok) throw new Error('Failed to load activity log');
         const eventRows: AttendanceWithWorker[] = await attendanceRes.json();
         const correctionPayload: AttendanceCorrectionsResponse = await correctionsRes.json();
+        if (correctionPayload.backend_unavailable) throw new Error('Attendance correction history is unavailable');
         if (cancelled) return;
         setEvents(Array.isArray(eventRows) ? eventRows : []);
         setCorrections(Array.isArray(correctionPayload.corrections) ? correctionPayload.corrections : []);
@@ -131,8 +132,8 @@ function LogPageContent() {
         const history = await fetch(`/api/attendance-corrections?${params.toString()}`);
         if (history.ok) {
           const payload: AttendanceCorrectionsResponse = await history.json();
-          historyChecked = Array.isArray(payload.corrections);
-          const saved = payload.corrections?.find((correction) => correction.id === request.correction_id);
+          historyChecked = !payload.backend_unavailable && Array.isArray(payload.corrections);
+          const saved = historyChecked ? payload.corrections.find((correction) => correction.id === request.correction_id) : null;
           if (saved?.reversal_id) {
             acknowledgeCorrectionRequest(request);
             setReversalDraft(null);
