@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 import { convexTest } from 'convex-test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { api } from './_generated/api';
 import schema from './schema';
@@ -127,4 +127,25 @@ describe('portal member lifecycle', () => {
     expect(state.member).toMatchObject({ role: 'admin', active: true });
     expect(state.account?.secret).toBe('unchanged');
   });
+});
+
+
+it('revokes sessions created earlier in the same millisecond', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-25T18:00:00Z'));
+  try {
+    const { t, admin, viewer, viewerSession } = await setup();
+    const actor = t.withIdentity({ subject: admin });
+    const oldJwt = t.withIdentity({ subject: `${viewer}|${viewerSession}` });
+    await actor.mutation(api.portalMembers.setActive, { userId: viewer, active: false });
+    await actor.mutation(api.portalMembers.setActive, { userId: viewer, active: true });
+    await expect(oldJwt.query(api.portalMembers.current, {})).resolves.toBeNull();
+    const freshSession = await t.run(ctx => ctx.db.insert('authSessions', {
+      userId: viewer, expirationTime: Date.now() + 60_000,
+    }));
+    await expect(t.withIdentity({ subject: `${viewer}|${freshSession}` })
+      .query(api.portalMembers.current, {})).resolves.toMatchObject({ role: 'viewer' });
+  } finally {
+    vi.useRealTimers();
+  }
 });

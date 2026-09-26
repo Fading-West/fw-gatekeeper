@@ -30,7 +30,7 @@ export default defineSchema({
     active: v.boolean(),
     createdAt: v.string(),
     updatedAt: v.optional(v.string()),
-    sessionRevokedAt: v.optional(v.string()),
+    sessionRevokedAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_active", ["active"])

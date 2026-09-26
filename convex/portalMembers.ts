@@ -218,12 +218,17 @@ export const setActive = mutation({
     if (target.active === args.active) return null;
     await protectLastAdmin(ctx, target, target.role, args.active);
     const now = new Date();
+    // Convex creation times may have sub-millisecond precision. Include the
+    // latest committed session rather than truncating the cutoff to an ISO date.
+    const latestSession = !args.active ? await ctx.db.query('authSessions')
+      .withIndex('userId', q => q.eq('userId', args.userId)).order('desc').first() : null;
+    const cutoff = Math.max(now.getTime(), latestSession?._creationTime ?? 0);
     await ctx.db.patch(target._id, {
       active: args.active,
       updatedAt: now.toISOString(),
-      ...(!args.active ? { sessionRevokedAt: now.toISOString() } : {}),
+      ...(!args.active ? { sessionRevokedAt: cutoff } : {}),
     });
-    if (!args.active) await revokeSessionBatch(ctx, args.userId, now.getTime());
+    if (!args.active) await revokeSessionBatch(ctx, args.userId, cutoff);
     await writeAuditLog(ctx, { actorUserId: actor.userId, action: args.active ? 'portalMembers.reactivate' : 'portalMembers.disable', targetTable: 'portalMembers', targetId: target._id });
     return null;
   },

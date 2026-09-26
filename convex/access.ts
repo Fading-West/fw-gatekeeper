@@ -12,7 +12,7 @@ export async function hasCurrentPortalSession(ctx: QueryCtx | MutationCtx, userI
   if (!identity || identity.subject.split('|', 1)[0] !== userId) return false;
   const member = await ctx.db.query('portalMembers')
     .withIndex('by_user', (q) => q.eq('userId', userId)).unique();
-  if (!member?.sessionRevokedAt) return true;
+  if (member?.sessionRevokedAt === undefined) return true;
   const separator = identity.subject.indexOf('|');
   // Once an account has been disabled, only a newly created live session
   // can authorize it after reactivation. Old JWTs outlive session deletion.
@@ -20,7 +20,7 @@ export async function hasCurrentPortalSession(ctx: QueryCtx | MutationCtx, userI
   const session = await ctx.db.get(identity.subject.slice(separator + 1) as Id<"authSessions">);
   return session?.userId === userId
     && session.expirationTime > Date.now()
-    && session._creationTime > Date.parse(member.sessionRevokedAt);
+    && session._creationTime > member.sessionRevokedAt;
 }
 
 export async function assertPortalRole(
