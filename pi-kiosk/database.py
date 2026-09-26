@@ -403,25 +403,24 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
     rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
-    if rows:
-        # Cleanup must succeed before the row is removed. Otherwise a retry
-        # would lose the only record of owned thumbnails and could ack a purge
-        # while biometric files remain on disk.
-        photo_root = Path(config.PHOTO_DIR).resolve()
-        owned = {photo_root / f"{server_id}.jpg"}
-        for row in rows:
-            owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
-        remaining_paths = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,)).fetchall()
-        referenced = {
-            Path(path).resolve()
-            for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
-        }
-        for path in owned:
-            candidate = path.resolve()
-            if strict_cleanup and (candidate == photo_root or not candidate.is_relative_to(photo_root)):
-                raise ValueError(f"Retired worker photo path needs manual cleanup: {path}")
-            if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
-                candidate.unlink(missing_ok=True)
+    # The server-id filename remains attributable even when an older client
+    # deleted the SQLite row without removing its thumbnail. Unknown legacy
+    # filenames are never inferred from a worker's name and deleted here.
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    owned = {photo_root / f"{server_id}.jpg"}
+    for row in rows:
+        owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+    remaining_paths = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,)).fetchall()
+    referenced = {
+        Path(path).resolve()
+        for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
+    }
+    for path in owned:
+        candidate = path.resolve()
+        if strict_cleanup and (candidate == photo_root or not candidate.is_relative_to(photo_root)):
+            raise ValueError(f"Retired worker photo path needs manual cleanup: {path}")
+        if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
+            candidate.unlink(missing_ok=True)
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
     return cursor.rowcount > 0
@@ -459,6 +458,22 @@ def count_unmanaged_local_workers() -> int:
     """Profiles without a server identity cannot be certified by roster sync."""
     conn = _get_conn()
     return int(conn.execute("SELECT COUNT(*) FROM workers WHERE server_id IS NULL OR server_id = ''").fetchone()[0])
+
+
+def list_unreferenced_photo_files() -> list[str]:
+    """Find files a roster receipt cannot certify or safely delete."""
+    conn = _get_conn()
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    if not photo_root.exists():
+        return []
+    rows = conn.execute("SELECT photo_paths FROM workers").fetchall()
+    referenced = {
+        Path(path).resolve()
+        for row in rows for path in json.loads(row["photo_paths"] or "[]")
+    }
+    return sorted(str(path) for path in photo_root.rglob("*")
+                  if (path.is_file() or path.is_symlink()) and
+                  (not path.resolve().is_relative_to(photo_root) or path.resolve() not in referenced))
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:

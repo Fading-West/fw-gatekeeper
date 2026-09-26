@@ -113,6 +113,32 @@ class RosterReceiptTests(unittest.TestCase):
             self.assertEqual(posted.call_count, 1)
             self.assertFalse(legacy.exists())
 
+    def test_row_gone_legacy_thumbnail_blocks_ack_without_deleting_unknown_file(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            legacy = Path(tmp) / 'Alex.jpg'
+            legacy.write_bytes(b'old biometric thumbnail')
+            # An older client already deleted Alex's SQLite row, losing the
+            # reference that could have identified this name-based thumbnail.
+            posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]))
+            posted.assert_not_called()
+            self.assertEqual(legacy.read_bytes(), b'old biometric thumbnail')
+            self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+            legacy.unlink()
+            posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]), post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+
+    def test_row_gone_server_id_thumbnail_is_cleaned_before_ack(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            known = Path(tmp) / f'{SERVER_ID}.jpg'
+            known.write_bytes(b'old biometric thumbnail')
+            with mock.patch.object(Path, 'unlink', side_effect=PermissionError('read-only disk')):
+                posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]))
+            posted.assert_not_called()
+            self.assertTrue(known.exists())
+            posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]), post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            self.assertFalse(known.exists())
+
     def test_invalid_update_preserves_existing_photo_and_reference(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
             photo = Path(tmp) / f'{SERVER_ID}.jpg'

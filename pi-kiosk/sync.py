@@ -435,6 +435,9 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             unmanaged = database.count_unmanaged_local_workers()
             if unmanaged:
                 raise ValueError(f"{unmanaged} unmanaged local worker profile(s) prevent roster acknowledgement; map or remove them after review")
+            unreferenced = database.list_unreferenced_photo_files()
+            if unreferenced:
+                raise ValueError(f"{len(unreferenced)} unreferenced local photo file(s) prevent roster acknowledgement; review {unreferenced[0]}")
 
         if receipt_protocol:
             # A pending receipt is only cached after all changes are durable.

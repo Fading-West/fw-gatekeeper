@@ -65,7 +65,7 @@ The server issues one pending receipt per kiosk before reading that kiosk's rost
 
 Applied-roster confirmation requires a registered device credential. Deploy the cloud protocol first, issue and configure each kiosk's device credential, then update the kiosk software. A kiosk still using the legacy shared key can continue roster downloads but remains unconfirmed; an admin roster read never creates a device receipt.
 
-An unmanaged local worker profile with no server ID, or a thumbnail stored outside the configured kiosk photo directory, also blocks acknowledgement. Review and map or remove that profile and its files on the device; keep its attendance evidence for reconciliation. The kiosk log names the condition that needs repair.
+An unmanaged local worker profile with no server ID, a thumbnail stored outside the configured kiosk photo directory, or an unreferenced file in that directory also blocks acknowledgement. A known server-ID thumbnail can be cleaned even if an older client already deleted its SQLite row. Unknown legacy filenames are left in place for manual review; inspect and remove or map them before expecting a receipt acknowledgement. Keep attendance evidence for reconciliation. The kiosk log names the condition that needs repair.
 
 Purging is irreversible. If the person later returns to work, enroll them again from scratch (new consent, new photos, new template).
 
