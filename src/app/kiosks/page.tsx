@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '@/components/Toast';
 
 type KioskReadinessStatus = 'online' | 'stale' | 'offline' | 'never_synced';
@@ -67,6 +67,7 @@ export default function KiosksPage() {
   const [location, setLocation] = useState('');
   const [issuedCredential, setIssuedCredential] = useState<{ kioskId: string; value: string } | null>(null);
   const [credentialBusy, setCredentialBusy] = useState<string | null>(null);
+  const credentialBusyRef = useRef(false);
   const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
 
   const fetchCredentialStatus = useCallback(async () => {
@@ -81,8 +82,9 @@ export default function KiosksPage() {
   }, []);
 
   const manageCredential = async (id: string, method: 'POST' | 'DELETE') => {
+    if (credentialBusyRef.current || issuedCredential) return;
+    credentialBusyRef.current = true;
     setCredentialBusy(id);
-    setIssuedCredential(null);
     try {
       const response = await fetch('/api/kiosks/credentials', {
         method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
@@ -95,6 +97,7 @@ export default function KiosksPage() {
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Credential change failed', 'error');
     } finally {
+      credentialBusyRef.current = false;
       setCredentialBusy(null);
     }
   };
@@ -286,9 +289,9 @@ export default function KiosksPage() {
                   </div>
                   <div className="flex gap-2">
                     <span className="badge border border-slate-500/30 text-slate-300">{credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
-                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy === kiosk.id}
+                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
                       onClick={() => manageCredential(kiosk.id, 'POST')}>Issue / rotate credential</button>
-                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy === kiosk.id}
+                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
                       onClick={() => manageCredential(kiosk.id, 'DELETE')}>Revoke credential</button>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 text-sm">

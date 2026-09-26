@@ -37,7 +37,9 @@ export async function GET(req: NextRequest) {
   const identity = admin ? null : await authenticateKiosk(req, [requestedId]);
   if (!admin && !identity) return unauthorizedApiResponse();
 
-  const kioskId = identity?.kioskId || requestedId;
+  // The credential lookup already resolved the exact row. A configured alias
+  // may collide with another legacy kiosk and must not be resolved again.
+  const kioskId = identity?.documentId || requestedId;
   const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
 
   if (!kioskId) return NextResponse.json({ error: 'kiosk_id required' }, { status: 400 });

@@ -82,6 +82,9 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(attempts)) {
       return NextResponse.json({ error: 'attempts (or events/logs) array required' }, { status: 400 });
     }
+    if (attempts.some((attempt: unknown) => !attempt || typeof attempt !== 'object' || Array.isArray(attempt))) {
+      return NextResponse.json({ error: 'Each attempt must be a JSON object' }, { status: 400 });
+    }
     const claims = [...kioskClaims(body), ...attempts.flatMap((attempt: unknown) =>
       attempt && typeof attempt === 'object' && !Array.isArray(attempt) ? kioskClaims(attempt as Record<string, unknown>) : [])];
     const identity = await authenticateKiosk(req, claims);

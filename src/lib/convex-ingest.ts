@@ -97,7 +97,7 @@ export function updateKioskLastSync(kioskId: string, lastSync: string, health?: 
 }
 
 export function lookupKioskCredential(input: { mode: 'device'; credentialHash: string } | { mode: 'legacy'; identifier: string }) {
-  return postSecuredIngest<{ kioskId: string; aliases: string[] } | null>('/api/ingest/kiosks/authenticate', input);
+  return postSecuredIngest<{ documentId: string; kioskId: string; aliases: string[] } | null>('/api/ingest/kiosks/authenticate', input);
 }
 
 export function fetchWorkersForSync(since: string) {

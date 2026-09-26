@@ -18,11 +18,11 @@ it('keeps unknown, inactive, and mismatched devices from downloading a roster', 
   expect(updateKioskLastSync).not.toHaveBeenCalled();
 });
 
-it('uses the authenticated canonical kiosk ID for heartbeat and roster access', async () => {
-  vi.mocked(authenticateKiosk).mockResolvedValue({ kioskId: 'entry', aliases: ['entry', 'Front'] });
+it('uses the authenticated document ID for heartbeat and roster access', async () => {
+  vi.mocked(authenticateKiosk).mockResolvedValue({ documentId: 'kiosk-document', kioskId: 'entry', aliases: ['entry', 'Front'] });
   vi.mocked(updateKioskLastSync).mockResolvedValue({ updated: true });
   vi.mocked(fetchWorkersForSync).mockResolvedValue({ workers: [] });
   expect((await GET(request('Front'))).status).toBe(200);
-  expect(updateKioskLastSync).toHaveBeenCalledWith('entry', expect.any(String), undefined);
+  expect(updateKioskLastSync).toHaveBeenCalledWith('kiosk-document', expect.any(String), undefined);
   expect(fetchWorkersForSync).toHaveBeenCalledOnce();
 });

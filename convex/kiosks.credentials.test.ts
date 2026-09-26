@@ -47,6 +47,18 @@ describe('device credentials', () => {
     await t.run(ctx => ctx.db.patch(kioskId, { active: false }));
     expect(await t.query(internal.kiosks.authenticateLegacy, { identifier: 'entry' })).toBeNull();
   });
+
+  it('keeps authenticated heartbeats bound to the document despite legacy alias collisions', async () => {
+    const { t, admin, kioskId } = await setup();
+    const otherId = await t.run(ctx => ctx.db.insert('kiosks', { name: 'entry', type: 'exit', location: '', active: true }));
+    await admin.mutation(api.kiosks.rotateCredential, { id: kioskId, credentialHash: firstHash });
+    const identity = await t.query(internal.kiosks.authenticateDevice, { credentialHash: firstHash });
+    expect(identity).toMatchObject({ documentId: kioskId, kioskId: 'entry' });
+    expect(await t.mutation(internal.kiosks.updateLastSyncFromHttp, { kioskId: 'entry', lastSync: '2026-09-25T10:00:00Z' })).toEqual({ updated: false });
+    expect(await t.mutation(internal.kiosks.updateLastSyncFromHttp, { kioskId: identity!.documentId, lastSync: '2026-09-25T10:00:00Z' })).toEqual({ updated: true });
+    expect(await t.run(ctx => ctx.db.get(kioskId))).toMatchObject({ lastSync: '2026-09-25T10:00:00Z' });
+    expect(await t.run(ctx => ctx.db.get(otherId))).not.toHaveProperty('lastSync');
+  });
 });
 
 it('keeps validated legacy aliases in attendance and recognition retry evidence', async () => {

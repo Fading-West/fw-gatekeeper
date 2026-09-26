@@ -26,3 +26,17 @@ it('rejects a mismatched record before any secured ingest call', async () => {
   expect(response.status).toBe(401);
   expect(fetchMock).not.toHaveBeenCalled();
 });
+
+it('rejects null and non-object attempts before authentication or ingest', async () => {
+  vi.mocked(authenticateKiosk).mockClear();
+  const fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+  for (const attempt of [null, 42, [], 'invalid']) {
+    const response = await POST(new NextRequest('http://localhost/api/recognition-attempts/bulk', {
+      method: 'POST', body: JSON.stringify({ kiosk_id: 'entry-1', attempts: [attempt] }),
+    }));
+    expect(response.status).toBe(400);
+  }
+  expect(authenticateKiosk).not.toHaveBeenCalled();
+  expect(fetchMock).not.toHaveBeenCalled();
+});

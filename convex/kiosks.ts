@@ -2,6 +2,7 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
+import type { Doc } from "./_generated/dataModel";
 
 function normalizeOptionalText(value?: string) {
   const trimmed = value?.trim();
@@ -159,12 +160,13 @@ export const updateLastSyncFromHttp = internalMutation({
 });
 
 const deviceIdentity = v.union(v.null(), v.object({
+  documentId: v.id("kiosks"),
   kioskId: v.string(),
   aliases: v.array(v.string()),
 }));
 
-function identityFor(kiosk: { _id: string; name: string; kioskId?: string }) {
-  return { kioskId: kiosk.kioskId || kiosk._id, aliases: [kiosk._id, kiosk.name, ...(kiosk.kioskId ? [kiosk.kioskId] : [])] };
+function identityFor(kiosk: Pick<Doc<"kiosks">, "_id" | "name" | "kioskId">) {
+  return { documentId: kiosk._id, kioskId: kiosk.kioskId || kiosk._id, aliases: [kiosk._id, kiosk.name, ...(kiosk.kioskId ? [kiosk.kioskId] : [])] };
 }
 
 // The caller must prove possession of the random secret before using this

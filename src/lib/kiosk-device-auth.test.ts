@@ -5,7 +5,7 @@ import { lookupKioskCredential } from './convex-ingest';
 import { authenticateKiosk, kioskClaims } from './kiosk-device-auth';
 
 vi.mock('./convex-ingest', () => ({ lookupKioskCredential: vi.fn() }));
-const identity = { kioskId: 'entry', aliases: ['entry', 'Front', 'kiosk-document'] };
+const identity = { documentId: 'kiosk-document', kioskId: 'entry', aliases: ['entry', 'Front', 'kiosk-document'] };
 const request = (key?: string) => new NextRequest('http://localhost/api/sync', { headers: key ? { 'x-kiosk-key': key } : {} });
 beforeEach(() => { vi.clearAllMocks(); vi.stubEnv('KIOSK_API_KEY', 'shared-key'); });
 afterEach(() => vi.unstubAllEnvs());
