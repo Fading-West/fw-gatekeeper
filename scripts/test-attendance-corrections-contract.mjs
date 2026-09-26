@@ -51,7 +51,7 @@ assert.match(apiRoute, /attendanceCorrections\.create/, 'POST /api/attendance-co
 assert.match(apiRoute, /hasValidPortalSession\(req,\s*\['admin',\s*'enrollment',\s*'viewer'\]\)/, 'Correction reads should allow viewers.');
 assert.match(apiRoute, /hasValidPortalSession\(req,\s*\['admin',\s*'enrollment'\]\)/, 'Correction writes should be restricted.');
 assert.match(middleware, /pathname === '\/api\/attendance-corrections' && method === 'GET'[\s\S]*\['admin', 'enrollment', 'viewer'\]/, 'Middleware should permit correction reads for viewers.');
-assert.match(middleware, /pathname === '\/api\/attendance-corrections' && method === 'POST'[\s\S]*\['admin', 'enrollment'\]/, 'Middleware should restrict correction writes.');
+assert.match(middleware, /pathname === '\/api\/attendance-corrections' && \(method === 'POST' \|\| method === 'PATCH'\)[\s\S]*\['admin', 'enrollment'\]/, 'Middleware should restrict correction writes.');
 
 assert.match(exceptionsPage, /Correct attendance/, 'Exceptions page must expose correction actions.');
 assert.match(exceptionsPage, /Save correction/, 'Exceptions page must submit corrections.');

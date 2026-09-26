@@ -55,7 +55,7 @@ function getApiAllowedRoles(req: NextRequest): PortalMemberRole[] {
     return ['admin', 'enrollment', 'viewer'];
   }
 
-  if (pathname === '/api/attendance-corrections' && method === 'POST') {
+  if (pathname === '/api/attendance-corrections' && (method === 'POST' || method === 'PATCH')) {
     return ['admin', 'enrollment'];
   }
 

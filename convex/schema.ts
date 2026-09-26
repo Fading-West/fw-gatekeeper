@@ -110,12 +110,25 @@ export default defineSchema({
     relatedExceptionKey: v.optional(v.string()),
     reason: v.string(),
     supervisorName: v.optional(v.string()),
+    actorUserId: v.optional(v.id("users")),
     createdAt: v.string(),
     updatedAt: v.string(),
   })
     .index("by_date", ["date"])
     .index("by_worker_date", ["workerId", "date"])
     .index("by_original_attendance", ["originalAttendanceId"])
+    .index("by_requestId", ["requestId"]),
+
+  attendanceCorrectionReversals: defineTable({
+    correctionId: v.id("attendanceCorrections"),
+    requestId: v.string(),
+    date: v.string(),
+    workerId: v.string(),
+    reason: v.string(),
+    actorUserId: v.id("users"),
+    createdAt: v.string(),
+  })
+    .index("by_correctionId", ["correctionId"])
     .index("by_requestId", ["requestId"]),
 
   recognitionAttempts: defineTable({

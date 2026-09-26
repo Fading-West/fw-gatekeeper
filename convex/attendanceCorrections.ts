@@ -21,6 +21,13 @@ const attendanceCorrectionResult = v.object({
   related_exception_key: nullableString,
   reason: v.string(),
   supervisor_name: nullableString,
+  actor_user_id: nullableString,
+  actor_name: nullableString,
+  reversal_id: nullableString,
+  reversal_reason: nullableString,
+  reversed_by_user_id: nullableString,
+  reversed_by_name: nullableString,
+  reversed_at: nullableString,
   created_at: v.string(),
   updated_at: v.string(),
 });
@@ -43,7 +50,8 @@ export const list = query({
   },
   returns: v.array(attendanceCorrectionResult),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
+    const requester = await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
+    const canSeeActorIdentity = requester.role === "admin";
 
     const baseQuery = args.workerId
       ? ctx.db
@@ -57,6 +65,10 @@ export const list = query({
 
     const rows = [];
     for (const correction of corrections) {
+      const reversal = await ctx.db.query("attendanceCorrectionReversals")
+        .withIndex("by_correctionId", (q) => q.eq("correctionId", correction._id)).unique();
+      const actor = canSeeActorIdentity && correction.actorUserId ? await ctx.db.get(correction.actorUserId) : null;
+      const reversalActor = canSeeActorIdentity && reversal ? await ctx.db.get(reversal.actorUserId) : null;
       const workerId = ctx.db.normalizeId("workers", correction.workerId);
       const worker = workerId ? await ctx.db.get(workerId) : null;
       const original = correction.originalAttendanceId
@@ -77,6 +89,13 @@ export const list = query({
         related_exception_key: correction.relatedExceptionKey || null,
         reason: correction.reason,
         supervisor_name: correction.supervisorName || null,
+        actor_user_id: canSeeActorIdentity && correction.actorUserId ? String(correction.actorUserId) : null,
+        actor_name: correction.actorUserId ? (canSeeActorIdentity ? actor?.name || actor?.email || String(correction.actorUserId) : "Authorized operator") : null,
+        reversal_id: reversal ? String(reversal._id) : null,
+        reversal_reason: reversal?.reason || null,
+        reversed_by_user_id: canSeeActorIdentity && reversal ? String(reversal.actorUserId) : null,
+        reversed_by_name: reversal ? (canSeeActorIdentity ? reversalActor?.name || reversalActor?.email || String(reversal.actorUserId) : "Authorized operator") : null,
+        reversed_at: reversal?.createdAt || null,
         created_at: correction.createdAt,
         updated_at: correction.updatedAt,
       });
@@ -99,7 +118,7 @@ export const create = mutation({
   },
   returns: v.object({ id: v.id("attendanceCorrections"), createdAt: v.string() }),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
 
     const reason = normalizeText(args.reason);
     if (!reason) {
@@ -165,10 +184,52 @@ export const create = mutation({
       ...evidence,
       requestId,
       eventType,
+      actorUserId: actor.userId,
       createdAt: now,
       updatedAt: now,
     });
 
     return { id, createdAt: now };
+  },
+});
+
+export const reverse = mutation({
+  args: {
+    correctionId: v.id("attendanceCorrections"),
+    requestId: v.string(),
+    reason: v.string(),
+  },
+  returns: v.object({ id: v.id("attendanceCorrectionReversals"), createdAt: v.string() }),
+  handler: async (ctx, args) => {
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const reason = normalizeText(args.reason);
+    if (!reason || reason.length > 1000) throw new ConvexError({ code: "INVALID_CORRECTION_REVERSAL", message: "Reversal reason must be 1 to 1,000 characters." });
+    if (!args.requestId.trim() || args.requestId.length > 200) throw new ConvexError({ code: "INVALID_CORRECTION_REVERSAL", message: "requestId must be a nonempty string of at most 200 characters." });
+
+    const existingRequest = await ctx.db.query("attendanceCorrectionReversals")
+      .withIndex("by_requestId", (q) => q.eq("requestId", args.requestId)).unique();
+    if (existingRequest) {
+      if (existingRequest.correctionId !== args.correctionId || existingRequest.reason !== reason) {
+        throw new ConvexError({ code: "CORRECTION_REVERSAL_CONFLICT", message: "Reversal requestId was already used with different details." });
+      }
+      return { id: existingRequest._id, createdAt: existingRequest.createdAt };
+    }
+    const correction = await ctx.db.get(args.correctionId);
+    if (!correction) throw new ConvexError({ code: "INVALID_CORRECTION_REVERSAL", message: "Correction not found." });
+    const existingReversal = await ctx.db.query("attendanceCorrectionReversals")
+      .withIndex("by_correctionId", (q) => q.eq("correctionId", args.correctionId)).unique();
+    if (existingReversal) throw new ConvexError({ code: "CORRECTION_REVERSAL_CONFLICT", message: "Correction has already been reversed." });
+
+    const createdAt = new Date().toISOString();
+    const id = await ctx.db.insert("attendanceCorrectionReversals", {
+      correctionId: correction._id,
+      requestId: args.requestId,
+      date: correction.date,
+      workerId: correction.workerId,
+      reason,
+      actorUserId: actor.userId,
+      createdAt,
+    });
+    return { id, createdAt };
   },
 });
