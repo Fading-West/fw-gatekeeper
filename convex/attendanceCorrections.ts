@@ -50,7 +50,8 @@ export const list = query({
   },
   returns: v.array(attendanceCorrectionResult),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
+    const requester = await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
+    const canSeeActorIdentity = requester.role === "admin";
 
     const baseQuery = args.workerId
       ? ctx.db
@@ -66,8 +67,8 @@ export const list = query({
     for (const correction of corrections) {
       const reversal = await ctx.db.query("attendanceCorrectionReversals")
         .withIndex("by_correctionId", (q) => q.eq("correctionId", correction._id)).unique();
-      const actor = correction.actorUserId ? await ctx.db.get(correction.actorUserId) : null;
-      const reversalActor = reversal ? await ctx.db.get(reversal.actorUserId) : null;
+      const actor = canSeeActorIdentity && correction.actorUserId ? await ctx.db.get(correction.actorUserId) : null;
+      const reversalActor = canSeeActorIdentity && reversal ? await ctx.db.get(reversal.actorUserId) : null;
       const workerId = ctx.db.normalizeId("workers", correction.workerId);
       const worker = workerId ? await ctx.db.get(workerId) : null;
       const original = correction.originalAttendanceId
@@ -88,12 +89,12 @@ export const list = query({
         related_exception_key: correction.relatedExceptionKey || null,
         reason: correction.reason,
         supervisor_name: correction.supervisorName || null,
-        actor_user_id: correction.actorUserId ? String(correction.actorUserId) : null,
-        actor_name: actor?.name || actor?.email || null,
+        actor_user_id: canSeeActorIdentity && correction.actorUserId ? String(correction.actorUserId) : null,
+        actor_name: correction.actorUserId ? (canSeeActorIdentity ? actor?.name || actor?.email || String(correction.actorUserId) : "Authorized operator") : null,
         reversal_id: reversal ? String(reversal._id) : null,
         reversal_reason: reversal?.reason || null,
-        reversed_by_user_id: reversal ? String(reversal.actorUserId) : null,
-        reversed_by_name: reversalActor?.name || reversalActor?.email || null,
+        reversed_by_user_id: canSeeActorIdentity && reversal ? String(reversal.actorUserId) : null,
+        reversed_by_name: reversal ? (canSeeActorIdentity ? reversalActor?.name || reversalActor?.email || String(reversal.actorUserId) : "Authorized operator") : null,
         reversed_at: reversal?.createdAt || null,
         created_at: correction.createdAt,
         updated_at: correction.updatedAt,

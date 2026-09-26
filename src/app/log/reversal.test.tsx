@@ -80,3 +80,49 @@ it('discards a reversal draft when the selected date changes', async () => {
     await act(async () => tree.unmount());
   }
 });
+
+it('shows a settled error after the selected date fails to load', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('2026-09-15')) return { ok: false, json: async () => ({}) };
+    return { ok: true, json: async () => url.startsWith('/api/attendance-corrections') ? { corrections: [] } : [] };
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<LogPage />); });
+  try {
+    await act(async () => tree.root.findByType('input').props.onChange({ target: { value: '2026-09-15' } }));
+    expect(tree.root.findByProps({ role: 'alert' }).children).toContain('Failed to load activity log');
+    expect(tree.root.findAllByType('div').some((node) => node.children.includes('Loading activity log...'))).toBe(false);
+    expect(tree.root.findAllByType('button').find((node) => node.children.includes('Export CSV'))?.props.disabled).toBe(true);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
+it('shows a settled error when the post-reversal refresh fails', async () => {
+  const correction = {
+    id: 'correction-1', date: '2026-09-14', worker_id: 'worker-1', worker_name: 'Worker', worker_department: 'Assembly',
+    action: 'add_clock_in', event_type: 'clock_in', corrected_timestamp: '2026-09-14T08:00:00',
+    original_attendance_id: null, original_timestamp: null, original_event_type: null, related_exception_key: null,
+    reason: 'Missed scan', supervisor_name: 'Supervisor', created_at: '2026-09-14T08:00:00', updated_at: '2026-09-14T08:00:00',
+  };
+  let reversed = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      reversed = true;
+      return { ok: true, json: async () => ({ id: 'reversal-1' }) };
+    }
+    if (reversed) return { ok: false, json: async () => ({}) };
+    return { ok: true, json: async () => url.startsWith('/api/attendance-corrections') ? { corrections: [correction] } : [] };
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<LogPage />); });
+  try {
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Reverse'))!.props.onClick());
+    await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Wrong scan' } }));
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Confirm reversal'))!.props.onClick());
+    expect(tree.root.findByProps({ role: 'alert' }).children).toContain('Failed to load activity log');
+    expect(tree.root.findAllByType('div').some((node) => node.children.includes('Loading activity log...'))).toBe(false);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});

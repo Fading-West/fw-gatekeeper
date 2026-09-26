@@ -263,7 +263,7 @@ function LogPageContent() {
         </div>
       )}
 
-      {loading || loadedSelection !== selectionKey ? (
+      {loading || (!error && loadedSelection !== selectionKey) ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading activity log...</div>
       ) : error ? null : (
       <>
@@ -311,8 +311,8 @@ function LogPageContent() {
                     </td>
                     <td className="px-5 py-3 text-xs text-slate-500">
                       {correction.supervisor_name || 'Not recorded'}
-                      {correction.actor_user_id && <div>Actor: {correction.actor_name || correction.actor_user_id}</div>}
-                      {correction.reversed_by_user_id && <div>Reversed by: {correction.reversed_by_name || correction.reversed_by_user_id}</div>}
+                      {(correction.actor_name || correction.actor_user_id) && <div>Actor: {correction.actor_name || correction.actor_user_id}</div>}
+                      {(correction.reversed_by_name || correction.reversed_by_user_id) && <div>Reversed by: {correction.reversed_by_name || correction.reversed_by_user_id}</div>}
                     </td>
                     {canReverse && <td className="px-5 py-3">
                       {!correction.reversal_id && <button type="button" className="btn-secondary text-xs" disabled={reversing} onClick={() => setReversalDraft({ correction, reason: '', selection: selectionKey })}>Reverse</button>}

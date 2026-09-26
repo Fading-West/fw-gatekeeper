@@ -4,6 +4,7 @@ import { convexTest } from 'convex-test';
 import { describe, expect, it } from 'vitest';
 import { api } from './_generated/api';
 import type { Id } from './_generated/dataModel';
+import { listEffectiveAttendanceByTimestampRange } from './attendance';
 import schema from './schema';
 
 const modules = import.meta.glob('./**/*.ts');
@@ -32,7 +33,7 @@ async function setup() {
 
 describe('attendance correction reversal', () => {
   it('removes a reversed addition from effective attendance and retains both audit records', async () => {
-    const { t, admin, enrollment, workerId, adminId, enrollmentId } = await setup();
+    const { t, admin, enrollment, viewer, workerId, adminId, enrollmentId } = await setup();
     const added = await admin.mutation(api.attendanceCorrections.create, {
       date, workerId, action: 'add_clock_out', correctedTimestamp: '2026-09-01T17:00:00', reason: 'Missed scan',
     });
@@ -43,8 +44,16 @@ describe('attendance correction reversal', () => {
     expect(await admin.query(api.attendance.list, { date })).toHaveLength(1);
     expect(await admin.query(api.attendanceCorrections.list, { date })).toMatchObject([{
       id: added.id, actor_user_id: adminId, reversal_id: reversed.id,
-      reversal_reason: 'Kiosk record found', reversed_by_user_id: enrollmentId,
+      actor_name: 'admin@example.com', reversal_reason: 'Kiosk record found', reversed_by_user_id: enrollmentId,
+      reversed_by_name: 'enrollment@example.com',
     }]);
+    for (const reader of [enrollment, viewer]) {
+      expect(await reader.query(api.attendanceCorrections.list, { date })).toMatchObject([{
+        id: added.id, actor_user_id: null, actor_name: 'Authorized operator',
+        reversed_by_user_id: null, reversed_by_name: 'Authorized operator',
+        reversal_reason: 'Kiosk record found',
+      }]);
+    }
     expect(await t.run((ctx) => ctx.db.get(added.id))).toMatchObject({ reason: 'Missed scan', actorUserId: adminId });
   });
 
@@ -89,4 +98,26 @@ describe('attendance correction reversal', () => {
     const result = await admin.mutation(api.attendanceCorrections.reverse, request);
     expect(await t.run((ctx) => ctx.db.get(result.id))).toMatchObject({ actorUserId: adminId });
   });
+});
+
+it('starts independent reversal lookups together for a correction-heavy date', async () => {
+  const started: string[] = [];
+  const pending = new Map<string, (value: null) => void>();
+  const corrections = ['one', 'two', 'three'].map(_id => ({ _id, action: 'add_clock_in' }));
+  const ctx = { db: { query(table: string) {
+    if (table === 'attendance') return { withIndex: () => ({ collect: async () => [] }) };
+    if (table === 'attendanceCorrections') return { withIndex: () => ({ collect: async () => corrections }) };
+    return { withIndex: (_index: string, select: (query: { eq: (_field: string, id: string) => string }) => string) => {
+      const id = select({ eq: (_field, value) => value });
+      return { unique: () => {
+        started.push(id);
+        return new Promise<null>(resolve => pending.set(id, resolve));
+      } };
+    } };
+  } } };
+  const result = listEffectiveAttendanceByTimestampRange(ctx, date);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(started).toEqual(['one', 'two', 'three']);
+  for (const resolve of pending.values()) resolve(null);
+  await expect(result).resolves.toEqual([]);
 });

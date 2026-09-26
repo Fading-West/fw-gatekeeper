@@ -75,12 +75,10 @@ export async function listEffectiveAttendanceByTimestampRange(
           .collect(),
   ]);
 
-  const activeCorrections = [];
-  for (const correction of corrections) {
-    const reversal = await ctx.db.query("attendanceCorrectionReversals")
-      .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correction._id)).unique();
-    if (!reversal) activeCorrections.push(correction);
-  }
+  const reversals = await Promise.all(corrections.map((correction: any) =>
+    ctx.db.query("attendanceCorrectionReversals")
+      .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correction._id)).unique()));
+  const activeCorrections = corrections.filter((_: any, index: number) => !reversals[index]);
 
   const voidedIds = new Set(
     activeCorrections
