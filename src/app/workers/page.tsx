@@ -77,7 +77,7 @@ export default function WorkersPage() {
       setKioskPurgeStatus(null);
     }
   }, []);
-  useEffect(() => { if (currentRole) void fetchKioskPurgeStatus(); }, [currentRole, fetchKioskPurgeStatus]);
+  useEffect(() => { if (currentRole === 'admin') void fetchKioskPurgeStatus(); }, [currentRole, fetchKioskPurgeStatus]);
 
   const resetEdit = () => {
     setEditId(null);
@@ -183,12 +183,12 @@ export default function WorkersPage() {
           <p className="text-sm text-slate-500 mt-1 font-mono">
             {workers.length} registered workers · {enrolledCount} face enrolled · {missingFaceCount} needs enrollment · {invalidFaceCount} invalid
           </p>
-          <p className="text-xs text-slate-400 mt-2">
+          {canEdit && <p className="text-xs text-slate-400 mt-2">
             {kioskPurgeStatus
               ? `${kioskPurgeStatus.pending} kiosk${kioskPurgeStatus.pending === 1 ? '' : 's'} with pending purge; ${kioskPurgeStatus.unconfirmed} without a confirmed roster. `
               : 'Kiosk purge status unavailable. '}
             Check each device on the <Link href="/kiosks" className="text-gold underline">Kiosks page</Link>.
-          </p>
+          </p>}
           {!canEdit && (
             <p className="mt-2 flex items-center gap-2">
               <span className="badge border border-slate-400/15 bg-slate-400/5 text-[10px] text-slate-300">Review-only</span>
