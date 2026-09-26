@@ -91,14 +91,47 @@ it('reconciles a saved reversal after a lost response and an edited-reason confl
     await editReason('Original reason');
     await submit();
     expect(tree.root.findAllByType('textarea')).toHaveLength(1);
+    expect(toast).toHaveBeenCalledWith('Connection lost after save Save status is unknown; refresh history before editing the reason or retrying.', 'error');
     await editReason('Edited reason');
     await submit();
     expect(patches).toBe(2);
     const patchRequests = vi.mocked(fetch).mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
     expect(JSON.parse(String(patchRequests[0][1]?.body)).request_id).not.toBe(JSON.parse(String(patchRequests[1][1]?.body)).request_id);
-    expect(toast).toHaveBeenCalledWith('Correction is reversed. Recorded reason: Original reason', 'info');
+    expect(toast).toHaveBeenCalledWith('A reversal is already recorded. Your request could not be confirmed. Recorded reason: Original reason', 'info');
     expect(tree.root.findAllByType('textarea')).toHaveLength(0);
     expect(tree.root.findAllByType('span').some((node) => node.children.includes('Reversed'))).toBe(true);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
+it('reports a competing operator reversal without claiming this request succeeded', async () => {
+  const correction = {
+    id: 'correction-3', date: '2026-09-14', worker_id: 'worker-1', worker_name: 'Worker', worker_department: 'Assembly',
+    action: 'add_clock_in', event_type: 'clock_in', corrected_timestamp: '2026-09-14T08:00:00',
+    original_attendance_id: null, original_timestamp: null, original_event_type: null, related_exception_key: null,
+    reason: 'Missed scan', supervisor_name: 'Supervisor', created_at: '2026-09-14T08:00:00', updated_at: '2026-09-14T08:00:00',
+  };
+  let attempted = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      attempted = true;
+      return { ok: false, json: async () => ({ error: 'Correction has already been reversed.' }) };
+    }
+    if (url.startsWith('/api/attendance-corrections')) return { ok: true, json: async () => ({ corrections: [{
+      ...correction, ...(attempted ? { reversal_id: 'other-reversal', reversal_reason: 'Other operator reason', reversed_by_name: 'Other Admin' } : {}),
+    }] }) };
+    return { ok: true, json: async () => [] };
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<LogPage />); });
+  try {
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Reverse'))!.props.onClick());
+    await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'My reason' } }));
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Confirm reversal'))!.props.onClick());
+    expect(toast).toHaveBeenCalledWith('A reversal is already recorded. Your request could not be confirmed. Recorded reason: Other operator reason', 'info');
+    expect(toast).not.toHaveBeenCalledWith('Correction reversed');
+    expect(tree.root.findAllByType('textarea')).toHaveLength(0);
   } finally {
     await act(async () => tree.unmount());
   }
