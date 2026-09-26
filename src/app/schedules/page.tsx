@@ -6,6 +6,7 @@ import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
+import { parseScheduleDays, SCHEDULE_DAYS_ERROR } from '../../../convex/scheduleValidation';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -16,6 +17,7 @@ export default function SchedulesPage() {
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [invalidStoredDays, setInvalidStoredDays] = useState<string | null>(null);
   const [startTime, setStartTime] = useState('06:00');
   const [endTime, setEndTime] = useState('14:30');
   const [department, setDepartment] = useState('');
@@ -69,6 +71,7 @@ export default function SchedulesPage() {
   const resetForm = () => {
     setName('');
     setDays([1, 2, 3, 4, 5]);
+    setInvalidStoredDays(null);
     setStartTime('06:00');
     setEndTime('14:30');
     setDepartment('');
@@ -77,9 +80,11 @@ export default function SchedulesPage() {
   };
 
   const handleEdit = (s: Schedule) => {
+    const parsedDays = parseScheduleDays(s.days);
     setEditId(s.id);
     setName(s.name);
-    try { setDays(JSON.parse(s.days)); } catch { setDays([1, 2, 3, 4, 5]); }
+    setDays(parsedDays ?? []);
+    setInvalidStoredDays(parsedDays ? null : s.days);
     setStartTime(s.start_time);
     setEndTime(s.end_time);
     setDepartment(s.department || '');
@@ -94,7 +99,7 @@ export default function SchedulesPage() {
 
     try {
       if (!isSupportedScheduleTimeRange(startTime, endTime)) throw new Error(SCHEDULE_TIME_ERROR);
-      const body = { id: editId, name, days, start_time: startTime, end_time: endTime, department: department || null };
+      const body = { id: editId, name: name.trim(), days, start_time: startTime, end_time: endTime, department: department || null };
 
       if (editId) {
         const res = await fetch('/api/schedules', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -129,11 +134,8 @@ export default function SchedulesPage() {
   };
 
   const parseDays = (daysJson: string): string => {
-    try {
-      return (JSON.parse(daysJson) as number[]).map((d) => DAY_LABELS[d]).join(', ');
-    } catch {
-      return daysJson;
-    }
+    const days = parseScheduleDays(daysJson);
+    return days ? days.map((d) => DAY_LABELS[d]).join(', ') : `Invalid days: ${daysJson}`;
   };
 
   return (
@@ -189,6 +191,13 @@ export default function SchedulesPage() {
 
           <div>
             <label className="section-label mb-2 block">Days of Week</label>
+            {invalidStoredDays !== null && (
+              <div role="alert" className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+                <p>The saved weekday value is invalid. Review it below, then select the correct days before updating this schedule.</p>
+                <p className="mt-1">Stored value:</p>
+                <code className="block max-h-32 overflow-auto whitespace-pre-wrap break-all text-xs">{invalidStoredDays}</code>
+              </div>
+            )}
             <div className="flex gap-2">
               {DAY_LABELS.map((label, i) => (
                 <button
@@ -281,6 +290,7 @@ export default function SchedulesPage() {
                   <div className="font-display font-medium text-slate-200">{s.name}</div>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs font-mono text-slate-400">{parseDays(s.days)}</span>
+                    {!parseScheduleDays(s.days) && <p role="alert" className="text-sm text-red-400 mt-2">Unsupported schedule: {SCHEDULE_DAYS_ERROR}</p>}
                     <span className="text-slate-600">&middot;</span>
                     <span className="text-xs font-mono text-gold tabular-nums">{s.start_time} &ndash; {s.end_time}</span>
                     {!isSupportedScheduleTimeRange(s.start_time, s.end_time) && <p role="alert" className="text-sm text-red-400 mt-2">Unsupported schedule: {SCHEDULE_TIME_ERROR}</p>}
