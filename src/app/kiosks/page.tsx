@@ -166,6 +166,7 @@ export default function KiosksPage() {
       setType('entry');
       setShowForm(false);
       fetchReadiness();
+      fetchCredentialStatus();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to register kiosk', 'error');
     }
