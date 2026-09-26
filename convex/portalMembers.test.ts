@@ -193,3 +193,54 @@ it('resets a password with an audit and immediate session cutoff, while rejectin
   expect(await t.run(ctx => ctx.db.get(viewerSession))).toBeNull();
   expect(await t.withIdentity({ subject: `${viewer}|${viewerSession}` }).query(api.portalMembers.current, {})).toBeNull();
 });
+
+it('creates the password account, member, and audit in one mutation', async () => {
+  const { t, admin } = await setup();
+  const result = await t.withIdentity({ subject: admin }).action(api.portalMembers.createPortalAccount, {
+    email: '  New.Member@Example.com  ', password: 'InitialPass123!', role: 'enrollment',
+  });
+  expect(result).toEqual({ email: 'new.member@example.com', role: 'enrollment', active: true });
+  const state = await t.run(async ctx => {
+    const account = await ctx.db.query('authAccounts')
+      .withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', result.email)).unique();
+    const member = account ? await ctx.db.query('portalMembers').withIndex('by_user', q => q.eq('userId', account.userId)).unique() : null;
+    const audit = member ? await ctx.db.query('auditLog')
+      .withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', member._id)).collect() : [];
+    return { account, member, audit };
+  });
+  expect(state.account?.secret).not.toBe('InitialPass123!');
+  expect(state.member).toMatchObject({ role: 'enrollment', active: true });
+  expect(state.audit).toMatchObject([{ actorUserId: admin, action: 'portalMembers.create' }]);
+});
+
+it('rejects creation if the admin loses access before the account mutation', async () => {
+  const { t, admin, second } = await setup();
+  expect(await t.withIdentity({ subject: admin }).query(internal.portalMembers.getActiveMemberByUserId, { userId: admin }))
+    .toMatchObject({ role: 'admin' });
+  await t.withIdentity({ subject: second }).mutation(api.portalMembers.setActive, { userId: admin, active: false });
+  await expect(t.withIdentity({ subject: admin }).mutation(internal.portalMembers.createAccountAndMember, {
+    email: 'stranded@example.com', password: 'InitialPass123!', role: 'viewer',
+  })).rejects.toThrow('Unauthorized');
+  expect(await t.run(ctx => ctx.db.query('authAccounts')
+    .withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'stranded@example.com')).unique())).toBeNull();
+});
+
+it('rolls back account and user creation if the member audit fails', async () => {
+  const { t, admin } = await setup();
+  const spy = vi.spyOn(audit, 'writeAuditLog').mockRejectedValueOnce(new Error('audit failed'));
+  try {
+    await expect(t.withIdentity({ subject: admin }).mutation(internal.portalMembers.createAccountAndMember, {
+      email: 'rollback@example.com', password: 'InitialPass123!', role: 'viewer',
+    })).rejects.toThrow('audit failed');
+    const state = await t.run(async ctx => ({
+      account: await ctx.db.query('authAccounts').withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'rollback@example.com')).unique(),
+      user: await ctx.db.query('users').withIndex('email', q => q.eq('email', 'rollback@example.com')).unique(),
+      members: await ctx.db.query('portalMembers').withIndex('by_active', q => q.eq('active', true)).collect(),
+    }));
+    expect(state.account).toBeNull();
+    expect(state.user).toBeNull();
+    expect(state.members).toHaveLength(3);
+  } finally {
+    spy.mockRestore();
+  }
+});

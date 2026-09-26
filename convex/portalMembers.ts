@@ -1,4 +1,4 @@
-import { createAccount, getAuthUserId } from '@convex-dev/auth/server';
+import { getAuthUserId } from '@convex-dev/auth/server';
 import { ConvexError, v } from 'convex/values';
 
 import { action, internalMutation, internalQuery, mutation, query } from './_generated/server';
@@ -117,33 +117,50 @@ export const getPasswordAccountByEmail = internalQuery({
   },
 });
 
-export const upsertMember = internalMutation({
+export const createAccountAndMember = internalMutation({
   args: {
-    userId: v.id('users'),
+    email: v.string(),
+    password: v.string(),
     role: portalMemberRole,
-    active: v.boolean(),
   },
+  returns: v.object({ email: v.string(), role: portalMemberRole, active: v.boolean() }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ['admin']);
+    const email = normalizeEmail(args.email);
+    if (!email || !email.includes('@')) {
+      throw new ConvexError('A valid email address is required');
+    }
+    assertValidPassword(args.password);
     const now = new Date().toISOString();
     const existing = await ctx.db
-      .query('portalMembers')
-      .withIndex('by_user', (q) => q.eq('userId', args.userId))
+      .query('authAccounts')
+      .withIndex('providerAndAccountId', (q) => q.eq('provider', 'password').eq('providerAccountId', email))
       .unique();
-
     if (existing) {
-      throw new ConvexError('Portal member already exists');
+      throw new ConvexError('An account with this email already exists. Use Reset Password instead.');
+    }
+
+    // This nested auth store call shares the mutation transaction. If member
+    // creation or its audit fails, Convex rolls back the auth account too.
+    const created = await ctx.runMutation(internal.auth.store, { args: {
+      type: 'createAccountFromCredentials',
+      provider: 'password',
+      account: { id: email, secret: args.password },
+      profile: { email },
+    } });
+    if (!created || typeof created !== 'object' || !('user' in created)) {
+      throw new ConvexError('Password account creation failed');
     }
 
     const memberId = await ctx.db.insert('portalMembers', {
-      userId: args.userId,
+      userId: created.user._id,
       role: args.role,
-      active: args.active,
+      active: true,
       createdAt: now,
       updatedAt: now,
     });
     await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.create', targetTable: 'portalMembers', targetId: memberId, details: JSON.stringify({ role: args.role }) });
-    return memberId;
+    return { email, role: args.role, active: true };
   },
 });
 
@@ -284,25 +301,9 @@ export const createPortalAccount = action({
     }
     assertValidPassword(args.password);
 
-    const existing = await ctx.runQuery(internal.portalMembers.getPasswordAccountByEmail, { email });
-
-    if (existing) {
-      throw new ConvexError('An account with this email already exists. Use Reset Password / Update Role instead.');
-    }
-
-    const created = await createAccount(ctx, {
-      provider: 'password',
-      account: { id: email, secret: args.password },
-      profile: { email },
+    return await ctx.runMutation(internal.portalMembers.createAccountAndMember, {
+      email, password: args.password, role: args.role,
     });
-
-    await ctx.runMutation(internal.portalMembers.upsertMember, {
-      userId: created.user._id,
-      role: args.role,
-      active: true,
-    });
-
-    return { email, role: args.role, active: true };
   },
 });
 
