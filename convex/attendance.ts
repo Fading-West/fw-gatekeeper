@@ -75,8 +75,15 @@ export async function listEffectiveAttendanceByTimestampRange(
           .collect(),
   ]);
 
+  const activeCorrections = [];
+  for (const correction of corrections) {
+    const reversal = await ctx.db.query("attendanceCorrectionReversals")
+      .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correction._id)).unique();
+    if (!reversal) activeCorrections.push(correction);
+  }
+
   const voidedIds = new Set(
-    corrections
+    activeCorrections
       .filter((correction: any) => correction.action === "void_event" && correction.originalAttendanceId)
       .map((correction: any) => String(correction.originalAttendanceId)),
   );
@@ -91,7 +98,7 @@ export async function listEffectiveAttendanceByTimestampRange(
     }));
 
   const sortKey = createRecognitionTimestampSortKey();
-  for (const correction of corrections) {
+  for (const correction of activeCorrections) {
     if (correction.action !== "add_clock_in" && correction.action !== "add_clock_out") continue;
     if (!correction.correctedTimestamp || !correction.eventType) continue;
     effective.push(withFactoryLocalTimestamp({

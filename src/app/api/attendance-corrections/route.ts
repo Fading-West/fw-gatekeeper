@@ -114,3 +114,26 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+export async function PATCH(req: NextRequest) {
+  if (!(await hasValidPortalSession(req, ['admin', 'enrollment']))) {
+    return unauthorizedApiResponse();
+  }
+  const body = await req.json().catch(() => ({}));
+  const correctionId = optionalString(body.correction_id) || optionalString(body.correctionId);
+  const requestId = body.request_id ?? body.requestId;
+  const reason = optionalString(body.reason);
+  if (!correctionId || !reason || reason.length > 1000 || typeof requestId !== 'string' || !requestId.trim() || requestId.length > 200) {
+    return NextResponse.json({ error: 'correction_id, reason (1–1,000 characters), and request_id are required' }, { status: 400 });
+  }
+  try {
+    const result = await convex.mutation((api as any).attendanceCorrections.reverse, {
+      correctionId, requestId, reason,
+    });
+    return NextResponse.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to reverse correction';
+    const status = message.includes('already been reversed') || message.includes('different details') ? 409 : 400;
+    return NextResponse.json({ error: message }, { status });
+  }
+}
