@@ -166,6 +166,11 @@ def init_db():
             value TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS photo_cleanup_journal (
+            path TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('published', 'retired'))
+        );
+
         CREATE TABLE IF NOT EXISTS attendance_rejections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             log_id INTEGER NOT NULL,
@@ -415,14 +420,16 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
         Path(path).resolve()
         for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
     }
-    for path in owned:
-        candidate = path.resolve()
-        if strict_cleanup and (candidate == photo_root or not candidate.is_relative_to(photo_root)):
-            raise ValueError(f"Retired worker photo path needs manual cleanup: {path}")
-        if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
-            candidate.unlink(missing_ok=True)
+    retired = [path for path in owned if path.resolve() not in referenced]
+    record_photo_cleanup(retired, "retired")
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
+    try:
+        recover_photo_cleanup()
+    except (OSError, ValueError) as exc:
+        if strict_cleanup:
+            raise
+        logger.warning("Worker deactivated; thumbnail cleanup remains pending: %s", exc)
     return cursor.rowcount > 0
 
 
@@ -453,6 +460,56 @@ def replaced_worker_photo_paths(server_id: str, keep_paths: list[str]) -> list[P
         if candidate not in keep and candidate not in referenced:
             retired.append(candidate)
     return retired
+
+
+def record_photo_cleanup(paths: list[Path], kind: str) -> None:
+    """Persist ownership before a file operation can outlive a process."""
+    if not paths:
+        return
+    conn = _get_conn()
+    conn.executemany(
+        "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, ?)",
+        ((str(path), kind) for path in paths),
+    )
+    conn.commit()
+
+
+def recover_photo_cleanup() -> None:
+    """Remove only journaled, unreferenced files; unknown files stay untouched."""
+    conn = _get_conn()
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    references = {
+        Path(path).resolve()
+        for row in conn.execute("SELECT photo_paths FROM workers")
+        for path in json.loads(row["photo_paths"] or "[]")
+    }
+    journal = conn.execute("SELECT path, kind FROM photo_cleanup_journal ORDER BY path").fetchall()
+    first_error = None
+    for entry in journal:
+        path = Path(entry["path"])
+        candidate = path.resolve()
+        if entry["kind"] == "published" and candidate in references:
+            conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
+            conn.commit()
+            continue
+        if entry["kind"] == "retired" and candidate in references:
+            continue
+        if not path.exists() and not path.is_symlink():
+            conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
+            conn.commit()
+            continue
+        if candidate == photo_root or not candidate.is_relative_to(photo_root):
+            first_error = first_error or ValueError(f"Worker photo path needs manual cleanup: {path}")
+            continue
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as exc:
+            first_error = first_error or exc
+            continue
+        conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
+        conn.commit()
+    if first_error:
+        raise first_error
 
 
 def count_unmanaged_local_workers() -> int:

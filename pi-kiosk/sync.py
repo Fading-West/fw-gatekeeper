@@ -6,11 +6,11 @@ import logging
 import os
 import re
 import threading
-import tempfile
 import uuid
 import time
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -356,6 +356,14 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         full_roster = receipt_protocol and data.get("full_roster") is True
         if receipt_protocol and not database.get_sync_state("last_roster_applied_at") and not full_roster:
             raise ValueError("Initial receipt sync must include full roster")
+        # A prior process may have died between photo publication and the
+        # SQLite commit, or between commit and retired-file cleanup.
+        try:
+            database.recover_photo_cleanup()
+        except (OSError, ValueError):
+            if receipt_protocol:
+                raise
+            logger.warning("Legacy roster sync continuing with thumbnail cleanup pending")
         seen_server_ids: set[str] = set()
 
         if receipt_protocol:
@@ -416,7 +424,9 @@ def sync_workers(health: Optional[dict] = None) -> bool:
 
             try:
                 retired_photos = database.replaced_worker_photo_paths(str(server_id), [photo_path] if photo_path else [])
+                database.record_photo_cleanup(retired_photos, "retired")
                 if staged_photo:
+                    database.record_photo_cleanup([Path(photo_path)], "published")
                     os.replace(staged_photo, photo_path)
                     staged_photo = None
                 try:
@@ -429,14 +439,11 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                         employee_id=employee_id,
                     )
                 except Exception:
-                    # A freshly published, uniquely named photo is not yet
-                    # referenced by SQLite. Remove it; the old row and file
-                    # remain intact for retry.
-                    if photo_path:
-                        os.unlink(photo_path)
+                    # The journal knows this file is not referenced after the
+                    # failed SQLite update, including across a process crash.
+                    database.recover_photo_cleanup()
                     raise
-                for retired in retired_photos:
-                    retired.unlink(missing_ok=True)
+                database.recover_photo_cleanup()
             finally:
                 if staged_photo and os.path.exists(staged_photo):
                     os.unlink(staged_photo)
@@ -509,11 +516,13 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
     try:
         os.makedirs(config.PHOTO_DIR, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
-        path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{uuid.uuid4().hex}.jpg")
+        identifier = uuid.uuid4().hex
+        path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{identifier}.jpg")
+        staged = os.path.join(config.PHOTO_DIR, f".{safe_name}-{identifier}.tmp")
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
-            with tempfile.NamedTemporaryFile(mode="wb", dir=config.PHOTO_DIR, prefix=f".{safe_name}-", suffix=".tmp", delete=False) as f:
-                staged = f.name
+            database.record_photo_cleanup([Path(staged)], "published")
+            with open(staged, "xb") as f:
                 f.write(r.content)
             return staged, path
     except Exception as e:

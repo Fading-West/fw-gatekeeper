@@ -1,4 +1,5 @@
 """Roster receipts require durable apply and a live recognizer reload."""
+import os
 import unittest
 import tempfile
 from pathlib import Path
@@ -94,10 +95,14 @@ class RosterReceiptTests(unittest.TestCase):
         posted.assert_not_called()
         self.assertIsNotNone(database.get_worker_by_name('Unmanaged'))
         database.remove_worker('Unmanaged')
-        database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=['/outside/legacy.jpg'])
-        posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]))
-        posted.assert_not_called()
-        self.assertIsNotNone(database.get_worker_by_name('Alex'))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', str(Path(tmp) / 'faces')):
+            outside = Path(tmp) / 'legacy.jpg'
+            outside.write_bytes(b'legacy biometric thumbnail')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(outside)])
+            posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]))
+            posted.assert_not_called()
+            self.assertIsNone(database.get_worker_by_name('Alex'))
+            self.assertTrue(outside.exists())
 
     def test_retired_thumbnail_cleanup_must_succeed_before_ack(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
@@ -108,7 +113,7 @@ class RosterReceiptTests(unittest.TestCase):
                 posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]))
             posted.assert_not_called()
             self.assertTrue(legacy.exists())
-            self.assertIsNotNone(database.get_worker_by_name('Alex'))
+            self.assertIsNone(database.get_worker_by_name('Alex'))
             posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]), post=lambda *a, **kw: ack())
             self.assertEqual(posted.call_count, 1)
             self.assertFalse(legacy.exists())
@@ -229,11 +234,64 @@ class RosterReceiptTests(unittest.TestCase):
             posted.assert_not_called()
             self.assertEqual(old.read_bytes(), b'original photo')
             self.assertNotEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(old)])
-            # The old file has no SQLite owner after publication. The orphan
-            # inventory must keep blocking acknowledgements on future retries.
-            posted, _ = self.cycle(response)
+            # A later cycle recovers the journaled old file before applying
+            # the roster again, so no manual cleanup is needed.
+            posted, _ = self.cycle(response, post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            self.assertFalse(old.exists())
+
+    def test_restart_recovers_published_and_retired_photos_without_touching_unknown_files(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            old = Path(tmp) / 'Alex.jpg'
+            old.write_bytes(b'old photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(old)])
+            published = Path(tmp) / f'{SERVER_ID}-interrupted.jpg'
+            staged = Path(tmp) / f'.{SERVER_ID}-interrupted.tmp'
+            database.record_photo_cleanup([published], 'published')
+            database.record_photo_cleanup([staged], 'published')
+            staged.write_bytes(b'new photo')
+            os.replace(staged, published)  # crash before SQLite commit
+            self._close_db()
+            database.init_db()
+            database.recover_photo_cleanup()
+            self.assertFalse(published.exists())
+            self.assertEqual(old.read_bytes(), b'old photo')
+            self.assertEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(old)])
+
+            replacement = Path(tmp) / f'{SERVER_ID}-committed.jpg'
+            replacement.write_bytes(b'committed photo')
+            database.record_photo_cleanup([old], 'retired')
+            database.record_photo_cleanup([replacement], 'published')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(replacement)])
+            self._close_db()  # crash after SQLite commit, before old photo cleanup
+            database.init_db()
+            database.recover_photo_cleanup()
+            self.assertFalse(old.exists())
+            self.assertEqual(replacement.read_bytes(), b'committed photo')
+            self.assertEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(replacement)])
+
+            unknown = Path(tmp) / 'Unknown-Legacy.jpg'
+            unknown.write_bytes(b'unmanaged photo')
+            posted, _ = self.cycle(roster([{'id': SERVER_ID, 'active': False}]))
             posted.assert_not_called()
-            self.assertTrue(old.exists())
+            self.assertTrue(unknown.exists())
+
+    def test_legacy_deactivation_survives_thumbnail_permission_failure(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            photo = Path(tmp) / 'Alex.jpg'
+            photo.write_bytes(b'old biometric thumbnail')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(photo)])
+            legacy = mock.Mock(status_code=200, json=lambda: {
+                'workers': [{'id': SERVER_ID, 'active': False}], 'synced_at': '2026-09-25T12:00:00Z',
+            })
+            with mock.patch.object(Path, 'unlink', side_effect=PermissionError('read-only disk')):
+                _, recognizer = self.cycle(legacy)
+            self.assertIsNone(database.get_worker_by_name('Alex'))
+            self.assertTrue(photo.exists())
+            recognizer.reload_faces.assert_called_once()
+            posted, _ = self.cycle(roster([]), post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            self.assertFalse(photo.exists())
 
 
 if __name__ == '__main__':
