@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import tempfile
+import uuid
 import time
 from collections import Counter
 from datetime import datetime
@@ -414,19 +415,28 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     raise ValueError(f"Worker photo download failed for {server_id}")
 
             try:
-                if receipt_protocol:
-                    database.cleanup_replaced_worker_photos(str(server_id), [photo_path] if photo_path else [])
-
-                database.add_worker(
-                    name=name,
-                    encoding=encoding,
-                    photo_paths=[photo_path] if photo_path else [],
-                    enrolled_at=enrolled_at,
-                    server_id=str(server_id),
-                    employee_id=employee_id,
-                )
+                retired_photos = database.replaced_worker_photo_paths(str(server_id), [photo_path] if photo_path else [])
                 if staged_photo:
                     os.replace(staged_photo, photo_path)
+                    staged_photo = None
+                try:
+                    database.add_worker(
+                        name=name,
+                        encoding=encoding,
+                        photo_paths=[photo_path] if photo_path else [],
+                        enrolled_at=enrolled_at,
+                        server_id=str(server_id),
+                        employee_id=employee_id,
+                    )
+                except Exception:
+                    # A freshly published, uniquely named photo is not yet
+                    # referenced by SQLite. Remove it; the old row and file
+                    # remain intact for retry.
+                    if photo_path:
+                        os.unlink(photo_path)
+                    raise
+                for retired in retired_photos:
+                    retired.unlink(missing_ok=True)
             finally:
                 if staged_photo and os.path.exists(staged_photo):
                     os.unlink(staged_photo)
@@ -499,7 +509,7 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
     try:
         os.makedirs(config.PHOTO_DIR, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
-        path = os.path.join(config.PHOTO_DIR, f"{safe_name}.jpg")
+        path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{uuid.uuid4().hex}.jpg")
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             with tempfile.NamedTemporaryFile(mode="wb", dir=config.PHOTO_DIR, prefix=f".{safe_name}-", suffix=".tmp", delete=False) as f:

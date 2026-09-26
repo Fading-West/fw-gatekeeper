@@ -453,41 +453,42 @@ const workerSyncResult = v.array(v.object({
   active: v.number(),
 }));
 
-async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: boolean }) {
-  const all = await ctx.db.query("workers").take(1001);
-  if (all.length > 1000) throw new Error("Kiosk roster exceeds 1,000 workers");
+async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: boolean; cursor?: string }) {
+  const page = await ctx.db.query("workers").paginate({ cursor: args.cursor ?? null, numItems: 200 });
   const since = args.since;
-  const filtered = all.filter((w: any) => {
+  const filtered = page.page.filter((w: any) => {
     const updatedAt = w.updatedAt || w.enrolledAt;
     return !since || (Boolean(updatedAt) && (args.inclusive ? updatedAt >= since : updatedAt > since));
   });
-  const result = [];
-  for (const w of filtered) {
-    let photoUrls: string[] = [];
+  const result = await Promise.all(filtered.map(async (w: any) => {
+    let photoUrl: string | null = null;
     if (w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
         const url = await ctx.storage.getUrl(sid);
-        if (url) photoUrls.push(url);
+        if (url) {
+          photoUrl = url;
+          break;
+        }
       }
     }
-    result.push({
+    return {
       id: w._id,
       name: w.name,
       employee_id: w.employeeId || "",
       department: w.department,
-      photo_url: photoUrls[0] || null,
+      photo_url: photoUrl,
       face_encoding: w.faceEncoding || null,
       enrolled_at: w.enrolledAt,
       updated_at: w.updatedAt || w.enrolledAt,
       active: w.active ? 1 : 0,
-    });
-  }
-  return result;
+    };
+  }));
+  return { workers: result, isDone: page.isDone, continueCursor: page.continueCursor };
 }
 
 export const listForSyncFromHttp = internalQuery({
-  args: { since: v.optional(v.string()), inclusive: v.optional(v.boolean()) },
-  returns: workerSyncResult,
+  args: { since: v.optional(v.string()), inclusive: v.optional(v.boolean()), cursor: v.optional(v.string()) },
+  returns: v.object({ workers: workerSyncResult, isDone: v.boolean(), continueCursor: v.string() }),
   handler: listWorkersForSync,
 });
 

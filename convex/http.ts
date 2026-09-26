@@ -324,9 +324,10 @@ const workerSyncRead = httpAction(async (ctx, request) => {
   const body = await readJsonBody(request);
   const since = body && typeof body.since === 'string' ? body.since : undefined;
   const inclusive = body?.inclusive === true;
-  const workers = await ctx.runQuery(internal.workers.listForSyncFromHttp, { since, inclusive });
-  console.info('secured_ingest_worker_sync', { returned: workers.length });
-  return jsonResponse({ workers });
+  const cursor = body && typeof body.cursor === 'string' ? body.cursor : undefined;
+  const page = await ctx.runQuery(internal.workers.listForSyncFromHttp, { since, inclusive, cursor });
+  console.info('secured_ingest_worker_sync', { returned: page.workers.length, isDone: page.isDone });
+  return jsonResponse(page);
 });
 
 const rosterReceiptIssue = httpAction(async (ctx, request) => {

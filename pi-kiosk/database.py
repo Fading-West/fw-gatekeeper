@@ -434,24 +434,25 @@ def get_synced_server_ids() -> set[str]:
     )}
 
 
-def cleanup_replaced_worker_photos(server_id: str, keep_paths: list[str]) -> None:
-    """Remove retired thumbnail paths before an update can forget ownership."""
+def replaced_worker_photo_paths(server_id: str, keep_paths: list[str]) -> list[Path]:
+    """Identify owned thumbnails to retire after replacement is durable."""
     conn = _get_conn()
     row = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchone()
-    if row is None:
-        return
     photo_root = Path(config.PHOTO_DIR).resolve()
     keep = {Path(path).resolve() for path in keep_paths}
     owned = {photo_root / f"{server_id}.jpg"}
-    owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+    if row is not None:
+        owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
     others = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,))
     referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
+    retired = []
     for path in owned:
         candidate = path.resolve()
         if candidate == photo_root or not candidate.is_relative_to(photo_root):
             raise ValueError(f"Worker photo path needs manual cleanup: {path}")
         if candidate not in keep and candidate not in referenced:
-            candidate.unlink(missing_ok=True)
+            retired.append(candidate)
+    return retired
 
 
 def count_unmanaged_local_workers() -> int:

@@ -193,6 +193,48 @@ class RosterReceiptTests(unittest.TestCase):
             self.assertEqual(photo.read_bytes(), b'original photo')
             self.assertEqual(list(Path(tmp).glob('*.tmp')), [])
 
+    def test_sqlite_update_failure_keeps_old_photo_and_reference(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            old = Path(tmp) / 'Alex.jpg'
+            old.write_bytes(b'original photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(old)])
+            conn = database._get_conn()
+            conn.execute("CREATE TRIGGER fail_photo_update BEFORE UPDATE ON workers BEGIN SELECT RAISE(FAIL, 'disk write failed'); END")
+            updated = {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+                       'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid/new'}
+            response = roster([updated])
+            response.content = b'new photo'
+            posted, _ = self.cycle(response)
+            posted.assert_not_called()
+            self.assertEqual(old.read_bytes(), b'original photo')
+            self.assertEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(old)])
+            self.assertEqual(list(Path(tmp).iterdir()), [old])
+            conn.execute('DROP TRIGGER fail_photo_update')
+            conn.commit()
+            posted, _ = self.cycle(response, post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            self.assertFalse(old.exists())
+
+    def test_cleanup_failure_after_update_keeps_old_file_and_blocks_ack(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            old = Path(tmp) / 'Alex.jpg'
+            old.write_bytes(b'original photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(old)])
+            updated = {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+                       'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid/new'}
+            response = roster([updated])
+            response.content = b'new photo'
+            with mock.patch.object(Path, 'unlink', side_effect=PermissionError('cleanup failed')):
+                posted, _ = self.cycle(response)
+            posted.assert_not_called()
+            self.assertEqual(old.read_bytes(), b'original photo')
+            self.assertNotEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(old)])
+            # The old file has no SQLite owner after publication. The orphan
+            # inventory must keep blocking acknowledgements on future retries.
+            posted, _ = self.cycle(response)
+            posted.assert_not_called()
+            self.assertTrue(old.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

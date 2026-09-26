@@ -46,6 +46,15 @@ it('uses the server-owned cursor for receipts and requires a full initial roster
   expect(fetchWorkersForSync).toHaveBeenLastCalledWith('2026-09-25T12:00:00Z', true);
 });
 
+it('does not return a receipt-bearing roster when a later worker page fails', async () => {
+  vi.mocked(issueRosterReceipt).mockResolvedValue({ receipt: 'pending', issuedAt: '2026-09-25T12:00:00Z', since: null });
+  vi.mocked(fetchWorkersForSync).mockRejectedValue(new Error('Later page unavailable'));
+  const response = await GET(request('roster_receipt=1'));
+  expect(response.status).toBe(503);
+  expect(await response.json()).not.toHaveProperty('roster_receipt');
+  expect(acknowledgeRosterReceipt).not.toHaveBeenCalled();
+});
+
 it('keeps the legacy response and caller since parameter compatible without issuing a receipt', async () => {
   vi.mocked(hasDeviceKeyFormat).mockReturnValue(false);
   const response = await GET(request('since=2026-09-01T00:00:00Z'));
