@@ -136,8 +136,13 @@ def _rejection_reason(response) -> Optional[str]:
 
 
 def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int], deadline: float) -> bool:
-    """Split validated rejections, retaining every unresolved event for retry."""
-    if budget[0] <= 0 or time.monotonic() >= deadline:
+    """Split validated rejections, retaining every unresolved event for retry.
+
+    Requests' timeout limits socket inactivity, not total elapsed request time;
+    the deadline bounds when requests start and their inactivity allowance.
+    """
+    remaining = deadline - time.monotonic()
+    if budget[0] <= 0 or remaining <= 0:
         logger.warning("Attendance isolation limit reached; remaining rows stay queued")
         return False
     budget[0] -= 1
@@ -145,7 +150,7 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
         response = requests.post(
             f"{config.SERVER_URL}/api/attendance/bulk",
             json={"kiosk_id": config.KIOSK_ID, "logs": payload},
-            headers=_auth_headers(), timeout=15,
+            headers=_auth_headers(), timeout=min(15, remaining),
         )
     except requests.RequestException:
         logger.exception("Attendance sync request failed; retaining unacknowledged batch")

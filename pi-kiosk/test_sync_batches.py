@@ -142,6 +142,17 @@ class AttendanceBatchTests(unittest.TestCase):
             self.assertFalse(sync.sync_attendance())
         self.assertEqual(database.count_unsynced_logs(), 1)
 
+    def test_isolation_request_uses_remaining_deadline_as_timeout(self):
+        self.enqueue(1)
+        with mock.patch.object(sync.time, 'monotonic', return_value=20.0), \
+             mock.patch.object(sync.requests, 'post', return_value=response({'acknowledged': 1})) as post:
+            self.assertTrue(sync._upload_attendance([1], [{}], [1], 20.5))
+            self.assertEqual(post.call_args.kwargs['timeout'], 0.5)
+        with mock.patch.object(sync.time, 'monotonic', return_value=20.5), \
+             mock.patch.object(sync.requests, 'post') as post:
+            self.assertFalse(sync._upload_attendance([1], [{}], [1], 20.5))
+            post.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
