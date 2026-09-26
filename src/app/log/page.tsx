@@ -121,6 +121,25 @@ function LogPageContent() {
       setRefreshVersion((version) => version + 1);
       toast('Correction reversed');
     } catch (error) {
+      // A lost PATCH response does not tell us whether the server committed.
+      // Read the audit row before offering a retry, including after a later
+      // retry whose edited reason conflicts with the saved reversal.
+      try {
+        const params = new URLSearchParams({ date: visibleDraft.correction.date });
+        if (queryWorkerId) params.set('worker_id', queryWorkerId);
+        const history = await fetch(`/api/attendance-corrections?${params.toString()}`);
+        if (history.ok) {
+          const payload: AttendanceCorrectionsResponse = await history.json();
+          const saved = payload.corrections?.find((correction) => correction.id === request.correction_id);
+          if (saved?.reversal_id) {
+            acknowledgeCorrectionRequest(request);
+            setReversalDraft(null);
+            setRefreshVersion((version) => version + 1);
+            toast(`Correction is reversed. Recorded reason: ${saved.reversal_reason || 'Not provided'}`, 'info');
+            return;
+          }
+        }
+      } catch { /* Keep the draft available for a retry if status cannot be checked. */ }
       toast(error instanceof Error ? error.message : 'Failed to reverse correction', 'error');
     } finally {
       reversalPendingRef.current = false;

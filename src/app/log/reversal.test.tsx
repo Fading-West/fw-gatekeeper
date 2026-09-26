@@ -50,7 +50,54 @@ it('retries a reversal with the same request ID and reloads the selected view af
     expect(patches).toHaveLength(2);
     expect(JSON.parse(String(patches[0].init?.body)).request_id).toBe(JSON.parse(String(patches[1].init?.body)).request_id);
     expect(requests.filter((request) => request.url === '/api/attendance?date=2026-09-14&worker_id=worker-1')).toHaveLength(2);
-    expect(requests.filter((request) => request.url === '/api/attendance-corrections?date=2026-09-14&worker_id=worker-1')).toHaveLength(2);
+    expect(requests.filter((request) => request.url === '/api/attendance-corrections?date=2026-09-14&worker_id=worker-1')).toHaveLength(3);
+    expect(tree.root.findAllByType('span').some((node) => node.children.includes('Reversed'))).toBe(true);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
+it('reconciles a saved reversal after a lost response and an edited-reason conflict', async () => {
+  const correction = {
+    id: 'correction-2', date: '2026-09-14', worker_id: 'worker-1', worker_name: 'Worker', worker_department: 'Assembly',
+    action: 'add_clock_in', event_type: 'clock_in', corrected_timestamp: '2026-09-14T08:00:00',
+    original_attendance_id: null, original_timestamp: null, original_event_type: null, related_exception_key: null,
+    reason: 'Missed scan', supervisor_name: 'Supervisor', created_at: '2026-09-14T08:00:00', updated_at: '2026-09-14T08:00:00',
+  };
+  let patches = 0;
+  let correctionReads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      patches += 1;
+      if (patches === 1) throw new Error('Connection lost after save');
+      return { ok: false, json: async () => ({ error: 'Correction has already been reversed.' }) };
+    }
+    if (url.startsWith('/api/attendance-corrections')) {
+      correctionReads += 1;
+      if (correctionReads === 2) throw new Error('History temporarily unavailable');
+      return { ok: true, json: async () => ({ corrections: [{
+        ...correction, ...(patches ? { reversal_id: 'reversal-2', reversal_reason: 'Original reason' } : {}),
+      }] }) };
+    }
+    return { ok: true, json: async () => patches ? [] : [{ id: 'correction:correction-2' }] };
+  }));
+
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<LogPage />); });
+  try {
+    await act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Reverse'))!.props.onClick());
+    const editReason = async (value: string) => act(async () => tree.root.findByType('textarea').props.onChange({ target: { value } }));
+    const submit = async () => act(async () => tree.root.findAllByType('button').find((node) => node.children.includes('Confirm reversal'))!.props.onClick());
+    await editReason('Original reason');
+    await submit();
+    expect(tree.root.findAllByType('textarea')).toHaveLength(1);
+    await editReason('Edited reason');
+    await submit();
+    expect(patches).toBe(2);
+    const patchRequests = vi.mocked(fetch).mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    expect(JSON.parse(String(patchRequests[0][1]?.body)).request_id).not.toBe(JSON.parse(String(patchRequests[1][1]?.body)).request_id);
+    expect(toast).toHaveBeenCalledWith('Correction is reversed. Recorded reason: Original reason', 'info');
+    expect(tree.root.findAllByType('textarea')).toHaveLength(0);
     expect(tree.root.findAllByType('span').some((node) => node.children.includes('Reversed'))).toBe(true);
   } finally {
     await act(async () => tree.unmount());
