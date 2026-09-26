@@ -17,6 +17,7 @@ export default function SchedulesPage() {
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [invalidStoredDays, setInvalidStoredDays] = useState<string | null>(null);
   const [startTime, setStartTime] = useState('06:00');
   const [endTime, setEndTime] = useState('14:30');
   const [department, setDepartment] = useState('');
@@ -70,6 +71,7 @@ export default function SchedulesPage() {
   const resetForm = () => {
     setName('');
     setDays([1, 2, 3, 4, 5]);
+    setInvalidStoredDays(null);
     setStartTime('06:00');
     setEndTime('14:30');
     setDepartment('');
@@ -78,9 +80,11 @@ export default function SchedulesPage() {
   };
 
   const handleEdit = (s: Schedule) => {
+    const parsedDays = parseScheduleDays(s.days);
     setEditId(s.id);
     setName(s.name);
-    setDays(parseScheduleDays(s.days) ?? []);
+    setDays(parsedDays ?? []);
+    setInvalidStoredDays(parsedDays ? null : s.days);
     setStartTime(s.start_time);
     setEndTime(s.end_time);
     setDepartment(s.department || '');
@@ -187,6 +191,13 @@ export default function SchedulesPage() {
 
           <div>
             <label className="section-label mb-2 block">Days of Week</label>
+            {invalidStoredDays !== null && (
+              <div role="alert" className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+                <p>The saved weekday value is invalid. Review it below, then select the correct days before updating this schedule.</p>
+                <p className="mt-1">Stored value:</p>
+                <code className="block max-h-32 overflow-auto whitespace-pre-wrap break-all text-xs">{invalidStoredDays}</code>
+              </div>
+            )}
             <div className="flex gap-2">
               {DAY_LABELS.map((label, i) => (
                 <button
