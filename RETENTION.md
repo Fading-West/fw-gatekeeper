@@ -30,7 +30,7 @@ Before photo capture can start, the enrolling operator must confirm a required c
 
 - Deactivation stops recognition after kiosks sync, but keeps cloud biometric data until an admin explicitly purges it.
 - It is **purged on request or on termination** using the admin "Purge face data" action (below). Enrolled worker data has no automatic time-based expiry; purge is an explicit, audited action. Incomplete uploads have a separate cleanup policy below.
-- Online kiosks remove cached templates on their next successful sync after deactivation. Offline devices retain cached data until connectivity returns. Existing kiosk versions may retain thumbnail files on disk; operators must remove those cached files during device cleanup and verify each device separately.
+- Receipt-capable online kiosks remove cached templates and owned thumbnails, reload recognition, then acknowledge a server-issued roster receipt. Offline devices retain cached data until connectivity returns. The **last contact** timestamp does not prove a purge was applied. Legacy kiosks without a roster acknowledgement remain unconfirmed; operators must verify and clean those devices separately.
 - Attendance history (non-biometric) is retained for operational and payroll reconciliation and is not deleted by a purge.
 
 ## Incomplete enrollment uploads
@@ -59,7 +59,11 @@ Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations
    - removes the template and photo references from the worker record,
    - marks the worker inactive and sets `biometricsPurgedAt`,
    - writes an `auditLog` row recording who purged, which worker, when, and why.
-5. Wait for each online kiosk to complete a successful sync. Offline kiosks remove the cached template on their next successful sync; check and clean legacy thumbnail files separately. Check the Kiosks page to confirm every kiosk has synced since the purge time.
+5. Open **Kiosks** and check **Last applied roster** and **Biometric purge** for every registered device. A pending purge means at least one kiosk has not acknowledged a roster issued after the purge. Offline and legacy kiosks stay pending until their local cache is verified and a receipt-capable version acknowledges it. **Last contact** only shows network activity. If a device is retired or cannot upgrade, physically verify its cached templates and thumbnails and document the cleanup separately; do not infer completion from a heartbeat.
+
+The server issues one pending receipt per kiosk before reading that kiosk's roster changes. A receipt-capable kiosk sends the receipt back only after every row is persisted, retired files are removed, and its recognizer reloads successfully. Failed downloads, partial writes, cleanup errors, reload errors, and lost acknowledgements leave the purge unconfirmed; retries reapply changes safely. The server owns the acknowledged cursor. Initial sync downloads the full roster, and later syncs include the cursor boundary to avoid missing equal-timestamp updates. Older kiosks can still use the legacy sync response but do not create purge acknowledgements.
+
+An unmanaged local worker profile with no server ID, or a thumbnail stored outside the configured kiosk photo directory, also blocks acknowledgement. Review and map or remove that profile and its files on the device; keep its attendance evidence for reconciliation. The kiosk log names the condition that needs repair.
 
 Purging is irreversible. If the person later returns to work, enroll them again from scratch (new consent, new photos, new template).
 

@@ -180,6 +180,8 @@ export default defineSchema({
     type: v.string(),
     location: v.string(),
     lastSync: v.optional(v.string()),
+    rosterAppliedAt: v.optional(v.string()),
+    lastRosterReceiptId: v.optional(v.id("kioskRosterReceipts")),
     // Self-reported device health, sent alongside each worker sync. A kiosk
     // whose network is up but whose camera/model is broken must not look
     // healthy on the dashboard.
@@ -204,6 +206,13 @@ export default defineSchema({
   }).index("by_active", ["active"])
     .index("by_kiosk_id", ["kioskId"])
     .index("by_credential_hash", ["credentialHash"]),
+
+  // At most one outstanding roster receipt per registered kiosk. Its issue
+  // time precedes the full roster read, so an ack cannot cover later purges.
+  kioskRosterReceipts: defineTable({
+    kioskId: v.id("kiosks"),
+    issuedAt: v.string(),
+  }).index("by_kiosk", ["kioskId"]),
 
   // One row per (kiosk, condition) episode, written by the alerting cron in
   // convex/alerts.ts. A row is "open" while resolvedAt is unset; a fresh

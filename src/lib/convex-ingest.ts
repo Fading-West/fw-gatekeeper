@@ -100,8 +100,16 @@ export function lookupKioskCredential(input: { mode: 'device'; credentialHash: s
   return postSecuredIngest<{ documentId: string; kioskId: string; aliases: string[] } | null>('/api/ingest/kiosks/authenticate', input);
 }
 
-export function fetchWorkersForSync(since: string) {
-  return postSecuredIngest<{ workers: unknown[] }>('/api/ingest/workers/sync', { since });
+export function fetchWorkersForSync(since: string, inclusive = false) {
+  return postSecuredIngest<{ workers: unknown[] }>('/api/ingest/workers/sync', { since, ...(inclusive ? { inclusive: true } : {}) });
+}
+
+export function issueRosterReceipt(kioskId: string) {
+  return postSecuredIngest<{ receipt: string; issuedAt: string; since: string | null }>('/api/ingest/kiosks/roster-receipt/issue', { kioskId });
+}
+
+export function acknowledgeRosterReceipt(kioskId: string, receipt: string) {
+  return postSecuredIngest<{ acknowledged: boolean; appliedAt: string | null }>('/api/ingest/kiosks/roster-receipt/ack', { kioskId, receipt });
 }
 
 export function getAttendanceReceiptStatus(digests: string[]) {

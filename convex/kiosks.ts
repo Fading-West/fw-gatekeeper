@@ -24,7 +24,7 @@ function serializeHealth(health: any) {
   };
 }
 
-function serializeKiosk(k: any) {
+function serializeKiosk(k: any, lastPurgeAt: string | null = null) {
   return {
     id: k._id,
     name: k.name,
@@ -32,6 +32,8 @@ function serializeKiosk(k: any) {
     type: k.type,
     location: k.location,
     last_sync: k.lastSync || null,
+    roster_applied_at: k.rosterAppliedAt || null,
+    purge_pending: Boolean(lastPurgeAt && (!k.rosterAppliedAt || k.rosterAppliedAt <= lastPurgeAt)),
     health: serializeHealth(k.health),
     credential_status: (k.credentialHash ? "device" : k.legacyDisabledAt ? "revoked" : "legacy") as "device" | "revoked" | "legacy",
     active: 1,
@@ -71,6 +73,8 @@ export const list = query({
     type: v.string(),
     location: v.string(),
     last_sync: v.union(v.string(), v.null()),
+    roster_applied_at: v.union(v.string(), v.null()),
+    purge_pending: v.boolean(),
     health: healthSerialized,
     credential_status: v.union(v.literal("device"), v.literal("revoked"), v.literal("legacy")),
     active: v.number(),
@@ -82,7 +86,11 @@ export const list = query({
       .query("kiosks")
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
-    return kiosks.map(serializeKiosk);
+    const latestPurge = await ctx.db.query("auditLog")
+      .withIndex("by_target_table_and_action_and_created_at", q =>
+        q.eq("targetTable", "workers").eq("action", "workers.purgeBiometrics"))
+      .order("desc").first();
+    return kiosks.map(k => serializeKiosk(k, latestPurge?.createdAt ?? null));
   },
 });
 
@@ -225,5 +233,41 @@ export const revokeCredential = mutation({
     await ctx.db.insert("auditLog", { actorUserId: actor.userId, action: "kiosk_credential_revoked",
       targetTable: "kiosks", targetId: args.id, createdAt: now });
     return { ok: true };
+  },
+});
+
+export const issueRosterReceiptFromHttp = internalMutation({
+  args: { kioskId: v.string() },
+  returns: v.union(v.object({ receipt: v.id("kioskRosterReceipts"), issuedAt: v.string(), since: v.union(v.string(), v.null()) }), v.null()),
+  handler: async (ctx, args) => {
+    const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
+    if (!kiosk) return null;
+    const pending = await ctx.db.query("kioskRosterReceipts")
+      .withIndex("by_kiosk", q => q.eq("kioskId", kiosk._id)).first();
+    if (pending) return { receipt: pending._id, issuedAt: pending.issuedAt, since: kiosk.rosterAppliedAt ?? null };
+    const issuedAt = new Date().toISOString();
+    const receipt = await ctx.db.insert("kioskRosterReceipts", { kioskId: kiosk._id, issuedAt });
+    return { receipt, issuedAt, since: kiosk.rosterAppliedAt ?? null };
+  },
+});
+
+export const acknowledgeRosterReceiptFromHttp = internalMutation({
+  args: { kioskId: v.string(), receipt: v.id("kioskRosterReceipts") },
+  returns: v.object({ acknowledged: v.boolean(), appliedAt: v.union(v.string(), v.null()) }),
+  handler: async (ctx, args) => {
+    const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
+    if (!kiosk) return { acknowledged: false, appliedAt: null };
+    if (kiosk.lastRosterReceiptId === args.receipt) {
+      return { acknowledged: true, appliedAt: kiosk.rosterAppliedAt ?? null };
+    }
+    const pending = await ctx.db.get(args.receipt);
+    if (!pending || pending.kioskId !== kiosk._id || pending.issuedAt > new Date().toISOString()) {
+      return { acknowledged: false, appliedAt: null };
+    }
+    const appliedAt = !kiosk.rosterAppliedAt || pending.issuedAt > kiosk.rosterAppliedAt
+      ? pending.issuedAt : kiosk.rosterAppliedAt;
+    await ctx.db.patch(kiosk._id, { rosterAppliedAt: appliedAt, lastRosterReceiptId: pending._id });
+    await ctx.db.delete(pending._id);
+    return { acknowledged: true, appliedAt };
   },
 });

@@ -88,6 +88,19 @@ class WorkerIdentityTests(unittest.TestCase):
                 self.assertTrue(shared.exists())
                 self.assertTrue(external.exists())
 
+    def test_server_deactivation_preserves_photo_referenced_by_local_only_worker(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import config
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            shared = Path(tmp) / 'Shared.jpg'
+            shared.write_bytes(b'photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(shared)])
+            database.add_worker('Local', ENCODING, photo_paths=[str(shared)])
+            database.remove_worker_by_server_id(SERVER_ID)
+            self.assertTrue(shared.exists())
+
     def test_legacy_unique_name_schema_migrates_without_reusing_deleted_ids(self):
         conn = database._get_conn()
         conn.execute('DROP TABLE workers')

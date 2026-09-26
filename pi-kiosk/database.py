@@ -399,33 +399,66 @@ def remove_worker(name: str) -> bool:
     return cursor.rowcount > 0
 
 
-def remove_worker_by_server_id(server_id: str) -> bool:
+def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
     rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
+    if rows:
+        # Cleanup must succeed before the row is removed. Otherwise a retry
+        # would lose the only record of owned thumbnails and could ack a purge
+        # while biometric files remain on disk.
+        photo_root = Path(config.PHOTO_DIR).resolve()
+        owned = {photo_root / f"{server_id}.jpg"}
+        for row in rows:
+            owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+        remaining_paths = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,)).fetchall()
+        referenced = {
+            Path(path).resolve()
+            for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
+        }
+        for path in owned:
+            candidate = path.resolve()
+            if strict_cleanup and (candidate == photo_root or not candidate.is_relative_to(photo_root)):
+                raise ValueError(f"Retired worker photo path needs manual cleanup: {path}")
+            if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
+                candidate.unlink(missing_ok=True)
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
-    if cursor.rowcount:
-        # Only delete files owned by the removed row, within the configured
-        # photo directory, and no longer referenced by any remaining worker.
-        # This includes legacy name-based thumbnails after a schema upgrade.
-        try:
-            photo_root = Path(config.PHOTO_DIR).resolve()
-            owned = {photo_root / f"{server_id}.jpg"}
-            for row in rows:
-                owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
-            remaining_paths = conn.execute("SELECT photo_paths FROM workers").fetchall()
-            referenced = {
-                Path(path).resolve()
-                for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
-            }
-            for path in owned:
-                candidate = path.resolve()
-                if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
-                    candidate.unlink(missing_ok=True)
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Could not remove retired worker thumbnail: %s", exc)
     return cursor.rowcount > 0
+
+
+def get_synced_server_ids() -> set[str]:
+    """Server identities currently cached on this kiosk."""
+    conn = _get_conn()
+    return {row[0] for row in conn.execute(
+        "SELECT server_id FROM workers WHERE server_id IS NOT NULL AND server_id != ''"
+    )}
+
+
+def cleanup_replaced_worker_photos(server_id: str, keep_paths: list[str]) -> None:
+    """Remove retired thumbnail paths before an update can forget ownership."""
+    conn = _get_conn()
+    row = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchone()
+    if row is None:
+        return
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    keep = {Path(path).resolve() for path in keep_paths}
+    owned = {photo_root / f"{server_id}.jpg"}
+    owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+    others = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,))
+    referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
+    for path in owned:
+        candidate = path.resolve()
+        if candidate == photo_root or not candidate.is_relative_to(photo_root):
+            raise ValueError(f"Worker photo path needs manual cleanup: {path}")
+        if candidate not in keep and candidate not in referenced:
+            candidate.unlink(missing_ok=True)
+
+
+def count_unmanaged_local_workers() -> int:
+    """Profiles without a server identity cannot be certified by roster sync."""
+    conn = _get_conn()
+    return int(conn.execute("SELECT COUNT(*) FROM workers WHERE server_id IS NULL OR server_id = ''").fetchone()[0])
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:
@@ -877,4 +910,10 @@ def set_sync_state(key: str, value: str):
     """Set a sync-state value by key."""
     conn = _get_conn()
     conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()
+
+
+def delete_sync_state(key: str):
+    conn = _get_conn()
+    conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
     conn.commit()

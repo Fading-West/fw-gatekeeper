@@ -11,8 +11,7 @@ async function requireAdmin(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const unauthorized = await requireAdmin(req);
-  if (unauthorized) return unauthorized;
+  if (!(await hasValidPortalSession(req, ['admin', 'enrollment', 'viewer']))) return unauthorizedApiResponse();
   try {
     return NextResponse.json(await convex.query(api.kiosks.list, {}));
   } catch (error) {

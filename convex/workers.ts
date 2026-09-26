@@ -453,12 +453,13 @@ const workerSyncResult = v.array(v.object({
   active: v.number(),
 }));
 
-async function listWorkersForSync(ctx: any, args: { since?: string }) {
-  const all = await ctx.db.query("workers").collect();
-  const since = args.since || "1970-01-01T00:00:00.000Z";
+async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: boolean }) {
+  const all = await ctx.db.query("workers").take(1001);
+  if (all.length > 1000) throw new Error("Kiosk roster exceeds 1,000 workers");
+  const since = args.since;
   const filtered = all.filter((w: any) => {
     const updatedAt = w.updatedAt || w.enrolledAt;
-    return Boolean(updatedAt) && updatedAt > since;
+    return !since || (Boolean(updatedAt) && (args.inclusive ? updatedAt >= since : updatedAt > since));
   });
   const result = [];
   for (const w of filtered) {
@@ -485,7 +486,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string }) {
 }
 
 export const listForSyncFromHttp = internalQuery({
-  args: { since: v.optional(v.string()) },
+  args: { since: v.optional(v.string()), inclusive: v.optional(v.boolean()) },
   returns: workerSyncResult,
   handler: listWorkersForSync,
 });
