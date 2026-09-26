@@ -30,7 +30,7 @@ describe('device credentials', () => {
     await admin.mutation(api.kiosks.rotateCredential, { id: kioskId, credentialHash: secondHash });
     expect(await t.query(internal.kiosks.authenticateDevice, { credentialHash: firstHash })).toBeNull();
     expect(await t.query(internal.kiosks.authenticateDevice, { credentialHash: secondHash })).toMatchObject({ kioskId: 'entry' });
-    await admin.mutation(api.kiosks.revokeCredential, { id: kioskId });
+    await admin.mutation(api.kiosks.revokeCredential, { id: kioskId, confirmStopSync: true });
     expect(await t.query(internal.kiosks.authenticateDevice, { credentialHash: secondHash })).toBeNull();
     expect(await t.query(internal.kiosks.authenticateLegacy, { identifier: 'entry' })).toBeNull();
     expect(await t.run(ctx => ctx.db.get(kioskId))).not.toHaveProperty('credentialHash');
@@ -38,6 +38,18 @@ describe('device credentials', () => {
     expect(audit.map(row => [row.action, row.actorUserId])).toEqual([
       ['kiosk_credential_issued', userId], ['kiosk_credential_rotated', userId], ['kiosk_credential_revoked', userId],
     ]);
+  });
+
+  it('requires explicit lockout confirmation before revoking a legacy-only kiosk', async () => {
+    const { t, admin, kioskId } = await setup();
+    await expect(admin.mutation(api.kiosks.revokeCredential, { id: kioskId, confirmStopSync: false }))
+      .rejects.toThrow('Confirm that this kiosk will stop syncing');
+    expect(await t.query(internal.kiosks.authenticateLegacy, { identifier: 'entry' })).not.toBeNull();
+    expect(await t.run(ctx => ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'kiosks').eq('targetId', kioskId)).collect())).toHaveLength(0);
+    await admin.mutation(api.kiosks.revokeCredential, { id: kioskId, confirmStopSync: true });
+    expect(await t.query(internal.kiosks.authenticateLegacy, { identifier: 'entry' })).toBeNull();
+    const audit = await t.run(ctx => ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'kiosks').eq('targetId', kioskId)).unique());
+    expect(JSON.parse(audit!.details!)).toEqual({ legacyOnly: true });
   });
 
   it('rejects nonadmin changes and inactive or unknown devices', async () => {

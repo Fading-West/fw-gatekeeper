@@ -8,8 +8,19 @@ import { DELETE, POST } from './route';
 vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn() } }));
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(hasValidPortalSession).mockResolvedValue(true); });
-const request = (method: 'POST' | 'DELETE') => new NextRequest('http://localhost/api/kiosks/credentials', {
-  method, body: JSON.stringify({ id: 'kiosk-id' }),
+const request = (method: 'POST' | 'DELETE', body: Record<string, unknown> = { id: 'kiosk-id' }) => new NextRequest('http://localhost/api/kiosks/credentials', {
+  method, body: JSON.stringify(body),
+});
+
+it('requires an explicit stop-sync confirmation before the revoke mutation', async () => {
+  const rejected = await DELETE(request('DELETE'));
+  expect(rejected.status).toBe(400);
+  expect(await rejected.json()).toMatchObject({ error: expect.stringContaining('stop syncing') });
+  expect(convex.mutation).not.toHaveBeenCalled();
+  vi.mocked(convex.mutation).mockResolvedValue({ ok: true });
+  const accepted = await DELETE(request('DELETE', { id: 'kiosk-id', confirmStopSync: true }));
+  expect(accepted.status).toBe(200);
+  expect(vi.mocked(convex.mutation).mock.calls[0][1]).toEqual({ id: 'kiosk-id', confirmStopSync: true });
 });
 
 it('issues a one-time random secret while sending only its hash to Convex', async () => {

@@ -213,17 +213,18 @@ export const rotateCredential = mutation({
 });
 
 export const revokeCredential = mutation({
-  args: { id: v.id("kiosks") },
+  args: { id: v.id("kiosks"), confirmStopSync: v.boolean() },
   returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin"]);
     const kiosk = await ctx.db.get(args.id);
     if (!kiosk?.active) throw new ConvexError({ code: "KIOSK_NOT_FOUND", message: "Active kiosk not found" });
+    if (!args.confirmStopSync) throw new ConvexError({ code: "KIOSK_LOCKOUT_CONFIRMATION_REQUIRED", message: "Confirm that this kiosk will stop syncing before revoking access" });
     const now = new Date().toISOString();
     await ctx.db.patch(args.id, { credentialHash: undefined, credentialRevokedAt: now,
       legacyDisabledAt: kiosk.legacyDisabledAt || now });
     await ctx.db.insert("auditLog", { actorUserId: actor.userId, action: "kiosk_credential_revoked",
-      targetTable: "kiosks", targetId: args.id, createdAt: now });
+      targetTable: "kiosks", targetId: args.id, details: JSON.stringify({ legacyOnly: !kiosk.credentialHash && !kiosk.legacyDisabledAt }), createdAt: now });
     return { ok: true };
   },
 });
