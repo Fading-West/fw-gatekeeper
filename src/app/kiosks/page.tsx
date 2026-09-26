@@ -189,7 +189,7 @@ export default function KiosksPage() {
             Kiosk <span className="text-gold">readiness</span>
           </h1>
           <p className="text-sm text-slate-400 mt-2 max-w-2xl leading-6">
-            Check each kiosk's last contact, acknowledged roster, biometric purge status,
+            Check each kiosk&apos;s last contact, acknowledged roster, biometric purge status,
             and attendance uploads.
           </p>
         </div>
