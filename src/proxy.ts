@@ -1,6 +1,6 @@
 import { convexAuthNextjsMiddleware } from '@convex-dev/auth/nextjs/server';
 import { NextFetchEvent, NextRequest, NextResponse } from 'next/server';
-import { hasValidKioskKey, isKioskRequestAllowed, unauthorizedApiResponse } from '@/lib/auth';
+import { hasDeviceKeyFormat, hasValidKioskKey, isKioskRequestAllowed, unauthorizedApiResponse } from '@/lib/auth';
 import { hasPortalMemberAccess, type PortalMemberRole } from '@/lib/portal-member';
 
 // /api/activity has its own dedicated bearer authentication. It must not use
@@ -104,7 +104,7 @@ async function legacyAccessMiddleware(
       return NextResponse.next();
     }
 
-    if (isKioskRequestAllowed(req) && hasValidKioskKey(req)) {
+    if (isKioskRequestAllowed(req) && (hasValidKioskKey(req) || hasDeviceKeyFormat(req))) {
       return NextResponse.next();
     }
 

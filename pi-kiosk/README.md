@@ -107,7 +107,7 @@ All settings live in `config.py` with per-kiosk overrides in
 | `SYNC_INTERVAL` | `30` | Seconds between sync cycles |
 | `KIOSK_ID` / `KIOSK_NAME` | `kiosk-entry-1` / `Main Entry` | Kiosk identity |
 | `KIOSK_TYPE` | `entry` | `entry`, `exit`, or `auto` (toggles by last action) |
-| `KIOSK_API_KEY` (env or local) | none | **Required** shared secret for server sync; without it sync is disabled and records stay queued |
+| `KIOSK_API_KEY` (env or local) | none | **Required** device credential issued on the portal's Kiosk readiness page; registered kiosks may use the shared key until migrated |
 | `KIOSK_UI_KEY` (env or local) | none | **Required** Pi-local secret for camera feed, roster/status, and log routes |
 | `KIOSK_SUPERVISOR_PIN` (env or local) | none | **Required** separate passcode for manual attendance (5-minute session) |
 | `KIOSK_UI_HOST` (env or local) | `127.0.0.1` | Web UI bind address; keep loopback-only |

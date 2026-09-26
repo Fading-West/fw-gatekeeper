@@ -65,6 +65,39 @@ export default function KiosksPage() {
   const [kioskId, setKioskId] = useState('');
   const [type, setType] = useState<'entry' | 'exit'>('entry');
   const [location, setLocation] = useState('');
+  const [issuedCredential, setIssuedCredential] = useState<{ kioskId: string; value: string } | null>(null);
+  const [credentialBusy, setCredentialBusy] = useState<string | null>(null);
+  const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
+
+  const fetchCredentialStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/kiosks', { cache: 'no-store' });
+      if (!response.ok) return;
+      const rows = await response.json();
+      if (Array.isArray(rows)) setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
+    } catch {
+      // Readiness remains available if the credential status request fails.
+    }
+  }, []);
+
+  const manageCredential = async (id: string, method: 'POST' | 'DELETE') => {
+    setCredentialBusy(id);
+    setIssuedCredential(null);
+    try {
+      const response = await fetch('/api/kiosks/credentials', {
+        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Credential change failed');
+      if (method === 'POST') setIssuedCredential({ kioskId: body.kiosk_id, value: body.credential });
+      else toast('Kiosk credential revoked');
+      fetchCredentialStatus();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Credential change failed', 'error');
+    } finally {
+      setCredentialBusy(null);
+    }
+  };
 
   const fetchReadiness = useCallback(async () => {
     setLoading(true);
@@ -84,7 +117,8 @@ export default function KiosksPage() {
 
   useEffect(() => {
     fetchReadiness();
-  }, [fetchReadiness]);
+    fetchCredentialStatus();
+  }, [fetchReadiness, fetchCredentialStatus]);
 
   const counts = health?.kiosks.counts;
   const deviceIssueCount = useMemo(
@@ -135,6 +169,14 @@ export default function KiosksPage() {
 
   return (
     <div className="animate-fade-in space-y-6 pb-24 md:pb-8">
+      {issuedCredential && (
+        <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
+          <p className="text-amber-200 font-semibold">Save this credential for {issuedCredential.kioskId}. It will only be shown once.</p>
+          <code className="block break-all select-all text-sm text-slate-100">{issuedCredential.value}</code>
+          <p className="text-xs text-slate-400">Set it as KIOSK_API_KEY on this Pi. The old shared key no longer works for this kiosk.</p>
+          <button type="button" className="btn-secondary" onClick={() => setIssuedCredential(null)}>Dismiss</button>
+        </div>
+      )}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <p className="section-label mb-2">Device Operations</p>
@@ -241,6 +283,13 @@ export default function KiosksPage() {
                       <p className="text-xs font-mono text-slate-500 mt-1">{kiosk.kiosk_id || kiosk.id}</p>
                     </div>
                     <span className={`badge border ${statusStyles[kiosk.status]}`}>{statusLabels[kiosk.status]}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="badge border border-slate-500/30 text-slate-300">{credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
+                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy === kiosk.id}
+                      onClick={() => manageCredential(kiosk.id, 'POST')}>Issue / rotate credential</button>
+                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy === kiosk.id}
+                      onClick={() => manageCredential(kiosk.id, 'DELETE')}>Revoke credential</button>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 text-sm">
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">

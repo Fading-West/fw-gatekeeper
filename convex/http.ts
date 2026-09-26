@@ -303,6 +303,19 @@ const kioskLastSyncIngest = httpAction(async (ctx, request) => {
   return jsonResponse(result);
 });
 
+const kioskAuthenticate = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body !== 'object') return jsonResponse({ error: 'Credential lookup required' }, 400);
+  if (body.mode === 'device' && typeof body.credentialHash === 'string') {
+    return jsonResponse(await ctx.runQuery(internal.kiosks.authenticateDevice, { credentialHash: body.credentialHash }));
+  }
+  if (body.mode === 'legacy' && typeof body.identifier === 'string') {
+    return jsonResponse(await ctx.runQuery(internal.kiosks.authenticateLegacy, { identifier: body.identifier }));
+  }
+  return jsonResponse({ error: 'Credential lookup required' }, 400);
+});
+
 const workerSyncRead = httpAction(async (ctx, request) => {
   if (!hasValidIngestCredential(request)) {
     return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -320,6 +333,7 @@ http.route({ path: '/api/ingest/attendance', method: 'POST', handler: attendance
 http.route({ path: '/api/ingest/attendance/bulk', method: 'POST', handler: attendanceBulkIngest });
 http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', handler: recognitionAttemptsBulkIngest });
 http.route({ path: '/api/ingest/kiosks/last-sync', method: 'POST', handler: kioskLastSyncIngest });
+http.route({ path: '/api/ingest/kiosks/authenticate', method: 'POST', handler: kioskAuthenticate });
 http.route({ path: '/api/ingest/workers/sync', method: 'POST', handler: workerSyncRead });
 http.route({ path: '/api/public/kiosk-health', method: 'GET', handler: publicKioskHealth });
 http.route({ path: '/api/internal/activity', method: 'GET', handler: activityFeedRead });

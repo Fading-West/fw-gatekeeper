@@ -2,7 +2,8 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestRecognitionAttemptBatch, SecuredIngestError } from '@/lib/convex-ingest';
-import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
+import { unauthorizedApiResponse } from '@/lib/auth';
+import { authenticateKiosk, kioskClaims } from '@/lib/kiosk-device-auth';
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -19,7 +20,7 @@ function optionalBoolean(value: unknown): boolean | undefined {
   return undefined;
 }
 
-function normalizeAttempt(raw: any, bulkKioskId?: string) {
+function normalizeAttempt(raw: any, kioskId: string) {
   const bestScore = optionalNumber(raw.best_score) ?? optionalNumber(raw.bestScore) ?? optionalNumber(raw.score) ?? optionalNumber(raw.confidence);
   const secondBestScore = optionalNumber(raw.second_best_score) ?? optionalNumber(raw.secondBestScore) ?? optionalNumber(raw.second_score) ?? optionalNumber(raw.secondScore);
   const scoreMargin = optionalNumber(raw.score_margin) ?? optionalNumber(raw.scoreMargin) ?? optionalNumber(raw.margin);
@@ -32,7 +33,7 @@ function normalizeAttempt(raw: any, bulkKioskId?: string) {
       optionalString(raw.idempotencyKey) ||
       optionalString(raw.id),
     legacySourceAttemptId: optionalString(raw.legacy_source_attempt_id) || optionalString(raw.legacySourceAttemptId),
-    kioskId: optionalString(raw.kiosk_id) || optionalString(raw.kioskId) || bulkKioskId || 'unknown-kiosk',
+    kioskId,
     timestamp: optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt) || new Date().toISOString(),
     faceDetected:
       optionalBoolean(raw.face_detected) ??
@@ -73,20 +74,20 @@ function normalizeAttempt(raw: any, bulkKioskId?: string) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!hasValidKioskKey(req)) {
-    return unauthorizedApiResponse();
-  }
-
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const attempts = body.attempts || body.events || body.logs;
-    const bulkKioskId = optionalString(body.kiosk_id) || optionalString(body.kioskId);
 
     if (!Array.isArray(attempts)) {
       return NextResponse.json({ error: 'attempts (or events/logs) array required' }, { status: 400 });
     }
+    const claims = [...kioskClaims(body), ...attempts.flatMap((attempt: unknown) =>
+      attempt && typeof attempt === 'object' && !Array.isArray(attempt) ? kioskClaims(attempt as Record<string, unknown>) : [])];
+    const identity = await authenticateKiosk(req, claims);
+    if (!identity) return unauthorizedApiResponse();
 
-    const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, bulkKioskId));
+    const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, identity.kioskId));
     const result = await ingestRecognitionAttemptBatch(mapped);
     console.info('next_secured_ingest_recognition', {
       received: mapped.length,

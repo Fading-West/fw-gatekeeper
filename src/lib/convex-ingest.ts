@@ -96,6 +96,10 @@ export function updateKioskLastSync(kioskId: string, lastSync: string, health?: 
   });
 }
 
+export function lookupKioskCredential(input: { mode: 'device'; credentialHash: string } | { mode: 'legacy'; identifier: string }) {
+  return postSecuredIngest<{ kioskId: string; aliases: string[] } | null>('/api/ingest/kiosks/authenticate', input);
+}
+
 export function fetchWorkersForSync(since: string) {
   return postSecuredIngest<{ workers: unknown[] }>('/api/ingest/workers/sync', { since });
 }

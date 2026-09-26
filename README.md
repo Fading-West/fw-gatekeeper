@@ -160,7 +160,10 @@ Before bringing kiosks online, configure the shared secrets used for dashboard a
 1. In Render (`fw-gatekeeper` → **Environment**), set:
    - `KIOSK_API_KEY` to a long random shared secret
    - `CONVEX_INGEST_KEY` to a long random secret, then set the **same** value on the Convex deployment with `npx convex env set CONVEX_INGEST_KEY <value>`
-2. Use the **same** `KIOSK_API_KEY` value on every Pi kiosk
+2. Register each kiosk in the portal before syncing it. Existing registered kiosks may keep using the shared `KIOSK_API_KEY` during migration.
+3. In **Kiosk readiness**, select **Issue / rotate credential** for one kiosk. Save the displayed credential immediately; the portal shows it only once. Set that value as `KIOSK_API_KEY` on that Pi and restart its service. Repeat one kiosk at a time.
+
+Issuing a device credential permanently disables shared-key access for that kiosk. Rotating invalidates the previous device credential immediately. Revoking disables the current credential without restoring shared-key access. A revoked kiosk needs a new credential issued by an administrator. Keep the server's shared `KIOSK_API_KEY` configured until all registered kiosks have migrated, then remove it. Unknown and inactive kiosks cannot sync with either key.
 
 See `.env.example` for every variable, grouped by where it is set (Render, Convex, face service, kiosk).
 
@@ -444,7 +447,7 @@ done
 | `NEXT_PUBLIC_CONVEX_URL` | `https://modest-bat-146.convex.cloud` | Convex prod URL |
 | `CONVEX_INGEST_URL` | `https://modest-bat-146.convex.site` | Convex HTTP-actions host for secured ingest |
 | `CONVEX_INGEST_KEY` | long random secret | **Required.** Must equal `CONVEX_INGEST_KEY` on the Convex deployment (table below) |
-| `KIOSK_API_KEY` | long random shared secret | **Required.** Shared secret between server and Pi kiosks; without it every kiosk gets 401 |
+| `KIOSK_API_KEY` | long random shared secret | Migration credential for registered kiosks that have not received device credentials; remove after migration |
 | `FACE_ENCODE_URL` | `https://fw-face-service.onrender.com/encode` | Face encoding service |
 | `FACE_SERVICE_KEY` | long random shared secret | Shared secret between the dashboard server and face service |
 | `FACE_SERVICE_ALLOWED_ORIGINS` | `https://fw-gatekeeper.onrender.com` | Browser origin allowed by the face service (set on `fw-face-service`) |
@@ -470,7 +473,7 @@ Kiosk registration supports up to 1,000 active kiosks. Each active kiosk must ha
 | `KIOSK_NAME` | `FW Kiosk` | Display name |
 | `KIOSK_TYPE` | `entry` | `entry` or `exit` |
 | `SERVER_URL` | `https://fw-gatekeeper.onrender.com` | Dashboard server URL |
-| `KIOSK_API_KEY` | `""` | Shared secret between server and Pi kiosks (required for sync) |
+| `KIOSK_API_KEY` | `""` | This kiosk's issued device credential, or the shared key while migrating; required for sync |
 | `KIOSK_UI_KEY` | `""` | Required Pi-local secret protecting camera, roster, attendance, and manual-clock routes |
 
 ### Kiosk CLI Options
