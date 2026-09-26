@@ -3,8 +3,9 @@
 import { convexTest } from 'convex-test';
 import { describe, expect, it, vi } from 'vitest';
 
-import { api } from './_generated/api';
+import { api, internal } from './_generated/api';
 import schema from './schema';
+import * as audit from './audit';
 
 const modules = import.meta.glob('./**/*.ts');
 
@@ -148,4 +149,47 @@ it('revokes sessions created earlier in the same millisecond', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('rolls back the password write if the audit step fails in the same mutation', async () => {
+  const { t, admin, viewer } = await setup();
+  await t.run(ctx => ctx.db.insert('authAccounts', {
+    userId: viewer, provider: 'password', providerAccountId: 'viewer@example.com', secret: 'old',
+  }));
+  const spy = vi.spyOn(audit, 'writeAuditLog').mockRejectedValueOnce(new Error('audit failed'));
+  try {
+    await expect(t.withIdentity({ subject: admin }).mutation(internal.portalMembers.resetAccountPassword, {
+      email: 'viewer@example.com', password: 'UpdatedPass123!', role: 'viewer',
+    })).rejects.toThrow('audit failed');
+    const state = await t.run(async ctx => ({
+      account: await ctx.db.query('authAccounts').withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'viewer@example.com')).unique(),
+      member: await ctx.db.query('portalMembers').withIndex('by_user', q => q.eq('userId', viewer)).unique(),
+    }));
+    expect(state.account?.secret).toBe('old');
+    expect(state.member?.sessionRevokedAt).toBeUndefined();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it('resets a password with an audit and immediate session cutoff, while rejecting a nonadmin', async () => {
+  const { t, admin, viewer, viewerMember, viewerSession } = await setup();
+  await t.run(ctx => ctx.db.insert('authAccounts', {
+    userId: viewer, provider: 'password', providerAccountId: 'viewer@example.com', secret: 'old',
+  }));
+  const args = { email: 'viewer@example.com', password: 'UpdatedPass123!', role: 'viewer' as const };
+  await expect(t.withIdentity({ subject: viewer }).mutation(internal.portalMembers.resetAccountPassword, args))
+    .rejects.toThrow('Insufficient permissions');
+  const startedAt = Date.now();
+  await t.withIdentity({ subject: admin }).mutation(internal.portalMembers.resetAccountPassword, args);
+  const state = await t.run(async ctx => ({
+    account: await ctx.db.query('authAccounts').withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', args.email)).unique(),
+    member: await ctx.db.get(viewerMember),
+    audit: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', viewerMember)).collect(),
+  }));
+  expect(state.account?.secret).not.toBe('old');
+  expect(state.member?.sessionRevokedAt).toBeGreaterThanOrEqual(startedAt);
+  expect(state.audit).toMatchObject([{ actorUserId: admin, action: 'portalMembers.resetPassword' }]);
+  expect(await t.run(ctx => ctx.db.get(viewerSession))).toBeNull();
+  expect(await t.withIdentity({ subject: `${viewer}|${viewerSession}` }).query(api.portalMembers.current, {})).toBeNull();
 });

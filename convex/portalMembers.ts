@@ -1,4 +1,4 @@
-import { createAccount, getAuthUserId, invalidateSessions, modifyAccountCredentials } from '@convex-dev/auth/server';
+import { createAccount, getAuthUserId } from '@convex-dev/auth/server';
 import { ConvexError, v } from 'convex/values';
 
 import { action, internalMutation, internalQuery, mutation, query } from './_generated/server';
@@ -147,16 +147,6 @@ export const upsertMember = internalMutation({
   },
 });
 
-export const recordPasswordReset = internalMutation({
-  args: { userId: v.id('users') },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const { actor, target } = await requireTarget(ctx, args.userId);
-    await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.resetPassword', targetTable: 'portalMembers', targetId: target._id });
-    return null;
-  },
-});
-
 async function requireTarget(ctx: MutationCtx, userId: Doc<'portalMembers'>['userId']) {
   const actor = await assertPortalRole(ctx, ['admin']);
   const target = await ctx.db.query('portalMembers')
@@ -234,15 +224,32 @@ export const setActive = mutation({
   },
 });
 
-export const preparePasswordReset = internalMutation({
-  args: { userId: v.id('users'), role: portalMemberRole },
+export const resetAccountPassword = internalMutation({
+  args: { email: v.string(), password: v.string(), role: portalMemberRole },
   returns: v.object({ active: v.boolean(), role: portalMemberRole }),
   handler: async (ctx, args) => {
-    const { target } = await requireTarget(ctx, args.userId);
+    const actor = await assertPortalRole(ctx, ['admin']);
+    assertValidPassword(args.password);
+    const account = await ctx.db.query('authAccounts')
+      .withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', args.email))
+      .unique();
+    if (!account) throw new ConvexError('No existing password account was found for this email. Create the account first.');
+    const target = await ctx.db.query('portalMembers')
+      .withIndex('by_user', q => q.eq('userId', account.userId)).unique();
+    if (!target) throw new ConvexError('Portal account not found');
     await protectLastAdmin(ctx, target, args.role, target.active);
     if (target.role !== args.role) {
       throw new ConvexError('Change the account role separately before resetting its password');
     }
+    await ctx.runMutation(internal.auth.store, { args: {
+      type: 'modifyAccount', provider: 'password', account: { id: args.email, secret: args.password },
+    } });
+    const latestSession = await ctx.db.query('authSessions')
+      .withIndex('userId', q => q.eq('userId', account.userId)).order('desc').first();
+    const cutoff = Math.max(Date.now(), latestSession?._creationTime ?? 0, target.sessionRevokedAt ?? 0);
+    await ctx.db.patch(target._id, { sessionRevokedAt: cutoff, updatedAt: new Date().toISOString() });
+    await revokeSessionBatch(ctx, account.userId, cutoff);
+    await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.resetPassword', targetTable: 'portalMembers', targetId: target._id });
     return { active: target.active, role: target.role };
   },
 });
@@ -314,21 +321,9 @@ export const resetPortalAccountPassword = action({
     }
     assertValidPassword(args.password);
 
-    const existing = await ctx.runQuery(internal.portalMembers.getPasswordAccountByEmail, { email });
-    if (!existing) {
-      throw new ConvexError('No existing password account was found for this email. Create the account first.');
-    }
-
-    const member = await ctx.runMutation(internal.portalMembers.preparePasswordReset, {
-      userId: existing.userId,
-      role: args.role,
+    const member = await ctx.runMutation(internal.portalMembers.resetAccountPassword, {
+      email, password: args.password, role: args.role,
     });
-    await modifyAccountCredentials(ctx, {
-      provider: 'password',
-      account: { id: email, secret: args.password },
-    });
-    await ctx.runMutation(internal.portalMembers.recordPasswordReset, { userId: existing.userId });
-    await invalidateSessions(ctx, { userId: existing.userId });
 
     return { email, role: member.role, active: member.active };
   },
