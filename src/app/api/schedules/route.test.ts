@@ -105,3 +105,11 @@ it('returns 400 for an invalid merged legacy row until the PATCH repairs it', as
   expect((await patch({ days: [1, 2] })).status).toBe(200);
   expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ name: 'Day', days: '[1,2]' });
 });
+
+it('returns 400 for a malformed PATCH schedule ID without writing', async () => {
+  const { t, id, patch } = await setup();
+  const response = await patch({ id: 'not-a-convex-id', name: 'Renamed' });
+  expect(response.status).toBe(400);
+  expect((await response.json()).error).toBe('Invalid schedule id.');
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ name: 'Day' });
+});

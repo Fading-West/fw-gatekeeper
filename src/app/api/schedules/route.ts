@@ -27,6 +27,12 @@ function badScheduleInput(error: unknown): string | null {
       (error.data?.code === 'INVALID_SCHEDULE' || error.data?.code === 'INVALID_SCHEDULE_TIMES')) {
     return error.data.message;
   }
+  // Convex validates the branded schedule ID before the mutation runs. Keep
+  // that client input failure separate from transport and server failures.
+  if (error instanceof Error && (error.name === 'ArgumentValidationError' || error.message.includes('ArgumentValidationError') ||
+      error.message.includes('Expected ID for table "schedules"'))) {
+    return 'Invalid schedule id.';
+  }
   return null;
 }
 
