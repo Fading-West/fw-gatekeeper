@@ -100,10 +100,14 @@ describe('attendance correction reversal', () => {
   });
 });
 
-it('starts independent reversal lookups together for a correction-heavy date', async () => {
+it('bounds reversal lookups across batches and excludes a late reversal', async () => {
   const started: string[] = [];
-  const pending = new Map<string, (value: null) => void>();
-  const corrections = ['one', 'two', 'three'].map(_id => ({ _id, action: 'add_clock_in' }));
+  const pending = new Map<string, (value: null | { _id: string }) => void>();
+  const corrections = Array.from({ length: 45 }, (_, index) => ({
+    _id: `correction-${index}`, workerId: 'worker-1', action: 'add_clock_in',
+    correctedTimestamp: `2026-09-01T08:${String(index).padStart(2, '0')}:00`,
+    eventType: 'clock_in', reason: 'Missed scan',
+  }));
   const ctx = { db: { query(table: string) {
     if (table === 'attendance') return { withIndex: () => ({ collect: async () => [] }) };
     if (table === 'attendanceCorrections') return { withIndex: () => ({ collect: async () => corrections }) };
@@ -111,13 +115,26 @@ it('starts independent reversal lookups together for a correction-heavy date', a
       const id = select({ eq: (_field, value) => value });
       return { unique: () => {
         started.push(id);
-        return new Promise<null>(resolve => pending.set(id, resolve));
+        return new Promise<null | { _id: string }>(resolve => pending.set(id, resolve));
       } };
     } };
   } } };
   const result = listEffectiveAttendanceByTimestampRange(ctx, date);
   await new Promise<void>(resolve => setImmediate(resolve));
-  expect(started).toEqual(['one', 'two', 'three']);
-  for (const resolve of pending.values()) resolve(null);
-  await expect(result).resolves.toEqual([]);
+  expect(started).toEqual(corrections.slice(0, 20).map(correction => correction._id));
+  for (const [id, resolve] of pending) { resolve(null); pending.delete(id); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(started).toEqual(corrections.slice(0, 40).map(correction => correction._id));
+  for (const [id, resolve] of pending) { resolve(null); pending.delete(id); }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(started).toEqual(corrections.map(correction => correction._id));
+  expect(pending.size).toBe(5);
+  for (const [id, resolve] of pending) {
+    resolve(id === 'correction-42' ? { _id: 'reversal-42' } : null);
+    pending.delete(id);
+  }
+  const effective = await result;
+  expect(effective).toHaveLength(44);
+  expect(effective.map(row => row.correctionId)).not.toContain('correction-42');
+  expect(effective.map(row => row.correctionId)).toContain('correction-44');
 });
