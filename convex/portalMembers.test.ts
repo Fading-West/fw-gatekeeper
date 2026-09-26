@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 
+import { generateKeyPairSync } from 'node:crypto';
 import { convexTest } from 'convex-test';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +9,17 @@ import schema from './schema';
 import * as audit from './audit';
 
 const modules = import.meta.glob('./**/*.ts');
+
+async function withLocalAuthKeys(run: () => Promise<void>) {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  vi.stubEnv('JWT_PRIVATE_KEY', privateKey.export({ format: 'pem', type: 'pkcs8' }).toString());
+  vi.stubEnv('CONVEX_SITE_URL', 'https://example.convex.site');
+  try {
+    await run();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+}
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -69,7 +81,7 @@ describe('portal member lifecycle', () => {
     await t.run(async (ctx) => {
       expect(await ctx.db.get(viewerSession)).toBeNull();
       expect(await ctx.db.get(viewerToken)).toBeNull();
-      expect(await ctx.db.get(survivingSession)).not.toBeNull();
+      expect(await ctx.db.get(survivingSession)).toBeNull();
     });
     await actor.mutation(api.portalMembers.setActive, { userId: viewer, active: true });
     await expect(oldJwt.query(api.portalMembers.current, {})).resolves.toBeNull();
@@ -211,6 +223,30 @@ it('creates the password account, member, and audit in one mutation', async () =
   expect(state.account?.secret).not.toBe('InitialPass123!');
   expect(state.member).toMatchObject({ role: 'enrollment', active: true });
   expect(state.audit).toMatchObject([{ actorUserId: admin, action: 'portalMembers.create' }]);
+  await withLocalAuthKeys(async () => {
+    await expect(t.action(api.auth.signIn, {
+      provider: 'password', params: { email: result.email, password: 'InitialPass123!', flow: 'signIn' },
+    })).resolves.toBeTruthy();
+  });
+});
+
+it('signs in with a reset password and rejects the previous password', async () => {
+  const { t, admin } = await setup();
+  const actor = t.withIdentity({ subject: admin });
+  await actor.action(api.portalMembers.createPortalAccount, {
+    email: 'resettable@example.com', password: 'InitialPass123!', role: 'viewer',
+  });
+  await actor.action(api.portalMembers.resetPortalAccountPassword, {
+    email: 'resettable@example.com', password: 'UpdatedPass123!', role: 'viewer',
+  });
+  await withLocalAuthKeys(async () => {
+    await expect(t.action(api.auth.signIn, {
+      provider: 'password', params: { email: 'resettable@example.com', password: 'InitialPass123!', flow: 'signIn' },
+    })).rejects.toThrow();
+    await expect(t.action(api.auth.signIn, {
+      provider: 'password', params: { email: 'resettable@example.com', password: 'UpdatedPass123!', flow: 'signIn' },
+    })).resolves.toBeTruthy();
+  });
 });
 
 it('rejects creation if the admin loses access before the account mutation', async () => {
@@ -242,5 +278,53 @@ it('rolls back account and user creation if the member audit fails', async () =>
     expect(state.members).toHaveLength(3);
   } finally {
     spy.mockRestore();
+  }
+});
+
+it('cleans several old sessions per batch and leaves post-cutoff sessions intact', async () => {
+  vi.useFakeTimers();
+  try {
+    const { t, admin, viewer } = await setup();
+    await t.run(async ctx => {
+      for (let index = 0; index < 22; index += 1) {
+        const sessionId = await ctx.db.insert('authSessions', { userId: viewer, expirationTime: Date.now() + 60_000 });
+        await ctx.db.insert('authRefreshTokens', { sessionId, expirationTime: Date.now() + 60_000 });
+        await ctx.db.insert('authRefreshTokens', { sessionId, expirationTime: Date.now() + 60_000 });
+      }
+    });
+    const actor = t.withIdentity({ subject: admin });
+    await actor.mutation(api.portalMembers.setActive, { userId: viewer, active: false });
+    const afterFirst = await t.run(ctx => ctx.db.query('authSessions').withIndex('userId', q => q.eq('userId', viewer)).take(30));
+    expect(afterFirst).toHaveLength(13); // 10 of 23 old sessions cleared immediately.
+    await actor.mutation(api.portalMembers.setActive, { userId: viewer, active: true });
+    const freshId = await t.run(ctx => ctx.db.insert('authSessions', { userId: viewer, expirationTime: Date.now() + 60_000 }));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const remaining = await t.run(ctx => ctx.db.query('authSessions').withIndex('userId', q => q.eq('userId', viewer)).take(30));
+    expect(remaining.map(session => session._id)).toEqual([freshId]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('caps refresh token cleanup per transaction and continues until complete', async () => {
+  vi.useFakeTimers();
+  try {
+    const { t, admin, viewer, viewerSession } = await setup();
+    await t.run(async ctx => {
+      for (let index = 0; index < 249; index += 1) {
+        await ctx.db.insert('authRefreshTokens', { sessionId: viewerSession, expirationTime: Date.now() + 60_000 });
+      }
+    });
+    await t.withIdentity({ subject: admin }).mutation(api.portalMembers.setActive, { userId: viewer, active: false });
+    const afterFirst = await t.run(ctx => ctx.db.query('authRefreshTokens')
+      .withIndex('sessionId', q => q.eq('sessionId', viewerSession)).take(251));
+    expect(afterFirst).toHaveLength(150);
+    expect(await t.run(ctx => ctx.db.get(viewerSession))).not.toBeNull();
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await t.run(ctx => ctx.db.get(viewerSession))).toBeNull();
+    expect(await t.run(ctx => ctx.db.query('authRefreshTokens')
+      .withIndex('sessionId', q => q.eq('sessionId', viewerSession)).take(1))).toEqual([]);
+  } finally {
+    vi.useRealTimers();
   }
 });

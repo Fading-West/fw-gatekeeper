@@ -185,14 +185,27 @@ async function protectLastAdmin(ctx: MutationCtx, target: Doc<'portalMembers'>, 
 }
 
 async function revokeSessionBatch(ctx: MutationCtx, userId: Doc<'portalMembers'>['userId'], cutoff: number) {
-  const session = (await ctx.db.query('authSessions')
+  const maxSessions = 10;
+  let tokenBudget = 100;
+  const sessions = await ctx.db.query('authSessions')
+    .withIndex('userId', (q) => q.eq('userId', userId)).take(maxSessions);
+  for (const session of sessions) {
+    if (session._creationTime > cutoff) break;
+    // Read one past the remaining budget to know whether this session still
+    // owns tokens. Never delete more than 100 refresh tokens per transaction.
+    const tokens = await ctx.db.query('authRefreshTokens')
+      .withIndex('sessionId', (q) => q.eq('sessionId', session._id)).take(tokenBudget + 1);
+    for (const token of tokens.slice(0, tokenBudget)) await ctx.db.delete(token._id);
+    const incomplete = tokens.length > tokenBudget;
+    tokenBudget -= Math.min(tokens.length, tokenBudget);
+    if (incomplete) break;
+    await ctx.db.delete(session._id);
+  }
+  const next = (await ctx.db.query('authSessions')
     .withIndex('userId', (q) => q.eq('userId', userId)).take(1))[0];
-  if (!session || session._creationTime > cutoff) return;
-  const tokens = await ctx.db.query('authRefreshTokens')
-    .withIndex('sessionId', (q) => q.eq('sessionId', session._id)).take(100);
-  for (const token of tokens) await ctx.db.delete(token._id);
-  if (tokens.length < 100) await ctx.db.delete(session._id);
-  await ctx.scheduler.runAfter(0, internal.portalMembers.cleanupRevokedSessions, { userId, cutoff });
+  if (next && next._creationTime <= cutoff) {
+    await ctx.scheduler.runAfter(0, internal.portalMembers.cleanupRevokedSessions, { userId, cutoff });
+  }
 }
 
 export const cleanupRevokedSessions = internalMutation({
