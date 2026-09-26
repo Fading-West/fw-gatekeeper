@@ -147,6 +147,44 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
 | "queued logs have no server worker mapping" | Queued rows whose worker row was removed before this release; see *Stranded attendance rows* below |
 
+### Rejected attendance uploads
+
+The server may reject one invalid event in an otherwise valid batch. The kiosk
+isolates that event and keeps its original SQLite row, validation reason, and
+original row snapshot in `attendance_rejections`. Other events continue syncing.
+Rejected events remain in the `queued_logs` health count, while `rejected_logs`
+and `retryable_logs` distinguish paused evidence from uploads that can drain.
+The kiosk displays Needs attention for rejected records. They do not retry until
+an operator reviews them. Authentication, network, and server failures remain
+in the normal retry queue.
+
+On the kiosk, make a SQLite backup, then inspect active rejections:
+
+```bash
+cd /opt/fw-gatekeeper/pi-kiosk
+sqlite3 data/attendance.db ".backup data/attendance.db.bak-$(date +%Y%m%d)"
+python3 attendance_rejections.py list
+```
+
+Check the recorded reason and `original_log_json` before changing the row. For
+example, after verifying the correct worker identity or timestamp against an
+independent record, repair the `attendance_log` row in SQLite. Then release
+the specific rejection with a reason; the next sync cycle retries it:
+
+```bash
+sqlite3 data/attendance.db \
+  "UPDATE attendance_log SET timestamp = '2026-09-25T08:00:00' WHERE id = 37 AND synced = 0;"
+python3 attendance_rejections.py retry 1 --note "Verified timestamp against supervisor shift record"
+```
+
+Use the rejection id from `list` for `retry`, and the log id for the SQL edit.
+The original snapshot, rejection reason, release time, and operator note stay
+in `attendance_rejections` after retry. If the event still fails validation,
+the kiosk records a new rejection; do not delete the evidence to clear an alert.
+If an attendance row was deleted, `list` still shows its rejection and original
+snapshot. `retry` refuses to release it until the row is restored from a backup
+or the snapshot under supervisor review.
+
 ### Stranded attendance rows
 
 Each attendance row stores the worker's Convex id (`server_worker_id`) when it is
