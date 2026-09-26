@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from '@/lib/attendance-backlog';
 import { unauthorizedApiResponse } from '@/lib/auth';
-import { authenticateKiosk, kioskClaims } from '@/lib/kiosk-device-auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
 import { ConvexError } from 'convex/values';
 import { SecuredIngestError } from '@/lib/convex-ingest';
 import { validateAttendanceEvent } from '../../../../../convex/attendanceValidation';
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       return validateAttendanceEvent({
         workerId: e.worker_id,
         eventType: e.event_type || e.action,
-        kioskId: identity.kioskId,
+        kioskId: kioskEvidenceId(identity, e, body),
         timestamp: e.timestamp,
         idempotencyKey: e.idempotency_key || e.idempotencyKey || e.id || undefined,
         workerName: e.worker_name || e.workerName || undefined,

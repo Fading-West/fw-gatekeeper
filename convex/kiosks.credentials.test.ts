@@ -3,6 +3,7 @@ import { convexTest } from 'convex-test';
 import { describe, expect, it } from 'vitest';
 import { api, internal } from './_generated/api';
 import schema from './schema';
+import { kioskEvidenceId } from '../src/lib/kiosk-device-auth';
 
 const modules = import.meta.glob('./**/*.ts');
 const firstHash = 'a'.repeat(64);
@@ -46,4 +47,26 @@ describe('device credentials', () => {
     await t.run(ctx => ctx.db.patch(kioskId, { active: false }));
     expect(await t.query(internal.kiosks.authenticateLegacy, { identifier: 'entry' })).toBeNull();
   });
+});
+
+it('keeps validated legacy aliases in attendance and recognition retry evidence', async () => {
+  const { t } = await setup();
+  const workerId = await t.run(ctx => ctx.db.insert('workers', {
+    name: 'Worker', department: 'Operations', active: true, enrolledAt: '2026-09-25',
+  }));
+  const identity = { kioskId: 'entry', aliases: ['entry', 'Front'] };
+  const event = { workerId, eventType: 'clock_in', timestamp: '2026-09-25T08:00:00', kioskId: 'Front', idempotencyKey: 'scan-1' };
+  await t.mutation(internal.attendance.bulkCreateFromHttp, { events: [event] });
+  const retryId = kioskEvidenceId(identity, { kioskId: 'Front' }, { kiosk_id: 'entry' });
+  expect(await t.mutation(internal.attendance.bulkCreateFromHttp, { events: [{ ...event, kioskId: retryId }] }))
+    .toEqual({ synced: 0, acknowledged: 1 });
+  expect(await t.run(ctx => ctx.db.query('attendance').collect())).toHaveLength(1);
+
+  const attempt = { sourceAttemptId: 'attempt-1', kioskId: 'Front', timestamp: '2026-09-25T08:00:00',
+    faceDetected: true, decision: 'matched', threshold: 0.3 };
+  await t.mutation(internal.recognitionAttempts.bulkIngestFromHttp, { attempts: [attempt] });
+  const attemptRetryId = kioskEvidenceId(identity, { kiosk_id: 'Front', kioskId: 'entry' });
+  expect(await t.mutation(internal.recognitionAttempts.bulkIngestFromHttp, { attempts: [{ ...attempt, kioskId: attemptRetryId }] }))
+    .toMatchObject({ ingested: 0, skipped: 1 });
+  expect(await t.run(ctx => ctx.db.query('recognitionAttempts').collect())).toHaveLength(1);
 });

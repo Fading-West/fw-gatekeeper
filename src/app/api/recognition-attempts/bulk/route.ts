@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestRecognitionAttemptBatch, SecuredIngestError } from '@/lib/convex-ingest';
 import { unauthorizedApiResponse } from '@/lib/auth';
-import { authenticateKiosk, kioskClaims } from '@/lib/kiosk-device-auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
     const identity = await authenticateKiosk(req, claims);
     if (!identity) return unauthorizedApiResponse();
 
-    const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, identity.kioskId));
+    const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, kioskEvidenceId(identity, attempt, body)));
     const result = await ingestRecognitionAttemptBatch(mapped);
     console.info('next_secured_ingest_recognition', {
       received: mapped.length,

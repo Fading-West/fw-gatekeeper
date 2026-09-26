@@ -6,7 +6,7 @@ import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from '@/lib/at
 import { SecuredIngestError } from '@/lib/convex-ingest';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 vi.mock('@/lib/auth', () => ({ hasValidKioskKey: vi.fn(() => true), unauthorizedApiResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }) }));
-vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn(), kioskClaims: (value: Record<string, unknown>) => ['kiosk_id', 'kioskId'].filter(key => Object.hasOwn(value, key)).map(key => value[key]) }));
+vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn(), kioskClaims: (value: Record<string, unknown>) => ['kiosk_id', 'kioskId'].filter(key => Object.hasOwn(value, key)).map(key => value[key]), kioskEvidenceId: (identity: { kioskId: string }, record: Record<string, unknown>, batch?: Record<string, unknown>) => record.kiosk_id ?? record.kioskId ?? batch?.kiosk_id ?? batch?.kioskId ?? identity.kioskId }));
 vi.mock('@/lib/attendance-backlog', () => ({ AttendanceBacklogPendingError: class extends Error {}, ingestAttendanceBacklog: vi.fn() }));
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(hasValidKioskKey).mockReturnValue(true); vi.mocked(authenticateKiosk).mockResolvedValue({ kioskId: 'entry', aliases: ['entry'] }); });
 const request = (body: unknown) => new NextRequest('http://localhost/api/attendance/bulk', { method: 'POST', body: JSON.stringify(body) });

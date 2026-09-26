@@ -6,7 +6,14 @@ import { lookupKioskCredential } from './convex-ingest';
 export type KioskIdentity = { kioskId: string; aliases: string[] };
 
 export function kioskClaims(value: Record<string, unknown>): unknown[] {
-  return ['kiosk_id', 'kioskId'].filter(key => Object.hasOwn(value, key)).map(key => value[key]);
+  return ['kiosk_id', 'kioskId'].filter(key => Object.prototype.hasOwnProperty.call(value, key)).map(key => value[key]);
+}
+
+// Use only after authenticateKiosk has checked every supplied claim. Keeping
+// the submitted alias preserves deduplication keys for retries of old rows.
+export function kioskEvidenceId(identity: KioskIdentity, record: Record<string, unknown>, batch?: Record<string, unknown>): string {
+  const claim = record.kiosk_id ?? record.kioskId ?? batch?.kiosk_id ?? batch?.kioskId;
+  return typeof claim === 'string' ? claim.trim() : identity.kioskId;
 }
 
 export async function authenticateKiosk(req: NextRequest, claims: unknown[]): Promise<KioskIdentity | null> {

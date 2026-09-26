@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { afterEach, expect, it, vi } from 'vitest';
 import { POST } from './route';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
-vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn(() => Promise.resolve({ kioskId: 'entry-1', aliases: ['entry-1'] })), kioskClaims: (value: Record<string, unknown>) => ['kiosk_id', 'kioskId'].filter(key => Object.hasOwn(value, key)).map(key => value[key]) }));
+vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn(() => Promise.resolve({ kioskId: 'entry-1', aliases: ['entry-1'] })), kioskClaims: (value: Record<string, unknown>) => ['kiosk_id', 'kioskId'].filter(key => Object.hasOwn(value, key)).map(key => value[key]), kioskEvidenceId: (identity: { kioskId: string }, record: Record<string, unknown>, batch?: Record<string, unknown>) => record.kiosk_id ?? record.kioskId ?? batch?.kiosk_id ?? batch?.kioskId ?? identity.kioskId }));
 vi.mock('@/lib/auth', () => ({ hasValidKioskKey: () => true, unauthorizedApiResponse: () => Response.json({}, { status: 401 }) }));
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 it('forwards persistent identities and propagates backend conflicts to the kiosk', async () => {
