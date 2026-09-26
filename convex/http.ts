@@ -323,9 +323,43 @@ const workerSyncRead = httpAction(async (ctx, request) => {
 
   const body = await readJsonBody(request);
   const since = body && typeof body.since === 'string' ? body.since : undefined;
-  const workers = await ctx.runQuery(internal.workers.listForSyncFromHttp, { since });
-  console.info('secured_ingest_worker_sync', { returned: workers.length });
-  return jsonResponse({ workers });
+  const inclusive = body?.inclusive === true;
+  const cursor = body && typeof body.cursor === 'string' ? body.cursor : undefined;
+  const page = await ctx.runQuery(internal.workers.listForSyncFromHttp, { since, inclusive, cursor });
+  console.info('secured_ingest_worker_sync', { returned: page.workers.length, isDone: page.isDone });
+  return jsonResponse(page);
+});
+
+const rosterReceiptIssue = httpAction(async (ctx, request) => {
+  // This bearer key belongs only to the Next server. Public kiosk keys are
+  // authenticated at /api/sync before Next calls this privileged endpoint.
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body.documentId !== 'string' || !body.documentId.trim()) {
+    return jsonResponse({ error: 'documentId required' }, 400);
+  }
+  try {
+    const issued = await ctx.runMutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: body.documentId as any });
+    return issued ? jsonResponse(issued) : jsonResponse({ error: 'Credentialed kiosk required' }, 404);
+  } catch {
+    return jsonResponse({ error: 'Invalid kiosk document ID' }, 400);
+  }
+});
+
+const rosterReceiptAck = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body.documentId !== 'string' || typeof body.receipt !== 'string' || !body.receipt.trim()) {
+    return jsonResponse({ error: 'documentId and receipt required' }, 400);
+  }
+  try {
+    const result = await ctx.runMutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, {
+      documentId: body.documentId as any, receipt: body.receipt as any,
+    });
+    return result.acknowledged ? jsonResponse(result) : jsonResponse({ error: 'Receipt is not pending for this kiosk' }, 409);
+  } catch {
+    return jsonResponse({ error: 'Invalid roster receipt' }, 400);
+  }
 });
 
 http.route({ path: '/api/ingest/attendance/receipts', method: 'POST', handler: attendanceReceiptStatus });
@@ -335,6 +369,8 @@ http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', hand
 http.route({ path: '/api/ingest/kiosks/last-sync', method: 'POST', handler: kioskLastSyncIngest });
 http.route({ path: '/api/ingest/kiosks/authenticate', method: 'POST', handler: kioskAuthenticate });
 http.route({ path: '/api/ingest/workers/sync', method: 'POST', handler: workerSyncRead });
+http.route({ path: '/api/ingest/kiosks/roster-receipt/issue', method: 'POST', handler: rosterReceiptIssue });
+http.route({ path: '/api/ingest/kiosks/roster-receipt/ack', method: 'POST', handler: rosterReceiptAck });
 http.route({ path: '/api/public/kiosk-health', method: 'GET', handler: publicKioskHealth });
 http.route({ path: '/api/internal/activity', method: 'GET', handler: activityFeedRead });
 

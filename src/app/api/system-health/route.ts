@@ -48,6 +48,8 @@ type SystemHealthPayload = {
       type: string;
       location: string;
       last_sync: string | null;
+      roster_applied_at: string | null;
+      purge_pending: boolean;
       status: KioskStatus;
       expected_worker_count: number;
       last_attendance_upload: string | null;
@@ -173,11 +175,16 @@ export async function GET(req: NextRequest) {
         type: kiosk.type,
         location: kiosk.location,
         last_sync: kiosk.last_sync,
+        roster_applied_at: kiosk.roster_applied_at ?? null,
+        purge_pending: Boolean(kiosk.purge_pending),
         status,
         expected_worker_count: readyWorkerCount,
         last_attendance_upload: latestTimestamp(matchingEvents),
         health: kiosk.health ?? null,
-        device_issues: getDeviceIssues(kiosk.health ?? null),
+        device_issues: [
+          ...getDeviceIssues(kiosk.health ?? null),
+          ...(kiosk.purge_pending ? ['Biometric purge still unconfirmed on this kiosk'] : []),
+        ],
       };
     });
 

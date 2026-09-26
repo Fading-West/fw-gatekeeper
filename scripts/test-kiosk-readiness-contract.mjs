@@ -10,7 +10,10 @@ assert.ok(exists('src/app/kiosks/page.tsx'), 'Kiosks page should exist so the si
 const kiosksPage = read('src/app/kiosks/page.tsx');
 assert.match(kiosksPage, /fetch\(['"]\/api\/system-health/, 'Kiosks page should use the sanitized system-health API payload');
 assert.match(kiosksPage, /Kiosk readiness/i, 'Kiosks page should have a clear readiness heading');
-assert.match(kiosksPage, /Last sync/i, 'Kiosks page should show last sync evidence for each kiosk');
+assert.match(kiosksPage, /Last contact/i, 'Kiosks page should label device contact separately from applied roster evidence');
+assert.match(kiosksPage, /Last applied roster/i, 'Kiosks page should show server-confirmed roster application');
+assert.match(kiosksPage, /Biometric purge/i, 'Kiosks page should show pending purge confirmation');
+assert.match(kiosksPage, /kiosk\.purge_pending/, 'Purge status must come from the server acknowledgement state');
 assert.match(kiosksPage, /Expected worker/i, 'Kiosks page should show expected worker payload counts');
 assert.match(kiosksPage, /Last attendance upload/i, 'Kiosks page should show last attendance upload evidence');
 assert.match(kiosksPage, /online[\s\S]*stale[\s\S]*offline[\s\S]*never synced/i, 'Kiosks page should explain online/stale/offline/never-synced status thresholds');

@@ -12,6 +12,8 @@ type KioskHealthRow = {
   type: string;
   location: string;
   last_sync: string | null;
+  roster_applied_at: string | null;
+  purge_pending: boolean;
   status: KioskReadinessStatus;
   expected_worker_count: number;
   last_attendance_upload: string | null;
@@ -189,8 +191,8 @@ export default function KiosksPage() {
             Kiosk <span className="text-gold">readiness</span>
           </h1>
           <p className="text-sm text-slate-400 mt-2 max-w-2xl leading-6">
-            Verify whether every gate kiosk has synced recently, how many enrolled workers it should receive,
-            and whether attendance uploads are reaching the portal.
+            Check each kiosk&apos;s last contact, acknowledged roster, biometric purge status,
+            and attendance uploads.
           </p>
         </div>
         <div className="flex gap-2">
@@ -209,7 +211,7 @@ export default function KiosksPage() {
             <p className="section-label mb-2">Kiosk readiness</p>
             <h2 className="font-display text-2xl text-slate-100">{readinessLabel}</h2>
             <p className="text-sm text-slate-400 mt-2">
-              Online means synced within {health?.kiosks.stale_threshold_minutes ?? 15} minutes; stale means 15–{health?.kiosks.offline_threshold_minutes ?? 60} minutes; offline means over {health?.kiosks.offline_threshold_minutes ?? 60} minutes; never synced means no sync has been recorded.
+              Online means contacted within {health?.kiosks.stale_threshold_minutes ?? 15} minutes; stale means 15–{health?.kiosks.offline_threshold_minutes ?? 60} minutes; offline means over {health?.kiosks.offline_threshold_minutes ?? 60} minutes. Contact does not confirm roster changes were applied.
             </p>
           </div>
           <span className="badge bg-gold/10 text-gold border border-gold/20">
@@ -302,8 +304,18 @@ export default function KiosksPage() {
                       <p className="text-slate-200 mt-1">{kiosk.location || 'No location set'}</p>
                     </div>
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
-                      <p className="text-xs text-slate-500">Last sync</p>
+                      <p className="text-xs text-slate-500">Last contact</p>
                       <p className="text-slate-200 mt-1">{formatTimestamp(kiosk.last_sync)}</p>
+                    </div>
+                    <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
+                      <p className="text-xs text-slate-500">Last applied roster</p>
+                      <p className="text-slate-200 mt-1">{kiosk.roster_applied_at ? formatTimestamp(kiosk.roster_applied_at) : 'Unconfirmed (legacy or pending acknowledgement)'}</p>
+                    </div>
+                    <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
+                      <p className="text-xs text-slate-500">Biometric purge</p>
+                      <p className={kiosk.purge_pending ? 'text-amber-300 mt-1' : 'text-slate-200 mt-1'}>
+                        {kiosk.purge_pending ? 'Pending confirmation on this kiosk' : kiosk.roster_applied_at ? 'No pending purge' : 'Not confirmed by this kiosk'}
+                      </p>
                     </div>
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className="text-xs text-slate-500">Expected worker payload</p>

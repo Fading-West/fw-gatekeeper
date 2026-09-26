@@ -166,6 +166,11 @@ def init_db():
             value TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS photo_cleanup_journal (
+            path TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('published', 'retired'))
+        );
+
         CREATE TABLE IF NOT EXISTS attendance_rejections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             log_id INTEGER NOT NULL,
@@ -309,6 +314,30 @@ def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
     return cursor.rowcount
 
 
+def _find_worker_update_row(conn, name: str, server_id: Optional[str], employee_id: str):
+    """Resolve the same row for photo retirement and the worker write."""
+    row = None
+    if server_id is not None:
+        row = conn.execute(
+            "SELECT id, server_id, employee_id, photo_paths FROM workers WHERE server_id = ?", (server_id,)
+        ).fetchone()
+    if row is not None:
+        return row
+    # Names are labels, not identity. Only adopt one compatible local-only
+    # row; a different server identity is never adopted by name.
+    matches = conn.execute(
+        "SELECT id, server_id, employee_id, photo_paths FROM workers "
+        "WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
+        (name,),
+    ).fetchall()
+    matches = [candidate for candidate in matches if not (
+        employee_id and candidate["employee_id"] and employee_id != candidate["employee_id"]
+    )]
+    if len(matches) > 1:
+        raise ValueError("Several local workers share this name; select a worker id.")
+    return matches[0] if matches else None
+
+
 def add_worker(
     name: str,
     encoding: np.ndarray,
@@ -332,23 +361,7 @@ def add_worker(
     enrolled_at = enrolled_at or datetime.now().isoformat(timespec="seconds")
     normalized_employee_id = employee_id.strip() if isinstance(employee_id, str) else ""
 
-    row = None
-    if server_id is not None:
-        row = conn.execute("SELECT id, server_id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
-    if row is None:
-        # Names are labels, not identity. Only adopt a single local-only row;
-        # a different server id must always receive its own local worker id.
-        matches = conn.execute(
-            "SELECT id, server_id, employee_id FROM workers WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
-            (normalized_name,),
-        ).fetchall()
-        matches = [candidate for candidate in matches if not (
-            normalized_employee_id and candidate["employee_id"]
-            and normalized_employee_id != candidate["employee_id"]
-        )]
-        if len(matches) > 1:
-            raise ValueError("Several local workers share this name; select a worker id.")
-        row = matches[0] if matches else None
+    row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
     stored_server_id = server_id
     if row:
         worker_id = int(row["id"])
@@ -399,33 +412,134 @@ def remove_worker(name: str) -> bool:
     return cursor.rowcount > 0
 
 
-def remove_worker_by_server_id(server_id: str) -> bool:
+def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
     rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
+    # The server-id filename remains attributable even when an older client
+    # deleted the SQLite row without removing its thumbnail. Unknown legacy
+    # filenames are never inferred from a worker's name and deleted here.
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    owned = {photo_root / f"{server_id}.jpg"}
+    for row in rows:
+        owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+    remaining_paths = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,)).fetchall()
+    referenced = {
+        Path(path).resolve()
+        for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
+    }
+    retired = [path for path in owned if path.resolve() not in referenced]
+    record_photo_cleanup(retired, "retired")
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
-    if cursor.rowcount:
-        # Only delete files owned by the removed row, within the configured
-        # photo directory, and no longer referenced by any remaining worker.
-        # This includes legacy name-based thumbnails after a schema upgrade.
-        try:
-            photo_root = Path(config.PHOTO_DIR).resolve()
-            owned = {photo_root / f"{server_id}.jpg"}
-            for row in rows:
-                owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
-            remaining_paths = conn.execute("SELECT photo_paths FROM workers").fetchall()
-            referenced = {
-                Path(path).resolve()
-                for row in remaining_paths for path in json.loads(row["photo_paths"] or "[]")
-            }
-            for path in owned:
-                candidate = path.resolve()
-                if candidate != photo_root and candidate.is_relative_to(photo_root) and candidate not in referenced:
-                    candidate.unlink(missing_ok=True)
-        except (OSError, ValueError, TypeError) as exc:
-            logger.warning("Could not remove retired worker thumbnail: %s", exc)
+    try:
+        recover_photo_cleanup()
+    except (OSError, ValueError) as exc:
+        if strict_cleanup:
+            raise
+        logger.warning("Worker deactivated; thumbnail cleanup remains pending: %s", exc)
     return cursor.rowcount > 0
+
+
+def get_synced_server_ids() -> set[str]:
+    """Server identities currently cached on this kiosk."""
+    conn = _get_conn()
+    return {row[0] for row in conn.execute(
+        "SELECT server_id FROM workers WHERE server_id IS NOT NULL AND server_id != ''"
+    )}
+
+
+def replaced_worker_photo_paths(name: str, server_id: str, employee_id: Optional[str], keep_paths: list[str]) -> list[Path]:
+    """Identify owned thumbnails to retire after replacement is durable."""
+    conn = _get_conn()
+    row = _find_worker_update_row(conn, name.strip(), server_id, employee_id.strip() if isinstance(employee_id, str) else "")
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    keep = {Path(path).resolve() for path in keep_paths}
+    owned = {photo_root / f"{server_id}.jpg"}
+    if row is not None:
+        owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
+    others = conn.execute("SELECT photo_paths FROM workers WHERE id != ?", (row["id"] if row else -1,))
+    referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
+    retired = []
+    for path in owned:
+        candidate = path.resolve()
+        if candidate == photo_root or not candidate.is_relative_to(photo_root):
+            raise ValueError(f"Worker photo path needs manual cleanup: {path}")
+        if candidate not in keep and candidate not in referenced:
+            retired.append(candidate)
+    return retired
+
+
+def record_photo_cleanup(paths: list[Path], kind: str) -> None:
+    """Persist ownership before a file operation can outlive a process."""
+    if not paths:
+        return
+    conn = _get_conn()
+    conn.executemany(
+        "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, ?)",
+        ((str(path), kind) for path in paths),
+    )
+    conn.commit()
+
+
+def recover_photo_cleanup() -> None:
+    """Remove only journaled, unreferenced files; unknown files stay untouched."""
+    conn = _get_conn()
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    references = {
+        Path(path).resolve()
+        for row in conn.execute("SELECT photo_paths FROM workers")
+        for path in json.loads(row["photo_paths"] or "[]")
+    }
+    journal = conn.execute("SELECT path, kind FROM photo_cleanup_journal ORDER BY path").fetchall()
+    first_error = None
+    for entry in journal:
+        path = Path(entry["path"])
+        candidate = path.resolve()
+        if entry["kind"] == "published" and candidate in references:
+            conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
+            conn.commit()
+            continue
+        if entry["kind"] == "retired" and candidate in references:
+            continue
+        if not path.exists() and not path.is_symlink():
+            conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
+            conn.commit()
+            continue
+        if candidate == photo_root or not candidate.is_relative_to(photo_root):
+            first_error = first_error or ValueError(f"Worker photo path needs manual cleanup: {path}")
+            continue
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as exc:
+            first_error = first_error or exc
+            continue
+        conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
+        conn.commit()
+    if first_error:
+        raise first_error
+
+
+def count_unmanaged_local_workers() -> int:
+    """Profiles without a server identity cannot be certified by roster sync."""
+    conn = _get_conn()
+    return int(conn.execute("SELECT COUNT(*) FROM workers WHERE server_id IS NULL OR server_id = ''").fetchone()[0])
+
+
+def list_unreferenced_photo_files() -> list[str]:
+    """Find files a roster receipt cannot certify or safely delete."""
+    conn = _get_conn()
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    if not photo_root.exists():
+        return []
+    rows = conn.execute("SELECT photo_paths FROM workers").fetchall()
+    referenced = {
+        Path(path).resolve()
+        for row in rows for path in json.loads(row["photo_paths"] or "[]")
+    }
+    return sorted(str(path) for path in photo_root.rglob("*")
+                  if (path.is_file() or path.is_symlink()) and
+                  (not path.resolve().is_relative_to(photo_root) or path.resolve() not in referenced))
 
 
 def get_worker_by_name(name: str) -> Optional[dict]:
@@ -904,4 +1018,10 @@ def set_sync_state(key: str, value: str):
     """Set a sync-state value by key."""
     conn = _get_conn()
     conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()
+
+
+def delete_sync_state(key: str):
+    conn = _get_conn()
+    conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
     conn.commit()

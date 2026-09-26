@@ -453,40 +453,52 @@ const workerSyncResult = v.array(v.object({
   active: v.number(),
 }));
 
-async function listWorkersForSync(ctx: any, args: { since?: string }) {
-  const all = await ctx.db.query("workers").collect();
-  const since = args.since || "1970-01-01T00:00:00.000Z";
-  const filtered = all.filter((w: any) => {
-    const updatedAt = w.updatedAt || w.enrolledAt;
-    return Boolean(updatedAt) && updatedAt > since;
-  });
-  const result = [];
-  for (const w of filtered) {
-    let photoUrls: string[] = [];
+async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: boolean; cursor?: string }) {
+  const since = args.since;
+  // Updated rows and older rows without updatedAt occupy separate index ranges.
+  // The phase prefix keeps their pagination cursors separate across HTTP calls.
+  const phase = since && args.cursor?.startsWith("l:") ? "legacy" : "updated";
+  if (since && args.cursor && !/^[ul]:/.test(args.cursor)) throw new Error("Invalid incremental roster cursor");
+  const cursor = since ? args.cursor?.slice(2) || null : args.cursor ?? null;
+  const query = !since ? ctx.db.query("workers") : phase === "updated"
+    ? ctx.db.query("workers").withIndex("by_updated_at_and_enrolled_at", (q: any) => args.inclusive
+      ? q.gte("updatedAt", since) : q.gt("updatedAt", since))
+    : ctx.db.query("workers").withIndex("by_updated_at_and_enrolled_at", (q: any) => args.inclusive
+      ? q.eq("updatedAt", undefined).gte("enrolledAt", since)
+      : q.eq("updatedAt", undefined).gt("enrolledAt", since));
+  const page = await query.paginate({ cursor, numItems: 200 });
+  const result = await Promise.all(page.page.map(async (w: any) => {
+    let photoUrl: string | null = null;
     if (w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
         const url = await ctx.storage.getUrl(sid);
-        if (url) photoUrls.push(url);
+        if (url) {
+          photoUrl = url;
+          break;
+        }
       }
     }
-    result.push({
+    return {
       id: w._id,
       name: w.name,
       employee_id: w.employeeId || "",
       department: w.department,
-      photo_url: photoUrls[0] || null,
+      photo_url: photoUrl,
       face_encoding: w.faceEncoding || null,
       enrolled_at: w.enrolledAt,
       updated_at: w.updatedAt || w.enrolledAt,
       active: w.active ? 1 : 0,
-    });
-  }
-  return result;
+    };
+  }));
+  if (!since) return { workers: result, isDone: page.isDone, continueCursor: page.continueCursor };
+  if (phase === "updated") return { workers: result, isDone: false,
+    continueCursor: page.isDone ? "l:" : `u:${page.continueCursor}` };
+  return { workers: result, isDone: page.isDone, continueCursor: `l:${page.continueCursor}` };
 }
 
 export const listForSyncFromHttp = internalQuery({
-  args: { since: v.optional(v.string()) },
-  returns: workerSyncResult,
+  args: { since: v.optional(v.string()), inclusive: v.optional(v.boolean()), cursor: v.optional(v.string()) },
+  returns: v.object({ workers: workerSyncResult, isDone: v.boolean(), continueCursor: v.string() }),
   handler: listWorkersForSync,
 });
 

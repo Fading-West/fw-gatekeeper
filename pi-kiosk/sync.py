@@ -6,9 +6,11 @@ import logging
 import os
 import re
 import threading
+import uuid
 import time
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -327,7 +329,10 @@ def sync_workers(health: Optional[dict] = None) -> bool:
     try:
         r = requests.get(
             f"{config.SERVER_URL}/api/sync",
-            params={"kiosk_id": config.KIOSK_ID, "since": last_sync, **_health_params(health)},
+            params={"kiosk_id": config.KIOSK_ID, "since": last_sync,
+                    "roster_receipt": "1",
+                    **({"full_roster": "1"} if not database.get_sync_state("last_roster_applied_at") else {}),
+                    **_health_params(health)},
             headers=_auth_headers(),
             timeout=15,
         )
@@ -336,9 +341,42 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             return False
 
         data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("Worker sync response must be an object")
         workers = data.get("workers", [])
+        if not isinstance(workers, list):
+            raise ValueError("workers must be an array")
+        receipt = data.get("roster_receipt")
+        receipt_protocol = receipt is not None
+        if receipt_protocol and (not isinstance(receipt, str) or not receipt or
+                                 not isinstance(data.get("synced_at"), str) or not data["synced_at"]):
+            raise ValueError("Invalid roster receipt response")
+        if receipt_protocol and "workers" not in data:
+            raise ValueError("Receipt sync response is missing workers")
+        full_roster = receipt_protocol and data.get("full_roster") is True
+        if receipt_protocol and not database.get_sync_state("last_roster_applied_at") and not full_roster:
+            raise ValueError("Initial receipt sync must include full roster")
+        # A prior process may have died between photo publication and the
+        # SQLite commit, or between commit and retired-file cleanup.
+        try:
+            database.recover_photo_cleanup()
+        except (OSError, ValueError):
+            if receipt_protocol:
+                raise
+            logger.warning("Legacy roster sync continuing with thumbnail cleanup pending")
+        seen_server_ids: set[str] = set()
+
+        if receipt_protocol:
+            for w in workers:
+                if (not isinstance(w, dict) or not w.get("id") or
+                    type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
+                    raise ValueError("Receipt sync worker row is missing id or active state")
+                if w["active"] and ("face_encoding" not in w or "photo_url" not in w):
+                    raise ValueError("Active receipt sync row is missing face_encoding or photo_url")
 
         for w in workers:
+            if not isinstance(w, dict):
+                raise ValueError("Worker sync row must be an object")
             server_id = w.get("id")
             name = w.get("name")
             employee_id = w.get("employee_id")
@@ -346,57 +384,155 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             photo_url = w.get("photo_url")
             enrolled_at = w.get("enrolled_at")
             is_active = bool(w.get("active"))
+            if receipt_protocol and not server_id:
+                raise ValueError("Worker sync row is missing id")
+            if receipt_protocol and is_active and not name:
+                raise ValueError("Active worker sync row is missing name")
+            if server_id:
+                seen_server_ids.add(str(server_id))
 
             if server_id and not is_active:
-                if database.remove_worker_by_server_id(str(server_id)):
+                if database.remove_worker_by_server_id(str(server_id), strict_cleanup=receipt_protocol):
                     logger.info("Removed deactivated worker: %s (server_id=%s)", name or "unknown", server_id)
                 continue
 
+            if receipt_protocol and server_id and is_active and encoding_data is None:
+                # An active worker with no template must not leave an old
+                # cached template usable on the device.
+                database.remove_worker_by_server_id(str(server_id), strict_cleanup=True)
+                continue
+
             if not server_id or not name or encoding_data is None:
+                if receipt_protocol:
+                    raise ValueError("Worker sync row has missing required fields")
                 logger.warning("Skipping worker sync row with missing required fields: %s", w)
                 continue
 
             encoding = np.array(encoding_data, dtype=np.float64)
+            if receipt_protocol and (encoding.ndim != 1 or encoding.size not in {128, 512} or not np.isfinite(encoding).all()):
+                raise ValueError("Worker encoding must be a 128-dim or 512-dim vector")
 
             # Download photo if provided
             photo_path = None
+            staged_photo = None
             if photo_url:
-                photo_path = _download_photo(str(server_id), photo_url)
+                photo_download = _download_photo(str(server_id), photo_url)
+                if photo_download:
+                    staged_photo, photo_path = photo_download
+                elif receipt_protocol:
+                    raise ValueError(f"Worker photo download failed for {server_id}")
 
-            database.add_worker(
-                name=name,
-                encoding=encoding,
-                photo_paths=[photo_path] if photo_path else [],
-                enrolled_at=enrolled_at,
-                server_id=str(server_id),
-                employee_id=employee_id,
-            )
+            try:
+                retired_photos = database.replaced_worker_photo_paths(
+                    name, str(server_id), employee_id, [photo_path] if photo_path else [],
+                )
+                database.record_photo_cleanup(retired_photos, "retired")
+                if staged_photo:
+                    database.record_photo_cleanup([Path(photo_path)], "published")
+                    os.replace(staged_photo, photo_path)
+                    staged_photo = None
+                try:
+                    database.add_worker(
+                        name=name,
+                        encoding=encoding,
+                        photo_paths=[photo_path] if photo_path else [],
+                        enrolled_at=enrolled_at,
+                        server_id=str(server_id),
+                        employee_id=employee_id,
+                    )
+                except Exception:
+                    # The journal knows this file is not referenced after the
+                    # failed SQLite update, including across a process crash.
+                    database.recover_photo_cleanup()
+                    raise
+                database.recover_photo_cleanup()
+            finally:
+                if staged_photo and os.path.exists(staged_photo):
+                    os.unlink(staged_photo)
             logger.info("Synced worker: %s (server_id=%s)", name, server_id)
 
-        database.set_sync_state("last_worker_sync", data.get("synced_at") or datetime.now().isoformat())
+        if full_roster:
+            for stale_id in database.get_synced_server_ids() - seen_server_ids:
+                database.remove_worker_by_server_id(stale_id, strict_cleanup=True)
+
+        if receipt_protocol:
+            unmanaged = database.count_unmanaged_local_workers()
+            if unmanaged:
+                raise ValueError(f"{unmanaged} unmanaged local worker profile(s) prevent roster acknowledgement; map or remove them after review")
+            unreferenced = database.list_unreferenced_photo_files()
+            if unreferenced:
+                raise ValueError(f"{len(unreferenced)} unreferenced local photo file(s) prevent roster acknowledgement; review {unreferenced[0]}")
+
+        if receipt_protocol:
+            # A pending receipt is only cached after all changes are durable.
+            # A restart must reapply the response and reload recognition before
+            # retrying the server acknowledgement.
+            database.set_sync_state("roster_pending_receipt", json.dumps({
+                "receipt": receipt, "issued_at": data["synced_at"],
+            }))
+        else:
+            database.delete_sync_state("roster_pending_receipt")
+            database.set_sync_state("last_worker_sync", data.get("synced_at") or datetime.now().isoformat())
         logger.info("Worker sync complete: %d workers", len(workers))
         return True
 
     except requests.RequestException as e:
         logger.warning("Worker sync failed: %s", e)
         return False
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
+    except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
         logger.error("Invalid sync response: %s", e)
         return False
 
 
-def _download_photo(name: str, url: str) -> Optional[str]:
-    """Download a worker photo and save locally."""
+def acknowledge_applied_roster() -> bool:
+    """Called only after this process successfully reloads persisted faces."""
+    raw = database.get_sync_state("roster_pending_receipt")
+    if not raw:
+        return False
+    pending = json.loads(raw)
+    try:
+        response = requests.post(
+            f"{config.SERVER_URL}/api/sync/ack",
+            json={"kiosk_id": config.KIOSK_ID, "roster_receipt": pending["receipt"]},
+            headers=_auth_headers(), timeout=15,
+        )
+        if response.status_code != 200:
+            logger.warning("Roster acknowledgement failed with status=%d", response.status_code)
+            return False
+        body = response.json()
+        if body.get("acknowledged") is not True or not isinstance(body.get("applied_at"), str):
+            logger.warning("Roster acknowledgement response was incomplete")
+            return False
+        database.set_sync_state("last_roster_applied_at", body["applied_at"])
+        database.set_sync_state("last_worker_sync", body["applied_at"])
+        database.delete_sync_state("roster_pending_receipt")
+        return True
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        logger.warning("Roster acknowledgement unavailable; will reapply and retry: %s", exc)
+        return False
+
+
+def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
+    """Stage a worker photo; caller publishes it after row validation."""
+    staged = None
     try:
         os.makedirs(config.PHOTO_DIR, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
-        path = os.path.join(config.PHOTO_DIR, f"{safe_name}.jpg")
+        identifier = uuid.uuid4().hex
+        path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{identifier}.jpg")
+        staged = os.path.join(config.PHOTO_DIR, f".{safe_name}-{identifier}.tmp")
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
-            with open(path, "wb") as f:
+            database.record_photo_cleanup([Path(staged)], "published")
+            with open(staged, "xb") as f:
                 f.write(r.content)
-            return path
+            return staged, path
     except Exception as e:
+        if staged:
+            try:
+                os.unlink(staged)
+            except OSError:
+                logger.warning("Could not remove incomplete staged photo: %s", staged)
         logger.warning("Failed to download photo for %s: %s", name, e)
     return None
 
@@ -468,6 +604,8 @@ class SyncWorker:
                         # even when the sync watermark must remain unchanged.
                         if self._recognizer:
                             self._recognizer.reload_faces()
+                    if workers_synced and database.get_sync_state("roster_pending_receipt"):
+                        workers_synced = bool(self._recognizer) and acknowledge_applied_roster()
                     if workers_synced:
                         self._report(last_sync_at=datetime.now().isoformat(timespec="seconds"))
                     sync_attendance()
