@@ -30,9 +30,11 @@ export default defineSchema({
     active: v.boolean(),
     createdAt: v.string(),
     updatedAt: v.optional(v.string()),
+    sessionRevokedAt: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
-    .index("by_active", ["active"]),
+    .index("by_active", ["active"])
+    .index("by_active_and_role", ["active", "role"]),
 
   pendingEnrollmentPhotos: defineTable({
     storageId: v.id("_storage"),

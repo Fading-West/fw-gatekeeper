@@ -1,10 +1,12 @@
 import { createAccount, getAuthUserId, invalidateSessions, modifyAccountCredentials } from '@convex-dev/auth/server';
 import { ConvexError, v } from 'convex/values';
 
-import { action, internalMutation, internalQuery, query } from './_generated/server';
+import { action, internalMutation, internalQuery, mutation, query } from './_generated/server';
 import { internal } from './_generated/api';
+import { assertPortalRole, hasCurrentPortalSession } from './access';
+import { writeAuditLog } from './audit';
 import type { Doc } from './_generated/dataModel';
-import type { ActionCtx } from './_generated/server';
+import type { ActionCtx, MutationCtx } from './_generated/server';
 
 const portalMemberRole = v.union(v.literal('admin'), v.literal('enrollment'), v.literal('viewer'));
 type PortalMemberRole = Doc<'portalMembers'>['role'];
@@ -35,7 +37,7 @@ export const current = query({
       .withIndex('by_user', (q) => q.eq('userId', userId))
       .unique();
 
-    if (!member?.active) {
+    if (!member?.active || !(await hasCurrentPortalSession(ctx, userId))) {
       return null;
     }
 
@@ -60,7 +62,7 @@ export const list = query({
       .withIndex('by_user', (q) => q.eq('userId', currentUserId))
       .unique();
 
-    if (!currentMember?.active || currentMember.role !== 'admin') {
+    if (!currentMember?.active || currentMember.role !== 'admin' || !(await hasCurrentPortalSession(ctx, currentUserId))) {
       throw new ConvexError('Admin access required');
     }
 
@@ -91,7 +93,7 @@ export const getActiveMemberByUserId = internalQuery({
       .withIndex('by_user', (q) => q.eq('userId', args.userId))
       .unique();
 
-    if (!member?.active) {
+    if (!member?.active || !(await hasCurrentPortalSession(ctx, args.userId))) {
       return null;
     }
 
@@ -122,6 +124,7 @@ export const upsertMember = internalMutation({
     active: v.boolean(),
   },
   handler: async (ctx, args) => {
+    const actor = await assertPortalRole(ctx, ['admin']);
     const now = new Date().toISOString();
     const existing = await ctx.db
       .query('portalMembers')
@@ -129,21 +132,113 @@ export const upsertMember = internalMutation({
       .unique();
 
     if (existing) {
-      await ctx.db.patch(existing._id, {
-        role: args.role,
-        active: args.active,
-        updatedAt: now,
-      });
-      return existing._id;
+      throw new ConvexError('Portal member already exists');
     }
 
-    return await ctx.db.insert('portalMembers', {
+    const memberId = await ctx.db.insert('portalMembers', {
       userId: args.userId,
       role: args.role,
       active: args.active,
       createdAt: now,
       updatedAt: now,
     });
+    await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.create', targetTable: 'portalMembers', targetId: memberId, details: JSON.stringify({ role: args.role }) });
+    return memberId;
+  },
+});
+
+export const recordPasswordReset = internalMutation({
+  args: { userId: v.id('users') },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { actor, target } = await requireTarget(ctx, args.userId);
+    await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.resetPassword', targetTable: 'portalMembers', targetId: target._id });
+    return null;
+  },
+});
+
+async function requireTarget(ctx: MutationCtx, userId: Doc<'portalMembers'>['userId']) {
+  const actor = await assertPortalRole(ctx, ['admin']);
+  const target = await ctx.db.query('portalMembers')
+    .withIndex('by_user', (q) => q.eq('userId', userId)).unique();
+  if (!target) throw new ConvexError('Portal account not found');
+  return { actor, target };
+}
+
+async function protectLastAdmin(ctx: MutationCtx, target: Doc<'portalMembers'>, nextRole: PortalMemberRole, nextActive: boolean) {
+  if (!target.active || target.role !== 'admin' || (nextActive && nextRole === 'admin')) return;
+  // The index range read participates in Convex OCC, so concurrent demotions
+  // or disables cannot both commit after observing each other as an admin.
+  const admins = await ctx.db.query('portalMembers')
+    .withIndex('by_active_and_role', (q) => q.eq('active', true).eq('role', 'admin'))
+    .take(2);
+  if (!admins.some((admin) => admin._id !== target._id)) {
+    throw new ConvexError('Cannot remove the last active administrator');
+  }
+}
+
+async function revokeSessionBatch(ctx: MutationCtx, userId: Doc<'portalMembers'>['userId'], cutoff: number) {
+  const session = (await ctx.db.query('authSessions')
+    .withIndex('userId', (q) => q.eq('userId', userId)).take(1))[0];
+  if (!session || session._creationTime > cutoff) return;
+  const tokens = await ctx.db.query('authRefreshTokens')
+    .withIndex('sessionId', (q) => q.eq('sessionId', session._id)).take(100);
+  for (const token of tokens) await ctx.db.delete(token._id);
+  if (tokens.length < 100) await ctx.db.delete(session._id);
+  await ctx.scheduler.runAfter(0, internal.portalMembers.cleanupRevokedSessions, { userId, cutoff });
+}
+
+export const cleanupRevokedSessions = internalMutation({
+  args: { userId: v.id('users'), cutoff: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await revokeSessionBatch(ctx, args.userId, args.cutoff);
+    return null;
+  },
+});
+
+export const setRole = mutation({
+  args: { userId: v.id('users'), role: portalMemberRole },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { actor, target } = await requireTarget(ctx, args.userId);
+    if (target.role === args.role) return null;
+    await protectLastAdmin(ctx, target, args.role, target.active);
+    await ctx.db.patch(target._id, { role: args.role, updatedAt: new Date().toISOString() });
+    await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.setRole', targetTable: 'portalMembers', targetId: target._id, details: JSON.stringify({ from: target.role, to: args.role }) });
+    return null;
+  },
+});
+
+export const setActive = mutation({
+  args: { userId: v.id('users'), active: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { actor, target } = await requireTarget(ctx, args.userId);
+    if (target.active === args.active) return null;
+    await protectLastAdmin(ctx, target, target.role, args.active);
+    const now = new Date();
+    await ctx.db.patch(target._id, {
+      active: args.active,
+      updatedAt: now.toISOString(),
+      ...(!args.active ? { sessionRevokedAt: now.toISOString() } : {}),
+    });
+    if (!args.active) await revokeSessionBatch(ctx, args.userId, now.getTime());
+    await writeAuditLog(ctx, { actorUserId: actor.userId, action: args.active ? 'portalMembers.reactivate' : 'portalMembers.disable', targetTable: 'portalMembers', targetId: target._id });
+    return null;
+  },
+});
+
+export const preparePasswordReset = internalMutation({
+  args: { userId: v.id('users'), role: portalMemberRole },
+  returns: v.object({ active: v.boolean(), role: portalMemberRole }),
+  handler: async (ctx, args) => {
+    const { target } = await requireTarget(ctx, args.userId);
+    await protectLastAdmin(ctx, target, args.role, target.active);
+    if (target.role !== args.role) {
+      throw new ConvexError('Change the account role separately before resetting its password');
+    }
+    return { active: target.active, role: target.role };
   },
 });
 
@@ -219,18 +314,17 @@ export const resetPortalAccountPassword = action({
       throw new ConvexError('No existing password account was found for this email. Create the account first.');
     }
 
+    const member = await ctx.runMutation(internal.portalMembers.preparePasswordReset, {
+      userId: existing.userId,
+      role: args.role,
+    });
     await modifyAccountCredentials(ctx, {
       provider: 'password',
       account: { id: email, secret: args.password },
     });
+    await ctx.runMutation(internal.portalMembers.recordPasswordReset, { userId: existing.userId });
     await invalidateSessions(ctx, { userId: existing.userId });
 
-    await ctx.runMutation(internal.portalMembers.upsertMember, {
-      userId: existing.userId,
-      role: args.role,
-      active: true,
-    });
-
-    return { email, role: args.role, active: true };
+    return { email, role: member.role, active: member.active };
   },
 });
