@@ -83,13 +83,14 @@ export default function KiosksPage() {
     }
   }, []);
 
-  const manageCredential = async (id: string, method: 'POST' | 'DELETE') => {
+  const manageCredential = async (id: string, method: 'POST' | 'DELETE', kioskName?: string) => {
     if (credentialBusyRef.current || issuedCredential) return;
+    if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${kioskName || id}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
     credentialBusyRef.current = true;
     setCredentialBusy(id);
     try {
       const response = await fetch('/api/kiosks/credentials', {
-        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...(method === 'DELETE' ? { confirmStopSync: true } : {}) }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || 'Credential change failed');
@@ -167,6 +168,7 @@ export default function KiosksPage() {
       setType('entry');
       setShowForm(false);
       fetchReadiness();
+      fetchCredentialStatus();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to register kiosk', 'error');
     }
@@ -229,7 +231,7 @@ export default function KiosksPage() {
       <section className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-5">
         <h2 className="font-display font-semibold text-amber-200">Kiosk setup reminder</h2>
         <p className="text-sm text-amber-100/80 leading-6 mt-2">
-          Each Raspberry Pi kiosk must point at this portal URL and use a matching <code className="font-mono">KIOSK_API_KEY</code> in its environment. The secret key is never shown here; verify it in Render and on the Pi when sync is failing.
+          Each Raspberry Pi kiosk must point at this portal URL. For a kiosk with an issued device credential, set that credential as <code className="font-mono">KIOSK_API_KEY</code> on its Pi; it is shown only once and does not match the shared key in Render. A kiosk still marked Shared key migration uses the shared Render key until you issue its device credential.
         </p>
       </section>
 
@@ -294,7 +296,7 @@ export default function KiosksPage() {
                     <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
                       onClick={() => manageCredential(kiosk.id, 'POST')}>Issue / rotate credential</button>
                     <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
-                      onClick={() => manageCredential(kiosk.id, 'DELETE')}>Revoke credential</button>
+                      onClick={() => manageCredential(kiosk.id, 'DELETE', kiosk.name)}>Revoke access</button>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 text-sm">
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
@@ -339,7 +341,7 @@ export default function KiosksPage() {
             </div>
           ) : (
             <div className="glass-card p-6 text-sm text-slate-400 leading-6">
-              No kiosks are registered yet. Add a kiosk record, then configure the Pi with the portal URL and matching <code className="font-mono">KIOSK_API_KEY</code> before launch.
+              No kiosks are registered yet. Add a kiosk record, then configure the Pi with the portal URL and an issued device credential as <code className="font-mono">KIOSK_API_KEY</code> before launch.
             </div>
           )}
         </section>

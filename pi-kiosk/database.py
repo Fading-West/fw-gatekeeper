@@ -744,7 +744,27 @@ def mark_synced(log_ids: list[int]):
 def count_unsynced_logs() -> int:
     """Count all unsent logs, including quarantined evidence, for health reporting."""
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) FROM attendance_log WHERE synced = 0").fetchone()
+    row = conn.execute("""SELECT
+        (SELECT COUNT(*) FROM attendance_log WHERE synced = 0) +
+        (SELECT COUNT(*) FROM attendance_rejections r
+         LEFT JOIN attendance_log l ON l.id = r.log_id
+         WHERE r.released_at IS NULL AND l.id IS NULL)""").fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_rejected_logs() -> int:
+    """Count active attendance rejections, including orphaned evidence."""
+    conn = _get_conn()
+    row = conn.execute("SELECT COUNT(*) FROM attendance_rejections WHERE released_at IS NULL").fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_retryable_logs() -> int:
+    """Count unsent attendance rows that the sync worker can currently upload."""
+    conn = _get_conn()
+    row = conn.execute("""SELECT COUNT(*) FROM attendance_log l WHERE l.synced = 0
+        AND NOT EXISTS (SELECT 1 FROM attendance_rejections r
+            WHERE r.log_id = l.id AND r.released_at IS NULL)""").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -762,7 +782,7 @@ def reject_attendance(log_id: int, reason: str) -> None:
 def list_attendance_rejections() -> list[dict]:
     conn = _get_conn()
     return [dict(row) for row in conn.execute("""SELECT r.*, l.synced, l.server_worker_id, l.timestamp
-        FROM attendance_rejections r JOIN attendance_log l ON l.id = r.log_id
+        FROM attendance_rejections r LEFT JOIN attendance_log l ON l.id = r.log_id
         WHERE r.released_at IS NULL ORDER BY r.id""")]
 
 
@@ -772,6 +792,13 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
         raise ValueError("A reason for retry is required")
     conn = _get_conn()
     with conn:
+        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id
+            FROM attendance_rejections r LEFT JOIN attendance_log l ON l.id = r.log_id
+            WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
+        if rejection is None:
+            raise ValueError(f"Active rejection {rejection_id} does not exist")
+        if rejection["existing_log_id"] is None:
+            raise ValueError(f"Attendance log {rejection['log_id']} is missing; restore the original evidence before retry")
         result = conn.execute("""UPDATE attendance_rejections
             SET released_at = datetime('now'), release_note = ?
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
