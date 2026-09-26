@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '@/components/Toast';
 
 type KioskReadinessStatus = 'online' | 'stale' | 'offline' | 'never_synced';
@@ -65,6 +65,43 @@ export default function KiosksPage() {
   const [kioskId, setKioskId] = useState('');
   const [type, setType] = useState<'entry' | 'exit'>('entry');
   const [location, setLocation] = useState('');
+  const [issuedCredential, setIssuedCredential] = useState<{ kioskId: string; value: string } | null>(null);
+  const [credentialBusy, setCredentialBusy] = useState<string | null>(null);
+  const credentialBusyRef = useRef(false);
+  const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
+
+  const fetchCredentialStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/kiosks', { cache: 'no-store' });
+      if (!response.ok) return;
+      const rows = await response.json();
+      if (Array.isArray(rows)) setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
+    } catch {
+      // Readiness remains available if the credential status request fails.
+    }
+  }, []);
+
+  const manageCredential = async (id: string, method: 'POST' | 'DELETE', kioskName?: string) => {
+    if (credentialBusyRef.current || issuedCredential) return;
+    if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${kioskName || id}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
+    credentialBusyRef.current = true;
+    setCredentialBusy(id);
+    try {
+      const response = await fetch('/api/kiosks/credentials', {
+        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...(method === 'DELETE' ? { confirmStopSync: true } : {}) }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Credential change failed');
+      if (method === 'POST') setIssuedCredential({ kioskId: body.kiosk_id, value: body.credential });
+      else toast('Kiosk credential revoked');
+      fetchCredentialStatus();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Credential change failed', 'error');
+    } finally {
+      credentialBusyRef.current = false;
+      setCredentialBusy(null);
+    }
+  };
 
   const fetchReadiness = useCallback(async () => {
     setLoading(true);
@@ -84,7 +121,8 @@ export default function KiosksPage() {
 
   useEffect(() => {
     fetchReadiness();
-  }, [fetchReadiness]);
+    fetchCredentialStatus();
+  }, [fetchReadiness, fetchCredentialStatus]);
 
   const counts = health?.kiosks.counts;
   const deviceIssueCount = useMemo(
@@ -128,6 +166,7 @@ export default function KiosksPage() {
       setType('entry');
       setShowForm(false);
       fetchReadiness();
+      fetchCredentialStatus();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to register kiosk', 'error');
     }
@@ -135,6 +174,14 @@ export default function KiosksPage() {
 
   return (
     <div className="animate-fade-in space-y-6 pb-24 md:pb-8">
+      {issuedCredential && (
+        <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
+          <p className="text-amber-200 font-semibold">Save this credential for {issuedCredential.kioskId}. It will only be shown once.</p>
+          <code className="block break-all select-all text-sm text-slate-100">{issuedCredential.value}</code>
+          <p className="text-xs text-slate-400">Set it as KIOSK_API_KEY on this Pi. The old shared key no longer works for this kiosk.</p>
+          <button type="button" className="btn-secondary" onClick={() => setIssuedCredential(null)}>Dismiss</button>
+        </div>
+      )}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <p className="section-label mb-2">Device Operations</p>
@@ -182,7 +229,7 @@ export default function KiosksPage() {
       <section className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-5">
         <h2 className="font-display font-semibold text-amber-200">Kiosk setup reminder</h2>
         <p className="text-sm text-amber-100/80 leading-6 mt-2">
-          Each Raspberry Pi kiosk must point at this portal URL and use a matching <code className="font-mono">KIOSK_API_KEY</code> in its environment. The secret key is never shown here; verify it in Render and on the Pi when sync is failing.
+          Each Raspberry Pi kiosk must point at this portal URL. For a kiosk with an issued device credential, set that credential as <code className="font-mono">KIOSK_API_KEY</code> on its Pi; it is shown only once and does not match the shared key in Render. A kiosk still marked Shared key migration uses the shared Render key until you issue its device credential.
         </p>
       </section>
 
@@ -242,6 +289,13 @@ export default function KiosksPage() {
                     </div>
                     <span className={`badge border ${statusStyles[kiosk.status]}`}>{statusLabels[kiosk.status]}</span>
                   </div>
+                  <div className="flex gap-2">
+                    <span className="badge border border-slate-500/30 text-slate-300">{credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
+                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
+                      onClick={() => manageCredential(kiosk.id, 'POST')}>Issue / rotate credential</button>
+                    <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
+                      onClick={() => manageCredential(kiosk.id, 'DELETE', kiosk.name)}>Revoke access</button>
+                  </div>
                   <div className="grid gap-3 sm:grid-cols-2 text-sm">
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className="text-xs text-slate-500">Location</p>
@@ -275,7 +329,7 @@ export default function KiosksPage() {
             </div>
           ) : (
             <div className="glass-card p-6 text-sm text-slate-400 leading-6">
-              No kiosks are registered yet. Add a kiosk record, then configure the Pi with the portal URL and matching <code className="font-mono">KIOSK_API_KEY</code> before launch.
+              No kiosks are registered yet. Add a kiosk record, then configure the Pi with the portal URL and an issued device credential as <code className="font-mono">KIOSK_API_KEY</code> before launch.
             </div>
           )}
         </section>

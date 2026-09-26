@@ -4,9 +4,11 @@ import { POST } from './route';
 import { hasValidKioskKey } from '@/lib/auth';
 import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from '@/lib/attendance-backlog';
 import { SecuredIngestError } from '@/lib/convex-ingest';
+import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 vi.mock('@/lib/auth', () => ({ hasValidKioskKey: vi.fn(() => true), unauthorizedApiResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }) }));
+vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn(), kioskClaims: (value: Record<string, unknown>) => ['kiosk_id', 'kioskId'].filter(key => Object.hasOwn(value, key)).map(key => value[key]), kioskEvidenceId: (identity: { kioskId: string }, record: Record<string, unknown>, batch?: Record<string, unknown>) => record.kiosk_id ?? record.kioskId ?? batch?.kiosk_id ?? batch?.kioskId ?? identity.kioskId }));
 vi.mock('@/lib/attendance-backlog', () => ({ AttendanceBacklogPendingError: class extends Error {}, ingestAttendanceBacklog: vi.fn() }));
-beforeEach(() => { vi.clearAllMocks(); vi.mocked(hasValidKioskKey).mockReturnValue(true); });
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(hasValidKioskKey).mockReturnValue(true); vi.mocked(authenticateKiosk).mockResolvedValue({ documentId: 'kiosk-document', kioskId: 'entry', aliases: ['entry'] }); });
 const request = (body: unknown) => new NextRequest('http://localhost/api/attendance/bulk', { method: 'POST', body: JSON.stringify(body) });
 const log = { worker_id: 'worker', action: 'clock_in', timestamp: '2026-09-01 06:00:00', idempotency_key: 'legacy-key', liveness_confirmed: 1, confidence: 1.0000000000000002 };
 it('preserves the old Pi wire format and returns full acknowledgement for 501 logs', async () => {
@@ -38,8 +40,16 @@ it('never returns success for a partially processed backlog', async () => {
 });
 
 it('rejects an unauthorized legacy request before ingest', async () => {
-  vi.mocked(hasValidKioskKey).mockReturnValue(false);
+  vi.mocked(authenticateKiosk).mockResolvedValue(null);
   expect((await POST(request({ logs: [log] }))).status).toBe(401);
+  expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
+});
+
+it('rejects a mismatched final record before forwarding any batch rows', async () => {
+  vi.mocked(authenticateKiosk).mockImplementation(async (_req, claims) =>
+    claims.includes('other') ? null : { documentId: 'kiosk-document', kioskId: 'entry', aliases: ['entry'] });
+  const response = await POST(request({ kiosk_id: 'entry', logs: [...Array(500).fill(log), { ...log, kiosk_id: 'other' }] }));
+  expect(response.status).toBe(401);
   expect(ingestAttendanceBacklog).not.toHaveBeenCalled();
 });
 

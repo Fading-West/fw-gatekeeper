@@ -10,6 +10,17 @@ async function requireAdmin(req: NextRequest) {
   return (await hasValidPortalSession(req, ['admin'])) ? null : unauthorizedApiResponse();
 }
 
+export async function GET(req: NextRequest) {
+  const unauthorized = await requireAdmin(req);
+  if (unauthorized) return unauthorized;
+  try {
+    return NextResponse.json(await convex.query(api.kiosks.list, {}));
+  } catch (error) {
+    console.error('Kiosks GET error:', error);
+    return NextResponse.json({ error: 'Failed to load kiosks' }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   const unauthorized = await requireAdmin(req);
   if (unauthorized) return unauthorized;

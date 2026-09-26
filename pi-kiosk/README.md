@@ -51,7 +51,7 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
-sudo KIOSK_API_KEY="replace-with-the-server-key" \
+sudo KIOSK_API_KEY="<credential issued for this kiosk>" \
   KIOSK_UI_KEY="$(openssl rand -hex 24)" \
   KIOSK_SUPERVISOR_PIN="<set-a-separate-supervisor-passcode>" \
   SERVER_URL=https://fw-gatekeeper.onrender.com \
@@ -107,7 +107,7 @@ All settings live in `config.py` with per-kiosk overrides in
 | `SYNC_INTERVAL` | `30` | Seconds between sync cycles |
 | `KIOSK_ID` / `KIOSK_NAME` | `kiosk-entry-1` / `Main Entry` | Kiosk identity |
 | `KIOSK_TYPE` | `entry` | `entry`, `exit`, or `auto` (toggles by last action) |
-| `KIOSK_API_KEY` (env or local) | none | **Required** shared secret for server sync; without it sync is disabled and records stay queued |
+| `KIOSK_API_KEY` (env or local) | none | **Required** device credential issued on the portal's Kiosk readiness page; registered kiosks may use the shared key until migrated |
 | `KIOSK_UI_KEY` (env or local) | none | **Required** Pi-local secret for camera feed, roster/status, and log routes |
 | `KIOSK_SUPERVISOR_PIN` (env or local) | none | **Required** separate passcode for manual attendance (5-minute session) |
 | `KIOSK_UI_HOST` (env or local) | `127.0.0.1` | Web UI bind address; keep loopback-only |
@@ -140,7 +140,7 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 |-------|-----|
 | "No camera available" | Check `ls /dev/video*` (USB) or `libcamera-hello` (Pi camera) |
 | "No enrolled workers found" | Enroll on the dashboard first; check WiFi for the initial sync |
-| "KIOSK_API_KEY is required" | Configure the server-matching key and restart `fw-gatekeeper-kiosk.service` |
+| "KIOSK_API_KEY is required" | Configure this kiosk's issued device credential, or the shared migration key on a registered kiosk that has not migrated, and restart `fw-gatekeeper-kiosk.service` |
 | "KIOSK_UI_KEY is required" | Rerun setup with a generated Pi-local UI key and restart the service |
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |

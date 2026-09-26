@@ -196,9 +196,16 @@ export default defineSchema({
       lastScanAt: v.optional(v.string()),
       reportedAt: v.string(),
     })),
+    credentialHash: v.optional(v.string()),
+    credentialIssuedAt: v.optional(v.string()),
+    credentialRevokedAt: v.optional(v.string()),
+    // Existing devices retain shared-key access until a credential is issued.
+    // Issuance permanently disables the shared key for that kiosk.
+    legacyDisabledAt: v.optional(v.string()),
     active: v.boolean(),
   }).index("by_active", ["active"])
-    .index("by_kiosk_id", ["kioskId"]),
+    .index("by_kiosk_id", ["kioskId"])
+    .index("by_credential_hash", ["credentialHash"]),
 
   // One row per (kiosk, condition) episode, written by the alerting cron in
   // convex/alerts.ts. A row is "open" while resolvedAt is unset; a fresh

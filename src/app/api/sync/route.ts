@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
-import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
+import { unauthorizedApiResponse } from '@/lib/auth';
+import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 import { fetchWorkersForSync, updateKioskLastSync, type KioskHealthReport } from '@/lib/convex-ingest';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 
@@ -31,10 +32,14 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
 }
 
 export async function GET(req: NextRequest) {
-  const isAuthorized = (await hasValidPortalSession(req, ['admin'])) || hasValidKioskKey(req);
-  if (!isAuthorized) return unauthorizedApiResponse();
+  const requestedId = req.nextUrl.searchParams.get('kiosk_id');
+  const admin = await hasValidPortalSession(req, ['admin']);
+  const identity = admin ? null : await authenticateKiosk(req, [requestedId]);
+  if (!admin && !identity) return unauthorizedApiResponse();
 
-  const kioskId = req.nextUrl.searchParams.get('kiosk_id');
+  // The credential lookup already resolved the exact row. A configured alias
+  // may collide with another legacy kiosk and must not be resolved again.
+  const kioskId = identity?.documentId || requestedId;
   const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
 
   if (!kioskId) return NextResponse.json({ error: 'kiosk_id required' }, { status: 400 });

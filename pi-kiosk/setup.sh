@@ -11,7 +11,7 @@
 #    KIOSK_NAME   Display name (default: FW Kiosk)
 #    KIOSK_TYPE   entry | exit (default: entry)
 #    SERVER_URL   Gatekeeper server (default: https://fw-gatekeeper.onrender.com)
-#    KIOSK_API_KEY Shared secret for kiosk API access (required in production)
+#    KIOSK_API_KEY Device credential issued for this kiosk, or the shared migration key
 #    KIOSK_UI_KEY  Local secret for protected kiosk web routes (required)
 #    KIOSK_SUPERVISOR_PIN  Supervisor-only passcode for manual attendance (required)
 #    ENABLE_LIVENESS  Set to 1 to download the 97MB dlib shape predictor used
@@ -49,7 +49,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ -z "$KIOSK_API_KEY" ]; then
-  echo "❌ KIOSK_API_KEY is required. Set it to the same value configured on the Gatekeeper server, then rerun setup."
+  echo "❌ KIOSK_API_KEY is required. Set this kiosk's issued device credential (or its shared migration key before credential issuance), then rerun setup."
   exit 1
 fi
 
