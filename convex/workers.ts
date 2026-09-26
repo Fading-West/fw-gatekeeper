@@ -454,13 +454,20 @@ const workerSyncResult = v.array(v.object({
 }));
 
 async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: boolean; cursor?: string }) {
-  const page = await ctx.db.query("workers").paginate({ cursor: args.cursor ?? null, numItems: 200 });
   const since = args.since;
-  const filtered = page.page.filter((w: any) => {
-    const updatedAt = w.updatedAt || w.enrolledAt;
-    return !since || (Boolean(updatedAt) && (args.inclusive ? updatedAt >= since : updatedAt > since));
-  });
-  const result = await Promise.all(filtered.map(async (w: any) => {
+  // Updated rows and older rows without updatedAt occupy separate index ranges.
+  // The phase prefix keeps their pagination cursors separate across HTTP calls.
+  const phase = since && args.cursor?.startsWith("l:") ? "legacy" : "updated";
+  if (since && args.cursor && !/^[ul]:/.test(args.cursor)) throw new Error("Invalid incremental roster cursor");
+  const cursor = since ? args.cursor?.slice(2) || null : args.cursor ?? null;
+  const query = !since ? ctx.db.query("workers") : phase === "updated"
+    ? ctx.db.query("workers").withIndex("by_updated_at_and_enrolled_at", (q: any) => args.inclusive
+      ? q.gte("updatedAt", since) : q.gt("updatedAt", since))
+    : ctx.db.query("workers").withIndex("by_updated_at_and_enrolled_at", (q: any) => args.inclusive
+      ? q.eq("updatedAt", undefined).gte("enrolledAt", since)
+      : q.eq("updatedAt", undefined).gt("enrolledAt", since));
+  const page = await query.paginate({ cursor, numItems: 200 });
+  const result = await Promise.all(page.page.map(async (w: any) => {
     let photoUrl: string | null = null;
     if (w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
@@ -483,7 +490,10 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
       active: w.active ? 1 : 0,
     };
   }));
-  return { workers: result, isDone: page.isDone, continueCursor: page.continueCursor };
+  if (!since) return { workers: result, isDone: page.isDone, continueCursor: page.continueCursor };
+  if (phase === "updated") return { workers: result, isDone: false,
+    continueCursor: page.isDone ? "l:" : `u:${page.continueCursor}` };
+  return { workers: result, isDone: page.isDone, continueCursor: `l:${page.continueCursor}` };
 }
 
 export const listForSyncFromHttp = internalQuery({

@@ -57,7 +57,8 @@ export default defineSchema({
     biometricsPurgedAt: v.optional(v.string()),
   })
     .index("by_active", ["active"])
-    .index("by_employee_id_and_active", ["employeeId", "active"]),
+    .index("by_employee_id_and_active", ["employeeId", "active"])
+    .index("by_updated_at_and_enrolled_at", ["updatedAt", "enrolledAt"]),
 
   // Append-only trail of privileged or privacy-relevant actions
   // (worker deactivation, biometric purge). Never edited or deleted.

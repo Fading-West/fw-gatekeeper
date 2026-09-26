@@ -331,6 +331,8 @@ const workerSyncRead = httpAction(async (ctx, request) => {
 });
 
 const rosterReceiptIssue = httpAction(async (ctx, request) => {
+  // This bearer key belongs only to the Next server. Public kiosk keys are
+  // authenticated at /api/sync before Next calls this privileged endpoint.
   if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
   const body = await readJsonBody(request);
   if (!body || typeof body.documentId !== 'string' || !body.documentId.trim()) {

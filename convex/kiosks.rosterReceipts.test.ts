@@ -52,6 +52,19 @@ it('rejects future, unknown, inactive, and wrong-device acknowledgements', async
   expect(invalid.status).toBe(400);
 });
 
+it('does not accept a kiosk device or migration key at the server-only receipt endpoints', async () => {
+  const { t, first } = await setup();
+  vi.stubEnv('CONVEX_INGEST_KEY', 'server-only-ingest-secret');
+  for (const path of ['/api/ingest/kiosks/roster-receipt/issue', '/api/ingest/kiosks/roster-receipt/ack']) {
+    for (const kioskKey of ['gkdev_device-secret', 'shared-migration-secret']) {
+      const response = await t.fetch(path, { method: 'POST', headers: { authorization: `Bearer ${kioskKey}` },
+        body: JSON.stringify({ documentId: first, receipt: 'forged' }) });
+      expect(response.status).toBe(401);
+    }
+  }
+  expect((await t.run(ctx => ctx.db.get(first)))?.rosterAppliedAt).toBeUndefined();
+});
+
 it('shows a purge pending until a later receipt is acknowledged, even with a recent heartbeat', async () => {
   const { t, first, adminId, admin } = await setup();
   const purgeAt = new Date().toISOString();
