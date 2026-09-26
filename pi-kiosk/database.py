@@ -314,6 +314,30 @@ def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
     return cursor.rowcount
 
 
+def _find_worker_update_row(conn, name: str, server_id: Optional[str], employee_id: str):
+    """Resolve the same row for photo retirement and the worker write."""
+    row = None
+    if server_id is not None:
+        row = conn.execute(
+            "SELECT id, server_id, employee_id, photo_paths FROM workers WHERE server_id = ?", (server_id,)
+        ).fetchone()
+    if row is not None:
+        return row
+    # Names are labels, not identity. Only adopt one compatible local-only
+    # row; a different server identity is never adopted by name.
+    matches = conn.execute(
+        "SELECT id, server_id, employee_id, photo_paths FROM workers "
+        "WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
+        (name,),
+    ).fetchall()
+    matches = [candidate for candidate in matches if not (
+        employee_id and candidate["employee_id"] and employee_id != candidate["employee_id"]
+    )]
+    if len(matches) > 1:
+        raise ValueError("Several local workers share this name; select a worker id.")
+    return matches[0] if matches else None
+
+
 def add_worker(
     name: str,
     encoding: np.ndarray,
@@ -337,23 +361,7 @@ def add_worker(
     enrolled_at = enrolled_at or datetime.now().isoformat(timespec="seconds")
     normalized_employee_id = employee_id.strip() if isinstance(employee_id, str) else ""
 
-    row = None
-    if server_id is not None:
-        row = conn.execute("SELECT id, server_id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
-    if row is None:
-        # Names are labels, not identity. Only adopt a single local-only row;
-        # a different server id must always receive its own local worker id.
-        matches = conn.execute(
-            "SELECT id, server_id, employee_id FROM workers WHERE name = ? COLLATE NOCASE AND (server_id IS NULL OR server_id = '')",
-            (normalized_name,),
-        ).fetchall()
-        matches = [candidate for candidate in matches if not (
-            normalized_employee_id and candidate["employee_id"]
-            and normalized_employee_id != candidate["employee_id"]
-        )]
-        if len(matches) > 1:
-            raise ValueError("Several local workers share this name; select a worker id.")
-        row = matches[0] if matches else None
+    row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
     stored_server_id = server_id
     if row:
         worker_id = int(row["id"])
@@ -441,16 +449,16 @@ def get_synced_server_ids() -> set[str]:
     )}
 
 
-def replaced_worker_photo_paths(server_id: str, keep_paths: list[str]) -> list[Path]:
+def replaced_worker_photo_paths(name: str, server_id: str, employee_id: Optional[str], keep_paths: list[str]) -> list[Path]:
     """Identify owned thumbnails to retire after replacement is durable."""
     conn = _get_conn()
-    row = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchone()
+    row = _find_worker_update_row(conn, name.strip(), server_id, employee_id.strip() if isinstance(employee_id, str) else "")
     photo_root = Path(config.PHOTO_DIR).resolve()
     keep = {Path(path).resolve() for path in keep_paths}
     owned = {photo_root / f"{server_id}.jpg"}
     if row is not None:
         owned.update(Path(path) for path in json.loads(row["photo_paths"] or "[]"))
-    others = conn.execute("SELECT photo_paths FROM workers WHERE server_id IS NULL OR server_id != ?", (server_id,))
+    others = conn.execute("SELECT photo_paths FROM workers WHERE id != ?", (row["id"] if row else -1,))
     referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
     retired = []
     for path in owned:

@@ -1,4 +1,5 @@
 """Roster receipts require durable apply and a live recognizer reload."""
+import json
 import os
 import unittest
 import tempfile
@@ -155,6 +156,65 @@ class RosterReceiptTests(unittest.TestCase):
             posted.assert_not_called()
             self.assertEqual(photo.read_bytes(), b'original photo')
             self.assertEqual(database.get_worker_by_name('Alex')['photo_paths'], [str(photo)])
+
+    def test_adopting_local_enrollment_retires_all_unshared_capture_photos(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            captures = [Path(tmp) / f'Alex-{index}.jpg' for index in (1, 2)]
+            shared = Path(tmp) / 'Shared.jpg'
+            for path in [*captures, shared]:
+                path.write_bytes(b'old capture')
+            local_id = database.add_worker('Alex', ENCODING, employee_id='E1',
+                                           photo_paths=[*(str(path) for path in captures), str(shared)])
+            database.add_worker('Taylor', ENCODING, server_id='other-server-id', photo_paths=[str(shared)])
+            database.set_sync_state('last_roster_applied_at', '2026-09-01T00:00:00Z')
+            row = {'id': SERVER_ID, 'name': 'Alex', 'employee_id': 'E1', 'active': True,
+                   'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid/new'}
+            response = roster([row], full=False)
+            response.content = b'new photo'
+            posted, _ = self.cycle(response, post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            adopted = database.get_worker_by_name('Alex')
+            self.assertEqual(adopted['id'], local_id)
+            self.assertEqual(adopted['server_id'], SERVER_ID)
+            self.assertTrue(Path(adopted['photo_paths'][0]).exists())
+            self.assertTrue(all(not path.exists() for path in captures))
+            self.assertTrue(shared.exists())
+            self.assertEqual(database.list_unreferenced_photo_files(), [])
+
+    def test_ambiguous_local_enrollment_does_not_retire_any_capture_photo(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            captures = [Path(tmp) / f'Alex-{index}.jpg' for index in (1, 2)]
+            for path in captures:
+                path.write_bytes(b'old capture')
+            database.add_worker('Alex', ENCODING, photo_paths=[str(captures[0])])
+            # SQLite permits duplicate local labels; insert the second row
+            # directly because add_worker intentionally refuses ambiguity.
+            conn = database._get_conn()
+            conn.execute(
+                "INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths) "
+                "SELECT name, employee_id, encoding_blob, enrolled_at, 1, ? FROM workers LIMIT 1",
+                (json.dumps([str(captures[1])]),),
+            )
+            conn.commit()
+            row = {'id': SERVER_ID, 'name': 'Alex', 'employee_id': '', 'active': True,
+                   'face_encoding': ENCODING.tolist(), 'photo_url': None}
+            posted, _ = self.cycle(roster([row]))
+            posted.assert_not_called()
+            self.assertTrue(all(path.exists() for path in captures))
+            self.assertEqual(database.get_synced_server_ids(), set())
+
+    def test_conflicting_employee_id_preserves_local_photo_and_blocks_ack(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            local_photo = Path(tmp) / 'Alex-Local.jpg'
+            local_photo.write_bytes(b'local capture')
+            local_id = database.add_worker('Alex', ENCODING, employee_id='E2', photo_paths=[str(local_photo)])
+            row = {'id': SERVER_ID, 'name': 'Alex', 'employee_id': 'E1', 'active': True,
+                   'face_encoding': ENCODING.tolist(), 'photo_url': None}
+            posted, _ = self.cycle(roster([row]))
+            posted.assert_not_called()
+            self.assertEqual(database.get_worker_by_id(local_id)['photo_paths'], [str(local_photo)])
+            self.assertTrue(local_photo.exists())
+            self.assertEqual(len(database.get_all_workers()), 2)
 
     def test_malformed_full_response_cannot_delete_roster_or_ack(self):
         database.add_worker('Alex', ENCODING, server_id=SERVER_ID)

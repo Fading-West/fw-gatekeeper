@@ -423,7 +423,9 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     raise ValueError(f"Worker photo download failed for {server_id}")
 
             try:
-                retired_photos = database.replaced_worker_photo_paths(str(server_id), [photo_path] if photo_path else [])
+                retired_photos = database.replaced_worker_photo_paths(
+                    name, str(server_id), employee_id, [photo_path] if photo_path else [],
+                )
                 database.record_photo_cleanup(retired_photos, "retired")
                 if staged_photo:
                     database.record_photo_cleanup([Path(photo_path)], "published")
