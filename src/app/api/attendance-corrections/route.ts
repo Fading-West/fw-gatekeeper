@@ -119,7 +119,8 @@ export async function PATCH(req: NextRequest) {
   if (!(await hasValidPortalSession(req, ['admin', 'enrollment']))) {
     return unauthorizedApiResponse();
   }
-  const body = await req.json().catch(() => ({}));
+  const parsed = await req.json().catch(() => ({}));
+  const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   const correctionId = optionalString(body.correction_id) || optionalString(body.correctionId);
   const requestId = body.request_id ?? body.requestId;
   const reason = optionalString(body.reason);
