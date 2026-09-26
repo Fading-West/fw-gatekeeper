@@ -133,8 +133,16 @@ export async function PATCH(req: NextRequest) {
     });
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to reverse correction';
-    const status = message.includes('already been reversed') || message.includes('different details') ? 409 : 400;
-    return NextResponse.json({ error: message }, { status });
+    if (error instanceof ConvexError && error.data?.code === 'INVALID_CORRECTION_REVERSAL') {
+      return NextResponse.json({ error: error.data.message }, { status: 400 });
+    }
+    if (error instanceof ConvexError && error.data?.code === 'CORRECTION_REVERSAL_CONFLICT') {
+      return NextResponse.json({ error: error.data.message }, { status: 409 });
+    }
+    if (error instanceof Error && (error.message.includes('ArgumentValidationError') || error.message.includes('Expected ID for table "attendanceCorrections"'))) {
+      return NextResponse.json({ error: 'Invalid correction ID.' }, { status: 400 });
+    }
+    console.error('Attendance correction reversal failed:', error);
+    return NextResponse.json({ error: 'Failed to reverse correction' }, { status: 500 });
   }
 }

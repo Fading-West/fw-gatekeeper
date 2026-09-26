@@ -202,22 +202,22 @@ export const reverse = mutation({
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const reason = normalizeText(args.reason);
-    if (!reason || reason.length > 1000) throw new ConvexError("Reversal reason must be 1 to 1,000 characters.");
-    if (!args.requestId.trim() || args.requestId.length > 200) throw new ConvexError("requestId must be a nonempty string of at most 200 characters.");
+    if (!reason || reason.length > 1000) throw new ConvexError({ code: "INVALID_CORRECTION_REVERSAL", message: "Reversal reason must be 1 to 1,000 characters." });
+    if (!args.requestId.trim() || args.requestId.length > 200) throw new ConvexError({ code: "INVALID_CORRECTION_REVERSAL", message: "requestId must be a nonempty string of at most 200 characters." });
 
     const existingRequest = await ctx.db.query("attendanceCorrectionReversals")
       .withIndex("by_requestId", (q) => q.eq("requestId", args.requestId)).unique();
     if (existingRequest) {
       if (existingRequest.correctionId !== args.correctionId || existingRequest.reason !== reason) {
-        throw new ConvexError("Reversal requestId was already used with different details.");
+        throw new ConvexError({ code: "CORRECTION_REVERSAL_CONFLICT", message: "Reversal requestId was already used with different details." });
       }
       return { id: existingRequest._id, createdAt: existingRequest.createdAt };
     }
     const correction = await ctx.db.get(args.correctionId);
-    if (!correction) throw new ConvexError("Correction not found.");
+    if (!correction) throw new ConvexError({ code: "INVALID_CORRECTION_REVERSAL", message: "Correction not found." });
     const existingReversal = await ctx.db.query("attendanceCorrectionReversals")
       .withIndex("by_correctionId", (q) => q.eq("correctionId", args.correctionId)).unique();
-    if (existingReversal) throw new ConvexError("Correction has already been reversed.");
+    if (existingReversal) throw new ConvexError({ code: "CORRECTION_REVERSAL_CONFLICT", message: "Correction has already been reversed." });
 
     const createdAt = new Date().toISOString();
     const id = await ctx.db.insert("attendanceCorrectionReversals", {

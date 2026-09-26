@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { ConvexError } from 'convex/values';
 import { beforeEach, expect, it, vi } from 'vitest';
 import convex from '@/lib/convex';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -38,4 +39,21 @@ it.each([{ request_id: '' }, { reason: ' ' }, { correction_id: '' }])('rejects i
   const response = await PATCH(request({ correction_id: 'correction-1', request_id: 'retry-1', reason: 'Wrong scan', ...change }));
   expect(response.status).toBe(400);
   expect(convex.mutation).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['INVALID_CORRECTION_REVERSAL', 400],
+  ['CORRECTION_REVERSAL_CONFLICT', 409],
+] as const)('maps known %s backend errors to %i', async (code, status) => {
+  vi.mocked(convex.mutation).mockRejectedValue(new ConvexError({ code, message: 'Known reversal error' }));
+  const response = await PATCH(request({ correction_id: 'correction-1', request_id: 'retry-1', reason: 'Wrong scan' }));
+  expect(response.status).toBe(status);
+  expect(await response.json()).toEqual({ error: 'Known reversal error' });
+});
+
+it('returns a safe 500 for transport failures', async () => {
+  vi.mocked(convex.mutation).mockRejectedValue(new Error('private connection string or backend detail'));
+  const response = await PATCH(request({ correction_id: 'correction-1', request_id: 'retry-1', reason: 'Wrong scan' }));
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ error: 'Failed to reverse correction' });
 });
