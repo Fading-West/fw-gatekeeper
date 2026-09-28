@@ -22,6 +22,7 @@ function getInitials(name: string) {
 export default function WorkersPage() {
   const { toast } = useToast();
   const [workers, setWorkers] = useState<Worker[]>([]);
+  const [kioskPurgeStatus, setKioskPurgeStatus] = useState<{ pending: number; unconfirmed: number } | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -62,6 +63,21 @@ export default function WorkersPage() {
   }, [currentRole, showInactive]);
 
   useEffect(() => { fetchWorkers(); }, [fetchWorkers]);
+
+  const fetchKioskPurgeStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/kiosks');
+      if (!res.ok) throw new Error('Kiosk status unavailable');
+      const kiosks = await res.json() as Array<{ purge_pending: boolean; roster_applied_at: string | null }>;
+      setKioskPurgeStatus({
+        pending: kiosks.filter(k => k.purge_pending).length,
+        unconfirmed: kiosks.filter(k => !k.roster_applied_at).length,
+      });
+    } catch {
+      setKioskPurgeStatus(null);
+    }
+  }, []);
+  useEffect(() => { if (currentRole === 'admin') void fetchKioskPurgeStatus(); }, [currentRole, fetchKioskPurgeStatus]);
 
   const resetEdit = () => {
     setEditId(null);
@@ -109,7 +125,7 @@ export default function WorkersPage() {
   const purgeBiometrics = async (w: Worker) => {
     const reason = window.prompt(
       `Permanently delete ${w.name}'s face template and enrollment photos?\n\n` +
-      'This also deactivates the worker; kiosks drop the cached template on their next successful sync. ' +
+      'This also deactivates the worker. Each kiosk must apply and acknowledge the purge; offline and legacy kiosks remain unconfirmed. ' +
       'This cannot be undone.\n\nEnter a reason (required):',
     );
     if (reason === null) return;
@@ -127,8 +143,9 @@ export default function WorkersPage() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.error || 'Failed to purge face data');
       }
-      toast(`${w.name}'s face data purged and worker deactivated`);
+      toast(`${w.name}'s cloud face data purged. Check kiosk acknowledgements.`);
       fetchWorkers();
+      fetchKioskPurgeStatus();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to purge face data', 'error');
     }
@@ -166,6 +183,12 @@ export default function WorkersPage() {
           <p className="text-sm text-slate-500 mt-1 font-mono">
             {workers.length} registered workers · {enrolledCount} face enrolled · {missingFaceCount} needs enrollment · {invalidFaceCount} invalid
           </p>
+          {canEdit && <p className="text-xs text-slate-400 mt-2">
+            {kioskPurgeStatus
+              ? `${kioskPurgeStatus.pending} kiosk${kioskPurgeStatus.pending === 1 ? '' : 's'} with pending purge; ${kioskPurgeStatus.unconfirmed} without a confirmed roster. `
+              : 'Kiosk purge status unavailable. '}
+            Check each device on the <Link href="/kiosks" className="text-gold underline">Kiosks page</Link>.
+          </p>}
           {!canEdit && (
             <p className="mt-2 flex items-center gap-2">
               <span className="badge border border-slate-400/15 bg-slate-400/5 text-[10px] text-slate-300">Review-only</span>

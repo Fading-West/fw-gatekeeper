@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { validateAttendanceEvent, type AttendanceEvent } from '../../convex/attendanceValidation';
-import { ingestAttendanceBacklog } from './attendance-backlog';
-import { getAttendanceReceiptStatus, ingestAttendanceBatch } from './convex-ingest';
-vi.mock('./convex-ingest', () => ({ getAttendanceReceiptStatus: vi.fn(), ingestAttendanceBatch: vi.fn() }));
+import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from './attendance-backlog';
+import { getAttendanceReceiptStatus, ingestAttendanceBatch, SecuredIngestError } from './convex-ingest';
+vi.mock('./convex-ingest', async importOriginal => ({
+  ...(await importOriginal<typeof import('./convex-ingest')>()),
+  getAttendanceReceiptStatus: vi.fn(), ingestAttendanceBatch: vi.fn(),
+}));
 const receipts = new Set<string>();
 const rows = new Set<string>();
 const digest = (events: unknown[]) => createHash('sha256').update(JSON.stringify(events)).digest('hex');
@@ -33,6 +36,21 @@ it('retries only missing chunks after a partial failure without duplicates', asy
   expect(await ingestAttendanceBacklog(events(1501))).toEqual({ synced: 500, acknowledged: 1501 });
   expect(ingestAttendanceBatch).toHaveBeenCalledTimes(1);
   expect(rows.size).toBe(1501);
+});
+it('propagates permanent validation from one chunk after all settled chunks finish', async () => {
+  const bad = new SecuredIngestError(400, 'INVALID_ATTENDANCE', 'workerId must identify an existing worker');
+  vi.mocked(ingestAttendanceBatch).mockImplementationOnce(commit).mockRejectedValueOnce(bad);
+  await expect(ingestAttendanceBacklog(events(501))).rejects.toBe(bad);
+  expect(rows.size).toBe(500);
+  vi.mocked(ingestAttendanceBatch).mockClear();
+  expect(await ingestAttendanceBacklog(events(501))).toEqual({ synced: 1, acknowledged: 501 });
+  expect(ingestAttendanceBatch).toHaveBeenCalledTimes(1);
+});
+it('prefers a transient failure when another chunk has permanent validation trouble', async () => {
+  vi.mocked(ingestAttendanceBatch)
+    .mockRejectedValueOnce(new SecuredIngestError(400, 'INVALID_ATTENDANCE', 'bad worker'))
+    .mockRejectedValueOnce(new SecuredIngestError(503));
+  await expect(ingestAttendanceBacklog(events(501))).rejects.toBeInstanceOf(AttendanceBacklogPendingError);
 });
 it('resumes a lost acknowledgement from its committed receipt', async () => {
   vi.mocked(ingestAttendanceBatch).mockImplementationOnce(async (chunk, checkpoint) => { await commit(chunk, checkpoint); throw new Error('lost response'); });

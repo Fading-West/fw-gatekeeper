@@ -37,3 +37,40 @@ describe("same-day schedules", () => {
     await t.mutation(api.schedules.remove, { id });
   });
 });
+
+describe("schedule fields", () => {
+  it.each(["", " \t "])("rejects blank name %j on create and update", async name => {
+    const t = await admin();
+    await expect(t.mutation(api.schedules.create, { ...valid, name })).rejects.toThrow("Schedule name");
+    const { id } = await t.mutation(api.schedules.create, valid);
+    await expect(t.mutation(api.schedules.update, { id, name })).rejects.toThrow("Schedule name");
+    expect((await t.query(api.schedules.list, {}))[0].name).toBe("Day");
+  });
+
+  it.each(["", "1,2", "{}", "null", "[]", "[1,1]", "[1,7]", "[-1]", "[1.5]", "[\"1\"]", "[true]"])("rejects malformed weekday JSON %j on create and update", async days => {
+    const t = await admin();
+    await expect(t.mutation(api.schedules.create, { ...valid, days })).rejects.toThrow("Schedule days");
+    const { id } = await t.mutation(api.schedules.create, valid);
+    await expect(t.mutation(api.schedules.update, { id, days })).rejects.toThrow("Schedule days");
+    expect((await t.query(api.schedules.list, {}))[0].days).toBe(valid.days);
+  });
+
+  it("rejects invalid Convex argument types before they reach storage", async () => {
+    const t = await admin();
+    await expect(t.mutation(api.schedules.create, { ...valid, days: [1] as unknown as string })).rejects.toThrow();
+    await expect(t.mutation(api.schedules.create, { ...valid, name: 42 as unknown as string })).rejects.toThrow();
+    const { id } = await t.mutation(api.schedules.create, valid);
+    await expect(t.mutation(api.schedules.update, { id, days: [1] as unknown as string })).rejects.toThrow();
+  });
+
+  it("validates the merged row and permits a legacy row to be repaired", async () => {
+    const t = await admin();
+    const id = await t.run(ctx => ctx.db.insert("schedules", {
+      ...valid, name: " ", days: "1,2", active: true, createdAt: new Date().toISOString(),
+    }));
+    await expect(t.mutation(api.schedules.update, { id, name: "Fixed" })).rejects.toThrow("Schedule days");
+    await expect(t.mutation(api.schedules.update, { id, days: "[1,2]" })).rejects.toThrow("Schedule name");
+    await t.mutation(api.schedules.update, { id, name: " Fixed ", days: "[1,2]" });
+    expect((await t.query(api.schedules.list, {}))[0]).toMatchObject({ name: "Fixed", days: "[1,2]" });
+  });
+});

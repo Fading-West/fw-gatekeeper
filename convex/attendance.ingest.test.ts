@@ -81,7 +81,12 @@ describe('attendance ingestion evidence integrity', () => {
     vi.stubEnv('CONVEX_INGEST_KEY', 'test-ingest-key');
     const headers = { authorization: 'Bearer test-ingest-key', 'content-type': 'application/json' };
     expect((await t.fetch('/api/ingest/attendance/bulk', { method: 'POST', body: JSON.stringify({ events: [event] }) })).status).toBe(401);
-    expect((await t.fetch('/api/ingest/attendance/bulk', { method: 'POST', headers, body: JSON.stringify({ events: [{ ...event, timestamp: 'bad' }] }) })).status).toBe(400);
+    const invalid = await t.fetch('/api/ingest/attendance/bulk', { method: 'POST', headers, body: JSON.stringify({ events: [{ ...event, timestamp: 'bad' }] }) });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ code: 'INVALID_ATTENDANCE' });
+    const unknownWorker = await t.fetch('/api/ingest/attendance/bulk', { method: 'POST', headers, body: JSON.stringify({ events: [{ ...event, workerId: 'missing-worker' }] }) });
+    expect(unknownWorker.status).toBe(400);
+    expect(await unknownWorker.json()).toMatchObject({ code: 'INVALID_ATTENDANCE', error: 'workerId must identify an existing worker' });
     const valid = await t.fetch('/api/ingest/attendance/bulk', { method: 'POST', headers, body: JSON.stringify({ events: [event] }) });
     expect(valid.status).toBe(200);
     expect(await valid.json()).toEqual({ synced: 1, acknowledged: 1 });
