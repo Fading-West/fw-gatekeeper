@@ -5,16 +5,50 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # React, DOM, and the test renderer must migrate together with their types.
+      react:
+        patterns:
+          - react
+          - react-dom
+          - react-test-renderer
+          - "@types/react"
+          - "@types/react-dom"
+          - "@types/react-test-renderer"
+    ignore:
+      # Revisit when eslint-config-next's React plugin supports ESLint 10.
+      - dependency-name: eslint
+        versions: [">=10.0.0 <11.0.0"]
+      # Revisit when typescript-eslint supports TypeScript 7.
+      - dependency-name: typescript
+        versions: [">=7.0.0 <8.0.0"]
   - package-ecosystem: pip
     directory: /face-service
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      # Native runtime migration must preserve face-service/kiosk NumPy parity.
+      - dependency-name: numpy
+        versions: [">=2.0.0,<3.0.0"]
+      # OpenCV 5 requires NumPy 2; keep the verified Haar-cascade stack for now.
+      - dependency-name: opencv-python-headless
+        versions: [">=5.0.0,<6.0.0"]
   - package-ecosystem: pip
     directory: /pi-kiosk
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      # Bookworm's native camera stack and face service still require NumPy 1.x.
+      - dependency-name: numpy
+        versions: [">=2.0.0,<3.0.0"]
+      - dependency-name: opencv-python-headless
+        versions: [">=5.0.0,<6.0.0"]
+      # setuptools 82 removed pkg_resources, imported by face_recognition_models.
+      # Remove this exclusion when that model package is migrated or replaced.
+      - dependency-name: setuptools
+        versions: [">=82.0.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
