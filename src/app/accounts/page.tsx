@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useAction, useQuery } from 'convex/react';
+import { useAction, useMutation, useQuery } from 'convex/react';
 import { api } from '../../../convex/_generated/api';
 import { useToast } from '@/components/Toast';
 
@@ -69,12 +69,15 @@ export default function AccountsPage() {
   const members = useQuery(api.portalMembers.list, isAdmin ? {} : 'skip');
   const createPortalAccount = useAction(api.portalMembers.createPortalAccount);
   const resetPortalAccountPassword = useAction(api.portalMembers.resetPortalAccountPassword);
+  const updateRole = useMutation(api.portalMembers.setRole);
+  const setActive = useMutation(api.portalMembers.setActive);
 
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<PortalRole>('enrollment');
   const [password, setPassword] = useState(() => generatePassword());
   const [submitting, setSubmitting] = useState(false);
   const [createdAccount, setCreatedAccount] = useState<CreatedAccount | null>(null);
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
 
   const sortedMembers = useMemo(() => [...(members ?? [])], [members]);
   const normalizedEmail = email.trim().toLowerCase();
@@ -95,7 +98,7 @@ export default function AccountsPage() {
     }
     if (existingMember) {
       const confirmed = window.confirm(
-        `Reset the password for ${normalizedEmail} and update their role to ${role}? This will sign out any existing sessions for that user.`
+        `Reset the password for ${normalizedEmail}? This will sign out any existing sessions for that user.`
       );
       if (!confirmed) {
         return;
@@ -106,7 +109,7 @@ export default function AccountsPage() {
     setCreatedAccount(null);
     try {
       const result = existingMember
-        ? await resetPortalAccountPassword({ email: normalizedEmail, password, role })
+        ? await resetPortalAccountPassword({ email: normalizedEmail, password, role: existingMember.role })
         : await createPortalAccount({ email: normalizedEmail, password, role });
       setCreatedAccount({ email: result.email, password, role: result.role });
       setEmail('');
@@ -126,6 +129,19 @@ export default function AccountsPage() {
     const text = `FW Gatekeeper login\nhttps://fw-gatekeeper.onrender.com/login\n\nEmail: ${createdAccount.email}\nInitial password: ${createdAccount.password}`;
     await navigator.clipboard.writeText(text);
     toast('Credentials copied');
+  }
+
+  async function updateMember(userId: typeof sortedMembers[number]['userId'], change: { role: PortalRole } | { active: boolean }) {
+    setUpdatingUserId(userId);
+    try {
+      if ('role' in change) await updateRole({ userId, role: change.role });
+      else await setActive({ userId, active: change.active });
+      toast('Account updated');
+    } catch (error) {
+      toast(getActionErrorMessage(error), 'error');
+    } finally {
+      setUpdatingUserId(null);
+    }
   }
 
   if (currentMember === undefined || (isAdmin && members === undefined)) {
@@ -159,7 +175,7 @@ export default function AccountsPage() {
             Account <span className="text-gold">Management</span>
           </h1>
           <p className="text-sm text-slate-500 mt-1 font-mono">
-            Create named portal logins for Fading West users
+            Create and manage named portal logins for Fading West users
           </p>
         </div>
       </div>
@@ -183,15 +199,16 @@ export default function AccountsPage() {
             <div>
               <label className="section-label mb-1.5 block">Role</label>
               <select
-                value={role}
+                value={existingMember?.role ?? role}
                 onChange={(event) => setRole(event.target.value as PortalRole)}
+                disabled={Boolean(existingMember)}
                 className="input-field"
               >
                 <option value="enrollment">Enrollment</option>
                 <option value="viewer">Viewer</option>
                 <option value="admin">Admin</option>
               </select>
-              <p className="text-xs text-slate-500 mt-2 leading-5">{roleDescriptions[role]}</p>
+              <p className="text-xs text-slate-500 mt-2 leading-5">{roleDescriptions[existingMember?.role ?? role]}</p>
             </div>
 
             <div>
@@ -215,7 +232,7 @@ export default function AccountsPage() {
 
             {existingMember && (
               <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-3 text-sm text-amber-200 leading-6">
-                This email already has an account. Submitting will reset the password and update the role instead of creating a duplicate.
+                This email already has an account. Submitting will reset the password. Use the role control below to change access. A disabled account will remain disabled.
               </div>
             )}
 
@@ -225,7 +242,7 @@ export default function AccountsPage() {
               disabled={submitting}
               className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {submitting ? (existingMember ? 'Updating…' : 'Creating…') : existingMember ? 'Reset Password / Update Role' : 'Create Account'}
+              {submitting ? (existingMember ? 'Resetting…' : 'Creating…') : existingMember ? 'Reset Password' : 'Create Account'}
             </button>
           </div>
         </div>
@@ -271,11 +288,35 @@ export default function AccountsPage() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="font-display font-medium text-sm text-slate-200 truncate">{member.email}</div>
-                <div className="text-xs font-mono text-slate-500">Role: {member.role}</div>
+                <label className="text-xs text-slate-400 flex items-center gap-2 mt-1">
+                  Role
+                  <select
+                    aria-label={`Role for ${member.email}`}
+                    value={member.role}
+                    disabled={updatingUserId !== null}
+                    onChange={(event) => void updateMember(member.userId, { role: event.target.value as PortalRole })}
+                    className="rounded border border-navy-600 bg-navy-900 px-2 py-1 text-slate-100"
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="enrollment">Enrollment</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </label>
               </div>
               <span className={`text-xs font-mono px-2.5 py-1 rounded-full border ${member.active ? 'text-emerald-300 border-emerald-400/20 bg-emerald-400/5' : 'text-slate-500 border-slate-500/20 bg-slate-500/5'}`}>
                 {member.active ? 'Active' : 'Inactive'}
               </span>
+              <button
+                type="button"
+                disabled={updatingUserId !== null}
+                onClick={() => {
+                  if (member.active && !window.confirm(`Disable ${member.email}? All active sessions will be revoked.`)) return;
+                  void updateMember(member.userId, { active: !member.active });
+                }}
+                className="btn-secondary text-xs disabled:opacity-60"
+              >
+                {member.active ? 'Disable' : 'Reactivate'}
+              </button>
             </div>
           ))}
         </div>

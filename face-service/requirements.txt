@@ -1,6 +1,11 @@
-fastapi
-uvicorn[standard]
-numpy
-Pillow
+# Direct dependency inputs for CPython 3.11 on Linux x86_64.
+# Production installs use requirements.lock, including transitive versions and hashes.
+# Regenerate with scripts/lock-python-dependencies.sh from the repository root.
+# Keep numpy aligned with the kiosk; the OS/base image is maintained separately.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+numpy==1.26.4
+Pillow==12.3.0
 opencv-python-headless==4.11.0.86
-onnxruntime
+onnxruntime==1.29.0

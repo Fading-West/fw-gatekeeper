@@ -41,7 +41,8 @@ assert.match(attempts, /by_source_attempt_id/, 'Bulk ingest should support sourc
 assert.match(attempts, /timestampBelongsToFactoryLocalDate\(attempt\.timestamp,\s*args\.date\)/, 'Exact recognition attempt lookups should stay scoped to the requested factory day.');
 
 assert.match(auth, /\/api\/recognition-attempts\/bulk/, 'Kiosk auth allow-list must include recognition attempt bulk upload.');
-assert.match(bulkRoute, /hasValidKioskKey/, 'Bulk recognition attempt upload must require a valid kiosk key.');
+assert.match(bulkRoute, /await authenticateKiosk\(req, claims\)/, 'Bulk recognition upload must authenticate the device and every kiosk claim.');
+assert.match(bulkRoute, /if \(!identity\) return unauthorizedApiResponse\(\)/, 'Unverified devices must be rejected before ingestion.');
 assert.match(bulkRoute, /ingestRecognitionAttemptBatch/, 'Bulk recognition attempt API must use secured Convex HTTP ingest.');
 assert.doesNotMatch(bulkRoute, /convex\.mutation/, 'Bulk recognition attempt API must not call a public Convex mutation.');
 assert.match(apiRoute, /recognitionAttempts\.listByDate/, 'Recognition attempt API must call the Convex listByDate query.');

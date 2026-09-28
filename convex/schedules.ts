@@ -1,6 +1,21 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
+
+import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { isValidScheduleName, parseScheduleDays, SCHEDULE_DAYS_ERROR, SCHEDULE_NAME_ERROR } from "./scheduleValidation";
+
+function validateTimes(start: string, end: string) {
+  if (!isSupportedScheduleTimeRange(start, end)) {
+    throw new ConvexError({ code: "INVALID_SCHEDULE_TIMES", message: SCHEDULE_TIME_ERROR });
+  }
+}
+
+function validateSchedule(name: string, days: string, start: string, end: string) {
+  if (!isValidScheduleName(name)) throw new ConvexError({ code: "INVALID_SCHEDULE", message: SCHEDULE_NAME_ERROR });
+  if (!parseScheduleDays(days)) throw new ConvexError({ code: "INVALID_SCHEDULE", message: SCHEDULE_DAYS_ERROR });
+  validateTimes(start, end);
+}
 
 const scheduleResult = v.object({
   id: v.id("schedules"),
@@ -51,9 +66,10 @@ export const create = mutation({
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin"]);
 
+    validateSchedule(args.name, args.days, args.startTime, args.endTime);
     const id = await ctx.db.insert("schedules", {
-      name: args.name,
-      days: args.days,
+      name: args.name.trim(),
+      days: JSON.stringify(parseScheduleDays(args.days)),
       startTime: args.startTime,
       endTime: args.endTime,
       department: args.department,
@@ -71,16 +87,20 @@ export const update = mutation({
     days: v.optional(v.string()),
     startTime: v.optional(v.string()),
     endTime: v.optional(v.string()),
-    department: v.optional(v.string()),
+    department: v.optional(v.union(v.string(), v.null())),
   },
   returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin"]);
 
     const { id, ...fields } = args;
+    const existing = await ctx.db.get(id);
+    if (!existing) throw new Error("Schedule not found");
+    validateSchedule(fields.name ?? existing.name, fields.days ?? existing.days,
+      fields.startTime ?? existing.startTime, fields.endTime ?? existing.endTime);
     const updates: Record<string, unknown> = {};
-    if (fields.name !== undefined) updates.name = fields.name;
-    if (fields.days !== undefined) updates.days = fields.days;
+    if (fields.name !== undefined) updates.name = fields.name.trim();
+    if (fields.days !== undefined) updates.days = JSON.stringify(parseScheduleDays(fields.days));
     if (fields.startTime !== undefined) updates.startTime = fields.startTime;
     if (fields.endTime !== undefined) updates.endTime = fields.endTime;
     if (fields.department !== undefined) updates.department = fields.department || undefined;

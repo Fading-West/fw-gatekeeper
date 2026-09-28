@@ -1,11 +1,13 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
+import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 import { createLocalIsoTimestamp, getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useSelectedData } from '@/hooks/useSelectedData';
 import {
   AttendanceCorrectionAction,
   ShiftException,
@@ -185,19 +187,17 @@ function ExceptionsPageContent() {
   const queryIntent = searchParams.get('intent') || '';
   const currentRole = usePortalRole();
   const [date, setDate] = useState(queryDate);
-  const [payload, setPayload] = useState<ShiftExceptionsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [department, setDepartment] = useState(queryDepartment);
   const [type, setType] = useState(queryType);
   const [severity, setSeverity] = useState<ShiftExceptionSeverity | 'all'>(querySeverity);
   const [status, setStatus] = useState<ShiftExceptionStatus | 'all'>(queryStatus);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
-  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [correctionDraft, setCorrectionDraft] = useState<CorrectionDraft | null>(null);
   const [handledIntentKey, setHandledIntentKey] = useState('');
   const [savingCorrection, setSavingCorrection] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setIsPending] = useState(false);
+  const reviewPendingRef = useRef(false);
+  const correctionPendingRef = useRef(false);
   const canOperate = canOperateExceptions(currentRole);
   const correctionModalRef = useRef<HTMLElement | null>(null);
   const correctionTriggerRef = useRef<HTMLElement | null>(null);
@@ -211,25 +211,22 @@ function ExceptionsPageContent() {
     setStatus(queryStatus);
   }, [queryDate, queryDepartment, querySeverity, queryStatus, queryType]);
 
-  const fetchExceptions = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetch(`/api/shift-exceptions?date=${date}`, { cache: 'no-store' });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || 'Failed to load exceptions');
-      setPayload(body);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load exceptions');
-      setPayload(null);
-    } finally {
-      setLoading(false);
-    }
+  const loadExceptions = useCallback(async (signal: AbortSignal): Promise<ShiftExceptionsResponse> => {
+    const res = await fetch(`/api/shift-exceptions?date=${date}`, { cache: 'no-store', signal });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error || 'Failed to load exceptions');
+    if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    return body;
   }, [date]);
+  const { data: payload, loading, error, refresh: fetchExceptions } = useSelectedData(date, loadExceptions);
+  const dataReady = Boolean(payload && !loading && !error);
+
 
   useEffect(() => {
-    fetchExceptions();
-  }, [fetchExceptions]);
+    setCorrectionDraft(null);
+    setNoteDrafts({});
+    setHandledIntentKey('');
+  }, [date]);
 
   const exceptions = payload?.exceptions ?? [];
   const departments = useMemo(() => {
@@ -256,8 +253,10 @@ function ExceptionsPageContent() {
       toast('Only admin or enrollment roles can update exception reviews.', 'error');
       return;
     }
-    setPendingKey(exception.key);
-    startTransition(async () => {
+    if (!dataReady || exception.date !== date || reviewPendingRef.current || correctionPendingRef.current) return;
+    reviewPendingRef.current = true;
+    setIsPending(true);
+    void (async () => {
       try {
         const res = await fetch('/api/shift-exceptions', {
           method: 'PATCH',
@@ -277,12 +276,14 @@ function ExceptionsPageContent() {
       } catch (err) {
         toast(err instanceof Error ? err.message : 'Failed to update exception', 'error');
       } finally {
-        setPendingKey(null);
+        reviewPendingRef.current = false;
+        setIsPending(false);
       }
-    });
+    })();
   }
 
   function openCorrection(exception: ShiftException) {
+    if (!dataReady || exception.date !== date || reviewPendingRef.current) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can correct attendance.', 'error');
       return;
@@ -379,6 +380,7 @@ function ExceptionsPageContent() {
   }, [filtered, queryExceptionKey]);
 
   async function submitCorrection() {
+    if (!dataReady || correctionPendingRef.current || correctionDraft?.exception.date !== date) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can save attendance corrections.', 'error');
       return;
@@ -401,35 +403,41 @@ function ExceptionsPageContent() {
       return;
     }
 
+    const request = {
+      date,
+      worker_id: correctionDraft.exception.worker_id,
+      action: correctionDraft.action,
+      corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
+      original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
+      related_exception_key: correctionDraft.sourceExceptionKey,
+      reason: correctionDraft.reason.trim(),
+      supervisor_name: correctionDraft.supervisorName.trim(),
+    };
+
+    correctionPendingRef.current = true;
     setSavingCorrection(true);
     try {
       const res = await fetch('/api/attendance-corrections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          date,
-          worker_id: correctionDraft.exception.worker_id,
-          action: correctionDraft.action,
-          corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
-          original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
-          related_exception_key: correctionDraft.sourceExceptionKey,
-          reason: correctionDraft.reason,
-          supervisor_name: correctionDraft.supervisorName,
-        }),
+        body: JSON.stringify({ ...request, request_id: correctionRequestId(request) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || 'Failed to save correction');
+      acknowledgeCorrectionRequest(request);
       toast('Attendance correction saved');
       setCorrectionDraft(null);
       await fetchExceptions();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to save correction', 'error');
     } finally {
+      correctionPendingRef.current = false;
       setSavingCorrection(false);
     }
   }
 
   function exportCsv() {
+    if (!dataReady) return;
     const blob = new Blob([csvFor(filtered)], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -454,10 +462,10 @@ function ExceptionsPageContent() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <button type="button" onClick={fetchExceptions} className="btn-secondary" disabled={loading}>
+          <button type="button" onClick={fetchExceptions} className="btn-secondary" disabled={loading || isPending || savingCorrection}>
             {loading ? 'Refreshing...' : 'Refresh'}
           </button>
-          <button type="button" onClick={exportCsv} className="btn-primary" disabled={filtered.length === 0}>
+          <button type="button" onClick={exportCsv} className="btn-primary" disabled={!dataReady || filtered.length === 0}>
             Export CSV
           </button>
         </div>
@@ -482,7 +490,7 @@ function ExceptionsPageContent() {
         <div className="grid gap-3 md:grid-cols-5">
           <label className="space-y-1.5">
             <span className="section-label block">Date</span>
-            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
+            <input type="date" disabled={isPending || savingCorrection} value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
           </label>
           <label className="space-y-1.5">
             <span className="section-label block">Department</span>
@@ -569,7 +577,7 @@ function ExceptionsPageContent() {
               </thead>
               <tbody className="divide-y divide-navy-600/35">
                 {filtered.map((exception) => {
-                  const controlsDisabled = isPending && pendingKey === exception.key;
+                  const controlsDisabled = !dataReady || isPending || savingCorrection;
                   const targeted = queryExceptionKey === exception.key;
                   const resolution = exception.suggested_resolution;
                   return (

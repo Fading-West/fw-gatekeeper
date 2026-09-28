@@ -118,7 +118,7 @@ export function getFactoryLocalDateKey(
     return null;
   }
 
-  const trimmed = timestamp.trim();
+  const trimmed = timestamp.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T");
   if (ABSOLUTE_TIMESTAMP_RE.test(trimmed)) {
     return getDateKeyFromAbsoluteTimestamp(trimmed, options);
   }
@@ -135,7 +135,7 @@ export function getFactoryLocalTimestamp(
     return null;
   }
 
-  const trimmed = timestamp.trim();
+  const trimmed = timestamp.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T");
   if (ABSOLUTE_TIMESTAMP_RE.test(trimmed)) {
     return getTimestampFromAbsoluteTimestamp(trimmed, options);
   }

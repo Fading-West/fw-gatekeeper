@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
   const unauthorized = await requireAdmin(req);
   if (unauthorized) return unauthorized;
 
-  const workers = await convex.query(api.workers.list, { includeEncodings: false });
+  const workers = await convex.query(api.workers.list, { includeEncodings: false, active: req.nextUrl.searchParams.get('active') !== 'false' });
   return NextResponse.json(workers.map((worker: any) => ({
     id: worker.id,
     name: worker.name,

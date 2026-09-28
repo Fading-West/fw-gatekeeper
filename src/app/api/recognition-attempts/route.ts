@@ -90,7 +90,7 @@ function summarize(attempts: RecognitionAttempt[]): RecognitionAttemptSummary {
       (attempt) => attempt.decision.startsWith('accepted') && typeof attempt.margin === 'number' && attempt.margin <= LOW_MARGIN_THRESHOLD,
     ).length,
     median_score: median(scores),
-    review_backlog: attempts.filter((attempt) => attempt.review_status === 'unreviewed' || attempt.decision === 'near_miss').length,
+    review_backlog: attempts.filter((attempt) => attempt.review_status === 'unreviewed').length,
     total: attempts.length,
   };
 }
@@ -157,6 +157,9 @@ export async function GET(req: NextRequest) {
       kioskId: optionalString(searchParams.get('kiosk_id')),
       reviewed: attemptId ? undefined : reviewStatus === 'unreviewed' ? false : reviewStatus && reviewStatus !== 'all' ? true : undefined,
       limit: attemptId ? 1000 : Number(searchParams.get('limit') || 100),
+      decision: attemptId ? undefined : optionalString(searchParams.get('decision')),
+      confidenceBand: attemptId ? undefined : optionalString(searchParams.get('confidence_band')),
+      reviewStatus: attemptId ? undefined : reviewStatus,
     });
     const targetAttempt = attemptId
       ? await convex.query((api as any).recognitionAttempts.getById, { id: attemptId, date })

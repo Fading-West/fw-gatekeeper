@@ -4,7 +4,10 @@ import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
 import { ingestAttendanceEvent } from '@/lib/convex-ingest';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
-import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
+import { unauthorizedApiResponse } from '@/lib/auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
+import { ConvexError } from 'convex/values';
+import { validateAttendanceEvent } from '../../../../convex/attendanceValidation';
 
 export async function GET(req: NextRequest) {
   try {
@@ -27,29 +30,31 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  // Defense in depth: kiosk credential is checked here, not only in middleware.
-  if (!hasValidKioskKey(req)) {
-    return unauthorizedApiResponse();
-  }
-
   try {
-    const body = await req.json().catch(() => ({}));
-    const { worker_id, event_type, type, kiosk_id, timestamp } = body;
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
+    const identity = await authenticateKiosk(req, kioskClaims(body));
+    if (!identity) return unauthorizedApiResponse();
+    const { worker_id, event_type, type, timestamp } = body;
     const resolvedType = event_type || type;
 
     if (!worker_id || !resolvedType) {
       return NextResponse.json({ error: 'worker_id and event_type (or type) required' }, { status: 400 });
     }
 
-    const result = await ingestAttendanceEvent({
+    const validated = validateAttendanceEvent({
       workerId: worker_id,
       eventType: resolvedType,
-      kioskId: kiosk_id || undefined,
-      timestamp: timestamp || undefined,
+      kioskId: kioskEvidenceId(identity, body),
+      timestamp: timestamp ?? new Date().toISOString(),
+      idempotencyKey: body.idempotency_key ?? body.idempotencyKey,
+      note: body.note,
     });
+    const result = await ingestAttendanceEvent({ ...validated, timestamp: timestamp ?? undefined });
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof ConvexError) return NextResponse.json({ error: error.data.message }, { status: 400 });
     console.error('Attendance POST error:', error);
     return NextResponse.json({ error: 'Failed to record attendance' }, { status: 500 });
   }
