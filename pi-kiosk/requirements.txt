@@ -5,7 +5,7 @@
 # Never add picamera2 here: pip must not replace the OS camera stack.
 # numpy must remain <2 and match the face service.
 numpy==1.26.4
-scipy==1.17.1
+scipy==1.18.1
 Pillow==12.3.0
 requests==2.34.2
 flask==3.1.3
