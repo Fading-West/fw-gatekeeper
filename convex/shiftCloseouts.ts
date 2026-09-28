@@ -263,7 +263,7 @@ function buildCloseoutDraft(input: {
       "corrections_applied",
       "Corrections applied",
       input.summary.attendance_corrections
-        ? `${plural(input.summary.attendance_corrections, "audited attendance correction")} are included in effective attendance for this date; the raw kiosk evidence remains preserved as source history.`
+        ? `${plural(input.summary.attendance_corrections, "audited attendance correction")} are recorded for this date; reversals are reflected in effective attendance, and raw kiosk evidence remains preserved as source history.`
         : "No audited attendance corrections are recorded for this date; the closeout is based on kiosk and schedule evidence only.",
       [
         {

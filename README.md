@@ -155,12 +155,15 @@ ssh pi@192.168.1.XXX
 
 ## Step 3: Set Security Secrets
 
-Before bringing kiosks online, configure the shared secrets used for dashboard auth and kiosk sync:
+Before bringing kiosks online, configure server secrets and issue each kiosk its own credential:
 
 1. In Render (`fw-gatekeeper` → **Environment**), set:
    - `KIOSK_API_KEY` to a long random shared secret
    - `CONVEX_INGEST_KEY` to a long random secret, then set the **same** value on the Convex deployment with `npx convex env set CONVEX_INGEST_KEY <value>`
-2. Use the **same** `KIOSK_API_KEY` value on every Pi kiosk
+2. Register each kiosk in the portal before syncing it. Existing registered kiosks may keep using the shared `KIOSK_API_KEY` during migration.
+3. In **Kiosk readiness**, select **Issue / rotate credential** for one kiosk. Save the displayed credential immediately; the portal shows it only once. Pass that kiosk's credential as `KIOSK_API_KEY` when running its setup script. Repeat one kiosk at a time. For an already installed Pi, set the credential in `config_local.py` and restart its service.
+
+Issuing a device credential permanently disables shared-key access for that kiosk. Rotating invalidates the previous device credential immediately. Revoking disables the current credential without restoring shared-key access. A revoked kiosk needs a new credential issued by an administrator. Keep the server's shared `KIOSK_API_KEY` configured until all registered kiosks have migrated, then remove it. Unknown and inactive kiosks cannot sync with either key.
 
 See `.env.example` for every variable, grouped by where it is set (Render, Convex, face service, kiosk).
 
@@ -168,35 +171,35 @@ See `.env.example` for every variable, grouped by where it is set (Render, Conve
 
 ## Step 4: Run the Setup Script
 
-Once you have a terminal open (either on the Pi desktop or via SSH), run these commands.
+Once you have a terminal open (either on the Pi desktop or via SSH), run these commands. Replace the `KIOSK_API_KEY` placeholder with the credential issued for that specific kiosk. Choose a separate local UI key and supervisor passcode. The setup script writes all three to `config_local.py`; do not replace the device credential with the server's shared migration key.
 
 For the **first kiosk** (Main Entry):
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
-sudo KIOSK_ID=kiosk-entry-1 KIOSK_NAME="Main Entry" KIOSK_TYPE=entry bash setup.sh
+sudo KIOSK_API_KEY="<issued credential for Main Entry>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-entry-1 KIOSK_NAME="Main Entry" KIOSK_TYPE=entry bash setup.sh
 ```
 
 For the **second kiosk** (Side Entry):
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
-sudo KIOSK_ID=kiosk-entry-2 KIOSK_NAME="Side Entry" KIOSK_TYPE=entry bash setup.sh
+sudo KIOSK_API_KEY="<issued credential for Side Entry>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-entry-2 KIOSK_NAME="Side Entry" KIOSK_TYPE=entry bash setup.sh
 ```
 
 For **exit kiosks**:
 
 ```bash
-sudo KIOSK_ID=kiosk-exit-1 KIOSK_NAME="Main Exit" KIOSK_TYPE=exit bash setup.sh
-sudo KIOSK_ID=kiosk-exit-2 KIOSK_NAME="Loading Dock" KIOSK_TYPE=exit bash setup.sh
-```
-
-After `setup.sh` finishes on each Pi, set the same shared kiosk key in `config_local.py`:
-
-```bash
-sudo tee -a /opt/fw-gatekeeper/pi-kiosk/config_local.py >/dev/null <<'EOF'
-KIOSK_API_KEY = "replace-with-the-same-render-kiosk-api-key"
-EOF
+sudo KIOSK_API_KEY="<issued credential for Main Exit>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-exit-1 KIOSK_NAME="Main Exit" KIOSK_TYPE=exit bash setup.sh
+sudo KIOSK_API_KEY="<issued credential for Loading Dock>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-exit-2 KIOSK_NAME="Loading Dock" KIOSK_TYPE=exit bash setup.sh
 ```
 
 > ⏱ Setup takes **15-25 minutes** per Pi (mostly compiling dlib). Go set up the next Pi while this one builds.
@@ -444,7 +447,7 @@ done
 | `NEXT_PUBLIC_CONVEX_URL` | `https://modest-bat-146.convex.cloud` | Convex prod URL |
 | `CONVEX_INGEST_URL` | `https://modest-bat-146.convex.site` | Convex HTTP-actions host for secured ingest |
 | `CONVEX_INGEST_KEY` | long random secret | **Required.** Must equal `CONVEX_INGEST_KEY` on the Convex deployment (table below) |
-| `KIOSK_API_KEY` | long random shared secret | **Required.** Shared secret between server and Pi kiosks; without it every kiosk gets 401 |
+| `KIOSK_API_KEY` | long random shared secret | Migration credential for registered kiosks that have not received device credentials; remove after migration |
 | `FACE_ENCODE_URL` | `https://fw-face-service.onrender.com/encode` | Face encoding service |
 | `FACE_SERVICE_KEY` | long random shared secret | Shared secret between the dashboard server and face service |
 | `FACE_SERVICE_ALLOWED_ORIGINS` | `https://fw-gatekeeper.onrender.com` | Browser origin allowed by the face service (set on `fw-face-service`) |
@@ -470,7 +473,7 @@ Kiosk registration supports up to 1,000 active kiosks. Each active kiosk must ha
 | `KIOSK_NAME` | `FW Kiosk` | Display name |
 | `KIOSK_TYPE` | `entry` | `entry` or `exit` |
 | `SERVER_URL` | `https://fw-gatekeeper.onrender.com` | Dashboard server URL |
-| `KIOSK_API_KEY` | `""` | Shared secret between server and Pi kiosks (required for sync) |
+| `KIOSK_API_KEY` | `""` | This kiosk's issued device credential, or the shared key while migrating; required for sync |
 | `KIOSK_UI_KEY` | `""` | Required Pi-local secret protecting camera, roster, attendance, and manual-clock routes |
 
 ### Kiosk CLI Options

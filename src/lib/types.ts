@@ -177,6 +177,13 @@ export interface AttendanceCorrection {
   related_exception_key: string | null;
   reason: string;
   supervisor_name: string | null;
+  actor_user_id?: string | null;
+  actor_name?: string | null;
+  reversal_id?: string | null;
+  reversal_reason?: string | null;
+  reversed_by_user_id?: string | null;
+  reversed_by_name?: string | null;
+  reversed_at?: string | null;
   created_at: string;
   updated_at: string;
 }

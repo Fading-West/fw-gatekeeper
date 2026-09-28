@@ -1,7 +1,8 @@
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
-import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
-import { fetchWorkersForSync, updateKioskLastSync, type KioskHealthReport } from '@/lib/convex-ingest';
+import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
+import { authenticateKiosk } from '@/lib/kiosk-device-auth';
+import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, type KioskHealthReport } from '@/lib/convex-ingest';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 
 function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefined {
@@ -31,11 +32,16 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
 }
 
 export async function GET(req: NextRequest) {
-  const isAuthorized = (await hasValidPortalSession(req, ['admin'])) || hasValidKioskKey(req);
-  if (!isAuthorized) return unauthorizedApiResponse();
+  const requestedId = req.nextUrl.searchParams.get('kiosk_id');
+  const admin = await hasValidPortalSession(req, ['admin']);
+  const identity = admin ? null : await authenticateKiosk(req, [requestedId]);
+  if (!admin && !identity) return unauthorizedApiResponse();
 
-  const kioskId = req.nextUrl.searchParams.get('kiosk_id');
+  // The credential lookup already resolved the exact row. A configured alias
+  // may collide with another legacy kiosk and must not be resolved again.
+  const kioskId = identity?.documentId || requestedId;
   const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
+  const receiptProtocol = Boolean(identity) && hasDeviceKeyFormat(req) && req.nextUrl.searchParams.get('roster_receipt') === '1';
 
   if (!kioskId) return NextResponse.json({ error: 'kiosk_id required' }, { status: 400 });
 
@@ -52,6 +58,20 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  if (receiptProtocol) {
+    // Issue before reading the complete roster: the receipt's Convex clock
+    // cannot certify a purge that raced the roster download afterward.
+    try {
+      const issued = await issueRosterReceipt(identity!.documentId);
+      const forceFull = req.nextUrl.searchParams.get('full_roster') === '1';
+      const { workers } = await fetchWorkersForSync(forceFull ? '' : issued.since ?? '', true);
+      return NextResponse.json({ workers, synced_at: issued.issuedAt, roster_receipt: issued.receipt,
+        full_roster: forceFull || !issued.since });
+    } catch (error) {
+      console.error('Roster receipt sync failed:', error);
+      return NextResponse.json({ error: 'Roster sync unavailable' }, { status: 503 });
+    }
+  }
   const { workers } = await fetchWorkersForSync(since);
   return NextResponse.json({ workers, synced_at: lastSync });
 }
