@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
@@ -8,6 +8,8 @@ import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
+import { usePortalRole } from '@/hooks/usePortalRole';
+import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 
 function correctionLabel(action: string) {
   return action.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -23,6 +25,8 @@ function validDateParam(value: string | null) {
 
 function LogPageContent() {
   const { toast } = useToast();
+  const role = usePortalRole();
+  const canReverse = role === 'admin' || role === 'enrollment';
   const searchParams = useSearchParams();
   const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const queryWorkerId = searchParams.get('worker_id') || '';
@@ -36,14 +40,24 @@ function LogPageContent() {
   // fetch effect runs after paint, so `loading` alone leaves one render where
   // a new selection still shows (and could export) the previous rows.
   const [loadedSelection, setLoadedSelection] = useState('');
-  const selectionKey = `${date}|${queryWorkerId}`;
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [reversalDraft, setReversalDraft] = useState<{ correction: AttendanceCorrection; reason: string; selection: string } | null>(null);
+  const [reversing, setReversing] = useState(false);
+  const reversalPendingRef = useRef(false);
+  const selectionKey = `${date}|${queryWorkerId}|${refreshVersion}`;
+  const visibleDraft = reversalDraft?.selection === selectionKey ? reversalDraft : null;
   const exportsReady = !loading && !error && loadedSelection === selectionKey;
   const hasSourceContext = Boolean(queryWorkerId || queryAttendanceId);
   const fullDayHref = `/log?date=${encodeURIComponent(date)}`;
 
   useEffect(() => {
+    setReversalDraft(null);
     setDate(queryDate);
   }, [queryDate]);
+
+  useEffect(() => {
+    setReversalDraft(null);
+  }, [queryWorkerId]);
 
   useEffect(() => {
     const attendanceParams = new URLSearchParams({ date });
@@ -65,10 +79,11 @@ function LogPageContent() {
         if (!attendanceRes.ok || !correctionsRes.ok) throw new Error('Failed to load activity log');
         const eventRows: AttendanceWithWorker[] = await attendanceRes.json();
         const correctionPayload: AttendanceCorrectionsResponse = await correctionsRes.json();
+        if (correctionPayload.backend_unavailable) throw new Error('Attendance correction history is unavailable');
         if (cancelled) return;
         setEvents(Array.isArray(eventRows) ? eventRows : []);
         setCorrections(Array.isArray(correctionPayload.corrections) ? correctionPayload.corrections : []);
-        setLoadedSelection(`${date}|${queryWorkerId}`);
+        setLoadedSelection(`${date}|${queryWorkerId}|${refreshVersion}`);
       } catch (err) {
         if (cancelled) return;
         setEvents([]);
@@ -82,7 +97,59 @@ function LogPageContent() {
     return () => {
       cancelled = true;
     };
-  }, [date, queryWorkerId]);
+  }, [date, queryWorkerId, refreshVersion]);
+
+  async function submitReversal() {
+    if (!canReverse || !visibleDraft || reversalPendingRef.current || !exportsReady) return;
+    const reason = visibleDraft.reason.trim();
+    if (!reason || reason.length > 1000) {
+      toast('Enter a reversal reason of 1 to 1,000 characters', 'error');
+      return;
+    }
+    const request = { correction_id: visibleDraft.correction.id, reason };
+    reversalPendingRef.current = true;
+    setReversing(true);
+    try {
+      const response = await fetch('/api/attendance-corrections', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...request, request_id: correctionRequestId(request) }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error || 'Failed to reverse correction');
+      acknowledgeCorrectionRequest(request);
+      setReversalDraft(null);
+      setRefreshVersion((version) => version + 1);
+      toast('Correction reversed');
+    } catch (error) {
+      // A lost PATCH response does not tell us whether the server committed.
+      // Read the audit row before offering a retry, including after a later
+      // retry whose edited reason conflicts with the saved reversal.
+      let historyChecked = false;
+      try {
+        const params = new URLSearchParams({ date: visibleDraft.correction.date });
+        if (queryWorkerId) params.set('worker_id', queryWorkerId);
+        const history = await fetch(`/api/attendance-corrections?${params.toString()}`);
+        if (history.ok) {
+          const payload: AttendanceCorrectionsResponse = await history.json();
+          historyChecked = !payload.backend_unavailable && Array.isArray(payload.corrections);
+          const saved = historyChecked ? payload.corrections.find((correction) => correction.id === request.correction_id) : null;
+          if (saved?.reversal_id) {
+            acknowledgeCorrectionRequest(request);
+            setReversalDraft(null);
+            setRefreshVersion((version) => version + 1);
+            toast(`A reversal is already recorded. Your request could not be confirmed. Recorded reason: ${saved.reversal_reason || 'Not provided'}`, 'info');
+            return;
+          }
+        }
+      } catch { /* Keep the draft available for a retry if status cannot be checked. */ }
+      const message = error instanceof Error ? error.message : 'Failed to reverse correction';
+      toast(historyChecked ? message : `${message} Save status is unknown; refresh history before editing the reason or retrying.`, 'error');
+    } finally {
+      reversalPendingRef.current = false;
+      setReversing(false);
+    }
+  }
 
   useEffect(() => {
     if (!queryAttendanceId || !events.some((event) => event.id === queryAttendanceId)) return;
@@ -167,7 +234,7 @@ function LogPageContent() {
           <input
             type="date"
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(e) => { setReversalDraft(null); setDate(e.target.value); }}
             className="input-field w-auto"
           />
           <button
@@ -219,7 +286,7 @@ function LogPageContent() {
         </div>
       )}
 
-      {loading ? (
+      {loading || (!error && loadedSelection !== selectionKey) ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading activity log...</div>
       ) : error ? null : (
       <>
@@ -244,6 +311,7 @@ function LogPageContent() {
                   <th className="px-5 py-3.5 text-left section-label">Effective Time</th>
                   <th className="px-5 py-3.5 text-left section-label">Reason</th>
                   <th className="px-5 py-3.5 text-left section-label">Supervisor</th>
+                  {canReverse && <th className="px-5 py-3.5 text-left section-label">Action</th>}
                 </tr>
               </thead>
               <tbody>
@@ -251,6 +319,7 @@ function LogPageContent() {
                   <tr key={correction.id} className="border-b border-navy-700/30 table-row-hover">
                     <td className="px-5 py-3">
                       <span className="badge border border-gold/20 bg-gold/10 text-gold text-[11px]">{correctionLabel(correction.action)}</span>
+                      {correction.reversal_id && <span className="ml-2 text-xs text-amber-300">Reversed</span>}
                     </td>
                     <td className="px-5 py-3">
                       <div className="font-display font-medium text-slate-200">{correction.worker_name || correction.worker_id}</div>
@@ -259,12 +328,37 @@ function LogPageContent() {
                     <td className="px-5 py-3 font-mono text-xs text-slate-400">
                       {new Date(correctionTimestamp(correction)).toLocaleString()}
                     </td>
-                    <td className="px-5 py-3 text-slate-400">{correction.reason}</td>
-                    <td className="px-5 py-3 text-xs text-slate-500">{correction.supervisor_name || 'Not recorded'}</td>
+                    <td className="px-5 py-3 text-slate-400">
+                      {correction.reason}
+                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {correction.reversed_at ? new Date(correction.reversed_at).toLocaleString() : ''}</div>}
+                    </td>
+                    <td className="px-5 py-3 text-xs text-slate-500">
+                      {correction.supervisor_name || 'Not recorded'}
+                      {(correction.actor_name || correction.actor_user_id) && <div>Actor: {correction.actor_name || correction.actor_user_id}</div>}
+                      {(correction.reversed_by_name || correction.reversed_by_user_id) && <div>Reversed by: {correction.reversed_by_name || correction.reversed_by_user_id}</div>}
+                    </td>
+                    {canReverse && <td className="px-5 py-3">
+                      {!correction.reversal_id && <button type="button" className="btn-secondary text-xs" disabled={reversing} onClick={() => setReversalDraft({ correction, reason: '', selection: selectionKey })}>Reverse</button>}
+                    </td>}
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {canReverse && visibleDraft && (
+          <div className="border-t border-navy-600/50 p-5">
+            <label htmlFor="reversal-reason" className="section-label mb-2 block">Reason for reversal</label>
+            <p className="mb-3 text-sm text-slate-300">
+              {visibleDraft.correction.worker_name || visibleDraft.correction.worker_id} · {visibleDraft.correction.date} · {correctionLabel(visibleDraft.correction.action)}
+              <span className="block mt-1 font-mono text-xs text-slate-400">Correction {visibleDraft.correction.id}{visibleDraft.correction.original_attendance_id ? ` · Raw event ${visibleDraft.correction.original_attendance_id}` : ''}</span>
+              <span className="block mt-1">Original reason: {visibleDraft.correction.reason}</span>
+            </p>
+            <textarea id="reversal-reason" value={visibleDraft.reason} maxLength={1000} onChange={(event) => setReversalDraft({ ...visibleDraft, reason: event.target.value })} className="input-field w-full" rows={3} placeholder="Explain why this correction should no longer affect attendance" />
+            <div className="mt-3 flex gap-2">
+              <button type="button" className="btn-primary" disabled={reversing || !visibleDraft.reason.trim() || !exportsReady} onClick={() => void submitReversal()}>{reversing ? 'Reversing…' : 'Confirm reversal'}</button>
+              <button type="button" className="btn-secondary" disabled={reversing} onClick={() => setReversalDraft(null)}>Cancel</button>
+            </div>
           </div>
         )}
       </section>

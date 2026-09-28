@@ -114,3 +114,35 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+export async function PATCH(req: NextRequest) {
+  if (!(await hasValidPortalSession(req, ['admin', 'enrollment']))) {
+    return unauthorizedApiResponse();
+  }
+  const parsed = await req.json().catch(() => ({}));
+  const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  const correctionId = optionalString(body.correction_id) || optionalString(body.correctionId);
+  const requestId = body.request_id ?? body.requestId;
+  const reason = optionalString(body.reason);
+  if (!correctionId || !reason || reason.length > 1000 || typeof requestId !== 'string' || !requestId.trim() || requestId.length > 200) {
+    return NextResponse.json({ error: 'correction_id, reason (1–1,000 characters), and request_id are required' }, { status: 400 });
+  }
+  try {
+    const result = await convex.mutation((api as any).attendanceCorrections.reverse, {
+      correctionId, requestId, reason,
+    });
+    return NextResponse.json(result);
+  } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'INVALID_CORRECTION_REVERSAL') {
+      return NextResponse.json({ error: error.data.message }, { status: 400 });
+    }
+    if (error instanceof ConvexError && error.data?.code === 'CORRECTION_REVERSAL_CONFLICT') {
+      return NextResponse.json({ error: error.data.message }, { status: 409 });
+    }
+    if (error instanceof Error && (error.message.includes('ArgumentValidationError') || error.message.includes('Expected ID for table "attendanceCorrections"'))) {
+      return NextResponse.json({ error: 'Invalid correction ID.' }, { status: 400 });
+    }
+    console.error('Attendance correction reversal failed:', error);
+    return NextResponse.json({ error: 'Failed to reverse correction' }, { status: 500 });
+  }
+}

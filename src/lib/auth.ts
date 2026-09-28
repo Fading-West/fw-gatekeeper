@@ -4,6 +4,16 @@ function getKioskApiKey(): string {
   return process.env.KIOSK_API_KEY?.trim() || '';
 }
 
+export function presentedKioskKey(req: NextRequest): string | null {
+  const authHeader = req.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) return authHeader.slice('Bearer '.length).trim() || null;
+  return req.headers.get('x-kiosk-key')?.trim() || null;
+}
+
+export function hasDeviceKeyFormat(req: NextRequest): boolean {
+  return /^gkdev_[A-Za-z0-9_-]{43}$/.test(presentedKioskKey(req) || '');
+}
+
 export function hasValidKioskKey(req: NextRequest): boolean {
   const configuredKey = getKioskApiKey();
   if (!configuredKey) {
@@ -29,6 +39,7 @@ export function isKioskRequestAllowed(req: NextRequest): boolean {
 
   return (
     (pathname === '/api/sync' && req.method === 'GET') ||
+    (pathname === '/api/sync/ack' && req.method === 'POST') ||
     (pathname === '/api/attendance' && req.method === 'POST') ||
     (pathname === '/api/attendance/bulk' && req.method === 'POST') ||
     (pathname === '/api/recognition-attempts/bulk' && req.method === 'POST')

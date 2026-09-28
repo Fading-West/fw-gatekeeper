@@ -56,6 +56,8 @@ _health = {
     "liveness_available": False,
     "known_workers": 0,
     "queued_logs": 0,
+    "retryable_logs": 0,
+    "rejected_logs": 0,
     "queued_attempts": 0,
     "degraded_reason": None,
     "last_scan_at": None,

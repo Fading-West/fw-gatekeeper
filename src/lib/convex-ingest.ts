@@ -1,5 +1,5 @@
 export class SecuredIngestError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code?: string, readonly detail?: string) {
     super(`Secured Convex ingest failed with status ${status}.`);
   }
 }
@@ -41,7 +41,12 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
     });
 
     if (!response.ok) {
-      throw new SecuredIngestError(response.status);
+      const body = await response.json().catch(() => null) as { code?: unknown; error?: unknown } | null;
+      throw new SecuredIngestError(
+        response.status,
+        typeof body?.code === 'string' ? body.code : undefined,
+        typeof body?.error === 'string' ? body.error : undefined,
+      );
     }
 
     return await response.json() as T;
@@ -91,8 +96,35 @@ export function updateKioskLastSync(kioskId: string, lastSync: string, health?: 
   });
 }
 
-export function fetchWorkersForSync(since: string) {
-  return postSecuredIngest<{ workers: unknown[] }>('/api/ingest/workers/sync', { since });
+export function lookupKioskCredential(input: { mode: 'device'; credentialHash: string } | { mode: 'legacy'; identifier: string }) {
+  return postSecuredIngest<{ documentId: string; kioskId: string; aliases: string[] } | null>('/api/ingest/kiosks/authenticate', input);
+}
+
+export async function fetchWorkersForSync(since: string, inclusive = false) {
+  const workers: unknown[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await postSecuredIngest<{ workers: unknown[]; isDone: boolean; continueCursor: string }>(
+      '/api/ingest/workers/sync', { since, ...(inclusive ? { inclusive: true } : {}), ...(cursor ? { cursor } : {}) },
+    );
+    if (!Array.isArray(page.workers) || typeof page.isDone !== 'boolean' || typeof page.continueCursor !== 'string') {
+      throw new Error('Incomplete worker sync page');
+    }
+    workers.push(...page.workers);
+    if (page.isDone) return { workers };
+    if (!page.continueCursor || seenCursors.has(page.continueCursor)) throw new Error('Worker sync cursor did not advance');
+    seenCursors.add(page.continueCursor);
+    cursor = page.continueCursor;
+  }
+}
+
+export function issueRosterReceipt(documentId: string) {
+  return postSecuredIngest<{ receipt: string; issuedAt: string; since: string | null }>('/api/ingest/kiosks/roster-receipt/issue', { documentId });
+}
+
+export function acknowledgeRosterReceipt(documentId: string, receipt: string) {
+  return postSecuredIngest<{ acknowledged: boolean; appliedAt: string | null }>('/api/ingest/kiosks/roster-receipt/ack', { documentId, receipt });
 }
 
 export function getAttendanceReceiptStatus(digests: string[]) {

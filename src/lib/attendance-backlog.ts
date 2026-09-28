@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { MAX_ATTENDANCE_BATCH_SIZE, validateAttendanceEvent, type AttendanceEvent } from '../../convex/attendanceValidation';
-import { getAttendanceReceiptStatus, ingestAttendanceBatch } from './convex-ingest';
+import { getAttendanceReceiptStatus, ingestAttendanceBatch, SecuredIngestError } from './convex-ingest';
 
 export class AttendanceBacklogPendingError extends Error {}
 
@@ -38,7 +38,16 @@ export async function ingestAttendanceBacklog(input: AttendanceEvent[]) {
     if (Date.now() >= deadline) throw new AttendanceBacklogPendingError('Attendance upload will resume on retry');
     const results = await Promise.allSettled(missing.slice(offset, offset + 4).map(async index =>
       checkedAcknowledgement(await ingestAttendanceBatch(chunks[index], true), chunks[index].length)));
-    if (results.some(result => result.status === 'rejected')) throw new AttendanceBacklogPendingError('Attendance upload will resume on retry');
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    const invalid = failures.find(result => result.reason instanceof SecuredIngestError &&
+      result.reason.status === 400 && result.reason.code === 'INVALID_ATTENDANCE');
+    // A transient failure may have left another chunk uncommitted. Let the
+    // kiosk retry the whole batch before isolating a permanent rejection.
+    if (failures.some(result => !(result.reason instanceof SecuredIngestError &&
+      result.reason.status === 400 && result.reason.code === 'INVALID_ATTENDANCE'))) {
+      throw new AttendanceBacklogPendingError('Attendance upload will resume on retry');
+    }
+    if (invalid) throw invalid.reason;
     for (const result of results) if (result.status === 'fulfilled') synced += result.value.synced;
   }
   return { synced, acknowledged: events.length };

@@ -709,16 +709,19 @@
                     livenessNote.textContent = "";
                 }
 
-                const queued = (health.queued_logs || 0) + (health.queued_attempts || 0);
+                const rejected = health.rejected_logs || 0;
+                const queued = (health.retryable_logs || 0) + (health.queued_attempts || 0);
                 if (health.sync_online === true) {
-                    syncChip.textContent = queued > 0
+                    syncChip.textContent = rejected > 0
+                        ? `Needs attention - ${rejected} attendance record${rejected === 1 ? "" : "s"} rejected; ${queued} retryable queued. Review with attendance_rejections.py list`
+                        : queued > 0
                         ? `Syncing - ${queued} record${queued === 1 ? "" : "s"} queued`
                         : (health.last_sync_at
                             ? `Synced ${new Date(health.last_sync_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`
                             : "Connected");
-                    syncChip.style.color = queued > 0 ? "#e0a343" : "#87dfb3";
+                    syncChip.style.color = rejected > 0 || queued > 0 ? "#e0a343" : "#87dfb3";
                 } else if (health.sync_online === false) {
-                    syncChip.textContent = `Offline - ${queued} scan${queued === 1 ? "" : "s"} queued`;
+                    syncChip.textContent = `Offline - ${queued} retryable queued${rejected ? `; ${rejected} rejected need attention` : ""}`;
                     syncChip.style.color = "#e0a343";
                 } else {
                     syncChip.textContent = "Sync disabled";

@@ -4,7 +4,8 @@ import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
 import { ingestAttendanceEvent } from '@/lib/convex-ingest';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
-import { hasValidKioskKey, unauthorizedApiResponse } from '@/lib/auth';
+import { unauthorizedApiResponse } from '@/lib/auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
 import { ConvexError } from 'convex/values';
 import { validateAttendanceEvent } from '../../../../convex/attendanceValidation';
 
@@ -29,15 +30,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  // Defense in depth: kiosk credential is checked here, not only in middleware.
-  if (!hasValidKioskKey(req)) {
-    return unauthorizedApiResponse();
-  }
-
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
-    const { worker_id, event_type, type, kiosk_id, timestamp } = body;
+    const identity = await authenticateKiosk(req, kioskClaims(body));
+    if (!identity) return unauthorizedApiResponse();
+    const { worker_id, event_type, type, timestamp } = body;
     const resolvedType = event_type || type;
 
     if (!worker_id || !resolvedType) {
@@ -47,7 +45,7 @@ export async function POST(req: NextRequest) {
     const validated = validateAttendanceEvent({
       workerId: worker_id,
       eventType: resolvedType,
-      kioskId: kiosk_id || undefined,
+      kioskId: kioskEvidenceId(identity, body),
       timestamp: timestamp ?? new Date().toISOString(),
       idempotencyKey: body.idempotency_key ?? body.idempotencyKey,
       note: body.note,

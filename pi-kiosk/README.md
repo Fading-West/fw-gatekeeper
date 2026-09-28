@@ -50,8 +50,8 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 3. Run the setup script:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nztinversive/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
-sudo KIOSK_API_KEY="replace-with-the-server-key" \
+curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
+sudo KIOSK_API_KEY="<credential issued for this kiosk>" \
   KIOSK_UI_KEY="$(openssl rand -hex 24)" \
   KIOSK_SUPERVISOR_PIN="<set-a-separate-supervisor-passcode>" \
   SERVER_URL=https://fw-gatekeeper.onrender.com \
@@ -107,7 +107,7 @@ All settings live in `config.py` with per-kiosk overrides in
 | `SYNC_INTERVAL` | `30` | Seconds between sync cycles |
 | `KIOSK_ID` / `KIOSK_NAME` | `kiosk-entry-1` / `Main Entry` | Kiosk identity |
 | `KIOSK_TYPE` | `entry` | `entry`, `exit`, or `auto` (toggles by last action) |
-| `KIOSK_API_KEY` (env or local) | none | **Required** shared secret for server sync; without it sync is disabled and records stay queued |
+| `KIOSK_API_KEY` (env or local) | none | **Required** device credential issued on the portal's Kiosk readiness page; registered kiosks may use the shared key until migrated |
 | `KIOSK_UI_KEY` (env or local) | none | **Required** Pi-local secret for camera feed, roster/status, and log routes |
 | `KIOSK_SUPERVISOR_PIN` (env or local) | none | **Required** separate passcode for manual attendance (5-minute session) |
 | `KIOSK_UI_HOST` (env or local) | `127.0.0.1` | Web UI bind address; keep loopback-only |
@@ -140,12 +140,50 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 |-------|-----|
 | "No camera available" | Check `ls /dev/video*` (USB) or `libcamera-hello` (Pi camera) |
 | "No enrolled workers found" | Enroll on the dashboard first; check WiFi for the initial sync |
-| "KIOSK_API_KEY is required" | Configure the server-matching key and restart `fw-gatekeeper-kiosk.service` |
+| "KIOSK_API_KEY is required" | Configure this kiosk's issued device credential, or the shared migration key on a registered kiosk that has not migrated, and restart `fw-gatekeeper-kiosk.service` |
 | "KIOSK_UI_KEY is required" | Rerun setup with a generated Pi-local UI key and restart the service |
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
 | "queued logs have no server worker mapping" | Queued rows whose worker row was removed before this release; see *Stranded attendance rows* below |
+
+### Rejected attendance uploads
+
+The server may reject one invalid event in an otherwise valid batch. The kiosk
+isolates that event and keeps its original SQLite row, validation reason, and
+original row snapshot in `attendance_rejections`. Other events continue syncing.
+Rejected events remain in the `queued_logs` health count, while `rejected_logs`
+and `retryable_logs` distinguish paused evidence from uploads that can drain.
+The kiosk displays Needs attention for rejected records. They do not retry until
+an operator reviews them. Authentication, network, and server failures remain
+in the normal retry queue.
+
+On the kiosk, make a SQLite backup, then inspect active rejections:
+
+```bash
+cd /opt/fw-gatekeeper/pi-kiosk
+sqlite3 data/attendance.db ".backup data/attendance.db.bak-$(date +%Y%m%d)"
+python3 attendance_rejections.py list
+```
+
+Check the recorded reason and `original_log_json` before changing the row. For
+example, after verifying the correct worker identity or timestamp against an
+independent record, repair the `attendance_log` row in SQLite. Then release
+the specific rejection with a reason; the next sync cycle retries it:
+
+```bash
+sqlite3 data/attendance.db \
+  "UPDATE attendance_log SET timestamp = '2026-09-25T08:00:00' WHERE id = 37 AND synced = 0;"
+python3 attendance_rejections.py retry 1 --note "Verified timestamp against supervisor shift record"
+```
+
+Use the rejection id from `list` for `retry`, and the log id for the SQL edit.
+The original snapshot, rejection reason, release time, and operator note stay
+in `attendance_rejections` after retry. If the event still fails validation,
+the kiosk records a new rejection; do not delete the evidence to clear an alert.
+If an attendance row was deleted, `list` still shows its rejection and original
+snapshot. `retry` refuses to release it until the row is restored from a backup
+or the snapshot under supervisor review.
 
 ### Stranded attendance rows
 
