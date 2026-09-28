@@ -218,11 +218,13 @@ it('creates the password account, member, and audit in one mutation', async () =
     const member = account ? await ctx.db.query('portalMembers').withIndex('by_user', q => q.eq('userId', account.userId)).unique() : null;
     const audit = member ? await ctx.db.query('auditLog')
       .withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', member._id)).collect() : [];
-    return { account, member, audit };
+    const alerts = await ctx.db.query('peopleAlertEvents').collect();
+    return { account, member, audit, alerts };
   });
   expect(state.account?.secret).not.toBe('InitialPass123!');
   expect(state.member).toMatchObject({ role: 'enrollment', active: true });
   expect(state.audit).toMatchObject([{ actorUserId: admin, action: 'portalMembers.create' }]);
+  expect(state.alerts).toMatchObject([{ kind: 'portal_account', label: 'new.member@example.com', detail: 'enrollment', delivered: false }]);
   await withLocalAuthKeys(async () => {
     await expect(t.action(api.auth.signIn, {
       provider: 'password', params: { email: result.email, password: 'InitialPass123!', flow: 'signIn' },

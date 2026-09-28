@@ -160,6 +160,15 @@ export const createAccountAndMember = internalMutation({
       updatedAt: now,
     });
     await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.create', targetTable: 'portalMembers', targetId: memberId, details: JSON.stringify({ role: args.role }) });
+    await ctx.db.insert('peopleAlertEvents', {
+      kind: 'portal_account',
+      targetId: memberId,
+      label: email,
+      detail: args.role,
+      createdAt: now,
+      delivered: false,
+    });
+    await ctx.scheduler.runAfter(0, internal.peopleAlerts.deliverPending, {});
     return { email, role: args.role, active: true };
   },
 });

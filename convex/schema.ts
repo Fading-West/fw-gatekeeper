@@ -77,6 +77,17 @@ export default defineSchema({
     .index("by_created", ["createdAt"])
     .index("by_target_table_and_action_and_created_at", ["targetTable", "action", "createdAt"]),
 
+  peopleAlertEvents: defineTable({
+    kind: v.union(v.literal("worker"), v.literal("portal_account")),
+    targetId: v.string(),
+    label: v.string(),
+    detail: v.optional(v.string()),
+    createdAt: v.string(),
+    delivered: v.boolean(),
+    deliveredAt: v.optional(v.string()),
+    claimedUntil: v.optional(v.number()),
+  }).index("by_delivered", ["delivered"]),
+
   attendance: defineTable({
     workerId: v.string(),
     eventType: v.string(),

@@ -1,5 +1,6 @@
 import { internalQuery, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { assertPortalRole } from "./access";
@@ -230,6 +231,15 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       consentRecordedBy: actorUserId,
     });
     await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: now }) });
+    await ctx.db.insert("peopleAlertEvents", {
+      kind: "worker",
+      targetId: id,
+      label: name,
+      detail: department,
+      createdAt: now,
+      delivered: false,
+    });
+    await ctx.scheduler.runAfter(0, internal.peopleAlerts.deliverPending, {});
     return { id, name, employeeId, department };
 }
 
