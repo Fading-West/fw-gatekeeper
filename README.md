@@ -5,6 +5,12 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 **Live Dashboard:** https://fw-gatekeeper.onrender.com  
 **Convex Dashboard:** https://dashboard.convex.dev/t/thiesnoah/fw-gatekeeper
 
+## Schedule support
+
+Schedules must start and end on the same factory-local calendar day, with an end later than the start (`HH:MM`). Overnight and 24-hour schedules are unsupported. Existing unsupported schedules remain visible with a warning and produce a critical configuration exception for assigned workers; schedule-based attendance checks and suggested corrections are disabled until an administrator repairs or removes that schedule. Raw attendance remains available for manual review.
+
+Scan-sequence exceptions are reviewed per attendance event (including added correction events). After upgrading from timestamp-based exception keys, existing scan-sequence issues require a fresh review: legacy reviews cannot identify which same-time event was reviewed. Historical review and correction records remain stored, but legacy exception links no longer identify a current issue; reopen the date in Shift Exceptions. Other exception reviews are unchanged.
+
 ## Architecture
 
 ```
@@ -29,7 +35,7 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 
 | Component | Technology |
 |-----------|-----------|
-| Dashboard | Next.js 14 + Tailwind CSS |
+| Dashboard | Next.js 16 + Tailwind CSS |
 | Database | Convex (cloud) |
 | Face Encoding | ArcFace ONNX (512-dim embeddings) |
 | Face Detection (Pi) | dlib HOG + Haar cascade |
@@ -110,7 +116,7 @@ Factory access control system for Fading West. Face recognition at entry/exit po
 ## Step 1: Flash Raspberry Pi OS
 
 1. Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-2. Choose **Raspberry Pi OS with Desktop (64-bit)** — NOT Lite (we need a desktop session + browser for the monitor display)
+2. Choose **Raspberry Pi OS Bookworm with Desktop (64-bit, Python 3.11)** — NOT Lite (we need a desktop session + browser for the monitor display)
 3. Click the ⚙️ gear icon and configure:
    - **Hostname:** `fw-kiosk-1` (increment for each Pi: `fw-kiosk-2`, etc.)
    - **Enable SSH:** Yes, use password authentication
@@ -149,51 +155,56 @@ ssh pi@192.168.1.XXX
 
 ## Step 3: Set Security Secrets
 
-Before bringing kiosks online, configure the shared secrets used for dashboard auth and kiosk sync:
+Before bringing kiosks online, configure server secrets and issue each kiosk its own credential:
 
 1. In Render (`fw-gatekeeper` → **Environment**), set:
    - `KIOSK_API_KEY` to a long random shared secret
-   - `AUTH_SECRET` to a long random signing key for admin session cookies
-2. Use the **same** `KIOSK_API_KEY` value on every Pi kiosk
+   - `CONVEX_INGEST_KEY` to a long random secret, then set the **same** value on the Convex deployment with `npx convex env set CONVEX_INGEST_KEY <value>`
+2. Register each kiosk in the portal before syncing it. Existing registered kiosks may keep using the shared `KIOSK_API_KEY` during migration.
+3. In **Kiosk readiness**, select **Issue / rotate credential** for one kiosk. Save the displayed credential immediately; the portal shows it only once. Pass that kiosk's credential as `KIOSK_API_KEY` when running its setup script. Repeat one kiosk at a time. For an already installed Pi, set the credential in `config_local.py` and restart its service.
+
+Issuing a device credential permanently disables shared-key access for that kiosk. Rotating invalidates the previous device credential immediately. Revoking disables the current credential without restoring shared-key access. A revoked kiosk needs a new credential issued by an administrator. Keep the server's shared `KIOSK_API_KEY` configured until all registered kiosks have migrated, then remove it. Unknown and inactive kiosks cannot sync with either key.
+
+See `.env.example` for every variable, grouped by where it is set (Render, Convex, face service, kiosk).
 
 > The dashboard no longer auto-seeds demo data. Enroll real workers before expecting kiosks to recognize anyone.
 
 ## Step 4: Run the Setup Script
 
-Once you have a terminal open (either on the Pi desktop or via SSH), run these commands.
+Once you have a terminal open (either on the Pi desktop or via SSH), run these commands. Replace the `KIOSK_API_KEY` placeholder with the credential issued for that specific kiosk. Choose a separate local UI key and supervisor passcode. The setup script writes all three to `config_local.py`; do not replace the device credential with the server's shared migration key.
 
 For the **first kiosk** (Main Entry):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nztinversive/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
-sudo KIOSK_ID=kiosk-entry-1 KIOSK_NAME="Main Entry" KIOSK_TYPE=entry bash setup.sh
+curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
+sudo KIOSK_API_KEY="<issued credential for Main Entry>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-entry-1 KIOSK_NAME="Main Entry" KIOSK_TYPE=entry bash setup.sh
 ```
 
 For the **second kiosk** (Side Entry):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nztinversive/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
-sudo KIOSK_ID=kiosk-entry-2 KIOSK_NAME="Side Entry" KIOSK_TYPE=entry bash setup.sh
+curl -sSL https://raw.githubusercontent.com/Fading-West/fw-gatekeeper/master/pi-kiosk/setup.sh -o setup.sh
+sudo KIOSK_API_KEY="<issued credential for Side Entry>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-entry-2 KIOSK_NAME="Side Entry" KIOSK_TYPE=entry bash setup.sh
 ```
 
 For **exit kiosks**:
 
 ```bash
-sudo KIOSK_ID=kiosk-exit-1 KIOSK_NAME="Main Exit" KIOSK_TYPE=exit bash setup.sh
-sudo KIOSK_ID=kiosk-exit-2 KIOSK_NAME="Loading Dock" KIOSK_TYPE=exit bash setup.sh
-```
-
-After `setup.sh` finishes on each Pi, set the same shared kiosk key in `config_local.py`:
-
-```bash
-sudo tee -a /opt/fw-gatekeeper/pi-kiosk/config_local.py >/dev/null <<'EOF'
-KIOSK_API_KEY = "replace-with-the-same-render-kiosk-api-key"
-EOF
+sudo KIOSK_API_KEY="<issued credential for Main Exit>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-exit-1 KIOSK_NAME="Main Exit" KIOSK_TYPE=exit bash setup.sh
+sudo KIOSK_API_KEY="<issued credential for Loading Dock>" \
+  KIOSK_UI_KEY="$(openssl rand -hex 24)" KIOSK_SUPERVISOR_PIN="<supervisor passcode>" \
+  KIOSK_ID=kiosk-exit-2 KIOSK_NAME="Loading Dock" KIOSK_TYPE=exit bash setup.sh
 ```
 
 > ⏱ Setup takes **15-25 minutes** per Pi (mostly compiling dlib). Go set up the next Pi while this one builds.
 > 
-> 💡 **Tip:** If typing long commands on the Pi is annoying, you can open Firefox on the Pi desktop, go to the [README on GitHub](https://github.com/nztinversive/fw-gatekeeper), and copy-paste the commands from there.
+> 💡 **Tip:** If typing long commands on the Pi is annoying, you can open Firefox on the Pi desktop, go to the [README on GitHub](https://github.com/Fading-West/fw-gatekeeper), and copy-paste the commands from there.
 
 ## Step 5: Connect the Hardware
 
@@ -218,7 +229,7 @@ libcamera-hello --timeout 5000
 Before the kiosks can recognize anyone, enroll workers:
 
 1. Go to https://fw-gatekeeper.onrender.com
-2. Enter PIN: **4729**
+2. Sign in with the portal account provided by your administrator.
 3. Click **Enroll Face** in the sidebar
 4. Enter the worker's name and department
 5. Capture 3 photos (look straight at camera, good lighting)
@@ -228,6 +239,8 @@ Before the kiosks can recognize anyone, enroll workers:
 > 💡 **Tip:** Enroll in a well-lit area. Have workers remove hats/sunglasses. 3 slightly different angles (straight, slight left, slight right) improves recognition.
 >
 > If face encoding is unavailable, enrollment now fails instead of creating an unusable worker record.
+>
+> Enrollment requires confirming the worker's biometric consent. See [RETENTION.md](RETENTION.md) for what face data is stored, how long, and how an admin purges it.
 
 ## Step 7: Start the Kiosks
 
@@ -397,7 +410,8 @@ ssh pi@fw-kiosk-1.local
 cd /opt/fw-gatekeeper
 sudo git pull origin master
 cd pi-kiosk
-./venv/bin/pip install -r requirements.txt
+./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
+PATH="$PWD/venv/bin:$PATH" ./venv/bin/python -m pip install --require-hashes --no-build-isolation -r requirements.lock
 sudo systemctl restart fw-gatekeeper-kiosk
 ```
 
@@ -420,12 +434,6 @@ done
 1. Dashboard → Workers → click worker → Deactivate
 2. Worker will no longer be recognized at kiosks after next sync
 
-### Change the admin PIN
-Set the `ADMIN_PIN` environment variable on Render:
-1. Go to https://dashboard.render.com → fw-gatekeeper → Environment
-2. Change `ADMIN_PIN` value
-3. Redeploy
-
 ---
 
 ## Configuration Reference
@@ -434,15 +442,30 @@ Set the `ADMIN_PIN` environment variable on Render:
 
 | Variable | Value | Description |
 |----------|-------|-------------|
+| `NODE_ENV` | `production` | Required. Missing kiosk credentials fail closed; local development requires an explicit `FW_ALLOW_UNCONFIGURED_KIOSK_KEY=true` override, which production ignores. |
+| `NODE_VERSION` | `22` | Node major for Render builds (matches `.node-version` and `package.json` engines) |
 | `NEXT_PUBLIC_CONVEX_URL` | `https://modest-bat-146.convex.cloud` | Convex prod URL |
-| `ADMIN_PIN` | `4729` | Dashboard login PIN |
-| `AUTH_SECRET` | long random secret | Signing key for admin session cookies (required for dashboard auth) |
-| `KIOSK_API_KEY` | long random shared secret | Shared secret between server and Pi kiosks (required for sync) |
+| `CONVEX_INGEST_URL` | `https://modest-bat-146.convex.site` | Convex HTTP-actions host for secured ingest |
+| `CONVEX_INGEST_KEY` | long random secret | **Required.** Must equal `CONVEX_INGEST_KEY` on the Convex deployment (table below) |
+| `KIOSK_API_KEY` | long random shared secret | Migration credential for registered kiosks that have not received device credentials; remove after migration |
 | `FACE_ENCODE_URL` | `https://fw-face-service.onrender.com/encode` | Face encoding service |
 | `FACE_SERVICE_KEY` | long random shared secret | Shared secret between the dashboard server and face service |
-| `FACE_SERVICE_ALLOWED_ORIGINS` | `https://fw-gatekeeper.onrender.com` | Browser origin allowed by the face service |
+| `FACE_SERVICE_ALLOWED_ORIGINS` | `https://fw-gatekeeper.onrender.com` | Browser origin allowed by the face service (set on `fw-face-service`) |
+
+### Convex deployment environment
+
+Set these on the Convex deployment (`npx convex env set NAME value` or the Convex dashboard), not on Render:
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `CONVEX_INGEST_KEY` | same value as on Render | Bearer secret checked by `convex/http.ts` for secured ingest |
+| `JWT_PRIVATE_KEY` | generated | Convex Auth RS256 signing key; created and set by `npx @convex-dev/auth` |
+| `JWKS` | generated | Convex Auth public key set matching `JWT_PRIVATE_KEY`; set by `npx @convex-dev/auth` |
+| `SITE_URL` | `https://fw-gatekeeper.onrender.com` | Dashboard URL used by Convex Auth for redirects |
 
 ### Kiosk Setup Variables
+
+Kiosk registration supports up to 1,000 active kiosks. Each active kiosk must have a unique name and sync ID across both fields (ignoring case and surrounding spaces), because older devices can sync using their kiosk name. Names and sync IDs must also avoid another active kiosk’s document ID. Registration rejects conflicts; inactive aliases may be reused.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -450,7 +473,7 @@ Set the `ADMIN_PIN` environment variable on Render:
 | `KIOSK_NAME` | `FW Kiosk` | Display name |
 | `KIOSK_TYPE` | `entry` | `entry` or `exit` |
 | `SERVER_URL` | `https://fw-gatekeeper.onrender.com` | Dashboard server URL |
-| `KIOSK_API_KEY` | `""` | Shared secret between server and Pi kiosks (required for sync) |
+| `KIOSK_API_KEY` | `""` | This kiosk's issued device credential, or the shared key while migrating; required for sync |
 | `KIOSK_UI_KEY` | `""` | Required Pi-local secret protecting camera, roster, attendance, and manual-clock routes |
 
 ### Kiosk CLI Options

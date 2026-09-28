@@ -10,7 +10,6 @@ import logging
 import os
 import time
 import threading
-from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -20,7 +19,8 @@ import face_recognition as fr
 
 import config
 import database
-from embeddings import embed_face, model_ready as recognition_model_ready, normalize_embedding
+from embeddings import embed_face, model_ready as recognition_model_ready
+from matching import FreshFaceMatcher
 from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
@@ -172,6 +172,7 @@ def _write_recognition_attempt(result, decision):
         face_detected=bool(result and result.get("face_loc") is not None),
         candidate_worker_id=result.get("candidate_worker_id") if result else None,
         candidate_worker_name=result.get("candidate_worker_name") if result else None,
+        candidate_server_worker_id=result.get("server_worker_id") if result else None,
         best_score=result.get("best_score") if result else None,
         second_best_score=result.get("second_best_score") if result else None,
         score_margin=result.get("score_margin") if result else None,
@@ -224,14 +225,13 @@ def run(args):
     recognizer.load_faces()
     logger.info("Loaded %d known faces", recognizer.known_count)
 
-    # Blink verification. If the shape predictor is missing, keep the door
-    # working but record events as unverified and report the kiosk degraded —
-    # never claim liveness we don't have.
+    # Required verification fails closed. The camera, UI and offline sync
+    # keep running while the landmark model is retried in the background.
     liveness = recognizer.liveness_checker if config.LIVENESS_REQUIRED else None
     if config.LIVENESS_REQUIRED and liveness is None:
         logger.critical(
-            "Liveness model missing: clock events will be recorded WITHOUT blink "
-            "verification and this kiosk will report itself degraded."
+            "Required liveness model unavailable: automatic attendance is blocked "
+            "until blink verification recovers."
         )
 
     # An empty or model-incompatible roster rejects every scan; the dashboard
@@ -242,7 +242,7 @@ def run(args):
     elif recognizer.usable_count == 0:
         startup_degraded = "encoding_mismatch"
     elif config.LIVENESS_REQUIRED and liveness is None:
-        startup_degraded = "liveness_unavailable"
+        startup_degraded = "liveness_required_unavailable"
 
     web_app.update_health(
         model_ok=model_ready,
@@ -270,7 +270,7 @@ def run(args):
             # every scan will be rejected until re-enrollment.
             return "encoding_mismatch"
         if config.LIVENESS_REQUIRED and liveness is None:
-            return "liveness_unavailable"
+            return "liveness_required_unavailable"
         return None
 
     sync_worker = (
@@ -321,7 +321,7 @@ def run(args):
 
     def detection_loop():
         logger.info("Detection thread started")
-        embedding_history = deque(maxlen=config.RECOGNITION_EMBEDDING_WINDOW)
+        embedding_history = FreshFaceMatcher(config.RECOGNITION_EMBEDDING_WINDOW, config.RECOGNITION_MATCH_THRESHOLD)
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -366,9 +366,6 @@ def run(args):
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding")
                     continue
 
-                embedding_history.append(embedding)
-                smoothed_embedding = normalize_embedding(np.mean(np.stack(embedding_history), axis=0))
-
                 # Match against known workers
                 known_encs, known_ids, known_names, known_server_ids = recognizer.snapshot_known_faces()
                 matched = None
@@ -377,7 +374,7 @@ def run(args):
                 second_score = None
 
                 if known_encs:
-                    cand_dim = len(smoothed_embedding)
+                    cand_dim = len(embedding)
                     # Validate every roster row, not just the first: legacy
                     # 128-dim entries can coexist with 512-dim ones (server and
                     # local stores both still accept them), and an unchecked
@@ -401,17 +398,15 @@ def run(args):
                         current_result[0] = _empty_recognition_result(face_loc, decision="rejected_dim_mismatch")
                         continue
 
-                    scores = []
-                    for i, known in compatible:
-                        sim = cosine_sim(np.array(known), smoothed_embedding)
-                        scores.append((sim, i))
-                    scores.sort(reverse=True, key=lambda item: item[0])
+                    scores, frame_accepted = embedding_history.match(
+                        embedding, compatible, known_ids, known_server_ids, frame_ts,
+                    )
                     best_sim, best_idx = scores[0]
                     if len(scores) > 1:
                         second_score = scores[1][0]
                     conf = best_sim
                     logger.info("Match: sim=%.3f name=%s window=%d", conf, known_names[best_idx], len(embedding_history))
-                    if conf >= config.RECOGNITION_MATCH_THRESHOLD:
+                    if frame_accepted:
                         matched = known_names[best_idx]
 
                 margin = conf - second_score if second_score is not None else None
@@ -451,6 +446,7 @@ def run(args):
 
             except Exception as e:
                 logger.error("Detection error: %s", e, exc_info=True)
+                embedding_history.clear()
                 current_result[0] = None
 
     det_thread = threading.Thread(target=detection_loop, daemon=True, name="face-detect")
@@ -476,7 +472,8 @@ def run(args):
 
         result["liveness_confirmed"] = liveness_confirmed
         try:
-            database.log_attendance(
+            recognizer.liveness_policy.record(
+                database.log_attendance,
                 worker_id=worker_id, worker_name=display_name,
                 action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
                 server_worker_id=server_worker_id,
@@ -517,6 +514,17 @@ def run(args):
     roster_fault = startup_degraded if startup_degraded in ("no_workers_synced", "encoding_mismatch") else None
     try:
         while True:
+            active_liveness = recognizer.liveness_checker
+            if active_liveness is not liveness:
+                liveness = active_liveness
+                # A recovered/replaced checker starts a new verification;
+                # an earlier blink can never authorize attendance after loss.
+                pending_clock[0] = None
+                current_result[0] = None
+                web_app.update_health(
+                    liveness_available=liveness is not None,
+                    degraded_reason=base_degraded_reason(),
+                )
             try:
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
@@ -541,6 +549,23 @@ def run(args):
             with detect_lock:
                 if pending_frame[0] is None:
                     pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now)
+
+            if config.LIVENESS_REQUIRED and liveness is None:
+                # Roster sync may have recovered since startup while this
+                # early branch is skipping normal recognition health updates.
+                web_app.update_health(liveness_available=False, degraded_reason=base_degraded_reason())
+                pending_clock[0] = None
+                current_result[0] = None
+                box_loc = None
+                box_label = None
+                web_app.update_status(
+                    state="SERVICE_DEGRADED",
+                    message="Blink verification unavailable - please ask your supervisor",
+                    worker_id=None, worker_name=None, face_detected=False,
+                    known_workers=recognizer.known_count,
+                )
+                time.sleep(0.05)
+                continue
 
             # 3. Skip during display hold; drop results that land mid-hold so a
             #    lingering face can't re-trigger off stale data every cycle.
@@ -610,7 +635,7 @@ def run(args):
                         return cosine_sim(pending["encoding"], emb) >= config.RECOGNITION_MATCH_THRESHOLD
 
                     blink_ok = (
-                        liveness.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
+                        recognizer.liveness_policy.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
                         if box_loc is not None
                         else False
                     )

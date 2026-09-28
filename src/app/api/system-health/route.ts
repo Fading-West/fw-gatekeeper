@@ -5,6 +5,7 @@ import { api } from '../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
+import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
@@ -47,6 +48,8 @@ type SystemHealthPayload = {
       type: string;
       location: string;
       last_sync: string | null;
+      roster_applied_at: string | null;
+      purge_pending: boolean;
       status: KioskStatus;
       expected_worker_count: number;
       last_attendance_upload: string | null;
@@ -84,21 +87,15 @@ function getKioskStatus(lastSync: string | null): KioskStatus {
   return 'offline';
 }
 
-const DEGRADED_REASON_LABELS: Record<string, string> = {
-  camera_error: 'camera failure — the kiosk cannot scan',
-  model_error: 'recognition model failed to load — all scans are rejected',
-  encoding_mismatch: 'face encodings do not match the kiosk model — all workers are rejected',
-  no_workers_synced: 'no workers synced — every scan is rejected',
-  liveness_unavailable: 'blink verification unavailable — scans are recorded unverified',
-};
+
 
 function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
   if (!health) return [];
   const issues: string[] = [];
-  if (health.camera_ok === false) issues.push(DEGRADED_REASON_LABELS.camera_error);
-  if (health.model_ok === false) issues.push(DEGRADED_REASON_LABELS.model_error);
+  if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
+  if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
   if (health.degraded_reason && health.degraded_reason !== 'camera_error' && health.degraded_reason !== 'model_error') {
-    issues.push(DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
+    issues.push(KIOSK_DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
   }
   if ((health.queued_logs ?? 0) > 0) {
     issues.push(`${health.queued_logs} attendance record${health.queued_logs === 1 ? '' : 's'} queued on-device`);
@@ -178,11 +175,16 @@ export async function GET(req: NextRequest) {
         type: kiosk.type,
         location: kiosk.location,
         last_sync: kiosk.last_sync,
+        roster_applied_at: kiosk.roster_applied_at ?? null,
+        purge_pending: Boolean(kiosk.purge_pending),
         status,
         expected_worker_count: readyWorkerCount,
         last_attendance_upload: latestTimestamp(matchingEvents),
         health: kiosk.health ?? null,
-        device_issues: getDeviceIssues(kiosk.health ?? null),
+        device_issues: [
+          ...getDeviceIssues(kiosk.health ?? null),
+          ...(kiosk.purge_pending ? ['Biometric purge still unconfirmed on this kiosk'] : []),
+        ],
       };
     });
 
@@ -251,7 +253,8 @@ async function fetchFaceHealth(url: string): Promise<FaceServiceHealth> {
       body = null;
     }
 
-    const modelReady = Boolean(body?.det_exists && body?.rec_exists);
+    // Detection runs on OpenCV's bundled Haar cascade; only the recognition model is downloaded.
+    const modelReady = Boolean(body?.rec_exists);
     const healthy = res.ok && (!body?.status || body.status === 'ok') && modelReady;
     return {
       status: healthy ? 'online' : 'degraded',

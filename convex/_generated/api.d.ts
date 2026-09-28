@@ -9,9 +9,14 @@
  */
 
 import type * as access from "../access.js";
+import type * as activityFeed from "../activityFeed.js";
+import type * as alerts from "../alerts.js";
 import type * as attendance from "../attendance.js";
 import type * as attendanceCorrections from "../attendanceCorrections.js";
 import type * as auth from "../auth.js";
+import type * as crons from "../crons.js";
+import type * as enrollmentPhotos from "../enrollmentPhotos.js";
+import type * as health from "../health.js";
 import type * as http from "../http.js";
 import type * as kioskLookup from "../kioskLookup.js";
 import type * as kiosks from "../kiosks.js";
@@ -34,9 +39,14 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access: typeof access;
+  activityFeed: typeof activityFeed;
+  alerts: typeof alerts;
   attendance: typeof attendance;
   attendanceCorrections: typeof attendanceCorrections;
   auth: typeof auth;
+  crons: typeof crons;
+  enrollmentPhotos: typeof enrollmentPhotos;
+  health: typeof health;
   http: typeof http;
   kioskLookup: typeof kioskLookup;
   kiosks: typeof kiosks;

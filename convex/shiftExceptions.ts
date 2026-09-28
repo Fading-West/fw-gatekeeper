@@ -1,10 +1,12 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
-import { findActiveKioskByIdentifier } from "./kioskLookup";
+import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+
+import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -212,6 +214,12 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
   const workerMissing = !exception.worker_id;
   const workerDisabledReason = "A worker-backed exception is required before an attendance correction can be created.";
 
+  if (exception.type === "unsupported_schedule") {
+    return { ...base, action: "review_only", label: "Fix schedule", cta: "Open schedules",
+      reason: SCHEDULE_TIME_ERROR, href: exception.links.schedules || null,
+      source_href: exception.links.schedules || null, disabled_reason: SCHEDULE_TIME_ERROR };
+  }
+
   if (exception.type === "missing_arrival") {
     const correctedTime = exception.scheduled_start || "06:00";
     return {
@@ -386,11 +394,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   for (const worker of workers) {
-    const schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
+    let schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
     const workerId = String(worker._id);
-    const workerEvents = [...(eventsByWorker.get(workerId) || [])].sort((a, b) =>
-      a.timestamp.localeCompare(b.timestamp),
-    );
+    const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const clockOuts = workerEvents.filter((event) => event.eventType === "clock_out");
     const firstIn = clockIns[0] || null;
@@ -403,6 +409,22 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       worker: `/workers`,
       schedules: "/schedules",
     };
+
+    if (schedule && !isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
+      exceptions.push(createException({
+        key: `${date}:unsupported_schedule:${workerId}`,
+        date, type: "unsupported_schedule", severity: "critical",
+        title: `${workerName} has an unsupported schedule`,
+        description: `${schedule.name}: ${SCHEDULE_TIME_ERROR} Schedule-based attendance checks are unavailable until an administrator fixes the schedule.`,
+        worker_id: workerId, worker_name: workerName, department,
+        kiosk_id: null, kiosk_name: null,
+        first_seen: firstIn?.timestamp || null, last_seen: lastEvent?.timestamp || null,
+        schedule_name: schedule.name, scheduled_start: schedule.startTime, scheduled_end: schedule.endTime,
+        event_count: workerEvents.length, links: baseLinks,
+      }));
+      // Keep scan-based checks, but never suggest a same-day correction from this range.
+      schedule = null;
+    }
 
     if (schedule && !firstIn && scheduleTimeHasPassed(date, schedule.startTime, factoryNow)) {
       const key = `${date}:missing_arrival:${workerId}`;
@@ -499,7 +521,10 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       const firstEventIsOut = index === 0 && event.eventType === "clock_out";
       if (!repeated && !firstEventIsOut) continue;
 
-      const key = `${date}:scan_sequence:${workerId}:${event.timestamp}:${event.eventType}`;
+      // Use the source ID, including synthetic correction IDs: independent scans
+      // can share a timestamp and type. Timestamp-only legacy reviews cannot be
+      // safely attributed after later scans/corrections, so they are not reused.
+      const key = `${date}:scan_sequence:${workerId}:${event._id}`;
       exceptions.push(createException({
         key,
         date,
@@ -529,11 +554,12 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
   }
 
+  const resolveKiosk = createActiveKioskResolver(ctx);
   const kioskNameCache = new Map<string, string | null>();
   async function resolveKioskName(kioskId?: string | null) {
     if (!kioskId) return null;
     if (kioskNameCache.has(kioskId)) return kioskNameCache.get(kioskId) || null;
-    const kiosk = await findActiveKioskByIdentifier(ctx, kioskId);
+    const kiosk = await resolveKiosk(kioskId);
     const name = kiosk?.name || null;
     kioskNameCache.set(kioskId, name);
     return name;
@@ -568,11 +594,26 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       decision === "rejected_unknown" ||
       decision === "unknown" ||
       decision.startsWith("rejected");
-    if (reviewed && !lowMarginAccepted && !riskyDecision) continue;
-    if (!riskyDecision && !lowMarginAccepted && reviewed) continue;
-
     const attemptId = String(attempt.id || attempt._id);
     const key = `${date}:recognition_review:${attemptId}`;
+    const label = recognitionText(attempt, "reviewed_label", "reviewedLabel") || "confirmed";
+    const completed = reviewed && ["confirmed", "corrected", "ignored"].includes(label);
+    const attemptReviewedAt = recognitionText(attempt, "reviewed_at", "reviewedAt");
+    const attemptUpdatedAt = recognitionText(attempt, "updated_at", "updatedAt") || attemptReviewedAt;
+    const explicitReview = reviewsByKey.get(key) as { updatedAt: string } | undefined;
+    // Both screens can review or reopen an exception. The latest action wins;
+    // an old exception disposition must not undo a newer Recognition Lab review.
+    const explicitIsNewer = explicitReview && (
+      !attemptUpdatedAt || Date.parse(explicitReview.updatedAt) > Date.parse(attemptUpdatedAt)
+    );
+    if (!explicitIsNewer) {
+      reviewsByKey.set(key, {
+        status: completed ? (label === "ignored" ? "ignored" : "reviewed") : "open",
+        note: recognitionText(attempt, "reviewed_note", "reviewedNote"),
+        reviewedAt: completed ? attemptReviewedAt : null,
+      });
+    }
+    if (completed && !lowMarginAccepted && !riskyDecision && !explicitReview) continue;
     const candidate = candidateWorkerName || "Unknown person";
     const kioskName = await resolveKioskName(kioskId);
     exceptions.push(createException({

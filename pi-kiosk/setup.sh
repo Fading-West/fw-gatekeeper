@@ -11,7 +11,7 @@
 #    KIOSK_NAME   Display name (default: FW Kiosk)
 #    KIOSK_TYPE   entry | exit (default: entry)
 #    SERVER_URL   Gatekeeper server (default: https://fw-gatekeeper.onrender.com)
-#    KIOSK_API_KEY Shared secret for kiosk API access (required in production)
+#    KIOSK_API_KEY Device credential issued for this kiosk, or the shared migration key
 #    KIOSK_UI_KEY  Local secret for protected kiosk web routes (required)
 #    KIOSK_SUPERVISOR_PIN  Supervisor-only passcode for manual attendance (required)
 #    ENABLE_LIVENESS  Set to 1 to download the 97MB dlib shape predictor used
@@ -49,7 +49,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ -z "$KIOSK_API_KEY" ]; then
-  echo "❌ KIOSK_API_KEY is required. Set it to the same value configured on the Gatekeeper server, then rerun setup."
+  echo "❌ KIOSK_API_KEY is required. Set this kiosk's issued device credential (or its shared migration key before credential issuance), then rerun setup."
   exit 1
 fi
 
@@ -61,6 +61,15 @@ if [ -z "$KIOSK_SUPERVISOR_PIN" ]; then
   echo "❌ KIOSK_SUPERVISOR_PIN is required for manual attendance controls."
   exit 1
 fi
+
+# The native dependency lock targets Bookworm's Python 3.11 on 64-bit ARM.
+# Refuse other images before changing the machine or attempting source builds.
+python3 - <<'PYTHON_TARGET'
+import platform
+import sys
+if platform.machine() != "aarch64" or sys.version_info[:2] != (3, 11):
+    raise SystemExit("Use Raspberry Pi OS Bookworm (64-bit), Python 3.11, for this dependency lock.")
+PYTHON_TARGET
 
 # ─── 1. System Update ──────────────────────────────────────────
 echo "[1/7] Updating system packages..."
@@ -94,15 +103,17 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   git checkout -- pi-kiosk/config.py 2>/dev/null || true
   git pull origin master
 else
-  git clone https://github.com/nztinversive/fw-gatekeeper.git "$INSTALL_DIR"
+  git clone https://github.com/Fading-West/fw-gatekeeper.git "$INSTALL_DIR"
 fi
 
 cd "$INSTALL_DIR/pi-kiosk"
 
 # Python virtual environment
 python3 -m venv venv --system-site-packages
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements.txt
+# picamera2/libcamera remain apt-managed. No pip camera dependency or upgrade.
+# Hash-check the source-build tools first; isolated builds would fetch newer tools.
+./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
+PATH="$PWD/venv/bin:$PATH" ./venv/bin/python -m pip install --require-hashes --no-build-isolation -r requirements.lock
 
 # ─── 4. Download Face Models ───────────────────────────────────
 echo "[4/8] Downloading face models..."

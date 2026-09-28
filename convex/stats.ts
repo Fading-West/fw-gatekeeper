@@ -33,22 +33,23 @@ export const get = query({
 
     const today = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
 
-    const allWorkers = await ctx.db
+    const activeWorkers = await ctx.db
       .query("workers")
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
-    const totalWorkers = allWorkers.length;
+    const totalWorkers = activeWorkers.length;
+    const activeWorkerIds = new Set<string>(activeWorkers.map((worker) => String(worker._id)));
 
-    // Get today's records
-    const todayAttendance = await listEffectiveAttendanceByTimestampRange(ctx, today);
+    // All dashboard metrics use the current active roster, including historical dates.
+    // Filter only this summary; attendance history still retains inactive workers.
+    const todayAttendance = (await listEffectiveAttendanceByTimestampRange(ctx, today))
+      .filter((record) => activeWorkerIds.has(record.workerId));
 
+    // The helper orders by instant, including offsets and subsecond precision.
     // Latest event per worker
     const workerStatus = new Map<string, { eventType: string; timestamp: string }>();
     for (const a of todayAttendance) {
-      const existing = workerStatus.get(a.workerId);
-      if (!existing || a.timestamp > existing.timestamp) {
-        workerStatus.set(a.workerId, { eventType: a.eventType, timestamp: a.timestamp });
-      }
+      workerStatus.set(a.workerId, { eventType: a.eventType, timestamp: a.timestamp });
     }
 
     let clockedIn = 0;
@@ -63,8 +64,7 @@ export const get = query({
     const firstIns = new Map<string, string>();
     for (const a of todayAttendance) {
       if (a.eventType === "clock_in") {
-        const existing = firstIns.get(a.workerId);
-        if (!existing || a.timestamp < existing) {
+        if (!firstIns.has(a.workerId)) {
           firstIns.set(a.workerId, a.timestamp);
         }
       }

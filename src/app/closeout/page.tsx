@@ -1,11 +1,12 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useSelectedData } from '@/hooks/useSelectedData';
 import {
   ShiftCloseoutChecklistItem,
   ShiftCloseoutResponse,
@@ -49,26 +50,27 @@ function checklistExportLine(item: ShiftCloseoutChecklistItem) {
 }
 
 function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string) {
+  const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
     `Status: ${payload.closeout?.status || 'open'}`,
     `Supervisor: ${supervisorName || payload.closeout?.supervisor_name || 'Not set'}`,
     `Completed: ${formatDateTime(payload.closeout?.completed_at)}`,
     '',
-    'Summary',
-    `Expected: ${payload.summary.expected}`,
-    `Present: ${payload.summary.present}`,
-    `Late: ${payload.summary.late}`,
-    `Missing: ${payload.summary.missing}`,
-    `Open exceptions: ${payload.summary.open_exceptions}`,
-    `Critical exceptions: ${payload.summary.critical_exceptions}`,
-    `Kiosk warnings: ${payload.summary.kiosk_warnings}`,
-    `Attendance corrections: ${payload.summary.attendance_corrections}`,
+    payload.closeout?.status === 'completed' ? 'Signed summary' : 'Current summary',
+    `Expected: ${summary.expected}`,
+    `Present: ${summary.present}`,
+    `Late: ${summary.late}`,
+    `Missing: ${summary.missing}`,
+    `Open exceptions: ${summary.open_exceptions}`,
+    `Critical exceptions: ${summary.critical_exceptions}`,
+    `Kiosk warnings: ${summary.kiosk_warnings}`,
+    `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
     '',
-    'Checklist',
+    'Current checklist',
     ...payload.checklist.map(checklistExportLine),
     '',
-    'Closeout Autopilot Draft',
+    'Current closeout draft',
     payload.closeout_draft?.narrative || 'No closeout draft available.',
     '',
     'Notes',
@@ -162,41 +164,33 @@ function ShiftCloseoutPageContent() {
   const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
   const currentRole = usePortalRole();
   const [date, setDate] = useState(queryDate);
-  const [payload, setPayload] = useState<ShiftCloseoutResponse | null>(null);
   const [supervisorName, setSupervisorName] = useState('');
   const [notes, setNotes] = useState('');
   const [acknowledgedBlockers, setAcknowledgedBlockers] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setIsPending] = useState(false);
+  const mutationPendingRef = useRef(false);
   const canOperate = canOperateCloseout(currentRole);
 
   useEffect(() => {
     setDate(queryDate);
   }, [queryDate]);
 
-  const fetchCloseout = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetch(`/api/shift-closeout?date=${date}`, { cache: 'no-store' });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || 'Failed to load shift closeout');
-      setPayload(body);
-      setSupervisorName(body.closeout?.supervisor_name || '');
-      setNotes(body.closeout?.notes || '');
-      setAcknowledgedBlockers(Boolean(body.closeout?.acknowledged_blockers));
-    } catch (err) {
-      setPayload(null);
-      setError(err instanceof Error ? err.message : 'Failed to load shift closeout');
-    } finally {
-      setLoading(false);
-    }
+  const loadCloseout = useCallback(async (signal: AbortSignal): Promise<ShiftCloseoutResponse> => {
+    const res = await fetch(`/api/shift-closeout?date=${date}`, { cache: 'no-store', signal });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error || 'Failed to load shift closeout');
+    if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    return body;
   }, [date]);
+  const { data: payload, loading, error, refresh: fetchCloseout } = useSelectedData(date, loadCloseout);
+  const dataReady = Boolean(payload && !loading && !error);
 
   useEffect(() => {
-    fetchCloseout();
-  }, [fetchCloseout]);
+    setSupervisorName(payload?.closeout?.supervisor_name || '');
+    setNotes(payload?.closeout?.notes || '');
+    setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
+  }, [payload]);
+
 
   const status = payload?.closeout?.status || 'open';
   const completed = status === 'completed';
@@ -210,8 +204,8 @@ function ShiftCloseoutPageContent() {
       ? acknowledgedBlockers && notes.trim()
       : payload.can_complete
   ));
-  const closeoutLabel = completed ? 'Shift closeout complete' : blockerCount ? 'Closeout needs acknowledgement' : 'Ready to close shift';
-  const closeoutDescription = completed
+  const closeoutLabel = !dataReady ? (error ? 'Closeout unavailable' : 'Loading closeout') : completed ? 'Shift closeout complete' : blockerCount ? 'Closeout needs acknowledgement' : 'Ready to close shift';
+  const closeoutDescription = !dataReady ? 'Wait for this shift record to load before signing off.' : completed
     ? `Completed ${formatDateTime(payload?.closeout?.completed_at)}. Reopen if a supervisor needs to correct the record.`
     : blockerCount
       ? 'Review the blocked checklist items or add an acknowledgement note before completing the closeout.'
@@ -248,6 +242,7 @@ function ShiftCloseoutPageContent() {
   }, [payload]);
 
   function updateCloseout(action: 'save' | 'complete' | 'reopen') {
+    if (!dataReady || mutationPendingRef.current) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can update shift closeout.', 'error');
       return;
@@ -257,7 +252,9 @@ function ShiftCloseoutPageContent() {
       return;
     }
 
-    startTransition(async () => {
+    mutationPendingRef.current = true;
+    setIsPending(true);
+    void (async () => {
       try {
         const res = await fetch('/api/shift-closeout', {
           method: 'PATCH',
@@ -276,8 +273,11 @@ function ShiftCloseoutPageContent() {
         await fetchCloseout();
       } catch (err) {
         toast(err instanceof Error ? err.message : 'Failed to update closeout', 'error');
+      } finally {
+        mutationPendingRef.current = false;
+        setIsPending(false);
       }
-    });
+    })();
   }
 
   return (
@@ -293,13 +293,13 @@ function ShiftCloseoutPageContent() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <button type="button" onClick={fetchCloseout} className="btn-secondary" disabled={loading}>
+          <button type="button" onClick={fetchCloseout} className="btn-secondary" disabled={loading || isPending}>
             {loading ? 'Refreshing...' : 'Refresh'}
           </button>
-          <button type="button" onClick={() => window.print()} className="btn-secondary">
+          <button type="button" onClick={() => dataReady && window.print()} disabled={!dataReady} className="btn-secondary">
             Print
           </button>
-          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes)} className="btn-primary" disabled={!payload}>
+          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes)} className="btn-primary" disabled={!dataReady}>
             Export
           </button>
         </div>
@@ -412,11 +412,11 @@ function ShiftCloseoutPageContent() {
           <section className="glass-card p-5 space-y-4">
             <div>
               <h2 className="font-display font-semibold text-slate-100">Supervisor signoff</h2>
-              <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close.</p>
+              <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
             <label className="space-y-1.5 block">
               <span className="section-label block">Date</span>
-              <input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
+              <input type="date" disabled={isPending} value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
             </label>
             <label className="space-y-1.5 block">
               <span className="section-label block">Supervisor</span>
@@ -427,7 +427,7 @@ function ShiftCloseoutPageContent() {
                   setSupervisorName(event.target.value);
                 }}
                 placeholder="Supervisor name"
-                readOnly={!canOperate}
+                readOnly={completed || !dataReady || isPending || !canOperate}
                 className="input-field"
               />
             </label>
@@ -446,7 +446,7 @@ function ShiftCloseoutPageContent() {
                       type="button"
                       className="btn-secondary shrink-0 text-xs"
                       onClick={() => setNotes(draftNarrative)}
-                      disabled={draftApplied || !draftNarrative}
+                      disabled={isPending || draftApplied || !draftNarrative}
                     >
                       {draftApplied ? 'Draft applied' : 'Use draft'}
                     </button>
@@ -497,7 +497,7 @@ function ShiftCloseoutPageContent() {
                       type="button"
                       className="btn-secondary shrink-0 text-xs"
                       onClick={() => setNotes(suggestedNote)}
-                      disabled={suggestedNoteApplied}
+                      disabled={isPending || suggestedNoteApplied}
                     >
                       {suggestedNoteApplied ? 'Applied' : 'Use note'}
                     </button>
@@ -520,7 +520,7 @@ function ShiftCloseoutPageContent() {
                   setNotes(event.target.value);
                 }}
                 placeholder={canOperate ? 'Document exceptions reviewed, kiosk caveats, or follow-up needed.' : 'Closeout notes'}
-                readOnly={!canOperate}
+                readOnly={completed || !dataReady || isPending || !canOperate}
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
@@ -533,7 +533,7 @@ function ShiftCloseoutPageContent() {
                     if (!canOperate) return;
                     setAcknowledgedBlockers(event.target.checked);
                   }}
-                  disabled={!canOperate}
+                  disabled={!dataReady || isPending || !canOperate}
                   className="mt-1 h-4 w-4 rounded border-navy-500 bg-navy-900"
                 />
                 <span>I acknowledge the blocked closeout items and documented the reason in notes.</span>
@@ -542,15 +542,15 @@ function ShiftCloseoutPageContent() {
             <div className="flex flex-wrap gap-2">
               {canOperate ? (
                 <>
-                  <button type="button" className="btn-secondary" onClick={() => updateCloseout('save')} disabled={isPending || !payload}>
+                  <button type="button" className="btn-secondary" onClick={() => updateCloseout('save')} disabled={completed || !dataReady || isPending || !payload}>
                     Save notes
                   </button>
                   {completed ? (
-                    <button type="button" className="btn-primary" onClick={() => updateCloseout('reopen')} disabled={isPending || !payload}>
+                    <button type="button" className="btn-primary" onClick={() => updateCloseout('reopen')} disabled={!dataReady || isPending || !payload}>
                       Reopen
                     </button>
                   ) : (
-                    <button type="button" className="btn-primary" onClick={() => updateCloseout('complete')} disabled={isPending || !payload || !canComplete}>
+                    <button type="button" className="btn-primary" onClick={() => updateCloseout('complete')} disabled={!dataReady || isPending || !payload || !canComplete}>
                       Complete closeout
                     </button>
                   )}

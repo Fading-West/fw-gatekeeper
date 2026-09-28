@@ -1,3 +1,6 @@
+import { validateReceiptDigests } from "./attendance";
+import { ConvexError } from "convex/values";
+import { validateAttendanceBatch, validateAttendanceEvent } from "./attendanceValidation";
 import { httpRouter } from 'convex/server';
 import { auth } from './auth';
 import { internal } from './_generated/api';
@@ -21,6 +24,64 @@ function publicJsonResponse(body: unknown) {
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
 }
+
+function activityJsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+async function hasValidActivityCredential(request: Request) {
+  const expected = process.env.ACTIVITY_FW_GATEWAY_TOKEN?.trim();
+  if (!expected || expected.length < 32) return false;
+  const authorization = request.headers.get('authorization');
+  if (!authorization?.startsWith('Bearer ')) return false;
+  const presented = authorization.slice('Bearer '.length).trim();
+  if (presented.length !== expected.length) return false;
+
+  const encoder = new TextEncoder();
+  const [presentedDigest, expectedDigest] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(presented)),
+    crypto.subtle.digest('SHA-256', encoder.encode(expected)),
+  ]);
+  const presentedBytes = new Uint8Array(presentedDigest);
+  const expectedBytes = new Uint8Array(expectedDigest);
+  let difference = 0;
+  for (let index = 0; index < presentedBytes.length; index += 1) {
+    difference |= presentedBytes[index] ^ expectedBytes[index];
+  }
+  return difference === 0;
+}
+
+const activityFeedRead = httpAction(async (ctx, request) => {
+  const expected = process.env.ACTIVITY_FW_GATEWAY_TOKEN?.trim();
+  const sourceAccountId = process.env.ACTIVITY_FW_GATEWAY_ACCOUNT_ID?.trim();
+  if (!expected || expected.length < 32 || !sourceAccountId) {
+    console.error('activity_feed_unconfigured');
+    return activityJsonResponse({ error: 'Activity feed is not configured' }, 503);
+  }
+  if (!(await hasValidActivityCredential(request))) {
+    return activityJsonResponse({ error: 'Unauthorized' }, 401);
+  }
+
+  const result = await ctx.runQuery(internal.activityFeed.read, {
+    sourceAccountId,
+    queriedAt: new Date().toISOString(),
+  });
+  if (!result.authorized) {
+    const status = result.reason === 'mapping_missing' ? 503 : 403;
+    return activityJsonResponse({ error: status === 503 ? 'Activity source account is not configured' : 'Forbidden' }, status);
+  }
+  if ('error' in result) {
+    console.error('activity_feed_scan_limit_exceeded');
+    return activityJsonResponse({ error: 'Activity feed unavailable' }, 503);
+  }
+  return activityJsonResponse(result.payload);
+});
 
 type PublicKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
@@ -137,11 +198,34 @@ const attendanceBulkIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'events array required' }, 400);
   }
 
-  const result = await ctx.runMutation(internal.attendance.bulkCreateFromHttp, {
-    events: body.events,
-  });
-  console.info('secured_ingest_attendance', { received: body.events.length, synced: result.synced });
-  return jsonResponse(result);
+  try {
+    const events = validateAttendanceBatch(body.events);
+    if (body.checkpoint !== undefined && typeof body.checkpoint !== "boolean") {
+      return jsonResponse({ error: 'checkpoint must be a boolean' }, 400);
+    }
+    const receiptHash = body.checkpoint ? Array.from(new Uint8Array(await crypto.subtle.digest(
+      'SHA-256', new TextEncoder().encode(JSON.stringify(events)),
+    )), byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
+    const result = await ctx.runMutation(internal.attendance.bulkCreateFromHttp, { events, receiptHash });
+    console.info('secured_ingest_attendance', { received: events.length, synced: result.synced });
+    return jsonResponse(result);
+  } catch (error) {
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message, code: error.data.code }, 400);
+    throw error;
+  }
+});
+
+const attendanceReceiptStatus = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  try {
+    const digests = validateReceiptDigests(body?.digests);
+    const acknowledged = await ctx.runQuery(internal.attendance.receiptStatus, { digests });
+    return jsonResponse({ acknowledged });
+  } catch (error) {
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    throw error;
+  }
 });
 
 const attendanceIngest = httpAction(async (ctx, request) => {
@@ -154,15 +238,22 @@ const attendanceIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'workerId and eventType required' }, 400);
   }
 
-  const result = await ctx.runMutation(internal.attendance.createFromHttp, {
-    workerId: body.workerId,
-    eventType: body.eventType,
-    kioskId: typeof body.kioskId === 'string' ? body.kioskId : undefined,
-    timestamp: typeof body.timestamp === 'string' ? body.timestamp : undefined,
-    idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
-  });
-  console.info('secured_ingest_attendance_single', { workerId: body.workerId });
-  return jsonResponse(result, 201);
+  try {
+    const event = validateAttendanceEvent({ ...body, timestamp: body.timestamp ?? new Date().toISOString() });
+    const result = await ctx.runMutation(internal.attendance.createFromHttp, {
+      workerId: event.workerId,
+      eventType: event.eventType,
+      kioskId: event.kioskId,
+      timestamp: body.timestamp === undefined ? undefined : event.timestamp,
+      idempotencyKey: event.idempotencyKey,
+      note: event.note,
+    });
+    console.info('secured_ingest_attendance_single', { workerId: event.workerId });
+    return jsonResponse(result, 201);
+  } catch (error) {
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    throw error;
+  }
 });
 
 const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
@@ -175,15 +266,22 @@ const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'attempts array required' }, 400);
   }
 
-  const result = await ctx.runMutation(internal.recognitionAttempts.bulkIngestFromHttp, {
-    attempts: body.attempts,
-  });
-  console.info('secured_ingest_recognition', {
-    received: body.attempts.length,
-    ingested: result.ingested,
-    skipped: result.skipped,
-  });
-  return jsonResponse(result, 201);
+  try {
+    const result = await ctx.runMutation(internal.recognitionAttempts.bulkIngestFromHttp, {
+      attempts: body.attempts,
+    });
+    console.info('secured_ingest_recognition', {
+      received: body.attempts.length,
+      ingested: result.ingested,
+      skipped: result.skipped,
+    });
+    return jsonResponse(result, 201);
+  } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'RECOGNITION_ATTEMPT_CONFLICT') {
+      return jsonResponse({ error: error.data.message, code: error.data.code }, 409);
+    }
+    throw error;
+  }
 });
 
 const kioskLastSyncIngest = httpAction(async (ctx, request) => {
@@ -205,6 +303,19 @@ const kioskLastSyncIngest = httpAction(async (ctx, request) => {
   return jsonResponse(result);
 });
 
+const kioskAuthenticate = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body !== 'object') return jsonResponse({ error: 'Credential lookup required' }, 400);
+  if (body.mode === 'device' && typeof body.credentialHash === 'string') {
+    return jsonResponse(await ctx.runQuery(internal.kiosks.authenticateDevice, { credentialHash: body.credentialHash }));
+  }
+  if (body.mode === 'legacy' && typeof body.identifier === 'string') {
+    return jsonResponse(await ctx.runQuery(internal.kiosks.authenticateLegacy, { identifier: body.identifier }));
+  }
+  return jsonResponse({ error: 'Credential lookup required' }, 400);
+});
+
 const workerSyncRead = httpAction(async (ctx, request) => {
   if (!hasValidIngestCredential(request)) {
     return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -212,16 +323,55 @@ const workerSyncRead = httpAction(async (ctx, request) => {
 
   const body = await readJsonBody(request);
   const since = body && typeof body.since === 'string' ? body.since : undefined;
-  const workers = await ctx.runQuery(internal.workers.listForSyncFromHttp, { since });
-  console.info('secured_ingest_worker_sync', { returned: workers.length });
-  return jsonResponse({ workers });
+  const inclusive = body?.inclusive === true;
+  const cursor = body && typeof body.cursor === 'string' ? body.cursor : undefined;
+  const page = await ctx.runQuery(internal.workers.listForSyncFromHttp, { since, inclusive, cursor });
+  console.info('secured_ingest_worker_sync', { returned: page.workers.length, isDone: page.isDone });
+  return jsonResponse(page);
 });
 
+const rosterReceiptIssue = httpAction(async (ctx, request) => {
+  // This bearer key belongs only to the Next server. Public kiosk keys are
+  // authenticated at /api/sync before Next calls this privileged endpoint.
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body.documentId !== 'string' || !body.documentId.trim()) {
+    return jsonResponse({ error: 'documentId required' }, 400);
+  }
+  try {
+    const issued = await ctx.runMutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: body.documentId as any });
+    return issued ? jsonResponse(issued) : jsonResponse({ error: 'Credentialed kiosk required' }, 404);
+  } catch {
+    return jsonResponse({ error: 'Invalid kiosk document ID' }, 400);
+  }
+});
+
+const rosterReceiptAck = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body.documentId !== 'string' || typeof body.receipt !== 'string' || !body.receipt.trim()) {
+    return jsonResponse({ error: 'documentId and receipt required' }, 400);
+  }
+  try {
+    const result = await ctx.runMutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, {
+      documentId: body.documentId as any, receipt: body.receipt as any,
+    });
+    return result.acknowledged ? jsonResponse(result) : jsonResponse({ error: 'Receipt is not pending for this kiosk' }, 409);
+  } catch {
+    return jsonResponse({ error: 'Invalid roster receipt' }, 400);
+  }
+});
+
+http.route({ path: '/api/ingest/attendance/receipts', method: 'POST', handler: attendanceReceiptStatus });
 http.route({ path: '/api/ingest/attendance', method: 'POST', handler: attendanceIngest });
 http.route({ path: '/api/ingest/attendance/bulk', method: 'POST', handler: attendanceBulkIngest });
 http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', handler: recognitionAttemptsBulkIngest });
 http.route({ path: '/api/ingest/kiosks/last-sync', method: 'POST', handler: kioskLastSyncIngest });
+http.route({ path: '/api/ingest/kiosks/authenticate', method: 'POST', handler: kioskAuthenticate });
 http.route({ path: '/api/ingest/workers/sync', method: 'POST', handler: workerSyncRead });
+http.route({ path: '/api/ingest/kiosks/roster-receipt/issue', method: 'POST', handler: rosterReceiptIssue });
+http.route({ path: '/api/ingest/kiosks/roster-receipt/ack', method: 'POST', handler: rosterReceiptAck });
 http.route({ path: '/api/public/kiosk-health', method: 'GET', handler: publicKioskHealth });
+http.route({ path: '/api/internal/activity', method: 'GET', handler: activityFeedRead });
 
 export default http;

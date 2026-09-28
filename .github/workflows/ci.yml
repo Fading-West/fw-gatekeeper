@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     env:
       NEXT_PUBLIC_CONVEX_URL: https://ci-only.convex.cloud
@@ -35,7 +35,7 @@ jobs:
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
   face-service-image:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

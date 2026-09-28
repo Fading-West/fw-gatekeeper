@@ -33,12 +33,14 @@ fake_liveness.LivenessChecker = mock.Mock
 with mock.patch.dict(sys.modules, {"embeddings": fake_embeddings, "liveness": fake_liveness}):
     import recognition  # noqa: E402
 
+from matching import FreshFaceMatcher
+
 ENCODING = np.ones(512, dtype=np.float64)
 SERVER_ID = "jh7f1wb6ndevpfktsdq1vmwmd584grnd"
 
 
 def _ok_response():
-    return mock.Mock(status_code=200, text="")
+    return mock.Mock(status_code=200, text="", json=lambda: {"synced": 0})
 
 
 class AttendanceServerIdMappingTests(unittest.TestCase):
@@ -141,6 +143,95 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         self.assertEqual(ids, [worker_id])
         self.assertEqual(server_ids, {worker_id: SERVER_ID})
 
+    # --- live roster synchronization --------------------------------------
+
+    def _run_sync_cycle(self, recognizer, rows, online=True):
+        reporter = mock.Mock()
+        worker = sync.SyncWorker(recognizer=recognizer, health_reporter=reporter)
+        worker._running = True
+        response = mock.Mock(status_code=200, json=lambda: {
+            "workers": rows, "synced_at": "2026-09-02T12:00:00",
+        })
+        def stop_after_cycle(_seconds):
+            worker._running = False
+        with mock.patch.object(sync, "check_server", return_value=online), \
+             mock.patch.object(sync.requests, "get", return_value=response), \
+             mock.patch.object(sync, "sync_attendance", return_value=True), \
+             mock.patch.object(sync, "sync_recognition_attempts", return_value=True), \
+             mock.patch.object(sync.time, "sleep", side_effect=stop_after_cycle), \
+             mock.patch.object(config, "SYNC_INTERVAL", 1):
+            worker._run()
+        return reporter
+
+    def _loaded_recognizer(self):
+        worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id=SERVER_ID, employee_id="E1")
+        database.set_sync_state("last_worker_sync", "2026-09-01T12:00:00")
+        recognizer = recognition.FaceRecognizer()
+        recognizer.load_faces()
+        return worker_id, recognizer
+
+    def _matches(self, recognizer, matcher, frame_ts, encoding=ENCODING):
+        encodings, ids, _, server_ids = recognizer.snapshot_known_faces()
+        _, approved = matcher.match(encoding, list(enumerate(encodings)), ids, server_ids, frame_ts)
+        return approved
+
+    def test_partial_sync_publishes_deactivation_without_claiming_success(self):
+        for invalid_row in (
+            {"id": "invalid", "name": "Invalid", "active": True, "face_encoding": [0.1]},
+            None,  # Unexpected exception after an already-committed deletion.
+        ):
+            with self.subTest(invalid_row=invalid_row):
+                worker_id, recognizer = self._loaded_recognizer()
+                matcher = FreshFaceMatcher(window=3, threshold=0.5)
+                self.assertTrue(self._matches(recognizer, matcher, 1.0))
+                reporter = self._run_sync_cycle(recognizer, [
+                    {"id": SERVER_ID, "active": False}, invalid_row,
+                ])
+                self.assertIsNone(database.get_worker_by_id(worker_id))
+                self.assertFalse(self._matches(recognizer, matcher, 2.0))
+                self.assertEqual(database.get_sync_state("last_worker_sync"), "2026-09-01T12:00:00")
+                self.assertFalse(any("last_sync_at" in call.kwargs for call in reporter.call_args_list))
+
+    def test_reload_failure_clears_stale_roster_and_later_reload_recovers(self):
+        _, recognizer = self._loaded_recognizer()
+        matcher = FreshFaceMatcher(window=3, threshold=0.5)
+        self.assertTrue(self._matches(recognizer, matcher, 1.0))
+        with mock.patch.object(database, "get_worker_roster", side_effect=RuntimeError("SQLite unavailable")):
+            reporter = self._run_sync_cycle(recognizer, [{"id": SERVER_ID, "active": False}])
+        self.assertFalse(self._matches(recognizer, matcher, 2.0))
+        self.assertEqual(recognizer.usable_count, 0)
+        self.assertFalse(any("last_sync_at" in call.kwargs for call in reporter.call_args_list))
+        database.add_worker(name="replacement", encoding=-ENCODING, server_id="replacement", employee_id="E2")
+        reporter = self._run_sync_cycle(recognizer, [])
+        self.assertTrue(self._matches(recognizer, matcher, 3.0, -ENCODING))
+        self.assertTrue(any("last_sync_at" in call.kwargs for call in reporter.call_args_list))
+
+    def test_successful_sync_publishes_replacement_and_advances_watermark(self):
+        _, recognizer = self._loaded_recognizer()
+        matcher = FreshFaceMatcher(window=3, threshold=0.5)
+        self.assertTrue(self._matches(recognizer, matcher, 1.0))
+        reporter = self._run_sync_cycle(recognizer, [
+            {"id": SERVER_ID, "active": False},
+            {"id": "replacement", "name": "Replacement", "employee_id": "E2", "active": True,
+             "face_encoding": (-ENCODING).tolist()},
+        ])
+        self.assertFalse(self._matches(recognizer, matcher, 2.0))
+        self.assertTrue(self._matches(recognizer, matcher, 3.0, -ENCODING))
+        self.assertEqual(database.get_sync_state("last_worker_sync"), "2026-09-02T12:00:00")
+        self.assertTrue(any("last_sync_at" in call.kwargs for call in reporter.call_args_list))
+
+    def test_unchanged_and_offline_cycles_preserve_recognition(self):
+        for online in (True, False):
+            with self.subTest(online=online):
+                _, recognizer = self._loaded_recognizer()
+                matcher = FreshFaceMatcher(window=3, threshold=0.5)
+                self.assertTrue(self._matches(recognizer, matcher, 1.0))
+                reporter = self._run_sync_cycle(recognizer, [], online=online)
+                self.assertTrue(self._matches(recognizer, matcher, 2.0))
+                self.assertEqual(any("last_sync_at" in call.kwargs for call in reporter.call_args_list), online)
+                self.assertEqual(database.get_sync_state("last_worker_sync"),
+                                 "2026-09-02T12:00:00" if online else "2026-09-01T12:00:00")
+
     # --- worker deletion --------------------------------------------------
 
     def test_deactivation_delete_freezes_mapping_on_queued_rows(self):
@@ -163,7 +254,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
         self.assertEqual(self._row(legacy_id)["server_worker_id"], SERVER_ID)
 
-    def test_delete_overwrites_stale_snapshot_with_latest_live_server_id(self):
+    def test_delete_preserves_original_snapshot_after_live_id_changes(self):
         server_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         server_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id=server_a)
@@ -175,15 +266,15 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         conn.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
         conn.commit()
 
-        self.assertEqual(self._row(log_id)["server_worker_id"], server_b)
+        self.assertEqual(self._row(log_id)["server_worker_id"], server_a)
         with mock.patch.object(sync.requests, "post", return_value=_ok_response()) as post:
             self.assertTrue(sync.sync_attendance())
-        self.assertEqual(post.call_args.kwargs["json"]["logs"][0]["worker_id"], server_b)
+        self.assertEqual(post.call_args.kwargs["json"]["logs"][0]["worker_id"], server_a)
 
     # --- startup migration ------------------------------------------------
 
     def test_init_db_backfills_queued_rows_only(self):
-        worker_id = database.add_worker(name="prime", encoding=ENCODING, server_id="server-prime")
+        worker_id = database.add_worker(name="prime", encoding=ENCODING, server_id="cccccccccccccccccccccccccccccccc")
         queued_id = self._insert_legacy_row(worker_id, name="prime", synced=0)
         synced_id = self._insert_legacy_row(worker_id, name="prime", synced=1)
         blank_id = self._insert_legacy_row(worker_id, name="prime", synced=0)
@@ -193,8 +284,8 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
         database.init_db()
 
-        self.assertEqual(self._row(queued_id)["server_worker_id"], "server-prime")
-        self.assertEqual(self._row(blank_id)["server_worker_id"], "server-prime")
+        self.assertEqual(self._row(queued_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
+        self.assertEqual(self._row(blank_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
         self.assertIsNone(self._row(synced_id)["server_worker_id"])
 
     def test_init_db_replaces_old_installed_delete_trigger(self):
@@ -218,7 +309,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
             "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
             "AND name = 'attendance_keep_server_id_before_worker_delete'"
         ).fetchone()["sql"]
-        self.assertNotIn("server_worker_id IS NULL", trigger_sql)
+        self.assertIn("server_worker_id IS NULL", trigger_sql)
 
         worker_id = database.add_worker(name="upgrade", encoding=ENCODING, server_id="server-b")
         log_id = database.log_attendance(
@@ -228,7 +319,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
             server_worker_id="server-a",
         )
         database.remove_worker_by_server_id("server-b")
-        self.assertEqual(self._row(log_id)["server_worker_id"], "server-b")
+        self.assertEqual(self._row(log_id)["server_worker_id"], "server-a")
 
     # --- sync -------------------------------------------------------------
 
@@ -247,9 +338,9 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         self.assertEqual(self._row(log_id)["synced"], 1)
         self.assertEqual(database.count_unsynced_logs(), 0)
 
-    def test_sync_prefers_live_server_id_over_stale_snapshot(self):
-        """Worker deleted and re-created on the server: queued rows follow the current id."""
-        worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id="old-server-id")
+    def test_sync_preserves_original_server_id_when_live_id_changes(self):
+        """The identity captured when attendance happened must remain authoritative."""
+        worker_id = database.add_worker(name="caleb", encoding=ENCODING, server_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         database.log_attendance(worker_id=worker_id, worker_name="caleb", action="clock_in")
         database.add_worker(name="caleb", encoding=ENCODING, server_id=None)  # name match keeps the row
         conn = database._get_conn()
@@ -260,7 +351,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
             self.assertTrue(sync.sync_attendance())
 
         sent = post.call_args.kwargs["json"]["logs"]
-        self.assertEqual([entry["worker_id"] for entry in sent], ["new-server-id"])
+        self.assertEqual([entry["worker_id"] for entry in sent], ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])
 
     def test_orphaned_rows_stay_queued_and_warn_once_per_set(self):
         self._insert_legacy_row(4, ts="2026-06-01T08:00:00")
@@ -309,7 +400,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         self.assertEqual(self._row(log_id)["synced"], 0)
 
     def test_mixed_batch_sends_mapped_rows_and_keeps_orphans(self):
-        worker_id = database.add_worker(name="prime", encoding=ENCODING, server_id="server-prime")
+        worker_id = database.add_worker(name="prime", encoding=ENCODING, server_id="cccccccccccccccccccccccccccccccc")
         good_id = database.log_attendance(worker_id=worker_id, worker_name="prime", action="clock_in")
         orphan_id = self._insert_legacy_row(4)
 
@@ -317,7 +408,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
             self.assertFalse(sync.sync_attendance())  # not fully drained
 
         sent = post.call_args.kwargs["json"]["logs"]
-        self.assertEqual([entry["worker_id"] for entry in sent], ["server-prime"])
+        self.assertEqual([entry["worker_id"] for entry in sent], ["cccccccccccccccccccccccccccccccc"])
         self.assertEqual(self._row(good_id)["synced"], 1)
         self.assertEqual(self._row(orphan_id)["synced"], 0)
 

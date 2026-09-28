@@ -1,10 +1,18 @@
-face_recognition
-numpy
-Pillow
-picamera2; platform_machine == "aarch64"
-requests
-flask
-opencv-python-headless
-dlib
-scipy
-onnxruntime
+# Direct dependency inputs for Raspberry Pi OS Bookworm, CPython 3.11, aarch64.
+# setup.sh installs requirements.lock with hashes and locked build tools.
+# Regenerate with scripts/lock-python-dependencies.sh from the repository root.
+# picamera2/libcamera are apt-only, visible through --system-site-packages.
+# Never add picamera2 here: pip must not replace the OS camera stack.
+# numpy must remain <2 and match the face service.
+numpy==1.26.4
+scipy==1.17.1
+Pillow==12.3.0
+requests==2.34.2
+flask==3.1.3
+opencv-python-headless==4.11.0.86
+onnxruntime==1.29.0
+dlib==20.0.1
+face_recognition==1.3.0
+face_recognition_models==0.3.0
+# face_recognition_models imports pkg_resources without declaring setuptools.
+setuptools==80.9.0
