@@ -5,6 +5,7 @@ import LogPage from './page';
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-14') }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast }) }));
+vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'viewer' }));
 vi.mock('@/components/AttendanceTable', () => ({ default: () => null, attendanceRowId: (id: string) => id }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 

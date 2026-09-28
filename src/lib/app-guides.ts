@@ -134,7 +134,7 @@ export const appGuides: AppGuide[] = [
       'Review correction history to understand any supervisor changes.',
       'Export events or calculated hours when the record must be shared.',
     ],
-    tips: ['A source-linked view highlights the relevant worker or event.', 'Attendance corrections belong in Exceptions, not directly in this table.'],
+    tips: ['A source-linked view highlights the relevant worker or event.', 'Create attendance corrections in Exceptions; authorized operators can reverse a recorded correction here with a reason.'],
     related: [{ href: '/exceptions', label: 'Review an exception' }, { href: '/closeout', label: 'Return to closeout' }],
   },
   {

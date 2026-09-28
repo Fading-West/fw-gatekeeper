@@ -30,9 +30,11 @@ export default defineSchema({
     active: v.boolean(),
     createdAt: v.string(),
     updatedAt: v.optional(v.string()),
+    sessionRevokedAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
-    .index("by_active", ["active"]),
+    .index("by_active", ["active"])
+    .index("by_active_and_role", ["active", "role"]),
 
   pendingEnrollmentPhotos: defineTable({
     storageId: v.id("_storage"),
@@ -57,7 +59,8 @@ export default defineSchema({
     biometricsPurgedAt: v.optional(v.string()),
   })
     .index("by_active", ["active"])
-    .index("by_employee_id_and_active", ["employeeId", "active"]),
+    .index("by_employee_id_and_active", ["employeeId", "active"])
+    .index("by_updated_at_and_enrolled_at", ["updatedAt", "enrolledAt"]),
 
   // Append-only trail of privileged or privacy-relevant actions
   // (worker deactivation, biometric purge). Never edited or deleted.
@@ -108,12 +111,25 @@ export default defineSchema({
     relatedExceptionKey: v.optional(v.string()),
     reason: v.string(),
     supervisorName: v.optional(v.string()),
+    actorUserId: v.optional(v.id("users")),
     createdAt: v.string(),
     updatedAt: v.string(),
   })
     .index("by_date", ["date"])
     .index("by_worker_date", ["workerId", "date"])
     .index("by_original_attendance", ["originalAttendanceId"])
+    .index("by_requestId", ["requestId"]),
+
+  attendanceCorrectionReversals: defineTable({
+    correctionId: v.id("attendanceCorrections"),
+    requestId: v.string(),
+    date: v.string(),
+    workerId: v.string(),
+    reason: v.string(),
+    actorUserId: v.id("users"),
+    createdAt: v.string(),
+  })
+    .index("by_correctionId", ["correctionId"])
     .index("by_requestId", ["requestId"]),
 
   recognitionAttempts: defineTable({
@@ -180,6 +196,8 @@ export default defineSchema({
     type: v.string(),
     location: v.string(),
     lastSync: v.optional(v.string()),
+    rosterAppliedAt: v.optional(v.string()),
+    lastRosterReceiptId: v.optional(v.id("kioskRosterReceipts")),
     // Self-reported device health, sent alongside each worker sync. A kiosk
     // whose network is up but whose camera/model is broken must not look
     // healthy on the dashboard.
@@ -194,9 +212,23 @@ export default defineSchema({
       lastScanAt: v.optional(v.string()),
       reportedAt: v.string(),
     })),
+    credentialHash: v.optional(v.string()),
+    credentialIssuedAt: v.optional(v.string()),
+    credentialRevokedAt: v.optional(v.string()),
+    // Existing devices retain shared-key access until a credential is issued.
+    // Issuance permanently disables the shared key for that kiosk.
+    legacyDisabledAt: v.optional(v.string()),
     active: v.boolean(),
   }).index("by_active", ["active"])
-    .index("by_kiosk_id", ["kioskId"]),
+    .index("by_kiosk_id", ["kioskId"])
+    .index("by_credential_hash", ["credentialHash"]),
+
+  // At most one outstanding roster receipt per registered kiosk. Its issue
+  // time precedes the full roster read, so an ack cannot cover later purges.
+  kioskRosterReceipts: defineTable({
+    kioskId: v.id("kiosks"),
+    issuedAt: v.string(),
+  }).index("by_kiosk", ["kioskId"]),
 
   // One row per (kiosk, condition) episode, written by the alerting cron in
   // convex/alerts.ts. A row is "open" while resolvedAt is unset; a fresh
