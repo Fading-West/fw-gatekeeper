@@ -1,5 +1,23 @@
 # Kiosk alerting and external health monitoring
 
+## New person alerts
+
+When a worker is first enrolled or a portal account is first created, Convex records a
+pending `peopleAlertEvents` row and immediately attempts delivery. A five-minute cron
+retries pending events after provider failures or missing configuration. Updating a
+worker, re-enrolling an existing worker, resetting a portal password, and changing a
+portal role do not create a new alert. Existing people are not backfilled.
+
+Set `RESEND_API_KEY`, `ALERT_EMAIL_FROM`, and `PEOPLE_ALERT_EMAIL_TO` on the **Convex
+production deployment** to receive email. `PEOPLE_ALERT_EMAIL_TO` accepts a
+comma-separated list. Set
+`PEOPLE_ALERT_WEBHOOK_URL` for an optional JSON webhook. The email includes only the
+person's name or portal email, department or role, addition time, and a dashboard link;
+it never includes face data. Delivery status remains visible in `peopleAlertEvents`.
+The endpoint accepts a stable Resend idempotency key for retries. A webhook receiver
+should deduplicate by `event_id` if exactly-once handling is important.
+
+
 Nothing used to watch FW Gatekeeper when no dashboard tab was open. This document
 covers the two pieces that fix that:
 
