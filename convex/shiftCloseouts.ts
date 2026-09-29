@@ -229,10 +229,10 @@ function buildCloseoutDraft(input: {
     buildDraftSection(
       "attendance_summary",
       "Attendance summary",
-      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers present, ${input.summary.late} late, and ${input.summary.missing} missing from effective attendance evidence.`,
+      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.`,
       [
         {
-          label: "briefing attendance summary",
+          label: "briefing attendance evidence",
           href: buildHref("/briefing", { date: input.date }),
           count: input.summary.expected,
           exact: false,
