@@ -63,6 +63,7 @@ function buildChecklist(input: {
   missingClockOuts: any[];
   recognitionReviews: any[];
   kioskWarnings: number;
+  unavailableWorkers: number;
   acknowledgedBlockers: boolean;
 }) {
   const criticalClear = input.criticalExceptions.length === 0 || input.acknowledgedBlockers;
@@ -85,6 +86,15 @@ function buildChecklist(input: {
   const recognitionHref = firstRecognitionLabHref || buildHref("/calibration/recognition", { date: input.date, review_status: "unreviewed" });
 
   return [
+    ...(input.unavailableWorkers > 0 ? [{
+      id: "schedule_coverage",
+      label: "Unavailable schedule coverage acknowledged",
+      status: input.acknowledgedBlockers ? "clear" : "blocked",
+      count: input.unavailableWorkers,
+      href: "/schedules",
+      proof: proof(input.unavailableWorkers, "workers with unsupported schedules", "/schedules", false),
+      description: `${input.unavailableWorkers} workers are excluded from attendance totals until their unsupported schedules are fixed.`,
+    }] : []),
     {
       id: "critical_exceptions",
       label: "Critical exceptions reviewed",
@@ -321,6 +331,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     missingClockOuts,
     recognitionReviews,
     kioskWarnings,
+    unavailableWorkers: briefing.coverage_unavailable,
     acknowledgedBlockers,
   });
   const sourceBlockers = buildChecklist({
@@ -330,15 +341,16 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     missingClockOuts,
     recognitionReviews,
     kioskWarnings,
+    unavailableWorkers: briefing.coverage_unavailable,
     acknowledgedBlockers: false,
   }).filter((item) => item.status === "blocked");
   const blockers = checklist.filter((item) => item.status === "blocked");
   const canComplete = blockers.length === 0;
   const summary = {
-    expected: briefing.summary.expected,
-    present: briefing.summary.present,
-    late: briefing.summary.late,
-    missing: briefing.summary.missing,
+    expected: briefing.daily_attendance.expected,
+    present: briefing.daily_attendance.present,
+    late: briefing.daily_attendance.late,
+    missing: briefing.daily_attendance.missing,
     open_exceptions: openExceptions.length,
     critical_exceptions: criticalExceptions.length,
     missing_clock_outs: missingClockOuts.length,
@@ -446,6 +458,7 @@ export const save = mutation({
     const acknowledgedBlockers = args.action === "reopen" ? false : args.acknowledgedBlockers ?? existing?.acknowledgedBlockers ?? false;
     const nextNotes = notes || (hasNotesArg ? undefined : normalizeText(existing?.notes));
     const hasSourceBlockers = Boolean(
+      current.checklist.some((item) => item.id === "schedule_coverage" && item.count > 0) ||
       current.summary.critical_exceptions ||
       current.summary.missing_clock_outs ||
       current.summary.recognition_reviews ||
