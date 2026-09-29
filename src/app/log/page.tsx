@@ -8,6 +8,7 @@ import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
+import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 
@@ -155,13 +156,6 @@ function LogPageContent() {
     if (!queryAttendanceId || !events.some((event) => event.id === queryAttendanceId)) return;
     document.getElementById(attendanceRowId(queryAttendanceId))?.scrollIntoView({ block: 'center' });
   }, [events, queryAttendanceId]);
-
-  // Quote/escape a value for CSV so names or departments containing commas,
-  // quotes, or newlines cannot shift columns in the exported file.
-  const csvField = (value: unknown) => {
-    const text = String(value ?? '');
-    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-  };
 
   const downloadCSV = (content: string, filename: string) => {
     const blob = new Blob([content], { type: 'text/csv' });
