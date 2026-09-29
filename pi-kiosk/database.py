@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +18,19 @@ import config
 logger = logging.getLogger(__name__)
 _local = threading.local()
 _IDENTITY_NOT_CAPTURED = object()
+
+
+def _attendance_epoch(value: str) -> Optional[float]:
+    """Compare instants without rewriting immutable event evidence.
+
+    Pre-upgrade rows are naive device-local wall times. Their timezone (and
+    repeated DST hour) cannot be recovered; retain their local interpretation.
+    New offset-bearing rows identify the exact instant, including during DST.
+    """
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _serialize_encoding(encoding: np.ndarray) -> bytes:
@@ -49,6 +62,7 @@ def _get_conn() -> sqlite3.Connection:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
+        _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA foreign_keys=OFF")
     return _local.conn
@@ -691,7 +705,7 @@ def log_attendance(
     """
     conn = _get_conn()
     normalized_action = _normalize_action(action)
-    timestamp = timestamp or datetime.now().isoformat(timespec="seconds")
+    timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
     server_worker_id = server_worker_id or get_server_id(worker_id) or None
     cursor = conn.execute(
         """
@@ -727,12 +741,12 @@ def log_attendance(
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
-    threshold = (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
     row = conn.execute(
         """
         SELECT id FROM attendance_log
-        WHERE worker_id = ? AND timestamp >= ?
-        ORDER BY timestamp DESC LIMIT 1
+        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
+        LIMIT 1
         """,
         (worker_id, threshold),
     ).fetchone()
@@ -743,7 +757,8 @@ def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
     conn = _get_conn()
     row = conn.execute(
-        "SELECT action FROM attendance_log WHERE worker_id = ? ORDER BY timestamp DESC LIMIT 1",
+        """SELECT action FROM attendance_log WHERE worker_id = ?
+        ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
         (worker_id,),
     ).fetchone()
     return row["action"] if row else None
@@ -752,15 +767,18 @@ def get_last_action(worker_id: int) -> Optional[str]:
 def get_today_logs(limit: int = 50) -> list[dict]:
     """Return today's gatekeeper activity."""
     conn = _get_conn()
+    # Convert each local midnight separately: DST days can be 23 or 25 hours.
+    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
     rows = conn.execute(
         """
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, note
         FROM attendance_log
-        WHERE date(timestamp) = date('now', 'localtime')
-        ORDER BY timestamp DESC
+        WHERE attendance_epoch(timestamp) >= ? AND attendance_epoch(timestamp) < ?
+        ORDER BY attendance_epoch(timestamp) DESC, id DESC
         LIMIT ?
         """,
-        (limit,),
+        (start.timestamp(), end.timestamp(), limit),
     ).fetchall()
     logs: list[dict] = []
     for row in rows:
@@ -910,7 +928,7 @@ def log_recognition_attempt(
             get_server_id(candidate_worker_id) if candidate_worker_id is not None else None
         )
     conn = _get_conn()
-    timestamp = timestamp or datetime.now().isoformat(timespec="seconds")
+    timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
     cursor = conn.execute(
         """
         INSERT INTO recognition_attempts
