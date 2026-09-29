@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
+import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 type WorkerCoverageStatus = "present" | "late" | "missing" | "clocked_out" | "still_clocked_in";
 type DepartmentCoverageStatus = "covered" | "short" | "critical" | "unscheduled";
@@ -191,6 +192,7 @@ function buildShiftTrustBrief(input: {
   };
   actionItems: any[];
   todaysSchedules: any[];
+  unavailableWorkers: number;
   workers: any[];
   openExceptions: any[];
   criticalExceptions: any[];
@@ -223,6 +225,13 @@ function buildShiftTrustBrief(input: {
       "Shift trust cannot be calculated until a schedule includes this date.",
       1,
       "/schedules",
+    ));
+  }
+  if (input.unavailableWorkers > 0) {
+    readinessBlockers.push(risk(
+      "schedule:unsupported", "schedule", "critical", "Schedule coverage unavailable",
+      `${plural(input.unavailableWorkers, "worker")} excluded from coverage counts. ${SCHEDULE_TIME_ERROR}`,
+      input.unavailableWorkers, "/schedules",
     ));
   }
   if (input.summary.missing > 0) {
@@ -377,7 +386,10 @@ function buildShiftTrustBrief(input: {
     : readinessStatus === "blocked"
       ? "Morning readiness is blocked"
       : "Morning readiness needs attention";
-  const summarySentence = `${statusLead}: ${input.summary.present}/${input.summary.expected} expected workers are present, ${input.summary.late} late, ${input.summary.missing} missing, ${input.summary.open_exceptions} open exceptions, and ${input.summary.kiosk_warnings} kiosk warnings.`;
+  const coverageCaveat = input.unavailableWorkers > 0
+    ? ` Coverage is unavailable for ${plural(input.unavailableWorkers, "worker")} with unsupported schedules; counts include supported schedules only.`
+    : "";
+  const summarySentence = `${statusLead}: ${input.summary.present}/${input.summary.expected} expected workers are present, ${input.summary.late} late, ${input.summary.missing} missing, ${input.summary.open_exceptions} open exceptions, and ${input.summary.kiosk_warnings} kiosk warnings.${coverageCaveat}`;
   const primaryAction = input.actionItems[0]
     ? {
         ...input.actionItems[0],
@@ -482,10 +494,18 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     let late = 0;
     let missing = 0;
     let clockedOut = 0;
+    let attended = 0;
+    let arrivedLate = 0;
+    let unavailableWorkers = 0;
 
     for (const worker of workers) {
       const schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
       if (!schedule) continue;
+      // Do not fall back to another schedule when the assigned schedule is invalid.
+      if (!isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
+        unavailableWorkers += 1;
+        continue;
+      }
 
       expected += 1;
       const workerId = String(worker._id);
@@ -493,6 +513,9 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       const firstIn = events.find((event) => event.eventType === "clock_in") || null;
       const lastEvent = events[events.length - 1] || null;
       const status = getWorkerStatus({ schedule, firstIn, lastEvent });
+      // Daily attendance survives clock-out; live coverage intentionally does not.
+      if (firstIn) attended += 1;
+      if (getWorkerStatus({ schedule, firstIn, lastEvent: null }) === "late") arrivedLate += 1;
       const department = normalizeText(worker.department) || "Unassigned";
       const departmentKey = `${department}:${schedule.name}:${schedule.startTime}:${schedule.endTime}`;
 
@@ -591,6 +614,13 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     const missingClockOuts = openExceptions.filter((exception) => exception.type === "missing_clock_out");
     const exceptionActions = openExceptions.filter((exception) => exception.type !== "recognition_review");
     const actionItems = [
+      ...(unavailableWorkers > 0 ? [{
+        id: "schedules:unsupported",
+        priority: "critical" as ActionPriority,
+        label: "Schedule coverage unavailable",
+        description: `${plural(unavailableWorkers, "worker")} excluded from coverage counts. ${SCHEDULE_TIME_ERROR}`,
+        href: "/schedules",
+      }] : []),
       ...departmentRows
         .filter((row) => row.status !== "covered")
         .map((row) => ({
@@ -675,6 +705,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       summary,
       actionItems,
       todaysSchedules,
+      unavailableWorkers,
       workers,
       openExceptions,
       criticalExceptions,
@@ -690,6 +721,8 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       date,
       generated_at: generatedAt,
       summary,
+      daily_attendance: { expected, present: attended, late: arrivedLate, missing },
+      coverage_unavailable: unavailableWorkers,
       departments: departmentRows,
       workers: workerRows,
       action_items: actionItems,
