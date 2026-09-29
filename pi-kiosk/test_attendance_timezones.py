@@ -85,6 +85,17 @@ class AttendanceTimezoneTests(unittest.TestCase):
             self.log("2026-09-29T13:00:00+00:00")
             self.assertFalse(database.was_recently_clocked(1, 5))
 
+    def test_malformed_historical_rows_do_not_break_local_readers(self):
+        with local_clock("America/Denver", datetime(2026, 9, 29, 14, 0, tzinfo=timezone.utc)):
+            self.log("not-a-timestamp", "clock_out")
+            self.log("2026-02-30T08:00:00", "clock_out")
+            self.assertFalse(database.was_recently_clocked(1, 5))
+            self.assertEqual(database.get_today_logs(), [])
+            valid = self.log()
+            self.assertTrue(database.was_recently_clocked(1, 5))
+            self.assertEqual(database.get_last_action(1), "clock_in")
+            self.assertEqual([row["id"] for row in database.get_today_logs()], [valid])
+
     def test_today_uses_device_local_midnights_for_both_timestamp_formats(self):
         with local_clock("America/Denver", datetime(2026, 9, 30, 5, 59, tzinfo=timezone.utc)):
             self.log("2026-09-29T05:59:59+00:00")  # previous local date

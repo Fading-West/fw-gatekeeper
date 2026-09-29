@@ -768,7 +768,7 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     """Return today's gatekeeper activity."""
     conn = _get_conn()
     # Convert each local midnight separately: DST days can be 23 or 25 hours.
-    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
     end = start + timedelta(days=1)
     rows = conn.execute(
         """
