@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { csvField } from './csv';
 
-it.each(['=1+1', '+SUM(A1:A2)', '-1+2', '@SUM(A1:A2)', '  =1+1', '\t=1+1', '\uFEFF=1+1'])(
+it.each(['=1+1', '+SUM(A1:A2)', '-1+2', '@SUM(A1:A2)', '  =1+1', '\t=1+1', '\uFEFF=1+1', '＝1+1', '＋1+1', '－1+1', '＠SUM(A1:A2)'])(
   'exports formula-like text as a literal cell: %j', (value) => {
     expect(csvField(value)).toBe(`'${value}`);
   },
