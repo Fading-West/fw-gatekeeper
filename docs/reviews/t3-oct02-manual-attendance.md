@@ -7,3 +7,5 @@ Scope: manual attendance only, master-based. Preserve the separate automatic rec
 Regression code: test_t3_manual_attendance.py covers real disposable SQLite transactions, concurrent replay, restart, deletion, receipt-write failure and Flask validation/authorization. UI holds selection while outcome is uncertain and retains the operation through network/auth failures.
 
 Validation status: source-only; no tests/runtime/builds run because serialized host admission remains pending behind FWCRM and UnitFlow. Exact-head checks and normal supervisor app acceptance remain required before PR readiness. Physical device, deployed backend and production release acceptance remain pending.
+
+Review correction: the browser persists only the pending operation ID and local worker ID before transmission, restores that identity across page reload, and clears it only after a terminal receipt. Unavailable/corrupt browser intent storage blocks new submissions before HTTP. Regression source covers reload, removed roster selection, and storage failure. All three original commits are retained. No runtime checks executed.

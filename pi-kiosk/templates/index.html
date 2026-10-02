@@ -582,6 +582,36 @@
         let supervisorStateVersion = 0;
         let manualSubmitting = false;
         let pendingManualRequest = null;
+        const manualIntentKey = "fw-gatekeeper-pending-manual-attendance-v1";
+        let manualIntentStorageError = false;
+        try {
+            const saved = localStorage.getItem(manualIntentKey);
+            if (saved !== null) {
+                const intent = JSON.parse(saved);
+                if (!intent || !Number.isSafeInteger(intent.worker_id) || intent.worker_id <= 0 ||
+                    typeof intent.request_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(intent.request_id)) {
+                    throw new Error("Invalid saved attendance intent");
+                }
+                pendingManualRequest = { worker_id: intent.worker_id, request_id: intent.request_id };
+                manualName.disabled = true;
+                manualResult.textContent = "Attendance confirmation pending. Retry before selecting another worker.";
+            }
+        } catch (_) {
+            manualIntentStorageError = true;
+        }
+
+        function retainManualRequest(operation) {
+            const saved = JSON.stringify(operation);
+            localStorage.setItem(manualIntentKey, saved);
+            if (localStorage.getItem(manualIntentKey) !== saved) throw new Error("Attendance intent not saved");
+            pendingManualRequest = operation;
+        }
+
+        function clearManualRequest() {
+            localStorage.removeItem(manualIntentKey);
+            if (localStorage.getItem(manualIntentKey) !== null) throw new Error("Attendance receipt not cleared");
+            pendingManualRequest = null;
+        }
 
         function tickClock() {
             const now = new Date();
@@ -766,6 +796,11 @@
 
         async function submitManualClock() {
             if (manualSubmitting) return;
+            if (manualIntentStorageError) {
+                manualResult.textContent = "Browser attendance storage is unavailable. Ask your supervisor to restore it before submitting.";
+                manualResult.style.color = "#ff9e8f";
+                return;
+            }
             const workerId = pendingManualRequest ? String(pendingManualRequest.worker_id) : manualName.value;
             if (!workerId) {
                 manualResult.textContent = "Select a worker.";
@@ -773,7 +808,14 @@
                 return;
             }
             if (!pendingManualRequest || pendingManualRequest.worker_id !== Number(workerId)) {
-                pendingManualRequest = { worker_id: Number(workerId), request_id: crypto.randomUUID() };
+                try {
+                    retainManualRequest({ worker_id: Number(workerId), request_id: crypto.randomUUID() });
+                } catch (_) {
+                    manualIntentStorageError = true;
+                    manualResult.textContent = "Could not save attendance intent. Nothing was submitted; restore browser storage and reload.";
+                    manualResult.style.color = "#ff9e8f";
+                    return;
+                }
             }
             manualSubmitting = true;
             manualBtn.disabled = true;
@@ -791,7 +833,7 @@
                 const data = await response.json();
                 if (operationStateVersion !== supervisorStateVersion || !adminVisible) {
                     if ((response.ok && data.success) || (response.status >= 400 && response.status < 500 && response.status !== 401)) {
-                        pendingManualRequest = null;
+                        clearManualRequest();
                     }
                     return;
                 }
@@ -801,13 +843,13 @@
                         openSupervisorDialog("Supervisor session expired. Unlock again to retry.");
                         return;
                     }
-                    if (response.status >= 400 && response.status < 500) pendingManualRequest = null;
+                    if (response.status >= 400 && response.status < 500) clearManualRequest();
                     if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                     manualResult.textContent = data.error || "Manual clock failed.";
                     manualResult.style.color = "#ff9e8f";
                     return;
                 }
-                pendingManualRequest = null;
+                clearManualRequest();
                 if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                 manualResult.textContent = `${data.worker_name}: ${data.action.replace("_", " ")}`;
                 manualResult.style.color = "#87dfb3";
