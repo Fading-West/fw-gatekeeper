@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 import threading
 import time
 from datetime import datetime
@@ -161,7 +160,7 @@ def _detect_primary_face(frame) -> Optional[tuple[int, int, int, int]]:
 
 def add_worker(name: str):
     database.init_db()
-    Path(config.FACES_DIR).mkdir(parents=True, exist_ok=True)
+    database.recover_photo_cleanup()
 
     worker_name = name.strip()
     if not worker_name:
@@ -191,11 +190,8 @@ def add_worker(name: str):
     print(f"Enrollment preview running at http://localhost:{PREVIEW_PORT}")
     print("Look at the camera and blink naturally. 3 live captures are required.")
 
-    folder = Path(config.FACES_DIR) / _safe_name(worker_name)
-    folder.mkdir(parents=True, exist_ok=True)
-
     encodings: list[np.ndarray] = []
-    photo_paths: list[str] = []
+    photo_bytes: list[bytes] = []
     last_capture = 0.0
 
     try:
@@ -234,11 +230,15 @@ def add_worker(name: str):
                         message = "Samples do not match: retake with the same worker, or cancel to start again"
                     if encoding is not None:
                         capture_index = len(encodings) + 1
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        photo_path = folder / f"capture_{capture_index}_{timestamp}.jpg"
-                        cv2.imwrite(str(photo_path), frame)
+                        ok, photo = cv2.imencode(".jpg", frame)
+                        if not ok:
+                            liveness.reset()
+                            _set_preview(display, "Photo encoding failed; retake this capture", len(encodings), liveness.get_ear(), False)
+                            continue
+                        # No biometric files are published while the operator is
+                        # still capturing or can cancel this enrollment.
                         encodings.append(encoding)
-                        photo_paths.append(str(photo_path))
+                        photo_bytes.append(photo.tobytes())
                         message = f"Captured sample {capture_index}/{SAMPLES_REQUIRED}"
                         liveness.reset()
                         live = False
@@ -292,15 +292,14 @@ def add_worker(name: str):
         print("Enrollment samples do not identify one consistent worker; retake them.")
         return 1
     average_encoding = normalize_embedding(np.mean(np.vstack(encodings), axis=0))
-    worker_id = database.add_worker(
-        name=worker_name,
-        encoding=average_encoding,
-        photo_paths=photo_paths,
-        enrolled_at=datetime.now().isoformat(timespec="seconds"),
-    )
+    try:
+        worker_id = database.publish_local_enrollment(worker_name, average_encoding, photo_bytes)
+    except (OSError, ValueError):
+        print("Enrollment could not be saved; owned captures are journaled for cleanup. Retry enrollment.")
+        return 1
 
     print(f"Enrolled '{worker_name}' (id={worker_id})")
-    print(f"Saved {len(photo_paths)} photos under: {folder}")
+    print(f"Saved {len(photo_bytes)} owned photos under: {config.PHOTO_DIR}")
     return 0
 
 
@@ -327,16 +326,7 @@ def remove_worker(name: str):
         print(f"Worker not found: {name}")
         return 1
 
-    for photo_path in worker.get("photo_paths", []):
-        path = Path(photo_path)
-        if path.exists():
-            path.unlink()
-
-    folder = Path(config.FACES_DIR) / _safe_name(worker["name"])
-    if folder.exists() and folder.is_dir():
-        shutil.rmtree(folder, ignore_errors=True)
-
-    if database.remove_worker(worker["name"]):
+    if database.remove_local_worker_owned(worker["name"]):
         print(f"Removed worker: {worker['name']}")
         return 0
 
