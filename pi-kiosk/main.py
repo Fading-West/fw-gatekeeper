@@ -36,16 +36,39 @@ logger = logging.getLogger("main")
 
 
 class Camera:
-    def __init__(self, mode="auto"):
+    def __init__(self, mode="auto", retry_seconds=5, clock=time.monotonic):
         self._cam = None
+        self._requested_mode = mode
         self._mode = mode
-        self._is_rgb = False  # True if camera returns RGB (picamera2)
+        self._backend = None
+        self._is_rgb = False
+        self._retry_seconds = retry_seconds
+        self._clock = clock
+        self._retry_at = 0.0
+
+    def _close_camera(self):
+        camera, backend = self._cam, self._backend
+        self._cam, self._backend = None, None
+        if camera is None:
+            return
+        try:
+            if backend == "pi":
+                try:
+                    camera.stop()
+                finally:
+                    camera.close()
+            else:
+                camera.release()
+        except Exception:
+            logger.warning("Camera cleanup failed", exc_info=True)
 
     def start(self):
-        if self._mode in ("pi", "auto"):
+        self._close_camera()
+        if self._requested_mode in ("pi", "auto"):
             try:
                 from picamera2 import Picamera2
                 self._cam = Picamera2()
+                self._backend = "pi"
                 cam_config = self._cam.create_video_configuration(
                     main={"size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT), "format": "RGB888"}
                 )
@@ -56,40 +79,46 @@ class Camera:
                 self._is_rgb = True
                 logger.info("Pi Camera initialized (RGB mode)")
                 return
-            except Exception as e:
-                if self._mode == "pi":
-                    raise RuntimeError(f"Pi Camera failed: {e}")
-                logger.info(f"Pi Camera not available ({e}), trying USB...")
-
-        self._cam = cv2.VideoCapture(config.CAMERA_INDEX)
-        self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-        self._cam.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
-        if not self._cam.isOpened():
-            raise RuntimeError("No camera available")
-        self._mode = "usb"
-        self._is_rgb = False
-        logger.info("USB Camera initialized (BGR mode)")
+            except Exception as exc:
+                self._close_camera()
+                if self._requested_mode == "pi":
+                    raise RuntimeError(f"Pi Camera failed: {exc}") from exc
+                logger.info("Pi Camera not available (%s), trying USB...", exc)
+        try:
+            self._cam = cv2.VideoCapture(config.CAMERA_INDEX)
+            self._backend = "usb"
+            self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
+            self._cam.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
+            if not self._cam.isOpened():
+                raise RuntimeError("No camera available")
+            self._mode = "usb"
+            self._is_rgb = False
+            logger.info("USB Camera initialized (BGR mode)")
+        except Exception:
+            self._close_camera()
+            raise
 
     def capture(self):
-        """Returns (bgr_frame, rgb_frame)"""
-        if self._mode == "pi":
-            rgb = self._cam.capture_array()
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            return bgr, rgb
-        else:
+        """Reopen failed capture devices after bounded backoff; never reuse them."""
+        if self._cam is None and self._clock() < self._retry_at:
+            raise RuntimeError("Camera reconnect pending")
+        try:
+            if self._cam is None:
+                self.start()
+            if self._mode == "pi":
+                rgb = self._cam.capture_array()
+                return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), rgb
             ret, bgr = self._cam.read()
             if not ret:
                 raise RuntimeError("Failed to capture frame")
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            return bgr, rgb
+            return bgr, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        except Exception:
+            self._close_camera()
+            self._retry_at = self._clock() + self._retry_seconds
+            raise
 
     def stop(self):
-        if self._cam is None:
-            return
-        if self._mode == "pi":
-            self._cam.stop()
-        else:
-            self._cam.release()
+        self._close_camera()
 
 
 GOLD = (11, 134, 184)
@@ -311,6 +340,26 @@ def run(args):
     pending_frame = [None]  # (bgr, rgb) tuple
     current_result = [None]
     detect_count = [0]
+    camera_generation = [0]
+
+    def publish_detection(result, generation):
+        # A detector may finish native work after capture has disconnected.
+        # Publication and generation retirement share the same barrier.
+        with detect_lock:
+            if generation != camera_generation[0]:
+                return False
+            if result is not None:
+                result["camera_generation"] = generation
+            current_result[0] = result
+            return True
+
+    def consume_detection():
+        with detect_lock:
+            result = current_result[0]
+            current_result[0] = None
+            if result is not None and result.get("camera_generation") != camera_generation[0]:
+                return None
+            return result
 
     last_clocks = {}
     display_until = [0.0]
@@ -322,6 +371,7 @@ def run(args):
     def detection_loop():
         logger.info("Detection thread started")
         embedding_history = FreshFaceMatcher(config.RECOGNITION_EMBEDDING_WINDOW, config.RECOGNITION_MATCH_THRESHOLD)
+        matching_generation = None
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -331,7 +381,10 @@ def run(args):
                 time.sleep(0.1)
                 continue
 
-            bgr_frame, rgb_frame, frame_ts = frames
+            bgr_frame, rgb_frame, frame_ts, generation = frames
+            if generation != matching_generation:
+                embedding_history.clear()
+                matching_generation = generation
 
             try:
                 # Use dlib for face DETECTION (finding where the face is)
@@ -344,7 +397,7 @@ def run(args):
 
                 if not locs:
                     embedding_history.clear()
-                    current_result[0] = None
+                    publish_detection(None, generation)
                     continue
 
                 # Scale to full resolution
@@ -358,12 +411,12 @@ def run(args):
                 except Exception as e:
                     logger.error("ONNX encoding error: %s", e)
                     embedding_history.clear()
-                    current_result[0] = _empty_recognition_result(face_loc, decision="rejected_model_error")
+                    publish_detection(_empty_recognition_result(face_loc, decision="rejected_model_error"), generation)
                     continue
 
                 if embedding is None:
                     embedding_history.clear()
-                    current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding")
+                    publish_detection(_empty_recognition_result(face_loc, decision="rejected_no_embedding"), generation)
                     continue
 
                 # Match against known workers
@@ -395,7 +448,7 @@ def run(args):
                         # failed recognition.
                         logger.warning("Dim mismatch: no roster encodings match live dim=%d", cand_dim)
                         embedding_history.clear()
-                        current_result[0] = _empty_recognition_result(face_loc, decision="rejected_dim_mismatch")
+                        publish_detection(_empty_recognition_result(face_loc, decision="rejected_dim_mismatch"), generation)
                         continue
 
                     scores, frame_accepted = embedding_history.match(
@@ -426,7 +479,7 @@ def run(args):
                 ):
                     decision = "near_miss"
 
-                current_result[0] = {
+                publish_detection({
                     "face_loc": face_loc,
                     "frame_ts": frame_ts,
                     "name": matched,
@@ -442,12 +495,12 @@ def run(args):
                     "threshold": config.RECOGNITION_MATCH_THRESHOLD,
                     "liveness_confirmed": False,
                     "model_version": config.RECOGNITION_MODEL_VERSION,
-                }
+                }, generation)
 
             except Exception as e:
                 logger.error("Detection error: %s", e, exc_info=True)
                 embedding_history.clear()
-                current_result[0] = None
+                publish_detection(None, generation)
 
     det_thread = threading.Thread(target=detection_loop, daemon=True, name="face-detect")
     det_thread.start()
@@ -462,6 +515,8 @@ def run(args):
     def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
                      server_worker_id=None):
         """Log the clock event + telemetry, update the display. Returns True on success."""
+        if not camera_healthy or result.get("camera_generation") != camera_generation[0]:
+            return False
         if config.KIOSK_TYPE == "entry":
             action = "clock_in"
         elif config.KIOSK_TYPE == "exit":
@@ -529,6 +584,24 @@ def run(args):
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
                 logger.error("Capture error: %s", e)
+                with detect_lock:
+                    camera_generation[0] += 1
+                    pending_frame[0] = None
+                    current_result[0] = None
+                pending_clock[0] = None
+                if liveness is not None:
+                    liveness.reset()
+                display_until[0] = 0.0
+                unknown_streak = 0
+                box_loc = None
+                box_label = None
+                box_color = GOLD
+                web_app.set_frame(None)
+                web_app.update_status(
+                    state="ERROR", message="Camera unavailable - reconnecting. Please ask your supervisor",
+                    worker_name=None, worker_id=None, face_detected=False,
+                    liveness_confirmed=False, confidence=None, ear=0.0, action=None,
+                )
                 if camera_healthy:
                     camera_healthy = False
                     web_app.update_health(camera_ok=False, degraded_reason="camera_error")
@@ -538,6 +611,8 @@ def run(args):
             if not camera_healthy:
                 camera_healthy = True
                 web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
+                web_app.update_status(state="IDLE", message="Step toward camera", worker_name=None,
+                                      worker_id=None, face_detected=False)
 
             now = time.time()
 
@@ -548,7 +623,7 @@ def run(args):
             #    against events like blink confirmation)
             with detect_lock:
                 if pending_frame[0] is None:
-                    pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now)
+                    pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now, camera_generation[0])
 
             if config.LIVENESS_REQUIRED and liveness is None:
                 # Roster sync may have recovered since startup while this
@@ -581,10 +656,22 @@ def run(args):
             #    cycles can never complete someone else's attendance.
             pending = pending_clock[0]
             if pending is not None:
-                fresh = current_result[0]
+                # Expiry and camera identity are checked before blink progress or
+                # a late post-blink result can authorize attendance.
+                if pending["camera_generation"] != camera_generation[0] or now > pending["deadline"]:
+                    pending_clock[0] = None
+                    consume_detection()
+                    _log_recognition_attempt(pending["result"], "rejected_liveness_timeout")
+                    liveness.reset()
+                    box_loc = None
+                    box_label = None
+                    web_app.update_status(state="NOT_RECOGNIZED", message="Verification interrupted - please try again",
+                                          worker_name=None, worker_id=None, face_detected=False,
+                                          known_workers=recognizer.known_count)
+                    continue
+                fresh = consume_detection()
                 identity_changed = False
                 if fresh is not None:
-                    current_result[0] = None
                     fresh_identity = (fresh.get("candidate_worker_id"), fresh.get("server_worker_id"))
                     pending_identity = (pending["worker_id"], pending["server_worker_id"])
                     if fresh.get("name") is None or fresh_identity != pending_identity:
@@ -658,16 +745,6 @@ def run(args):
                     )
                     liveness.reset()
                     display_until[0] = now + (config.DISPLAY_TIME_SUCCESS_SEC if recorded else 2)
-                elif now > pending["deadline"]:
-                    pending_clock[0] = None
-                    _log_recognition_attempt(pending["result"], "rejected_liveness_timeout")
-                    web_app.update_status(state="NOT_RECOGNIZED",
-                                          message="Blink not detected - please try again",
-                                          worker_name=pending["display_name"], worker_id=pending["display_id"],
-                                          face_detected=True, confidence=pending["confidence"],
-                                          ear=liveness.get_ear(), known_workers=recognizer.known_count)
-                    liveness.reset()
-                    display_until[0] = now + 2
                 else:
                     waiting_msg = (
                         f"Hold still, {pending['display_name']} - verifying..."
@@ -684,9 +761,7 @@ def run(args):
 
             # 5. Consume the detection result exactly once (a result must never
             #    be reprocessed across loop ticks).
-            result = current_result[0]
-            if result is not None:
-                current_result[0] = None
+            result = consume_detection()
 
             # Roster degradation tracks sync state alone - it must not wait
             # for someone to scan, in either direction.
@@ -823,6 +898,7 @@ def run(args):
                 # Matched - now require a blink before the event is recorded.
                 liveness.reset()
                 pending_clock[0] = {
+                    "camera_generation": camera_generation[0],
                     "result": result,
                     "worker_id": worker_id,
                     "display_name": display_name,
