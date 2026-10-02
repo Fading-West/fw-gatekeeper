@@ -166,4 +166,25 @@ describe('enrollment access loss', () => {
     expect(tree.root.findAllByType('video')).toHaveLength(0);
     expect(button('Continue to Camera').props.disabled).toBe(true);
   });
+
+  it('rejects an old capture callback after regrant and a new preview without fresh consent', async () => {
+    await readyCamera();
+    const staleCapture = button('Start Capture').props.onClick;
+    await changeRole('viewer');
+    await changeRole('admin');
+    await click('Add manually');
+    await act(async () => tree.root.findAllByType('input').find((node) => node.props.id === 'employee-name')!
+      .props.onChange({ target: { value: 'New worker' } }));
+    await click('Continue to Camera');
+    await act(async () => tree.root.findByType('video').props.onLoadedData());
+    await act(async () => { staleCapture(); await vi.advanceTimersByTimeAsync(9000); });
+    expect(button('Start Capture').props.disabled).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(false);
+    await confirmConsent();
+    await act(async () => { staleCapture(); await vi.advanceTimersByTimeAsync(9000); });
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(false);
+    await click('Start Capture');
+    await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(true);
+  });
 });

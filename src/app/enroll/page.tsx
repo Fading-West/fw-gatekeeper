@@ -73,6 +73,10 @@ function EnrollPageContent() {
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const consentRef = useRef(consentConfirmed);
+  const previewReadyRef = useRef(cameraReady);
+  consentRef.current = consentConfirmed;
+  previewReadyRef.current = cameraReady;
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [photoIssues, setPhotoIssues] = useState<string[]>([]);
@@ -342,9 +346,13 @@ function EnrollPageContent() {
 
   submitEnrollmentRef.current = submitEnrollment;
 
+  const captureAccessGeneration = accessGenerationRef.current;
+  const capturePreviewGeneration = cameraRequestRef.current;
   const startCapturing = useCallback(() => {
-    if (!accessRef.current || !consentConfirmed) return;
-    if (!cameraReady || captureTimerRef.current) return;
+    if (!mountedRef.current || !accessRef.current || !consentRef.current) return;
+    if (captureAccessGeneration !== accessGenerationRef.current
+      || capturePreviewGeneration !== cameraRequestRef.current) return;
+    if (!previewReadyRef.current || !streamRef.current || captureTimerRef.current) return;
     setStep('capturing');
     setCaptureCount(0);
     setPhotos([]);
@@ -386,7 +394,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [cameraReady, captureFrame, consentConfirmed, stopCamera]);
+  }, [captureAccessGeneration, capturePreviewGeneration, captureFrame, stopCamera]);
 
   const enrollNext = () => {
     stopCamera();
