@@ -137,14 +137,14 @@ describe("workers.purgeBiometrics", () => {
       employeeId: "F-88",
       department: "Operations",
       faceEncoding: encoding,
-      consentAt: "2026-01-01T00:00:00.000Z",
+      consentAt: new Date().toISOString(),
     });
     const createdId = created.id as Id<"workers">;
     await test.run(async (ctx) => {
       expect((await ctx.db.get(createdId))!.consentAt).not.toBe("2026-01-01T00:00:00.000Z");
       expect((await ctx.db.get(createdId))!.consentRecordedBy).toBe(userId);
     });
-    await actor.mutation(api.workers.update, { id: createdId, faceEncoding: encoding, consentAt: "2026-02-01T00:00:00.000Z" });
+    await actor.mutation(api.workers.update, { id: createdId, faceEncoding: encoding, consentAt: new Date().toISOString() });
     await test.run(async (ctx) => {
       expect((await ctx.db.get(createdId))!.consentAt).not.toBe("2026-02-01T00:00:00.000Z");
       expect((await ctx.db.get(createdId))!.consentRecordedBy).toBe(userId);

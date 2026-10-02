@@ -20,6 +20,11 @@ function isSupportedFaceEncoding(encoding?: number[]) {
 }
 
 function assertBiometricConsent(consentAt?: string) {
+  const acknowledgedAt = consentAt ? Date.parse(consentAt) : NaN;
+  const age = Date.now() - acknowledgedAt;
+  if (!Number.isFinite(age) || age > 10 * 60 * 1000 || age < -60 * 1000) {
+    throw new Error("Biometric consent must be confirmed recently before saving face data; confirm again");
+  }
   if (!consentAt || !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:?\d{2})$/i.test(consentAt) || !Number.isFinite(Date.parse(consentAt))) {
     throw new Error("Biometric consent must be confirmed before saving face data");
   }
