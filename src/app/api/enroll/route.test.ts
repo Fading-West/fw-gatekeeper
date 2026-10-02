@@ -18,7 +18,7 @@ beforeEach(() => {
   mocks.mutation.mockResolvedValue({ id: 'worker' });
 });
 function request(photos: unknown = ['data:image/jpeg;base64,YQ==','data:image/jpeg;base64,Yg==','data:image/jpeg;base64,Yw==']) {
-  return new NextRequest('https://example.test/api/enroll', { method: 'POST', body: JSON.stringify({ name: 'Test Worker', photos, consent: true }) });
+  return new NextRequest('https://example.test/api/enroll', { method: 'POST', body: JSON.stringify({ name: 'Test Worker', photos, consent: true, consentAt: new Date().toISOString() }) });
 }
 it('stores only photo indexes used by the quality gate', async () => {
   mocks.fetch.mockResolvedValueOnce(Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [1,2] }));

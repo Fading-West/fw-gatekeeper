@@ -1,3 +1,4 @@
+import { isRecentBiometricConsent } from "@/lib/biometric-consent";
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
@@ -16,20 +17,21 @@ export async function POST(req: NextRequest) {
   const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId, consent } = body as {
+    const { name, employeeId, department, photos, workerId, consent, consentAt } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
       consent?: boolean;
+      consentAt?: string;
     };
 
     // Biometric consent must be acknowledged on every enrollment and
     // re-enrollment before any photo is processed. See RETENTION.md.
-    if (consent !== true) {
+    if (consent !== true || !isRecentBiometricConsent(consentAt)) {
       return NextResponse.json(
-        { error: 'Biometric consent must be confirmed before enrolling a face.' },
+        { error: 'Confirm biometric consent again before enrolling a face; the acknowledgement must be recent.' },
         { status: 400 },
       );
     }
@@ -149,6 +151,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: getEncodingValidationMessage('Face encoding') }, { status: 422 });
     }
 
+    if (!isRecentBiometricConsent(consentAt)) {
+      return NextResponse.json({ error: 'Consent expired during encoding. Confirm biometric consent again.' }, { status: 400 });
+    }
+
     // Store only frames the quality gate used for the reference encoding.
     // A rejected/outlier frame must not become the worker's dashboard photo.
     for (const photo of acceptedPhotos) {
@@ -165,7 +171,6 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date().toISOString();
-    const consentAt = now;
     const result = workerId
       ? await convex.mutation(api.workers.update, {
           id: workerId as any,
@@ -205,7 +210,7 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     console.error('Enrollment error:', error);
     const message = error instanceof Error ? error.message : 'Internal server error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: message.includes('Biometric consent') ? 400 : 500 });
   } finally {
     if (storageIds.length > 0) {
       try {
