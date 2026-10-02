@@ -1,5 +1,6 @@
 """Synthetic SQLite/Flask regressions for durable manual clock operations."""
 import concurrent.futures
+import sqlite3
 import sys
 import types
 import unittest
@@ -13,6 +14,7 @@ import database
 
 class ManualAttendanceTests(unittest.TestCase):
     setUp = mapping.AttendanceServerIdMappingTests.setUp
+    _close_db = staticmethod(mapping.AttendanceServerIdMappingTests._close_db)
 
     def worker(self):
         return database.add_worker("Synthetic", ENCODING, server_id=SERVER_ID)
@@ -64,7 +66,7 @@ class ManualAttendanceTests(unittest.TestCase):
         worker = self.worker()
         conn = database._get_conn()
         conn.execute("CREATE TRIGGER receipt_failure BEFORE INSERT ON manual_attendance_receipts BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
-        with self.assertRaises(Exception):
+        with self.assertRaises(sqlite3.IntegrityError):
             database.record_manual_attendance(request_id="one", worker_id=worker)
         self.assertEqual(database.count_unsynced_logs(), 0)
         conn.execute("DROP TRIGGER receipt_failure")
