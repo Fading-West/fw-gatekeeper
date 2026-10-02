@@ -883,9 +883,18 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
 
 
 def count_unsynced_recognition_attempts() -> int:
-    """Count recognition telemetry rows still waiting to sync."""
+    """Count retryable telemetry, excluding actively quarantined evidence."""
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0").fetchone()
+    row = conn.execute("""SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0
+        AND NOT EXISTS (SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL)""").fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_rejected_recognition_attempts() -> int:
+    """Report retained recognition evidence that requires operator attention."""
+    conn = _get_conn()
+    row = conn.execute("SELECT COUNT(*) FROM recognition_rejections WHERE released_at IS NULL").fetchone()
     return int(row[0]) if row else 0
 
 

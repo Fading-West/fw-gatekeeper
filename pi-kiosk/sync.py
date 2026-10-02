@@ -356,7 +356,7 @@ def _health_params(health: Optional[dict]) -> dict:
     for key in ("camera_ok", "model_ok", "liveness_available"):
         if health.get(key) is not None:
             params[key] = "1" if health[key] else "0"
-    for key in ("known_workers", "queued_logs", "queued_attempts"):
+    for key in ("known_workers", "queued_logs", "queued_attempts", "rejected_attempts"):
         if health.get(key) is not None:
             params[key] = str(int(health[key]))
     for key in ("degraded_reason", "last_scan_at"):
@@ -629,7 +629,8 @@ class SyncWorker:
                 rejected_logs = database.count_rejected_logs()
                 queued_attempts = database.count_unsynced_recognition_attempts()
                 self._report(queued_logs=queued_logs, retryable_logs=retryable_logs,
-                             rejected_logs=rejected_logs, queued_attempts=queued_attempts)
+                             rejected_logs=rejected_logs, queued_attempts=queued_attempts,
+                             rejected_attempts=database.count_rejected_recognition_attempts())
 
                 self.server_online = check_server()
                 self._report(sync_online=self.server_online)
@@ -641,6 +642,7 @@ class SyncWorker:
                                 **self._health_provider(),
                                 "queued_logs": queued_logs,
                                 "queued_attempts": queued_attempts,
+                                "rejected_attempts": database.count_rejected_recognition_attempts(),
                             }
                         except Exception as e:
                             logger.debug("Health provider failed: %s", e)
@@ -663,6 +665,7 @@ class SyncWorker:
                         retryable_logs=database.count_retryable_logs(),
                         rejected_logs=database.count_rejected_logs(),
                         queued_attempts=database.count_unsynced_recognition_attempts(),
+                        rejected_attempts=database.count_rejected_recognition_attempts(),
                     )
                 else:
                     logger.debug("Server offline, skipping sync")

@@ -35,3 +35,7 @@ The Next.js route validates raw metric aliases before optional normalization, re
 Operator procedure (local, authorized support session only): run `python recognition_rejections.py list` from `pi-kiosk` using the kiosk's existing configured database. Inspect the recorded reason and original evidence. After an authorized repair or restored compatible validation, use `python recognition_rejections.py retry REJECTION_ID --note "reason for safe retry"`. Release alone does not modify an event or claim ingestion; an unchanged invalid event will be quarantined again. Review the retained rejection/release audit and subsequent acknowledgement. No real kiosk database or this command against production was used here.
 
 Integration dependency: PRs #97, #103 and #107 touch recognition replay acknowledgement. PRs #103 and #107 include the same rejection-isolation foundation so each is independently testable; merge the common foundation once and retain the focused validator and regression additions from both. PRs #102 and #103 both require a captured upload timestamp; preserve that common check once. Rerun combined tests before release.
+
+## Follow-up review revision
+
+Follow-up review: shared quarantine health reporting separates retryable depth from retained rejected attempts, with local Needs attention and authenticated manager health visibility. An additive optional rejectedAttempts field traverses the actual Next/Convex ingest boundaries; public health exposes only aggregate counts. This is the same common foundation as PR #103 and must be integrated once.
