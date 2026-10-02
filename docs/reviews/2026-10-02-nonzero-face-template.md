@@ -27,3 +27,7 @@ NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud NEXT_TELEMETRY_DISABLED=1 np
 Physical acceptance procedure: In an isolated staging installation with authorized test users and existing configuration, exercise the changed path and its denial/retry cases, check manager views and audit/attendance preservation, then perform release checks before deploying. No production or physical-device acceptance was run in this task.
 
 Evidence: Automated regression failures before the change and passing checks after it are retained in the task evidence. Final PR descriptions identify the exact published head and its executed checks. No deployment, merge, or physical acceptance is implied.
+
+## Integration review revision
+
+The encoding gate now models float64 squared-norm behavior rather than Math.hypot. Sparse 1e308 overflow and 1e-300 underflow vectors are rejected, while ordinary finite 512-value nonzero vectors remain accepted. Workers and shift briefing share this gate so a legacy unusable vector is consistently unenrolled. Tests exercise backend and briefing behavior.
