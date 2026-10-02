@@ -16,6 +16,8 @@ export default function SchedulesPage() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [editRevision, setEditRevision] = useState(0);
+  const [conflict, setConflict] = useState('');
   const [name, setName] = useState('');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [invalidStoredDays, setInvalidStoredDays] = useState<string | null>(null);
@@ -79,12 +81,15 @@ export default function SchedulesPage() {
     setEndTime('14:30');
     setDepartment('');
     setEditId(null);
+    setConflict('');
     setShowForm(false);
   };
 
   const handleEdit = (s: Schedule) => {
     const parsedDays = parseScheduleDays(s.days);
     setEditId(s.id);
+    setEditRevision(s.revision ?? 0);
+    setConflict('');
     setName(s.name);
     setDays(parsedDays ?? []);
     setInvalidStoredDays(parsedDays ? null : s.days);
@@ -105,11 +110,12 @@ export default function SchedulesPage() {
     setSaving(true);
     try {
       if (!isSupportedScheduleTimeRange(startTime, endTime)) throw new Error(SCHEDULE_TIME_ERROR);
-      const body = { id: editId, name: name.trim(), days, start_time: startTime, end_time: endTime, department: department || null };
+      const body = { id: editId, name: name.trim(), days, start_time: startTime, end_time: endTime, department: department || null, ...(editId ? { expected_revision: editRevision } : {}) };
 
       if (editId) {
         const res = await fetch('/api/schedules', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const responseBody = await res.json().catch(() => ({}));
+        if (res.status === 409) { setConflict(responseBody?.error || 'Schedule changed. Review the current schedule.'); return; }
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
         toast(`Schedule "${name}" updated`);
       } else {
@@ -131,17 +137,30 @@ export default function SchedulesPage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (schedule: Schedule) => {
     if (!confirm('Delete this schedule?')) return;
     try {
-      const res = await fetch(`/api/schedules?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/schedules?id=${encodeURIComponent(schedule.id)}&expected_revision=${schedule.revision ?? 0}`, { method: 'DELETE' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || 'Failed to delete schedule');
       toast('Schedule deleted');
       fetchSchedules();
-    } catch {
-      toast('Failed to delete schedule', 'error');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Failed to delete schedule', 'error');
+      void fetchSchedules();
     }
+  };
+
+  const loadCurrentSchedule = async () => {
+    try {
+      const res = await fetch('/api/schedules');
+      if (!res.ok) throw new Error('Current schedule unavailable. Your draft is retained.');
+      const rows: Schedule[] = await res.json();
+      const current = rows.find(row => row.id === editId);
+      if (!current) throw new Error('This schedule was removed. Cancel this draft and reload the list.');
+      handleEdit(current);
+      setSchedules(rows);
+    } catch (error) { toast(error instanceof Error ? error.message : 'Unable to reload schedule', 'error'); }
   };
 
   const parseDays = (daysJson: string): string => {
@@ -271,6 +290,7 @@ export default function SchedulesPage() {
         </div>
       )}
 
+      {conflict && <div role="alert" className="mb-4 text-amber-300">{conflict} Your draft is retained. <button type="button" className="btn-secondary" onClick={loadCurrentSchedule}>Load current schedule</button></div>}
       {error && (
         <div role="alert" className="mb-6 rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-300">
           {error}
@@ -322,7 +342,7 @@ export default function SchedulesPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
                       </svg>
                     </button>
-                    <button onClick={() => handleDelete(s.id)} className="px-3 py-1.5 text-xs rounded-xl bg-red-400/5 border border-red-400/10 text-red-400 hover:bg-red-400/10 transition-all">
+                    <button onClick={() => handleDelete(s)} className="px-3 py-1.5 text-xs rounded-xl bg-red-400/5 border border-red-400/10 text-red-400 hover:bg-red-400/10 transition-all">
                       Delete
                     </button>
                   </>

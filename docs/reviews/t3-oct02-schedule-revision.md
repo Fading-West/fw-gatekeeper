@@ -1,0 +1,9 @@
+# Reject obsolete schedule edits and removals
+
+Rank16; high attendance integrity benefit is an engineering estimate. Administrators could silently overwrite another administrator's attendance rules or save into a removed schedule. Optional numeric revisions expose legacy rows as revision0; changing mutations compare the expected revision transactionally and increment it. Inactive rows cannot be edited. Matching no-op saves and already-completed removals remain safe to retry without another write.
+
+The normal API requires a current revision and reports conflicts with409. A conflicted editor retains the draft, offers explicit loading of current values and explains a removed schedule. Delete uses the displayed revision; rejected deletes refresh the list and surface the actual reason.
+
+Acceptance: two stale snapshots cannot both change a rule; stale deletion cannot remove a changed rule; removed rows cannot be edited; a reviewed refreshed draft can save; legacy rows work without backfill. Dedicated backend/client regressions authored; existing intentional edit fixtures carry revision0. Source-only: exact tests/types/lint/build, normal-role runtime actions, CI and composition gates pending admission. No deployment, real data or physical acceptance claimed.
+
+Initial branch dependency: schedule-revision is stacked on schedule-create before either PR exists. Its focused commit also updates the inherited creation replay fixture with the required removal revision. This fixture adaptation is not a new improvement. Complete range includes the schedule-create parent, which must be tested and reviewed independently.

@@ -30,7 +30,7 @@ async function setup(role: 'admin' | 'viewer' | 'enrollment' = 'admin') {
     return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
   });
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/schedules', {
-    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, ...fields }),
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, expected_revision: 0, ...fields }),
   }));
   return { t, actor, id, patch };
 }

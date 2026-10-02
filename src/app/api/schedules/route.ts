@@ -84,8 +84,9 @@ export async function PATCH(req: NextRequest) {
     if (typeof id !== 'string' || !id) return NextResponse.json({ error: 'id required' }, { status: 400 });
     const inputError = scheduleInputError(fields, false);
     if (inputError) return NextResponse.json({ error: inputError }, { status: 400 });
+    if (!Number.isSafeInteger(fields.expected_revision) || fields.expected_revision < 0) return NextResponse.json({ error: 'Reload the schedule before changing it.', code: 'SCHEDULE_REVISION_CONFLICT' }, { status: 409 });
 
-    const updates: Record<string, unknown> = { id };
+    const updates: Record<string, unknown> = { id, expectedRevision: fields.expected_revision };
     if (name !== undefined) updates.name = name.trim();
     if (days !== undefined) updates.days = typeof days === 'string' ? days : JSON.stringify(days);
     if (start_time !== undefined) updates.startTime = start_time;
@@ -97,6 +98,9 @@ export async function PATCH(req: NextRequest) {
   } catch (error) {
     const inputError = badScheduleInput(error);
     if (inputError) return NextResponse.json({ error: inputError }, { status: 400 });
+    if (error instanceof ConvexError && typeof error.data === 'object' && error.data?.code === 'SCHEDULE_REVISION_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     console.error('Schedules PATCH error:', error);
     return NextResponse.json({ error: 'Failed to update schedule' }, { status: 500 });
   }
@@ -106,9 +110,15 @@ export async function DELETE(req: NextRequest) {
   try {
     const id = req.nextUrl.searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
-    await convex.mutation(api.schedules.remove, { id: id as any });
+    const rawRevision = req.nextUrl.searchParams.get('expected_revision');
+    const expectedRevision = rawRevision !== null && /^\d+$/.test(rawRevision) ? Number(rawRevision) : NaN;
+    if (!Number.isSafeInteger(expectedRevision)) return NextResponse.json({ error: 'Reload the schedule before removing it.', code: 'SCHEDULE_REVISION_CONFLICT' }, { status: 409 });
+    await convex.mutation(api.schedules.remove, { id: id as any, expectedRevision });
     return NextResponse.json({ ok: true });
   } catch (error) {
+    if (error instanceof ConvexError && typeof error.data === 'object' && error.data?.code === 'SCHEDULE_REVISION_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     console.error('Schedules DELETE error:', error);
     return NextResponse.json({ error: 'Failed to delete schedule' }, { status: 500 });
   }
