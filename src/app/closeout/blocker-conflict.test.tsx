@@ -1,12 +1,15 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import CloseoutPage from './page';
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-03') }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'enrollment' }));
+const actor = vi.hoisted(() => ({ id: 'synthetic-blocker-0', next: 0 }));
+vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => actor.id }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
 let tree: ReactTestRenderer;
+beforeEach(() => { actor.id = `synthetic-blocker-${++actor.next}`; });
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); vi.unstubAllGlobals(); });
 it('shows the signed record after a conflict refresh while preserving the rejected draft separately', async () => {
   let reads = 0;

@@ -36,7 +36,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     expect(replacement.summary).toEqual(original.summary);
     expect(replacement.blocker_evidence).not.toBe(original.blocker_evidence);
     expect(replacement.closeout?.acknowledged_blockers).toBe(false);
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old sources' })).rejects.toThrow('blockers changed');
+    await expect(save(actor, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old sources' })).rejects.toThrow('blockers changed');
     expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
   });
   it('requires fresh acknowledgement when another kiosk replaces the same-count blocker', async () => {

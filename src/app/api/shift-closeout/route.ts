@@ -132,7 +132,12 @@ export async function PATCH(req: NextRequest) {
       blockerEvidence: optionalString(body.blocker_evidence ?? body.blockerEvidence),
     });
 
-    return NextResponse.json(result || { ok: true });
+    if (!result || result.requestId !== requestId || typeof result.actorUserId !== 'string' ||
+        typeof result.id !== 'string' || !['open', 'completed', 'reopened'].includes(result.status) ||
+        !Number.isSafeInteger(result.revision) || result.revision < 0) {
+      return NextResponse.json({ error: 'The closeout action response was not confirmed. Retry the saved action.' }, { status: 502 });
+    }
+    return NextResponse.json(result);
   } catch (error) {
     if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(error.data?.code)) {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });

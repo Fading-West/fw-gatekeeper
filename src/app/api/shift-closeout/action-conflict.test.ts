@@ -18,3 +18,7 @@ it('forwards a new-record revision and reports recoverable concurrent edits', as
   expect(await response.json()).toEqual({ code: 'CLOSEOUT_REVISION_CONFLICT', error: 'Reconcile draft' });
   expect(vi.mocked(convex.mutation).mock.calls[0][1]).toMatchObject({ requestId: 'synthetic-save', expectedRevision: null });
 });
+it.each([undefined, {}, { id: 'synthetic', status: 'open', revision: 1, requestId: 'different', actorUserId: 'synthetic-actor' }])('does not report malformed mutation acknowledgements as successful %#', async result => {
+  vi.mocked(convex.mutation).mockResolvedValue(result);
+  expect((await PATCH(request({ request_id: 'synthetic-save', expected_revision: null }))).status).toBe(502);
+});

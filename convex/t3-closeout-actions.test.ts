@@ -19,6 +19,17 @@ async function setup() {
   return { t, first: t.withIdentity({ subject: userIds[0] }), second: t.withIdentity({ subject: userIds[1] }), userIds };
 }
 describe('closeout action identity and revisions', () => {
+  it('isolates equal request IDs between actors and returns the authenticated receipt identity', async () => {
+    const { t, first, second, userIds } = await setup();
+    const saved = await first.mutation(api.shiftCloseouts.save, { date, action: 'save', requestId: 'shared-id', expectedRevision: null, notes: 'First actor' });
+    const updated = await second.mutation(api.shiftCloseouts.save, { date, action: 'save', requestId: 'shared-id', expectedRevision: saved.revision, notes: 'Second actor' });
+    expect(saved).toMatchObject({ requestId: 'shared-id', actorUserId: userIds[0] });
+    expect(updated).toMatchObject({ requestId: 'shared-id', actorUserId: userIds[1] });
+    const before = await t.run(ctx => ctx.db.get(saved.id));
+    expect(await first.mutation(api.shiftCloseouts.save, { date, action: 'save', requestId: 'shared-id', expectedRevision: null, notes: 'First actor' })).toEqual(saved);
+    expect(await t.run(ctx => ctx.db.get(saved.id))).toEqual(before);
+    expect(await t.run(ctx => ctx.db.query('shiftCloseoutActionReceipts').collect())).toHaveLength(2);
+  });
   it('replays a lost completion response after another supervisor reopens without re-signing', async () => {
     const { t, first, second } = await setup();
     const complete = { date, action: 'complete' as const, requestId: 'original-completion', expectedRevision: null, notes: 'Signed synthetic record' };

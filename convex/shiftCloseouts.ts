@@ -15,7 +15,7 @@ async function recordActionReceipt(ctx: MutationCtx, receipt: {
   closeoutId: Id<"shiftCloseouts">; status: CloseoutStatus; revision: number;
 }) {
   await ctx.db.insert("shiftCloseoutActionReceipts", receipt);
-  return { id: receipt.closeoutId, status: receipt.status, revision: receipt.revision };
+  return { id: receipt.closeoutId, status: receipt.status, revision: receipt.revision, requestId: receipt.requestId, actorUserId: receipt.actorUserId };
 }
 
 function normalizeText(value?: string | null) {
@@ -457,7 +457,7 @@ export const save = mutation({
     acknowledgedBlockers: v.optional(v.boolean()),
     blockerEvidence: v.optional(v.string()),
   },
-  returns: v.object({ id: v.id("shiftCloseouts"), status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")), revision: v.number() }),
+  returns: v.object({ id: v.id("shiftCloseouts"), status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")), revision: v.number(), requestId: v.string(), actorUserId: v.id("users") }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     if (!isValidFactoryLocalDateKey(args.date)) throw new ConvexError("date must use YYYY-MM-DD format");
@@ -475,7 +475,7 @@ export const save = mutation({
       if (receipt.evidence !== requestEvidence) throw new ConvexError({ code: "CLOSEOUT_REQUEST_CONFLICT", message: "This closeout request ID was already used with different details." });
       // A replay reports its original result without reverting a later reopen
       // or another supervisor's notes. Authorization still precedes the receipt.
-      return { id: receipt.closeoutId, status: receipt.status, revision: receipt.revision };
+      return { id: receipt.closeoutId, status: receipt.status, revision: receipt.revision, requestId: receipt.requestId, actorUserId: receipt.actorUserId };
     }
     const existing = await ctx.db
       .query("shiftCloseouts")
