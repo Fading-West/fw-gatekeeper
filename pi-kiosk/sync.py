@@ -383,6 +383,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         if receipt_protocol and "workers" not in data:
             raise ValueError("Receipt sync response is missing workers")
         full_roster = receipt_protocol and data.get("full_roster") is True
+        fully_applied = True
         if receipt_protocol and not database.get_sync_state("last_roster_applied_at") and not full_roster:
             raise ValueError("Initial receipt sync must include full roster")
         # A prior process may have died between photo publication and the
@@ -392,6 +393,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         except (OSError, ValueError):
             if receipt_protocol:
                 raise
+            fully_applied = False
             logger.warning("Legacy roster sync continuing with thumbnail cleanup pending")
         seen_server_ids: set[str] = set()
 
@@ -434,6 +436,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             if not server_id or not name or encoding_data is None:
                 if receipt_protocol:
                     raise ValueError("Worker sync row has missing required fields")
+                fully_applied = False
                 logger.warning("Skipping worker sync row with missing required fields: %s", w)
                 continue
 
@@ -503,7 +506,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             database.delete_sync_state("roster_pending_receipt")
             database.set_sync_state("last_worker_sync", data.get("synced_at") or datetime.now().isoformat())
         logger.info("Worker sync complete: %d workers", len(workers))
-        if "workers" in data and _valid_sync_timestamp(data.get("synced_at")):
+        if fully_applied and "workers" in data and _valid_sync_timestamp(data.get("synced_at")):
             sync_auth_health.observe("roster", r.status_code, validated=True)
         return True
 

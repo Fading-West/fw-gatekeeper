@@ -135,6 +135,29 @@ class SyncAuthHealthTests(unittest.TestCase):
         restarted.observe("attendance", 401)
         self.assertFalse(restarted.snapshot()["sync_auth_ok"])
 
+    def test_legacy_partial_roster_and_cleanup_failure_do_not_clear_denial(self):
+        response = mock.Mock(status_code=200, json=lambda: {
+            "workers": [{"id": "synthetic-worker", "active": True, "name": "Worker", "face_encoding": None}],
+            "synced_at": "2026-10-02T12:00:00",
+        })
+        with mock.patch.object(sync.database, "has_workers_missing_employee_id", return_value=False), \
+             mock.patch.object(sync.database, "get_sync_state", return_value=None), \
+             mock.patch.object(sync.database, "set_sync_state"), \
+             mock.patch.object(sync.database, "delete_sync_state"), \
+             mock.patch.object(sync.database, "recover_photo_cleanup") as cleanup, \
+             mock.patch.object(sync.requests, "get", return_value=response):
+            self.tracker.observe("roster", 401)
+            self.assertTrue(sync.sync_workers(), "Retain legacy application compatibility")
+            self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["roster"])
+            response.json = lambda: {"workers": [], "synced_at": "2026-10-02T12:00:00"}
+            cleanup.side_effect = OSError("synthetic cleanup failure")
+            self.assertTrue(sync.sync_workers())
+            self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["roster"])
+            cleanup.side_effect = None
+            self.assertTrue(sync.sync_workers())
+            self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], [])
+            self.assertTrue(self.tracker.snapshot()["sync_auth_phases"]["roster"])
+
 
 if __name__ == "__main__":
     unittest.main()
