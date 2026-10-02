@@ -2,6 +2,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 import BriefingPage from './page';
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-03') }));
+vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'enrollment' }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
 let tree: ReactTestRenderer;
