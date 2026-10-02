@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionArgs } from 'convex/server';
 import { describe, expect, it } from 'vitest';
 import { api } from './_generated/api';
 import schema from './schema';
@@ -17,7 +18,7 @@ async function setup() {
 }
 async function acknowledge(actor: Awaited<ReturnType<typeof setup>>['actor'], action: 'save' | 'complete' = 'save') {
   const payload = await actor.query(api.shiftCloseouts.get, { date });
-  return actor.mutation(api.shiftCloseouts.save, { date, action, notes: 'Synthetic blocker evidence reviewed', acknowledgedBlockers: true, blockerEvidence: payload.blocker_evidence });
+  return save(actor, { date, action, notes: 'Synthetic blocker evidence reviewed', acknowledgedBlockers: true, blockerEvidence: payload.blocker_evidence });
 }
 describe('closeout acknowledgement is bound to reviewed evidence', () => {
   it('requires fresh acknowledgement when another kiosk replaces the same-count blocker', async () => {
@@ -31,7 +32,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     const changed = await actor.query(api.shiftCloseouts.get, { date });
     expect(changed.summary.kiosk_warnings).toBe(original.summary.kiosk_warnings);
     expect(changed.closeout).toMatchObject({ acknowledged_blockers: false, acknowledgement_stale: true });
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence })).rejects.toThrow('blockers changed');
+    await expect(save(actor, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence })).rejects.toThrow('blockers changed');
     expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
     await acknowledge(actor, 'complete');
     expect((await actor.query(api.shiftCloseouts.get, { date })).closeout?.status).toBe('completed');
@@ -40,7 +41,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     const { t, actor } = await setup();
     const old = await actor.query(api.shiftCloseouts.get, { date });
     await t.run(ctx => ctx.db.insert('recognitionAttempts', { timestamp: `${date}T10:00:00`, kioskId: 'synthetic-gate', faceDetected: true, decision: 'near_miss', threshold: .45, reviewed: false, createdAt: date }));
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'save', acknowledgedBlockers: true, blockerEvidence: old.blocker_evidence, notes: 'Old evidence' })).rejects.toThrow('blockers changed');
+    await expect(save(actor, { date, action: 'save', acknowledgedBlockers: true, blockerEvidence: old.blocker_evidence, notes: 'Old evidence' })).rejects.toThrow('blockers changed');
     expect(await t.run(ctx => ctx.db.query('shiftCloseouts').collect())).toEqual([]);
   });
   it('does not inherit unbound legacy acknowledgements and preserves an unchanged bound acknowledgement', async () => {
@@ -48,11 +49,18 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     const id = await t.run(ctx => ctx.db.insert('shiftCloseouts', { date, status: 'open', notes: 'Legacy note', acknowledgedBlockers: true,
       expected: 0, present: 0, late: 0, missing: 0, openExceptions: 0, criticalExceptions: 0, kioskWarnings: 1, createdAt: date, updatedAt: date }));
     expect((await actor.query(api.shiftCloseouts.get, { date })).closeout?.acknowledged_blockers).toBe(false);
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' })).rejects.toThrow('acknowledgement note');
+    await expect(save(actor, { date, action: 'complete' })).rejects.toThrow('acknowledgement note');
     await acknowledge(actor);
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' });
+    await save(actor, { date, action: 'complete' });
     const signed = await t.run(ctx => ctx.db.get(id));
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Lost response retry' });
+    await save(actor, { date, action: 'complete', notes: 'Lost response retry' });
     expect(await t.run(ctx => ctx.db.get(id))).toEqual(signed);
   });
 });
+
+let fixtureRequest = 0;
+async function save(actor: Awaited<ReturnType<typeof setup>>['actor'], args: Omit<FunctionArgs<typeof api.shiftCloseouts.save>, 'requestId' | 'expectedRevision'>) {
+  const current = await actor.query(api.shiftCloseouts.get, { date: args.date });
+  return actor.mutation(api.shiftCloseouts.save, { ...args, requestId: `synthetic-fixture-${++fixtureRequest}`,
+    expectedRevision: current.closeout ? current.closeout.revision ?? 0 : null });
+}

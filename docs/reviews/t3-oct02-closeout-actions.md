@@ -1,0 +1,9 @@
+# Closeout action receipts and concurrent draft protection
+
+A delayed completion retry could re-sign a deliberately reopened record, and an old draft could replace another supervisor's newer notes. Each closeout action now requires a stable request ID and expected revision. Transactional, actor-scoped receipts replay the original outcome without touching newer state. A changed request payload or stale revision returns HTTP 409. Authorization precedes receipt lookup, including after a role is revoked.
+
+The normal Closeout page retains uncertain action IDs in the current tab and sends the revision it loaded. Conflicts refresh evidence while retaining editable notes. If another supervisor completed the record, actual signed notes remain the signed view, and the unsaved draft is shown separately. Receipt and closeout/history updates share the mutation transaction. Legacy closeouts without revision are revision zero; new rows use an explicit null expected revision. The schema additions are optional or new tables, and require no destructive migration.
+
+Initial dependency base: `fix/t3-oct02-blocker-ack`, exact commit `7d11cf228e77dd25cb1867b3cdfd60f096605f64`. This PR counts only action receipts/revisions and their normal API/UI recovery; blocker acknowledgement remains the separate preceding milestone. Deploy backend schema/functions before the portal; old clients cannot mutate through the revised boundary without action identity.
+
+Regression sources cover delayed completion after reopen, conflicting note drafts, repeated reopen, revoked receipt authority, legacy rows, route validation and normal-page lost-response/conflict handling. All tests/types/lint/build/runtime and independent exact-head review are **pending** explicit serialized host admission. Source-only status; no readiness, production or physical-device acceptance claimed.

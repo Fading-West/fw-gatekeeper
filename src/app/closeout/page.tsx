@@ -7,6 +7,7 @@ import { useToast } from '@/components/Toast';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { closeoutRequestId, acknowledgeCloseoutRequest } from '@/lib/closeout-request';
 import {
   ShiftCloseoutChecklistItem,
   ShiftCloseoutResponse,
@@ -170,6 +171,7 @@ function ShiftCloseoutPageContent() {
   const [isPending, setIsPending] = useState(false);
   const mutationPendingRef = useRef(false);
   const conflictDraftRef = useRef<{ date: string; notes: string; supervisorName: string } | null>(null);
+  const [unsavedConflictDraft, setUnsavedConflictDraft] = useState<{ date: string; notes: string; supervisorName: string } | null>(null);
   const canOperate = canOperateCloseout(currentRole);
 
   useEffect(() => {
@@ -188,10 +190,14 @@ function ShiftCloseoutPageContent() {
 
   useEffect(() => {
     const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
-    setSupervisorName(retained?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
-    setNotes(retained?.notes ?? payload?.closeout?.notes ?? '');
+    const editableDraft = payload?.closeout?.status === 'completed' ? null : retained;
+    setSupervisorName(editableDraft?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
+    setNotes(editableDraft?.notes ?? payload?.closeout?.notes ?? '');
     setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
-    if (retained) conflictDraftRef.current = null;
+    if (retained) {
+      setUnsavedConflictDraft(payload?.closeout?.status === 'completed' ? retained : null);
+      conflictDraftRef.current = null;
+    }
   }, [payload]);
 
 
@@ -257,22 +263,17 @@ function ShiftCloseoutPageContent() {
 
     mutationPendingRef.current = true;
     setIsPending(true);
+    const request = { date, action, expected_revision: payload?.closeout ? payload.closeout.revision ?? 0 : null,
+      supervisor_name: supervisorName, notes, acknowledged_blockers: acknowledgedBlockers, blocker_evidence: payload?.blocker_evidence };
     void (async () => {
       try {
         const res = await fetch('/api/shift-closeout', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            date,
-            action,
-            supervisor_name: supervisorName,
-            notes,
-            acknowledged_blockers: acknowledgedBlockers,
-            blocker_evidence: payload?.blocker_evidence,
-          }),
+          body: JSON.stringify({ ...request, request_id: closeoutRequestId(request) }),
         });
         const body = await res.json().catch(() => ({}));
-        if (res.status === 409 && body.code === 'CLOSEOUT_BLOCKERS_CHANGED') {
+        if (res.status === 409 && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(body.code)) {
           conflictDraftRef.current = { date, notes, supervisorName };
           setAcknowledgedBlockers(false);
           await fetchCloseout();
@@ -280,6 +281,7 @@ function ShiftCloseoutPageContent() {
           return;
         }
         if (!res.ok) throw new Error(body?.error || 'Failed to update closeout');
+        acknowledgeCloseoutRequest(request);
         toast(action === 'complete' ? 'Shift closeout completed' : action === 'reopen' ? 'Shift closeout reopened' : 'Closeout notes saved');
         await fetchCloseout();
       } catch (err) {
@@ -425,6 +427,11 @@ function ShiftCloseoutPageContent() {
               <h2 className="font-display font-semibold text-slate-100">Supervisor signoff</h2>
               <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
+            {unsavedConflictDraft?.date === date && completed && (
+              <div role="alert" className="rounded-lg border border-amber-400/30 p-3 text-sm text-amber-200">
+                Another supervisor completed this record. The signed notes are shown below. Your unsaved draft was: {unsavedConflictDraft.notes || '(empty notes)'}
+              </div>
+            )}
             <label className="space-y-1.5 block">
               <span className="section-label block">Date</span>
               <input type="date" disabled={isPending} value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />

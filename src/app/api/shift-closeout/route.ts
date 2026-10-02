@@ -103,6 +103,13 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const date = optionalString(body.date);
     const action = optionalString(body.action) || 'save';
+    const requestId = body.request_id ?? body.requestId;
+    const expectedRevision = body.expected_revision ?? body.expectedRevision;
+    const revision = body.expected_revision === null || body.expectedRevision === null ? null : expectedRevision;
+    if (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 200 ||
+        (revision !== null && (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0))) {
+      return NextResponse.json({ error: 'request_id and expected_revision (null for a new record) are required', code: 'INVALID_CLOSEOUT_ACTION' }, { status: 400 });
+    }
 
     if (!date) {
       return NextResponse.json({ error: 'date required' }, { status: 400 });
@@ -115,6 +122,8 @@ export async function PATCH(req: NextRequest) {
     }
 
     const result = await convex.mutation((api as any).shiftCloseouts.save, {
+      requestId,
+      expectedRevision: revision,
       date,
       action,
       supervisorName: optionalString(body.supervisor_name) || optionalString(body.supervisorName),
@@ -125,8 +134,11 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
-    if (error instanceof ConvexError && error.data?.code === 'CLOSEOUT_BLOCKERS_CHANGED') {
+    if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(error.data?.code)) {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
+    if (error instanceof ConvexError && error.data?.code === 'INVALID_CLOSEOUT_ACTION') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 400 });
     }
     console.error('Shift closeout PATCH error:', error);
     return NextResponse.json(
