@@ -10,6 +10,10 @@ import kiosk_ui_auth as auth
 
 class SupervisorLockTests(unittest.TestCase):
     def setUp(self):
+        for name, value in (("_supervisor_sessions", {}), ("_supervisor_unlocks", {}), ("_cancelled_supervisor_unlocks", set())):
+            patcher = mock.patch.object(auth, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         for name, value in (("KIOSK_UI_KEY", "synthetic-ui"), ("KIOSK_SUPERVISOR_PIN", "synthetic-pin")):
             patcher = mock.patch.object(config, name, value, create=True)
             patcher.start()
@@ -55,6 +59,27 @@ class SupervisorLockTests(unittest.TestCase):
         self.assertEqual(first.post("/supervisor/lock", headers=headers).status_code, 200)
         self.assertEqual(copied.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 401)
         self.assertEqual(first.post("/supervisor/lock", headers=headers).status_code, 200)
+
+    def test_cancel_before_generation_and_after_cookie_creation(self):
+        auth.revoke_supervisor_session(None, "before")
+        with self.assertRaises(ValueError):
+            auth.supervisor_session_token(unlock_request_id="before")
+        late_cookie = auth.supervisor_session_token(unlock_request_id="after")
+        self.assertEqual(late_cookie, auth.supervisor_session_token(unlock_request_id="after"))
+        auth.revoke_supervisor_session(None, "after")
+        self.assertFalse(auth.has_valid_supervisor_credential(session_token=late_cookie))
+        with self.assertRaises(ValueError):
+            auth.supervisor_session_token(unlock_request_id="after")
+
+    def test_route_cancels_unlock_without_received_cookie(self):
+        with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
+            import app
+        client = app.app.test_client()
+        headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
+        self.assertEqual(client.post("/supervisor/lock", json={"request_id": "cancelled"}, headers=headers).status_code, 200)
+        response = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "request_id": "cancelled"}, headers=headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertIsNone(client.get_cookie(auth.KIOSK_SUPERVISOR_SESSION_COOKIE))
 
 
 if __name__ == "__main__":

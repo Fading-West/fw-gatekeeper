@@ -542,7 +542,7 @@
             <div id="supervisorError" class="supervisor-error" role="alert" aria-live="polite"></div>
             <div class="supervisor-dialog-actions">
                 <button id="supervisorCancel" type="button">Cancel</button>
-                <button type="submit">Unlock</button>
+                <button id="supervisorSubmit" type="submit">Unlock</button>
             </div>
         </form>
     </dialog>
@@ -574,6 +574,7 @@
         const supervisorPin = document.getElementById("supervisorPin");
         const supervisorError = document.getElementById("supervisorError");
         const supervisorCancel = document.getElementById("supervisorCancel");
+        const supervisorSubmit = document.getElementById("supervisorSubmit");
         const adminPanel = document.getElementById("adminPanel");
         const lastUpdated = document.getElementById("lastUpdated");
         const livenessNote = document.getElementById("livenessNote");
@@ -582,6 +583,8 @@
         let supervisorStateVersion = 0;
         let supervisorLockPending = false;
         let supervisorLockNeeded = false;
+        let supervisorUnlockPending = false;
+        let activeUnlockRequest = null;
 
         function tickClock() {
             const now = new Date();
@@ -655,14 +658,18 @@
 
         async function toggleSupervisorControls() {
             if (supervisorLockPending) return;
-            if (adminVisible || supervisorLockNeeded) {
+            if (adminVisible || supervisorLockNeeded || supervisorUnlockPending) {
+                supervisorStateVersion += 1;
                 setAdminVisible(false);
                 supervisorLockPending = true;
                 supervisorLockNeeded = true;
                 supervisorUnlock.disabled = true;
                 supervisorUnlock.textContent = "Locking supervisor session...";
                 try {
-                    const response = await fetch("/supervisor/lock", { method: "POST" });
+                    const response = await fetch("/supervisor/lock", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ request_id: activeUnlockRequest })
+                    });
                     if (!response.ok) throw new Error("Lock not confirmed");
                     supervisorLockNeeded = false;
                     supervisorUnlock.textContent = "Supervisor controls (A)";
@@ -678,20 +685,43 @@
         }
 
         async function unlockSupervisorControls() {
+            if (supervisorUnlockPending || supervisorLockPending || supervisorLockNeeded) return;
+            supervisorUnlockPending = true;
+            supervisorSubmit.disabled = true;
+            const version = supervisorStateVersion;
+            const operation = crypto.randomUUID();
+            activeUnlockRequest = operation;
             const pin = supervisorPin.value;
-            const response = await fetch("/supervisor/unlock", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pin })
-            });
-            if (!response.ok) {
-                supervisorError.textContent = "Supervisor authentication failed.";
-                supervisorPin.select();
-                return;
+            try {
+                const response = await fetch("/supervisor/unlock", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pin, request_id: operation })
+                });
+                if (version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
+                if (!response.ok) {
+                    if (response.status >= 500) throw new Error("Unlock not confirmed");
+                    supervisorError.textContent = "Supervisor authentication failed.";
+                    supervisorPin.select();
+                    return;
+                }
+                supervisorDialog.close();
+                setAdminVisible(true);
+                fetchStatus();
+            } catch (_) {
+                if (version === supervisorStateVersion) {
+                    supervisorLockNeeded = true;
+                    supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
+                    supervisorUnlock.textContent = "Unlock uncertain. Lock supervisor controls";
+                }
+            } finally {
+                supervisorUnlockPending = false;
+                supervisorSubmit.disabled = false;
             }
+        }
+
+        function cancelSupervisorUnlock() {
             supervisorDialog.close();
-            setAdminVisible(true);
-            fetchStatus();
+            if (supervisorUnlockPending || supervisorLockNeeded) toggleSupervisorControls();
         }
 
         async function fetchStatus() {
@@ -820,7 +850,11 @@
             event.preventDefault();
             unlockSupervisorControls();
         });
-        supervisorCancel.addEventListener("click", () => supervisorDialog.close());
+        supervisorCancel.addEventListener("click", cancelSupervisorUnlock);
+        supervisorDialog.addEventListener("cancel", (event) => {
+            event.preventDefault();
+            cancelSupervisorUnlock();
+        });
         supervisorDialog.addEventListener("close", () => supervisorUnlock.focus());
 
         document.addEventListener("keydown", (event) => {

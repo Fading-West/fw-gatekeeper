@@ -21,6 +21,10 @@ SUPERVISOR_MAX_FAILED_ATTEMPTS = 5
 SUPERVISOR_FAILURE_WINDOW_SECONDS = 60
 SUPERVISOR_LOCKOUT_SECONDS = 5 * 60
 _supervisor_sessions: dict[str, int] = {}
+_supervisor_unlocks: dict[str, str] = {}
+# Retain cancelled operations until restart: an arbitrarily delayed request
+# must never mint a new credential after its lock has been acknowledged.
+_cancelled_supervisor_unlocks: set[str] = set()
 _supervisor_session_lock = threading.Lock()
 
 
@@ -114,7 +118,8 @@ def kiosk_ui_session_token(key: Optional[str] = None) -> str:
     return hmac.new(configured_key.encode("utf-8"), _SESSION_CONTEXT, hashlib.sha256).hexdigest()
 
 
-def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int] = None) -> str:
+def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int] = None,
+                             unlock_request_id: Optional[str] = None) -> str:
     configured_pin = (pin or require_supervisor_pin()).strip()
     ui_key = require_kiosk_ui_key()
     issued = int(time.time() if issued_at is None else issued_at)
@@ -129,11 +134,21 @@ def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int]
                    if now - timestamp > SUPERVISOR_SESSION_TTL_SECONDS]
         for value in expired:
             del _supervisor_sessions[value]
+        for operation, value in list(_supervisor_unlocks.items()):
+            if value not in _supervisor_sessions:
+                del _supervisor_unlocks[operation]
+        if unlock_request_id:
+            if unlock_request_id in _cancelled_supervisor_unlocks:
+                raise ValueError("Supervisor unlock was cancelled")
+            existing = _supervisor_unlocks.get(unlock_request_id)
+            if existing:
+                return existing
+            _supervisor_unlocks[unlock_request_id] = token
         _supervisor_sessions[token] = issued
     return token
 
 
-def revoke_supervisor_session(session_token: Optional[str]) -> None:
+def revoke_supervisor_session(session_token: Optional[str], unlock_request_id: Optional[str] = None) -> None:
     """Lock this session on the server; separate unlocked sessions keep working.
 
     Sessions are deliberately process-local: a service restart requires a new
@@ -141,6 +156,10 @@ def revoke_supervisor_session(session_token: Optional[str]) -> None:
     """
     with _supervisor_session_lock:
         _supervisor_sessions.pop(session_token or "", None)
+        if unlock_request_id:
+            _cancelled_supervisor_unlocks.add(unlock_request_id)
+            token = _supervisor_unlocks.pop(unlock_request_id, None)
+            _supervisor_sessions.pop(token or "", None)
 
 
 def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_token: Optional[str] = None) -> bool:

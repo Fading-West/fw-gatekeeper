@@ -3,23 +3,44 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const template = readFileSync(new URL('../pi-kiosk/templates/index.html', import.meta.url), 'utf8');
 const start = template.indexOf('        async function toggleSupervisorControls()');
-const end = template.indexOf('        async function unlockSupervisorControls()', start);
+const end = template.indexOf('        async function fetchStatus()', start);
 assert.ok(start >= 0 && end > start);
-let calls = 0;
+let calls = [];
 let outcome = false;
+let unlockResponse;
 const context = vm.createContext({
-    adminVisible: true, supervisorUnlock: {},
-    setAdminVisible(visible) { context.adminVisible = visible; },
+    adminVisible: true, supervisorStateVersion: 0, supervisorUnlock: {}, supervisorSubmit: {},
+    supervisorPin: { value: 'synthetic', select() {} }, supervisorError: {},
+    supervisorDialog: { close() {} }, crypto: { randomUUID() { return 'synthetic-operation'; } },
+    setAdminVisible(visible) { if (context.adminVisible !== visible) context.supervisorStateVersion += 1; context.adminVisible = visible; },
     openSupervisorDialog() { throw new Error('Must finish lock before unlocking'); },
-    async fetch() { calls += 1; return { ok: outcome }; },
+    fetchStatus() {},
+    async fetch(url, options) {
+        calls.push({ url, body: JSON.parse(options.body) });
+        if (url === '/supervisor/unlock') return new Promise(resolve => { unlockResponse = resolve; });
+        return { ok: outcome };
+    },
 });
-vm.runInContext('let supervisorLockPending = false; let supervisorLockNeeded = false;\n' + template.slice(start, end), context);
+vm.runInContext('let supervisorLockPending = false; let supervisorLockNeeded = false; let supervisorUnlockPending = false; let activeUnlockRequest = null;\n' + template.slice(start, end), context);
 await context.toggleSupervisorControls();
 assert.equal(context.adminVisible, false);
 assert.match(context.supervisorUnlock.textContent, /Retry locking/);
 outcome = true;
 await context.toggleSupervisorControls();
-assert.equal(calls, 2);
+assert.equal(calls.length, 2);
 assert.equal(context.supervisorUnlock.disabled, false);
 assert.equal(context.supervisorUnlock.textContent, 'Supervisor controls (A)');
-console.log('Supervisor controls hide immediately and failed locking can be retried.');
+calls = [];
+const pending = context.unlockSupervisorControls();
+await context.unlockSupervisorControls();
+assert.equal(calls.length, 1, 'double submission sends one unlock request');
+assert.equal(context.supervisorSubmit.disabled, true);
+context.cancelSupervisorUnlock();
+await Promise.resolve();
+assert.equal(calls.length, 2);
+assert.equal(calls[1].body.request_id, calls[0].body.request_id);
+unlockResponse({ ok: true });
+await pending;
+assert.equal(context.adminVisible, false, 'late successful unlock never reveals controls after cancellation');
+assert.equal(context.supervisorSubmit.disabled, false);
+console.log('Supervisor unlock is single flight and cancelled operations stay locked.');

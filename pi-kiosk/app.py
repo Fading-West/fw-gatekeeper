@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -291,6 +292,9 @@ def supervisor_unlock():
             "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
         }), 429
     payload = request.get_json(silent=True) or {}
+    operation = payload.get("request_id")
+    if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
+        return jsonify({"success": False, "error": "Invalid unlock request"}), 400
     if not has_valid_supervisor_credential(provided_pin=str(payload.get("pin", ""))):
         locked = _supervisor_attempt_limiter.record_failure()
         if locked:
@@ -301,10 +305,14 @@ def supervisor_unlock():
             }), 429
         return jsonify({"success": False, "error": "Invalid supervisor passcode"}), 401
     _supervisor_attempt_limiter.record_success()
+    try:
+        token = supervisor_session_token(unlock_request_id=operation)
+    except ValueError:
+        return jsonify({"success": False, "error": "Supervisor unlock was cancelled"}), 409
     response = jsonify({"success": True})
     response.set_cookie(
         KIOSK_SUPERVISOR_SESSION_COOKIE,
-        supervisor_session_token(),
+        token,
         max_age=SUPERVISOR_SESSION_TTL_SECONDS,
         httponly=True,
         samesite="Strict",
@@ -316,7 +324,11 @@ def supervisor_unlock():
 @app.route("/supervisor/lock", methods=["POST"])
 @kiosk_ui_auth_required
 def supervisor_lock():
-    revoke_supervisor_session(request.cookies.get(KIOSK_SUPERVISOR_SESSION_COOKIE))
+    payload = request.get_json(silent=True) or {}
+    operation = payload.get("request_id")
+    if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
+        return jsonify({"success": False, "error": "Invalid unlock request"}), 400
+    revoke_supervisor_session(request.cookies.get(KIOSK_SUPERVISOR_SESSION_COOKIE), operation)
     response = jsonify({"success": True})
     response.delete_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, samesite="Strict")
     return response
