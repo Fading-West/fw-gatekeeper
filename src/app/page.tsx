@@ -9,6 +9,7 @@ import { buildLiveShiftSentinelItems, buildProactiveActions, getLiveShiftSentine
 import type { LiveShiftSentinelItem, LiveShiftSentinelSnapshot, ProactiveActionFreshness, ProactiveSignalFreshness } from '@/lib/proactive-actions';
 import type { ShiftBriefingResponse, ShiftCloseoutResponse, ShiftException, ShiftExceptionsResponse, ShiftTrustBriefStatus } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { boundedRead } from '@/lib/bounded-read';
 
 interface WorkerWithStatus {
   id: string;
@@ -334,12 +335,13 @@ export default function Dashboard() {
   const mounted = useRef(true);
   const dataDate = useRef<string | null>(null);
 
-  const fetchData = useCallback(async (isRefresh = false) => {
+  const fetchData = useCallback(async (isRefresh = false, supersede = true) => {
+    const today = getFactoryLocalDateString();
+    if (!supersede && activeRequest.current && dataDate.current === today) return;
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
     const sequence = ++requestSequence.current;
-    const today = getFactoryLocalDateString();
     const isCurrent = () => mounted.current && !controller.signal.aborted && sequence === requestSequence.current && today === getFactoryLocalDateString();
     if (dataDate.current !== today) {
       dataDate.current = today;
@@ -361,24 +363,24 @@ export default function Dashboard() {
     try {
       const attemptedAt = new Date();
       const attemptedAtIso = attemptedAt.toISOString();
-      const signals: Array<{ key: SignalFailureKey; label: string; href: string; request: () => Promise<Response> }> = [
-        { key: 'stats', label: 'Dashboard stats', href: `/log?date=${today}`, request: () => fetch(`/api/stats?date=${today}`, { signal: controller.signal }) },
-        { key: 'workers', label: 'Worker roster', href: '/workers', request: () => fetch('/api/workers?scope=dashboard', { signal: controller.signal }) },
-        { key: 'attendance', label: 'Attendance events', href: `/log?date=${today}`, request: () => fetch(`/api/attendance?date=${today}`, { signal: controller.signal }) },
-        { key: 'system-health', label: 'Kiosk and system health', href: '/kiosks', request: () => fetch(`/api/system-health?date=${today}`, { signal: controller.signal }) },
-        { key: 'shift-briefing', label: 'Morning readiness brief', href: `/briefing?date=${today}`, request: () => fetch(`/api/shift-briefing?date=${today}`, { signal: controller.signal }) },
-        { key: 'shift-exceptions', label: 'Shift exceptions', href: `/exceptions?date=${today}&status=open`, request: () => fetch(`/api/shift-exceptions?date=${today}`, { signal: controller.signal }) },
-        { key: 'shift-closeout', label: 'Shift closeout', href: `/closeout?date=${today}`, request: () => fetch(`/api/shift-closeout?date=${today}`, { signal: controller.signal }) },
+      const signals: Array<{ key: SignalFailureKey; label: string; href: string; request: (signal: AbortSignal) => Promise<Response> }> = [
+        { key: 'stats', label: 'Dashboard stats', href: `/log?date=${today}`, request: (signal) => fetch(`/api/stats?date=${today}`, { signal }) },
+        { key: 'workers', label: 'Worker roster', href: '/workers', request: (signal) => fetch('/api/workers?scope=dashboard', { signal }) },
+        { key: 'attendance', label: 'Attendance events', href: `/log?date=${today}`, request: (signal) => fetch(`/api/attendance?date=${today}`, { signal }) },
+        { key: 'system-health', label: 'Kiosk and system health', href: '/kiosks', request: (signal) => fetch(`/api/system-health?date=${today}`, { signal }) },
+        { key: 'shift-briefing', label: 'Morning readiness brief', href: `/briefing?date=${today}`, request: (signal) => fetch(`/api/shift-briefing?date=${today}`, { signal }) },
+        { key: 'shift-exceptions', label: 'Shift exceptions', href: `/exceptions?date=${today}&status=open`, request: (signal) => fetch(`/api/shift-exceptions?date=${today}`, { signal }) },
+        { key: 'shift-closeout', label: 'Shift closeout', href: `/closeout?date=${today}`, request: (signal) => fetch(`/api/shift-closeout?date=${today}`, { signal }) },
       ];
 
-      const results = await Promise.allSettled(signals.map(async (signal) => {
-        const res = await signal.request();
+      const results = await Promise.allSettled(signals.map((signal) => boundedRead(async (readSignal) => {
+        const res = await signal.request(readSignal);
         const json = await res.json().catch(() => null);
         if (!res.ok) {
           throw new Error(json?.error || `${res.status} ${res.statusText}`);
         }
         return { signal, json };
-      }));
+      }, controller.signal)));
       if (!isCurrent()) return;
 
       const failures: SignalFailure[] = [];
@@ -517,6 +519,7 @@ export default function Dashboard() {
         setLoading(false);
         setRefreshing(false);
       }
+      if (activeRequest.current === controller) activeRequest.current = null;
     }
   }, []);
 
@@ -533,7 +536,7 @@ export default function Dashboard() {
     fetchData();
     // Skip refreshes while the tab is hidden; catch up as soon as it returns.
     const interval = setInterval(() => {
-      if (!document.hidden) fetchData(true);
+      if (!document.hidden) fetchData(true, false);
     }, 10000);
     const onVisibilityChange = () => {
       if (!document.hidden) fetchData(true);

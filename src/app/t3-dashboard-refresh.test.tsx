@@ -2,7 +2,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'viewer' }));
 vi.mock('next/link', () => ({ default: ({ children }: { children: React.ReactNode }) => <span>{children}</span> }));
-vi.mock('@/components/WorkerCard', () => ({ default: ({ name, status, isStale }: { name: string; status: string; isStale: boolean }) => <span>{name}|{status}|{isStale ? 'stale' : 'fresh'}</span> }));
+vi.mock('@/components/WorkerCard', () => ({ default: ({ name, status, isStale }: { name: string; status: string; isStale: boolean }) => <span data-worker={name} data-status={status} data-stale={isStale}>{name}</span> }));
 vi.mock('@/lib/proactive-actions', () => ({ buildProactiveActions: () => [], buildLiveShiftSentinelItems: () => [], getLiveShiftSentinelSnapshot: () => ({}) }));
 import Dashboard from './page';
 let tree: ReactTestRenderer | undefined;
@@ -36,7 +36,6 @@ it('keeps the later poll when an older request finishes and aborts on unmount', 
   await act(async () => resolve(Response.json(payload('/api/workers', 'Old synthetic'))));
   expect(JSON.stringify(tree!.toJSON())).not.toContain('Old synthetic');
   await act(async () => tree!.unmount()); tree = undefined;
-  expect(signals.at(-1)?.aborted).toBe(true);
 });
 it('does not reuse yesterday attendance after a midnight refresh failure', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-03T04:59:58Z'));
@@ -44,9 +43,44 @@ it('does not reuse yesterday attendance after a midnight refresh failure', async
   const yesterday = [{ id: 'old', worker_id: 'synthetic', event_type: 'clock_in', timestamp: '2026-10-02T20:00:00' }];
   vi.stubGlobal('fetch', vi.fn(async (url: string) => nextDay && url.includes('/api/attendance') ? Response.json({ error: 'synthetic unavailable' }, { status: 503 }) : Response.json(payload(url, 'Synthetic worker', yesterday))));
   await act(async () => { tree = create(<Dashboard />); });
-  expect(JSON.stringify(tree!.toJSON())).toContain('Synthetic worker|in|fresh');
+  expect(tree!.root.findByProps({ 'data-worker': 'Synthetic worker' }).props).toMatchObject({ 'data-status': 'in', 'data-stale': false });
   nextDay = true; vi.setSystemTime(new Date('2026-10-03T05:00:02Z'));
   await act(async () => visible());
-  expect(JSON.stringify(tree!.toJSON())).not.toContain('Synthetic worker|in|');
-  expect(JSON.stringify(tree!.toJSON())).toContain('Synthetic worker|absent|stale');
+  expect(tree!.root.findByProps({ 'data-worker': 'Synthetic worker' }).props).toMatchObject({ 'data-status': 'absent', 'data-stale': true });
+});
+
+it('lets a twelve-second batch finish despite automatic ten-second polls', async () => {
+  vi.useFakeTimers(); setupDocument();
+  let workerRequests = 0;
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    if (url.includes('/api/workers')) {
+      workerRequests++;
+      return new Promise<Response>(resolve => setTimeout(() => resolve(Response.json(payload(url, 'Slow worker'))), 12_000));
+    }
+    return Promise.resolve(Response.json(payload(url, 'Slow worker')));
+  }));
+  await act(async () => { tree = create(<Dashboard />); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(workerRequests).toBe(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+  expect(tree!.root.findByProps({ 'data-worker': 'Slow worker' })).toBeTruthy();
+});
+it('publishes healthy signals after one hung response times out', async () => {
+  vi.useFakeTimers(); setupDocument();
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.includes('/api/attendance')
+    ? new Promise<Response>(() => {}) : Promise.resolve(Response.json(payload(url, 'Available worker')))));
+  await act(async () => { tree = create(<Dashboard />); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(tree!.root.findByProps({ 'data-worker': 'Available worker' }).props['data-stale']).toBe(true);
+  expect(JSON.stringify(tree!.toJSON())).toContain('timed out');
+});
+it('aborts all reads when an outstanding batch unmounts', async () => {
+  setupDocument(); const signals: AbortSignal[] = [];
+  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+    signals.push(init.signal as AbortSignal); return new Promise<Response>(() => {});
+  }));
+  await act(async () => { tree = create(<Dashboard />); });
+  await act(async () => tree!.unmount()); tree = undefined;
+  expect(signals).toHaveLength(7);
+  expect(signals.every(signal => signal.aborted)).toBe(true);
 });
