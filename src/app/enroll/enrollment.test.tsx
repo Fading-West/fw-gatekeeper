@@ -172,7 +172,6 @@ describe('enrollment access loss', () => {
     const staleCapture = button('Start Capture').props.onClick;
     await changeRole('viewer');
     await changeRole('admin');
-    await click('Add manually');
     await act(async () => tree.root.findAllByType('input').find((node) => node.props.id === 'employee-name')!
       .props.onChange({ target: { value: 'New worker' } }));
     await click('Continue to Camera');
