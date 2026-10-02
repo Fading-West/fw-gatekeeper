@@ -174,6 +174,7 @@ function buildShiftTrustBrief(input: {
   todaysSchedules: any[];
   unavailableWorkers: number;
   uncertainWorkers: number;
+  unsupportedWorkers: number;
   workers: any[];
   openExceptions: any[];
   criticalExceptions: any[];
@@ -210,7 +211,8 @@ function buildShiftTrustBrief(input: {
   }
   if (input.unavailableWorkers > 0) {
     readinessBlockers.push(risk(
-      "schedule:unavailable", "schedule", input.uncertainWorkers === input.unavailableWorkers ? "warning" : "critical", "Schedule coverage unavailable",
+      input.unsupportedWorkers === input.unavailableWorkers ? "schedule:unsupported" : "schedule:unavailable",
+      "schedule", input.uncertainWorkers === input.unavailableWorkers ? "warning" : "critical", "Schedule coverage unavailable",
       `${plural(input.unavailableWorkers, "worker")} have no unique supported schedule for this date. Counts include only workers with unique supported assignments; raw scans remain available.`,
       input.unavailableWorkers, "/schedules",
     ));
@@ -479,6 +481,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     let arrivedLate = 0;
     let unavailableWorkers = 0;
     let uncertainWorkers = 0;
+    let unsupportedWorkers = 0;
     const scheduleWarnings: {
       worker_id: string; worker_name: string; department: string; kind: "none" | "ambiguous" | "unsupported";
       tier: "department" | "default" | null;
@@ -493,6 +496,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       if (!schedule || !isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
         unavailableWorkers += 1;
         if (assignment.kind === "none") uncertainWorkers += 1;
+        if (assignment.kind === "unique") unsupportedWorkers += 1;
         const events = eventsByWorker.get(String(worker._id)) || [];
         const candidates = assignment.kind === "unique" ? [assignment.schedule] : assignment.candidates;
         scheduleWarnings.push({ worker_id: String(worker._id), worker_name: worker.name || "Unknown worker", department: worker.department || "Unassigned",
@@ -610,7 +614,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     const exceptionActions = openExceptions.filter((exception) => exception.type !== "recognition_review");
     const actionItems = [
       ...(unavailableWorkers > 0 ? [{
-        id: "schedules:unavailable",
+        id: unsupportedWorkers === unavailableWorkers ? "schedules:unsupported" : "schedules:unavailable",
         priority: (uncertainWorkers === unavailableWorkers ? "warning" : "critical") as ActionPriority,
         label: "Schedule coverage unavailable",
         description: `${plural(unavailableWorkers, "worker")} have missing, ambiguous or unsupported schedule assignments. Review assignments; no attendance expectation is inferred for unmatched workers.`,
@@ -702,6 +706,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       todaysSchedules,
       unavailableWorkers,
       uncertainWorkers,
+      unsupportedWorkers,
       workers,
       openExceptions,
       criticalExceptions,

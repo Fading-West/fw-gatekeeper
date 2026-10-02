@@ -30,7 +30,14 @@ describe('schedule uncertainty preserves attendance evidence', () => {
     expect(briefing.summary.expected).toBe(0);
     expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0 });
     expect(briefing.schedule_assignment_warnings).toContainEqual(expect.objectContaining({ worker_id: String(workerId), kind, event_count: 1 }));
-    expect(briefing.shift_trust_brief.readiness_blockers).toContainEqual(expect.objectContaining({ category: 'schedule', count: 1 }));
+    expect(briefing.shift_trust_brief.readiness_blockers).toContainEqual(expect.objectContaining({
+      id: kind === 'unsupported' ? 'schedule:unsupported' : 'schedule:unavailable',
+      category: 'schedule', count: 1, severity: kind === 'none' ? 'warning' : 'critical',
+    }));
+    expect(briefing.action_items).toContainEqual(expect.objectContaining({
+      id: kind === 'unsupported' ? 'schedules:unsupported' : 'schedules:unavailable',
+      priority: kind === 'none' ? 'warning' : 'critical',
+    }));
     const exceptions = (await actor.query(api.shiftExceptions.summary, { date })).exceptions;
     expect(exceptions.some(row => ['missing_arrival', 'late_arrival', 'missing_clock_out'].includes(row.type))).toBe(false);
     expect(exceptions).toContainEqual(expect.objectContaining({ type: 'scan_sequence', attendance_id: String(eventId) }));
@@ -41,6 +48,20 @@ describe('schedule uncertainty preserves attendance evidence', () => {
     expect(closeout.can_complete).toBe(false);
     expect(await t.run(ctx => ctx.db.query('attendance').collect())).toEqual(rawBefore);
     expect(await t.run(ctx => ctx.db.query('attendanceCorrections').collect())).toEqual([]);
+  });
+  it('uses the assignment risk identity for mixed missing and unsupported coverage while retaining critical severity', async () => {
+    const { t, actor } = await setup('none');
+    await t.run(async ctx => {
+      await ctx.db.insert('workers', { name: 'Synthetic overnight worker', department: 'Overnight', active: true, enrolledAt: date });
+      await ctx.db.insert('schedules', { name: 'Unsupported overnight', department: 'Overnight', days: '[4]', startTime: '22:00', endTime: '06:00', active: true, createdAt: date });
+    });
+    const briefing = await actor.query(api.shiftBriefing.summary, { date });
+    expect(briefing.coverage_unavailable).toBe(2);
+    expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0 });
+    expect(briefing.shift_trust_brief.readiness_blockers).toContainEqual(expect.objectContaining({ id: 'schedule:unavailable', count: 2, severity: 'critical' }));
+    expect(briefing.action_items).toContainEqual(expect.objectContaining({ id: 'schedules:unavailable', priority: 'critical' }));
+    expect(briefing.shift_trust_brief.readiness_blockers.some(row => row.id === 'schedule:unsupported')).toBe(false);
+    expect((await actor.query(api.shiftCloseouts.get, { date })).blockers).toContainEqual(expect.objectContaining({ id: 'schedule_coverage', count: 2 }));
   });
   it('keeps the department assignment unique despite duplicate defaults and preserves daily attendance after clock-out', async () => {
     const { t, actor, workerId } = await setup('unique');
