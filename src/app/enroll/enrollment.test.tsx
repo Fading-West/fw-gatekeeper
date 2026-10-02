@@ -150,7 +150,7 @@ describe('enrollment access loss', () => {
 
   it('aborts a processing request and ignores its late response even after regrant', async () => {
     let resolve!: (value: unknown) => void;
-    const normalFetch = fetchMock.getMockImplementation()!;
+    const normalFetch = fetchMock.getMockImplementation()! as (...args: any[]) => any;
     fetchMock.mockImplementation((url, options) => url === '/api/enroll'
       ? new Promise((done) => { resolve = done; }) : normalFetch(url, options));
     await readyCamera();
