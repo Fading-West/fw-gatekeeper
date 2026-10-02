@@ -18,6 +18,7 @@ function validateSchedule(name: string, days: string, start: string, end: string
 }
 
 const scheduleResult = v.object({
+  revision: v.number(),
   id: v.id("schedules"),
   name: v.string(),
   days: v.string(),
@@ -42,6 +43,7 @@ export const list = query({
       .collect();
     schedules.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return schedules.map((s) => ({
+      revision: s.revision ?? 0,
       id: s._id,
       name: s.name,
       days: s.days,
@@ -97,6 +99,7 @@ export const create = mutation({
 
 export const update = mutation({
   args: {
+    expectedRevision: v.optional(v.number()),
     id: v.id("schedules"),
     name: v.optional(v.string()),
     days: v.optional(v.string()),
@@ -111,6 +114,7 @@ export const update = mutation({
     const { id, ...fields } = args;
     const existing = await ctx.db.get(id);
     if (!existing) throw new Error("Schedule not found");
+    if (!existing.active) throw new ConvexError({ code: "SCHEDULE_REVISION_CONFLICT", message: "This schedule was removed. Reload the schedule list before continuing." });
     validateSchedule(fields.name ?? existing.name, fields.days ?? existing.days,
       fields.startTime ?? existing.startTime, fields.endTime ?? existing.endTime);
     const updates: Record<string, unknown> = {};
@@ -119,18 +123,29 @@ export const update = mutation({
     if (fields.startTime !== undefined) updates.startTime = fields.startTime;
     if (fields.endTime !== undefined) updates.endTime = fields.endTime;
     if (fields.department !== undefined) updates.department = fields.department || undefined;
+    if (Object.entries(updates).every(([field, value]) => existing[field as keyof typeof existing] === value)) return { ok: true };
+    if (!Number.isSafeInteger(fields.expectedRevision) || fields.expectedRevision !== (existing.revision ?? 0)) {
+      throw new ConvexError({ code: "SCHEDULE_REVISION_CONFLICT", message: "Schedule changed. Review the current schedule before saving your draft." });
+    }
+    updates.revision = (existing.revision ?? 0) + 1;
     await ctx.db.patch(id, updates);
     return { ok: true };
   },
 });
 
 export const remove = mutation({
-  args: { id: v.id("schedules") },
+  args: { id: v.id("schedules"), expectedRevision: v.optional(v.number()) },
   returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin"]);
 
-    await ctx.db.patch(args.id, { active: false });
+    const existing = await ctx.db.get(args.id);
+    if (!existing) throw new Error("Schedule not found");
+    if (!existing.active) return { ok: true };
+    if (!Number.isSafeInteger(args.expectedRevision) || args.expectedRevision !== (existing.revision ?? 0)) {
+      throw new ConvexError({ code: "SCHEDULE_REVISION_CONFLICT", message: "Schedule changed. Review the current schedule before removing it." });
+    }
+    await ctx.db.patch(args.id, { active: false, revision: (existing.revision ?? 0) + 1 });
     return { ok: true };
   },
 });

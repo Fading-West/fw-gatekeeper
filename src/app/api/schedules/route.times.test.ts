@@ -13,7 +13,7 @@ it.each(['POST', 'PATCH'])('returns a useful 400 for invalid schedule times on %
   const handler = method === 'POST' ? POST : PATCH;
   const response = await handler(new NextRequest('https://gateway.example.test/api/schedules', {
     method, headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id: 'schedule', name: 'Night', days: [1], start_time: '22:00', end_time: '06:00' }),
+    body: JSON.stringify({ id: 'schedule', expected_revision: 0, name: 'Night', days: [1], start_time: '22:00', end_time: '06:00' }),
   }));
   expect(response.status).toBe(400);
   expect(await response.json()).toEqual({ error: SCHEDULE_TIME_ERROR });
