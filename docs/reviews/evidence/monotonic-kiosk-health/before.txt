@@ -1,0 +1,39 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/13-monotonic-kiosk-health
+
+ ❯ convex/oct02-monotonic-kiosk-health.test.ts (1 test | 1 failed) 35ms
+   × keeps the latest fault and watermark across out-of-order requests 34ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  convex/oct02-monotonic-kiosk-health.test.ts > keeps the latest fault and watermark across out-of-order requests
+AssertionError: expected { …(9) } to match object { …(2) }
+(8 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "health": {
+-     "cameraOk": false,
++     "cameraOk": true,
+    },
+-   "lastSync": "2026-10-02T06:45:11.942Z",
++   "lastSync": "2026-10-02T06:44:11.942Z",
+  }
+
+ ❯ convex/oct02-monotonic-kiosk-health.test.ts:24:45
+     22|  await t.mutation(internal.kiosks.updateLastSyncFromHttp, { kioskId: a…
+     23|  expect(await t.mutation(internal.kiosks.updateLastSyncFromHttp, { kio…
+     24|  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ lastSync: …
+       |                                             ^
+     25|  await expect(t.mutation(internal.kiosks.updateLastSyncFromHttp, { kio…
+     26| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  01:46:11
+   Duration  374ms (transform 67ms, setup 0ms, import 173ms, tests 35ms, environment 0ms)
