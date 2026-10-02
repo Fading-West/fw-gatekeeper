@@ -10,5 +10,5 @@ export function isSupportedEncoding(encoding: unknown): encoding is number[] {
 }
 
 export function getEncodingValidationMessage(fieldName = 'Encoding'): string {
-  return `${fieldName} must be an array of 512 finite numbers`;
+  return `${fieldName} must be an array of 512 finite numbers with a nonzero finite squared norm`;
 }

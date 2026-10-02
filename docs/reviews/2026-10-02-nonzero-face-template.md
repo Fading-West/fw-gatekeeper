@@ -31,3 +31,7 @@ Evidence: Automated regression failures before the change and passing checks aft
 ## Integration review revision
 
 The encoding gate now models float64 squared-norm behavior rather than Math.hypot. Sparse 1e308 overflow and 1e-300 underflow vectors are rejected, while ordinary finite 512-value nonzero vectors remain accepted. Workers and shift briefing share this gate so a legacy unusable vector is consistently unenrolled. Tests exercise backend and briefing behavior.
+
+## Follow-up review revision
+
+Follow-up review: rejection diagnostics now explicitly require a nonzero finite squared norm at both shared route and authenticated Convex mutation boundaries. Six finite zero/overflow/underflow diagnostic regressions cover this message.

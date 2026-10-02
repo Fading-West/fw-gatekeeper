@@ -175,7 +175,7 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       throw new Error("Worker name is required");
     }
     if (!isSupportedFaceEncoding(args.faceEncoding)) {
-      throw new Error("faceEncoding must contain 512 finite values");
+      throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
     assertBiometricConsent(args.consentAt);
     assertPhotoLimit(args.photoStorageIds);
@@ -335,7 +335,7 @@ export const update = mutation({
     await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId, worker.photoStorageIds);
     const updates: Record<string, unknown> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
-      throw new Error("faceEncoding must contain 512 finite values");
+      throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
     const identities = fields.name !== undefined || fields.employeeId !== undefined
       ? await readWorkerIdentities(ctx) : undefined;
