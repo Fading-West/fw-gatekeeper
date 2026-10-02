@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import fcntl
+from contextlib import contextmanager
 import logging
 import sqlite3
 import threading
@@ -413,6 +416,11 @@ def remove_worker(name: str) -> bool:
 
 
 def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:
+    with _photo_publication_lock():
+        return _remove_worker_by_server_id_unlocked(server_id, strict_cleanup=strict_cleanup)
+
+
+def _remove_worker_by_server_id_unlocked(server_id: str, *, strict_cleanup: bool = False) -> bool:
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
     rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
@@ -433,7 +441,7 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
     try:
-        recover_photo_cleanup()
+        _recover_photo_cleanup_unlocked()
     except (OSError, ValueError) as exc:
         if strict_cleanup:
             raise
@@ -462,10 +470,8 @@ def replaced_worker_photo_paths(name: str, server_id: str, employee_id: Optional
     referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
     retired = []
     for path in owned:
-        candidate = path.resolve()
-        if candidate == photo_root or not candidate.is_relative_to(photo_root):
-            raise ValueError(f"Worker photo path needs manual cleanup: {path}")
-        if candidate not in keep and candidate not in referenced:
+        candidate = _owned_photo_path(path, photo_root)
+        if candidate.resolve() not in keep and candidate.resolve() not in referenced:
             retired.append(candidate)
     return retired
 
@@ -482,8 +488,46 @@ def record_photo_cleanup(paths: list[Path], kind: str) -> None:
     conn.commit()
 
 
+@contextmanager
+def _photo_publication_lock():
+    """Serialize short publication/cleanup phases across scanner and CLI processes."""
+    lock_path = Path(config.DB_PATH).parent / ".local-photo-publication.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def recover_photo_cleanup() -> None:
     """Remove only journaled, unreferenced files; unknown files stay untouched."""
+    with _photo_publication_lock():
+        _recover_photo_cleanup_unlocked()
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _owned_photo_path(path: Path, root: Path) -> Path:
+    """Retain the owned directory entry; never turn a symlink into its target."""
+    candidate = path.absolute()
+    resolved = candidate.resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError(f"Worker photo path needs manual cleanup: {path}")
+    if any(part.is_symlink() for part in (candidate, *candidate.parents) if part != root):
+        raise ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+    return candidate
+
+
+def _recover_photo_cleanup_unlocked() -> None:
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
     references = {
@@ -496,6 +540,9 @@ def recover_photo_cleanup() -> None:
     for entry in journal:
         path = Path(entry["path"])
         candidate = path.resolve()
+        if any(part.is_symlink() for part in (path, *path.parents) if part != photo_root):
+            first_error = first_error or ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+            continue
         if entry["kind"] == "published" and candidate in references:
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
@@ -503,6 +550,12 @@ def recover_photo_cleanup() -> None:
         if entry["kind"] == "retired" and candidate in references:
             continue
         if not path.exists() and not path.is_symlink():
+            if path.parent.exists():
+                try:
+                    _fsync_directory(path.parent)
+                except OSError as exc:
+                    first_error = first_error or exc
+                    continue
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
             continue
@@ -510,7 +563,8 @@ def recover_photo_cleanup() -> None:
             first_error = first_error or ValueError(f"Worker photo path needs manual cleanup: {path}")
             continue
         try:
-            candidate.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            _fsync_directory(path.parent)
         except OSError as exc:
             first_error = first_error or exc
             continue
@@ -518,6 +572,108 @@ def recover_photo_cleanup() -> None:
         conn.commit()
     if first_error:
         raise first_error
+
+
+def publish_local_enrollment(name: str, encoding: np.ndarray, photo_bytes: list[bytes]) -> int:
+    """Journal owned files before creating them, then publish their worker reference.
+
+    Capture stays in memory until this short phase. Recovery cannot delete an
+    in-flight publication, and a process exit releases the lock automatically.
+    """
+    if not photo_bytes or any(not isinstance(photo, bytes) or not photo for photo in photo_bytes):
+        raise ValueError("Every accepted capture must have encoded photo bytes")
+    return _publish_worker_photos(name, encoding, photo_bytes)
+
+
+def publish_synced_worker(name: str, encoding: np.ndarray, photo_bytes: list[bytes], *,
+                          enrolled_at: Optional[str], server_id: str,
+                          employee_id: Optional[str]) -> int:
+    """Publish downloaded bytes using the same ownership lock as local capture."""
+    if any(not isinstance(photo, bytes) or not photo for photo in photo_bytes):
+        raise ValueError("Downloaded photos must contain bytes")
+    return _publish_worker_photos(name, encoding, photo_bytes, enrolled_at=enrolled_at,
+                                 server_id=server_id, employee_id=employee_id)
+
+
+def _publish_worker_photos(name: str, encoding: np.ndarray, photo_bytes: list[bytes], *,
+                           enrolled_at: Optional[str] = None, server_id: Optional[str] = None,
+                           employee_id: Optional[str] = None) -> int:
+    conn = _get_conn()
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    with _photo_publication_lock():
+        missing = []
+        parent = photo_root
+        while not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        photo_root.mkdir(parents=True, exist_ok=True)
+        for created in reversed(missing):
+            _fsync_directory(created.parent)
+        old = _find_worker_update_row(conn, name.strip(), server_id, employee_id or "")
+        retired = []
+        if old:
+            retired = [_owned_photo_path(Path(path), photo_root) for path in json.loads(old["photo_paths"] or "[]")
+                       if Path(path).resolve() != photo_root and Path(path).resolve().is_relative_to(photo_root)]
+        identity = uuid.uuid4().hex
+        prefix = "sync" if server_id else "local"
+        paths = [photo_root / f"{prefix}-{identity}-{index + 1}.jpg" for index in range(len(photo_bytes))]
+        if server_id:
+            retired = replaced_worker_photo_paths(name, server_id, employee_id,
+                                                  [str(path) for path in paths])
+        if any(path.exists() or path.is_symlink() for path in paths):
+            raise ValueError("Capture destination exists; retry with a new enrollment intent")
+        # This commit precedes any photo write; interrupted writes remain attributable.
+        record_photo_cleanup(paths, "published")
+        record_photo_cleanup(retired, "retired")
+        try:
+            for path, photo in zip(paths, photo_bytes):
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(photo)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            _fsync_directory(photo_root)
+            worker_id = add_worker(name, encoding, photo_paths=[str(path) for path in paths],
+                                   enrolled_at=enrolled_at, server_id=server_id, employee_id=employee_id)
+        except BaseException:
+            conn.rollback()
+            try:
+                _recover_photo_cleanup_unlocked()
+            except (OSError, ValueError):
+                logger.warning("Local enrollment photo cleanup remains journaled for recovery")
+            raise
+        try:
+            _recover_photo_cleanup_unlocked()
+        except (OSError, ValueError):
+            logger.warning("Local enrollment committed; owned photo cleanup remains pending")
+        return worker_id
+
+
+def remove_local_worker_owned(name: str) -> bool:
+    """Remove a selected row before retiring its unshared owned files; never infer a folder."""
+    conn = _get_conn()
+    root = Path(config.PHOTO_DIR).resolve()
+    with _photo_publication_lock():
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            worker = get_worker_by_name(name)
+            if worker is None:
+                conn.rollback()
+                return False
+            owned = [_owned_photo_path(Path(path), root) for path in worker["photo_paths"]
+                     if Path(path).resolve() != root and Path(path).resolve().is_relative_to(root)]
+            conn.executemany("INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, 'retired')",
+                             ((str(path),) for path in owned))
+            conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        try:
+            _recover_photo_cleanup_unlocked()
+        except (OSError, ValueError):
+            logger.warning("Local removal committed; owned photo cleanup remains pending")
+        return True
 
 
 def count_unmanaged_local_workers() -> int:

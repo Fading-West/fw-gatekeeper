@@ -252,7 +252,7 @@ class RosterReceiptTests(unittest.TestCase):
                        'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid/new'}
             response = roster([updated])
             response.content = b'new photo'
-            with mock.patch.object(sync.os, 'replace', side_effect=PermissionError('publish failed')):
+            with mock.patch.object(database, '_fsync_directory', side_effect=PermissionError('publish failed')):
                 posted, _ = self.cycle(response)
             posted.assert_not_called()
             self.assertEqual(photo.read_bytes(), b'original photo')
