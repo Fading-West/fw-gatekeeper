@@ -19,6 +19,7 @@ import requests
 import config
 import database
 from sync_auth import require_kiosk_api_key
+from sync_health import sync_auth_health
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,7 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
     except requests.RequestException:
         logger.exception("Attendance sync request failed; retaining unacknowledged batch")
         return False
+    sync_auth_health.observe("attendance", response.status_code)
     if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
         database.mark_synced(log_ids)
         logger.info("Synced %d gatekeeper logs to server", len(log_ids))
@@ -284,6 +286,7 @@ def sync_recognition_attempts() -> bool:
             headers=_auth_headers(),
             timeout=15,
         )
+        sync_auth_health.observe("recognition", r.status_code)
         if 200 <= r.status_code < 300:
             database.mark_recognition_attempts_synced(synced_attempt_ids)
             logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
@@ -336,6 +339,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             headers=_auth_headers(),
             timeout=15,
         )
+        sync_auth_health.observe("roster", r.status_code)
         if r.status_code != 200:
             logger.warning("Server returned %d during worker sync", r.status_code)
             return False
@@ -496,6 +500,7 @@ def acknowledge_applied_roster() -> bool:
             json={"kiosk_id": config.KIOSK_ID, "roster_receipt": pending["receipt"]},
             headers=_auth_headers(), timeout=15,
         )
+        sync_auth_health.observe("roster_ack", response.status_code)
         if response.status_code != 200:
             logger.warning("Roster acknowledgement failed with status=%d", response.status_code)
             return False
@@ -566,6 +571,7 @@ class SyncWorker:
         logger.info("Sync worker stopped")
 
     def _report(self, **fields):
+        fields.update(sync_auth_health.snapshot())
         if self._health_reporter:
             try:
                 self._health_reporter(**fields)
@@ -620,6 +626,8 @@ class SyncWorker:
                     logger.debug("Server offline, skipping sync")
             except Exception as e:
                 logger.error("Sync error: %s", e)
+            finally:
+                self._report()
 
             # Sleep in small increments so we can stop quickly
             for _ in range(config.SYNC_INTERVAL):
