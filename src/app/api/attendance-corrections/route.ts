@@ -104,6 +104,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true }, { status: 201 });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'CORRECTION_SOURCE_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     if (error instanceof ConvexError && error.data?.code === 'INVALID_CORRECTION_TIMESTAMP') {
       return NextResponse.json({ error: error.data.message }, { status: 400 });
     }
