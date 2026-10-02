@@ -309,6 +309,7 @@ function getSentinelStatusTone(item: LiveShiftSentinelItem) {
 
 export default function Dashboard() {
   const currentRole = usePortalRole();
+  const [actionDate, setActionDate] = useState(getFactoryLocalDateString);
   const [stats, setStats] = useState({ totalWorkers: 0, clockedIn: 0, clockedOut: 0, notArrived: 0, avgArrival: null as string | null });
   const [workers, setWorkers] = useState<WorkerWithStatus[]>([]);
   const [attendanceEvents, setAttendanceEvents] = useState<AttendanceEvent[]>([]);
@@ -328,21 +329,46 @@ export default function Dashboard() {
   // Read by fetchData without being a dependency, so the polling interval
   // isn't torn down and re-armed on every successful refresh.
   const attendanceEventsRef = useRef<AttendanceEvent[]>([]);
+  const requestSequence = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+  const dataDate = useRef<string | null>(null);
 
   const fetchData = useCallback(async (isRefresh = false) => {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    const sequence = ++requestSequence.current;
+    const today = getFactoryLocalDateString();
+    const isCurrent = () => mounted.current && !controller.signal.aborted && sequence === requestSequence.current && today === getFactoryLocalDateString();
+    if (dataDate.current !== today) {
+      dataDate.current = today;
+      attendanceEventsRef.current = [];
+      setActionDate(today);
+      setLoading(true);
+      setStats({ totalWorkers: 0, clockedIn: 0, clockedOut: 0, notArrived: 0, avgArrival: null });
+      setWorkers([]);
+      setAttendanceEvents([]);
+      setSystemHealth(null);
+      setShiftBriefing(null);
+      setShiftExceptions(null);
+      setShiftCloseout(null);
+      setSignalFreshness({});
+      setSignalFailures([]);
+      setLastUpdated('');
+    }
     if (isRefresh) setRefreshing(true);
     try {
       const attemptedAt = new Date();
       const attemptedAtIso = attemptedAt.toISOString();
-      const today = getFactoryLocalDateString();
       const signals: Array<{ key: SignalFailureKey; label: string; href: string; request: () => Promise<Response> }> = [
-        { key: 'stats', label: 'Dashboard stats', href: `/log?date=${today}`, request: () => fetch(`/api/stats?date=${today}`) },
-        { key: 'workers', label: 'Worker roster', href: '/workers', request: () => fetch('/api/workers?scope=dashboard') },
-        { key: 'attendance', label: 'Attendance events', href: `/log?date=${today}`, request: () => fetch(`/api/attendance?date=${today}`) },
-        { key: 'system-health', label: 'Kiosk and system health', href: '/kiosks', request: () => fetch(`/api/system-health?date=${today}`) },
-        { key: 'shift-briefing', label: 'Morning readiness brief', href: `/briefing?date=${today}`, request: () => fetch(`/api/shift-briefing?date=${today}`) },
-        { key: 'shift-exceptions', label: 'Shift exceptions', href: `/exceptions?date=${today}&status=open`, request: () => fetch(`/api/shift-exceptions?date=${today}`) },
-        { key: 'shift-closeout', label: 'Shift closeout', href: `/closeout?date=${today}`, request: () => fetch(`/api/shift-closeout?date=${today}`) },
+        { key: 'stats', label: 'Dashboard stats', href: `/log?date=${today}`, request: () => fetch(`/api/stats?date=${today}`, { signal: controller.signal }) },
+        { key: 'workers', label: 'Worker roster', href: '/workers', request: () => fetch('/api/workers?scope=dashboard', { signal: controller.signal }) },
+        { key: 'attendance', label: 'Attendance events', href: `/log?date=${today}`, request: () => fetch(`/api/attendance?date=${today}`, { signal: controller.signal }) },
+        { key: 'system-health', label: 'Kiosk and system health', href: '/kiosks', request: () => fetch(`/api/system-health?date=${today}`, { signal: controller.signal }) },
+        { key: 'shift-briefing', label: 'Morning readiness brief', href: `/briefing?date=${today}`, request: () => fetch(`/api/shift-briefing?date=${today}`, { signal: controller.signal }) },
+        { key: 'shift-exceptions', label: 'Shift exceptions', href: `/exceptions?date=${today}&status=open`, request: () => fetch(`/api/shift-exceptions?date=${today}`, { signal: controller.signal }) },
+        { key: 'shift-closeout', label: 'Shift closeout', href: `/closeout?date=${today}`, request: () => fetch(`/api/shift-closeout?date=${today}`, { signal: controller.signal }) },
       ];
 
       const results = await Promise.allSettled(signals.map(async (signal) => {
@@ -353,6 +379,7 @@ export default function Dashboard() {
         }
         return { signal, json };
       }));
+      if (!isCurrent()) return;
 
       const failures: SignalFailure[] = [];
       const successfulKeys = new Set<SignalFailureKey>();
@@ -465,6 +492,7 @@ export default function Dashboard() {
       });
       setLastUpdated(attemptedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (err) {
+      if (!isCurrent()) return;
       console.error('Failed to fetch dashboard data', err);
       const failedAt = new Date().toISOString();
       setSignalFailures([{
@@ -485,8 +513,10 @@ export default function Dashboard() {
       }));
       setLastUpdated(new Date(failedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isCurrent()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -499,6 +529,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     fetchData();
     // Skip refreshes while the tab is hidden; catch up as soon as it returns.
     const interval = setInterval(() => {
@@ -509,12 +540,14 @@ export default function Dashboard() {
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
+      mounted.current = false;
+      requestSequence.current += 1;
+      activeRequest.current?.abort();
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [fetchData]);
 
-  const actionDate = getFactoryLocalDateString();
   const dashboardRole = currentRole || 'viewer';
   const proactiveShiftCloseout = shiftCloseout
     ? {
@@ -551,7 +584,7 @@ export default function Dashboard() {
     });
   }, [activeSentinelKeySignature, loading, sentinelHasSeenBaseline, sentinelStorageReady]);
 
-  if (loading) {
+  if (loading || actionDate !== getFactoryLocalDateString()) {
     return <DashboardSkeleton />;
   }
 
