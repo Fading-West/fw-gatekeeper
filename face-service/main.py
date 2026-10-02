@@ -13,6 +13,7 @@ Enrollment quality gate (POST /encode):
 """
 
 import base64
+from contextlib import asynccontextmanager
 import io
 import os
 import threading
@@ -45,7 +46,16 @@ from face_auth import (
 
 SERVICE_VERSION = "3.1-quality-gate"
 
-app = FastAPI(title="Face Encoding Service")
+@asynccontextmanager
+async def service_lifespan(_app):
+    # Initialize once at startup, outside health requests. A slow or failed
+    # model load leaves the cheap read-only endpoint available and degraded.
+    if get_configured_face_service_key():
+        threading.Thread(target=_warm_recognition_model, name="face-model-warmup", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),
@@ -63,6 +73,8 @@ REC_PATH = MODEL_DIR / "rec_model.onnx"
 # Lazy global
 _rec_session = None
 _rec_lock = threading.Lock()
+_rec_loading = False
+_rec_failed = False
 
 
 class MultipleFacesError(ValueError):
@@ -79,13 +91,29 @@ def ensure_models():
 
 
 def get_rec_session():
-    global _rec_session
+    global _rec_session, _rec_loading, _rec_failed
     # FastAPI sync handlers run in multiple threads; load only one native session.
     with _rec_lock:
         if _rec_session is None:
-            ensure_models()
-            _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
+            _rec_loading = True
+            _rec_failed = False
+            try:
+                ensure_models()
+                _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
+            except Exception:
+                _rec_failed = True
+                raise
+            finally:
+                _rec_loading = False
     return _rec_session
+
+
+def _warm_recognition_model():
+    try:
+        get_rec_session()
+    except Exception:
+        # Never emit complete native exception strings or configuration.
+        print("Face recognition model initialization failed; enrollment unavailable")
 
 
 PhotoInput = Annotated[str, Field(min_length=1, max_length=4_000_000)]
@@ -204,8 +232,18 @@ def get_embedding(img: np.ndarray) -> Optional[list[float]]:
 
 @app.get("/health")
 def health():
+    auth_ready = bool(get_configured_face_service_key())
+    model_ready = _rec_session is not None
+    reason = ("authentication_not_configured" if not auth_ready else
+              "model_loading" if _rec_loading else
+              "model_unavailable" if not model_ready else None)
     return {
-        "status": "ok",
+        "status": "ok" if auth_ready and model_ready else "degraded",
+        "auth_ready": auth_ready,
+        "model_ready": model_ready,
+        "model_loading": _rec_loading,
+        "model_failed": _rec_failed,
+        "degraded_reason": reason,
         "version": SERVICE_VERSION,
         "rec_model": str(REC_PATH),
         "rec_exists": REC_PATH.exists(),
