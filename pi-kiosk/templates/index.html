@@ -766,7 +766,7 @@
 
         async function submitManualClock() {
             if (manualSubmitting) return;
-            const workerId = manualName.value;
+            const workerId = pendingManualRequest ? String(pendingManualRequest.worker_id) : manualName.value;
             if (!workerId) {
                 manualResult.textContent = "Select a worker.";
                 manualResult.style.color = "#ff9e8f";
@@ -789,6 +789,12 @@
                     body: JSON.stringify(operation)
                 });
                 const data = await response.json();
+                if (operationStateVersion !== supervisorStateVersion || !adminVisible) {
+                    if ((response.ok && data.success) || (response.status >= 400 && response.status < 500 && response.status !== 401)) {
+                        pendingManualRequest = null;
+                    }
+                    return;
+                }
                 if (!response.ok || !data.success) {
                     if (response.status === 401) {
                         setAdminVisible(false);

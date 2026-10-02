@@ -34,8 +34,9 @@ class ManualAttendanceTests(unittest.TestCase):
             first = database.record_manual_attendance(request_id="one", worker_id=worker)
             self.assertEqual(database.record_manual_attendance(request_id="one", worker_id=worker), first)
             second = database.record_manual_attendance(request_id="two", worker_id=worker)
-        self.assertEqual([first["action"], second["action"]], ["clock_in", "clock_out"])
-        self.assertEqual(database.count_unsynced_logs(), 2)
+            third = database.record_manual_attendance(request_id="three", worker_id=worker)
+        self.assertEqual([first["action"], second["action"], third["action"]], ["clock_in", "clock_out", "clock_in"])
+        self.assertEqual(database.count_unsynced_logs(), 3)
 
     def test_concurrent_duplicate_records_once(self):
         worker = self.worker()

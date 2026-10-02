@@ -24,6 +24,7 @@ const context = vm.createContext({
 vm.runInContext('let manualSubmitting = false; let pendingManualRequest = null;\n' + template.slice(start, end), context);
 await context.submitManualClock();
 assert.equal(context.manualName.disabled, true, 'Unknown outcome keeps original selection for replay');
+context.manualName.value = ''; // A roster refresh removed the selected worker while the response was lost.
 outcome = 'deferred';
 const pending = context.submitManualClock();
 await context.submitManualClock();

@@ -784,7 +784,7 @@ def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
     conn = _get_conn()
     row = conn.execute(
-        "SELECT action FROM attendance_log WHERE worker_id = ? ORDER BY timestamp DESC LIMIT 1",
+        "SELECT action FROM attendance_log WHERE worker_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
         (worker_id,),
     ).fetchone()
     return row["action"] if row else None
