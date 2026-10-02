@@ -27,3 +27,7 @@ NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud NEXT_TELEMETRY_DISABLED=1 np
 Physical acceptance procedure: In an isolated staging installation with authorized test users and existing configuration, exercise the changed path and its denial/retry cases, check manager views and audit/attendance preservation, then perform release checks before deploying. No production or physical-device acceptance was run in this task.
 
 Evidence: Automated regression failures before the change and passing checks after it are retained in the task evidence. Final PR descriptions identify the exact published head and its executed checks. No deployment, merge, or physical acceptance is implied.
+
+## Integration review revision
+
+Legacy upload requires the captured timestamp instead of inventing upload-time identity. Missing captured timestamps return 400 before ingestion; callers must retain/review that evidence. Exact evidence is located with indexed bucket filtering without the 501-row cap, preserving distinct same-second measurements and retry idempotence even behind 502 legacy rows. No historical records are deleted.

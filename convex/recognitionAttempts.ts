@@ -351,9 +351,10 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
         seenLegacyEvidence.set(key, [...seenLegacyEvidence.get(key) ?? [], normalized]);
         const prior = await ctx.db.query("recognitionAttempts")
           .withIndex("by_kiosk_timestamp_candidate_decision", q => q.eq("kioskId", normalized.kioskId).eq("timestamp", normalized.timestamp).eq("candidateWorkerId", normalized.candidateWorkerId).eq("decision", normalized.decision))
-          .take(501);
-        if (prior.length > 500) throw new Error("Recognition retry lookup exceeds safe limit");
-        if (prior.some(row => !row.sourceAttemptId && sameEvidence(row, normalized))) {
+          .filter(q => q.and(q.eq(q.field("sourceAttemptId"), undefined),
+            ...evidenceFields.map(field => q.eq(q.field(field), normalized[field]))))
+          .first();
+        if (prior && sameEvidence(prior, normalized)) {
           skipped++;
           continue;
         }
