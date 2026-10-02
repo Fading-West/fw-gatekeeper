@@ -684,15 +684,30 @@
             openSupervisorDialog();
         }
 
+        function createSupervisorUnlockRequestId() {
+            const cryptography = globalThis.crypto;
+            if (typeof cryptography?.randomUUID === "function") {
+                try { return cryptography.randomUUID(); } catch (_) { /* Try the cryptographic fallback. */ }
+            }
+            if (typeof cryptography?.getRandomValues !== "function") {
+                throw new Error("Secure unlock identity unavailable");
+            }
+            const bytes = new Uint8Array(16);
+            cryptography.getRandomValues(bytes);
+            return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+        }
+
         async function unlockSupervisorControls() {
             if (supervisorUnlockPending || supervisorLockPending || supervisorLockNeeded) return;
             supervisorUnlockPending = true;
             supervisorSubmit.disabled = true;
             const version = supervisorStateVersion;
-            const operation = crypto.randomUUID();
-            activeUnlockRequest = operation;
-            const pin = supervisorPin.value;
+            let requestStarted = false;
             try {
+                const operation = createSupervisorUnlockRequestId();
+                activeUnlockRequest = operation;
+                const pin = supervisorPin.value;
+                requestStarted = true;
                 const response = await fetch("/supervisor/unlock", {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ pin, request_id: operation })
@@ -709,9 +724,13 @@
                 fetchStatus();
             } catch (_) {
                 if (version === supervisorStateVersion) {
-                    supervisorLockNeeded = true;
-                    supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
-                    supervisorUnlock.textContent = "Unlock uncertain. Lock supervisor controls";
+                    if (requestStarted) {
+                        supervisorLockNeeded = true;
+                        supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
+                        supervisorUnlock.textContent = "Unlock uncertain. Lock supervisor controls";
+                    } else {
+                        supervisorError.textContent = "Secure unlock identity unavailable. Retry on the kiosk browser.";
+                    }
                 }
             } finally {
                 supervisorUnlockPending = false;

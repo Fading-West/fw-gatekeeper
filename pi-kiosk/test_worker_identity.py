@@ -133,9 +133,9 @@ class ManualWorkerSelectionTests(WorkerIdentityTests):
             import app
         with mock.patch.object(config, "KIOSK_UI_KEY", "test-ui", create=True), mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "test-pin", create=True):
             client = app.app.test_client()
-            from kiosk_ui_auth import KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token
-            client.set_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token())
             headers = {"X-Kiosk-UI-Key": "test-ui"}
+            unlocked = client.post('/supervisor/unlock', json={"pin": "test-pin", "request_id": "synthetic-worker-selection"}, headers=headers)
+            self.assertEqual(unlocked.status_code, 200)
             database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
             other = database.add_worker('Alex', -ENCODING, server_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
             response = client.post('/manual-clock', json={"name": "Alex"}, headers=headers)
