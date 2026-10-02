@@ -34,7 +34,7 @@ function normalizeAttempt(raw: any, kioskId: string) {
       optionalString(raw.id),
     legacySourceAttemptId: optionalString(raw.legacy_source_attempt_id) || optionalString(raw.legacySourceAttemptId),
     kioskId,
-    timestamp: optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt) || new Date().toISOString(),
+    timestamp: (optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt))!,
     faceDetected:
       optionalBoolean(raw.face_detected) ??
       optionalBoolean(raw.faceDetected) ??
@@ -90,6 +90,10 @@ export async function POST(req: NextRequest) {
     const identity = await authenticateKiosk(req, claims);
     if (!identity) return unauthorizedApiResponse();
 
+    if (attempts.some((raw: any) => !(optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt)))) {
+      return NextResponse.json({ error: 'Each recognition attempt requires its captured timestamp for safe retry.', code: 'INVALID_RECOGNITION_TIMESTAMP' }, { status: 400 });
+    }
+
     const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, kioskEvidenceId(identity, attempt, body)));
     const result = await ingestRecognitionAttemptBatch(mapped);
     console.info('next_secured_ingest_recognition', {
@@ -99,6 +103,10 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof SecuredIngestError && error.status === 400 &&
+        ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.code || '')) {
+      return NextResponse.json({ error: error.detail || 'Invalid recognition evidence', code: error.code }, { status: 400 });
+    }
     if (error instanceof SecuredIngestError && error.status === 409) {
       return NextResponse.json({ error: 'Recognition attempt ID was reused with different evidence.', code: 'RECOGNITION_ATTEMPT_CONFLICT' }, { status: 409 });
     }

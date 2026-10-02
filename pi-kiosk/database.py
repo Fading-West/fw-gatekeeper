@@ -186,6 +186,17 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
+        CREATE TABLE IF NOT EXISTS recognition_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER NOT NULL REFERENCES recognition_attempts(id),
+            reason TEXT NOT NULL,
+            original_attempt_json TEXT NOT NULL,
+            rejected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            released_at TEXT,
+            release_note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_recognition_rejections_active
+            ON recognition_rejections(attempt_id, released_at);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_time ON recognition_attempts(timestamp);
         """
@@ -872,9 +883,18 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
 
 
 def count_unsynced_recognition_attempts() -> int:
-    """Count recognition telemetry rows still waiting to sync."""
+    """Count retryable telemetry, excluding actively quarantined evidence."""
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0").fetchone()
+    row = conn.execute("""SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0
+        AND NOT EXISTS (SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL)""").fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_rejected_recognition_attempts() -> int:
+    """Report retained recognition evidence that requires operator attention."""
+    conn = _get_conn()
+    row = conn.execute("SELECT COUNT(*) FROM recognition_rejections WHERE released_at IS NULL").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -960,7 +980,9 @@ def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
             best_score, second_best_score, score_margin, decision, threshold,
             liveness_confirmed, model_version, source_attempt_id, legacy_source_attempt_id, candidate_server_worker_id
         FROM recognition_attempts
-        WHERE synced = 0
+        WHERE synced = 0 AND NOT EXISTS (
+            SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL)
         ORDER BY id ASC
         LIMIT ?
         """,
@@ -995,6 +1017,37 @@ def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
         item["liveness_confirmed"] = bool(item["liveness_confirmed"])
         attempts.append(item)
     return attempts
+
+
+def reject_recognition_attempt(attempt_id: int, reason: str) -> None:
+    """Quarantine without deleting evidence or claiming successful ingestion."""
+    conn = _get_conn()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM recognition_attempts WHERE id = ? AND synced = 0", (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unsynced recognition attempt {attempt_id} does not exist")
+        active = conn.execute("SELECT id FROM recognition_rejections WHERE attempt_id = ? AND released_at IS NULL", (attempt_id,)).fetchone()
+        if not active:
+            conn.execute("INSERT INTO recognition_rejections (attempt_id, reason, original_attempt_json) VALUES (?, ?, ?)",
+                         (attempt_id, reason[:2000], json.dumps(dict(row), default=str)))
+
+
+def list_recognition_rejections() -> list[dict]:
+    conn = _get_conn()
+    return [dict(row) for row in conn.execute("SELECT * FROM recognition_rejections WHERE released_at IS NULL ORDER BY id")]
+
+
+def retry_recognition_rejection(rejection_id: int, note: str) -> None:
+    """Release reviewed evidence for retry while keeping the rejection audit."""
+    if not note.strip():
+        raise ValueError("A reason for retry is required")
+    conn = _get_conn()
+    with conn:
+        row = conn.execute("SELECT r.id FROM recognition_rejections r JOIN recognition_attempts a ON a.id = r.attempt_id WHERE r.id = ? AND r.released_at IS NULL AND a.synced = 0", (rejection_id,)).fetchone()
+        if row is None:
+            raise ValueError("Active rejection with original unsynced evidence is required")
+        conn.execute("UPDATE recognition_rejections SET released_at = datetime('now'), release_note = ? WHERE id = ? AND released_at IS NULL", (note.strip(), rejection_id))
 
 
 def mark_recognition_attempts_synced(attempt_ids: list[int]):

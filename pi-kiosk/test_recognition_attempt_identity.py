@@ -53,7 +53,7 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
             self.assertFalse(sync.sync_recognition_attempts())
             self.assertEqual(post.call_args.kwargs['json']['attempts'][0], first)
         self.assertEqual(database.count_unsynced_recognition_attempts(), 1)
-        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200)) as post:
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200, json=lambda: {'ingested': 1, 'skipped': 0})) as post:
             self.assertTrue(sync.sync_recognition_attempts())
             self.assertEqual(post.call_args.kwargs['json']['attempts'][0], first)
         self.assertEqual(database.count_unsynced_recognition_attempts(), 0)
@@ -95,7 +95,7 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
         self.assertEqual(first['candidateWorkerId'], SERVER_ID)
         self._close_db()
         database.init_db()
-        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200)) as post:
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200, json=lambda: {'ingested': 1, 'skipped': 0})) as post:
             self.assertTrue(sync.sync_recognition_attempts())
             self.assertEqual(post.call_args.kwargs['json']['attempts'][0], first)
 
@@ -108,7 +108,7 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
         self._write_result(result)
         self.assertIsNone(database.get_unsynced_recognition_attempts()[0]
                           ["candidate_server_worker_id"])
-        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200)) as post:
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200, json=lambda: {'ingested': 1, 'skipped': 0})) as post:
             self.assertTrue(sync.sync_recognition_attempts())
             self.assertIsNone(post.call_args.kwargs['json']['attempts'][0]['candidateWorkerId'])
 
