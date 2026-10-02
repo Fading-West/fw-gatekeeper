@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import cv2  # Load native submodules before temporary sys.modules isolation.
 import numpy as np
 import config
 import database
