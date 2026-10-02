@@ -580,6 +580,69 @@
         const syncChip = document.getElementById("syncChip");
         let adminVisible = false;
         let supervisorStateVersion = 0;
+        let manualSubmitting = false;
+        let pendingManualRequest = null;
+        const manualIntentKey = "fw-gatekeeper-pending-manual-attendance-v1";
+        let manualIntentStorageError = false;
+        function readManualRequest() {
+            const saved = sessionStorage.getItem(manualIntentKey);
+            if (saved === null) return null;
+            const intent = JSON.parse(saved);
+            if (!intent || !Number.isSafeInteger(intent.worker_id) || intent.worker_id <= 0 ||
+                typeof intent.request_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(intent.request_id)) {
+                throw new Error("Invalid saved attendance intent");
+            }
+            return { worker_id: intent.worker_id, request_id: intent.request_id };
+        }
+
+        function sameManualRequest(left, right) {
+            return left !== null && right !== null &&
+                left.worker_id === right.worker_id && left.request_id === right.request_id;
+        }
+
+        try {
+            pendingManualRequest = readManualRequest();
+            if (pendingManualRequest !== null) {
+                manualName.disabled = true;
+                manualResult.textContent = "Attendance confirmation pending. Retry before selecting another worker.";
+            }
+        } catch (_) {
+            manualIntentStorageError = true;
+        }
+
+        function retainManualRequest(operation) {
+            const existing = readManualRequest();
+            if (existing !== null && !sameManualRequest(existing, operation)) {
+                throw new Error("Another attendance intent is pending");
+            }
+            const saved = JSON.stringify(operation);
+            sessionStorage.setItem(manualIntentKey, saved);
+            if (sessionStorage.getItem(manualIntentKey) !== saved) throw new Error("Attendance intent not saved");
+            pendingManualRequest = operation;
+        }
+
+        function verifyManualRequest(operation) {
+            try {
+                if (!sameManualRequest(readManualRequest(), operation)) {
+                    throw new Error("Attendance intent changed");
+                }
+            } catch (error) {
+                manualIntentStorageError = true;
+                throw error;
+            }
+        }
+
+        function clearManualRequest(operation) {
+            try {
+                verifyManualRequest(operation);
+                sessionStorage.removeItem(manualIntentKey);
+                if (sessionStorage.getItem(manualIntentKey) !== null) throw new Error("Attendance receipt not cleared");
+                if (sameManualRequest(pendingManualRequest, operation)) pendingManualRequest = null;
+            } catch (error) {
+                manualIntentStorageError = true;
+                throw error;
+            }
+        }
 
         function tickClock() {
             const now = new Date();
@@ -763,38 +826,78 @@
         }
 
         async function submitManualClock() {
-            const workerId = manualName.value;
+            if (manualSubmitting) return;
+            if (manualIntentStorageError) {
+                manualResult.textContent = "Browser attendance storage is unavailable. Ask your supervisor to restore it before submitting.";
+                manualResult.style.color = "#ff9e8f";
+                return;
+            }
+            const workerId = pendingManualRequest ? String(pendingManualRequest.worker_id) : manualName.value;
             if (!workerId) {
                 manualResult.textContent = "Select a worker.";
                 manualResult.style.color = "#ff9e8f";
                 return;
             }
+            if (!pendingManualRequest || pendingManualRequest.worker_id !== Number(workerId)) {
+                try {
+                    retainManualRequest({ worker_id: Number(workerId), request_id: crypto.randomUUID() });
+                } catch (_) {
+                    manualIntentStorageError = true;
+                    manualResult.textContent = "Could not save attendance intent. Nothing was submitted; restore browser storage and reload.";
+                    manualResult.style.color = "#ff9e8f";
+                    return;
+                }
+            }
+            manualSubmitting = true;
+            manualBtn.disabled = true;
+            manualName.disabled = true;
+            const operation = pendingManualRequest;
+            const operationStateVersion = supervisorStateVersion;
             manualResult.textContent = "Submitting...";
             manualResult.style.color = "#9ea1a8";
             try {
+                verifyManualRequest(operation);
                 const response = await fetch("/manual-clock", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ worker_id: Number(workerId) })
+                    body: JSON.stringify(operation)
                 });
                 const data = await response.json();
+                if (operationStateVersion !== supervisorStateVersion || !adminVisible) {
+                    if ((response.ok && data.success) || (response.status >= 400 && response.status < 500 && response.status !== 401)) {
+                        clearManualRequest(operation);
+                    }
+                    return;
+                }
                 if (!response.ok || !data.success) {
                     if (response.status === 401) {
                         setAdminVisible(false);
                         openSupervisorDialog("Supervisor session expired. Unlock again to retry.");
                         return;
                     }
+                    if (response.status >= 400 && response.status < 500) clearManualRequest(operation);
+                    if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                     manualResult.textContent = data.error || "Manual clock failed.";
                     manualResult.style.color = "#ff9e8f";
                     return;
                 }
+                clearManualRequest(operation);
+                if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                 manualResult.textContent = `${data.worker_name}: ${data.action.replace("_", " ")}`;
                 manualResult.style.color = "#87dfb3";
                 manualName.value = "";
                 fetchLog();
             } catch (error) {
-                manualResult.textContent = "Connection error.";
-                manualResult.style.color = "#ff9e8f";
+                if (operationStateVersion === supervisorStateVersion && adminVisible) {
+                    manualResult.textContent = manualIntentStorageError
+                        ? "Browser attendance storage changed or is unavailable. Restore it before retrying this attendance."
+                        : "Connection error. Retry to confirm this attendance.";
+                    manualResult.style.color = "#ff9e8f";
+                }
+            } finally {
+                manualSubmitting = false;
+                manualBtn.disabled = false;
+                manualName.disabled = pendingManualRequest !== null || manualIntentStorageError;
             }
         }
 
