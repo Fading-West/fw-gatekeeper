@@ -88,7 +88,8 @@ type PublicKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 function publicKioskStatus(lastSync: string | null, now: number): PublicKioskStatus {
   if (!lastSync) return 'never_synced';
   const ageMs = now - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= 15 * 60 * 1000) return 'online';
+  if (!Number.isFinite(ageMs) || ageMs < 0) return 'offline';
+  if (ageMs <= 15 * 60 * 1000) return 'online';
   if (ageMs <= 60 * 60 * 1000) return 'stale';
   return 'offline';
 }

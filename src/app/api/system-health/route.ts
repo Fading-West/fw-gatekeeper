@@ -81,7 +81,7 @@ function asHealthUrl(rawUrl: string) {
 function getKioskStatus(lastSync: string | null): KioskStatus {
   if (!lastSync) return 'never_synced';
   const ageMs = Date.now() - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return 'online';
+  if (!Number.isFinite(ageMs) || ageMs < 0) return 'offline';
   if (ageMs <= ONLINE_THRESHOLD_MS) return 'online';
   if (ageMs <= STALE_THRESHOLD_MS) return 'stale';
   return 'offline';
