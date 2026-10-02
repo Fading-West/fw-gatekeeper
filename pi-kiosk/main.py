@@ -36,16 +36,39 @@ logger = logging.getLogger("main")
 
 
 class Camera:
-    def __init__(self, mode="auto"):
+    def __init__(self, mode="auto", retry_seconds=5, clock=time.monotonic):
         self._cam = None
+        self._requested_mode = mode
         self._mode = mode
-        self._is_rgb = False  # True if camera returns RGB (picamera2)
+        self._backend = None
+        self._is_rgb = False
+        self._retry_seconds = retry_seconds
+        self._clock = clock
+        self._retry_at = 0.0
+
+    def _close_camera(self):
+        camera, backend = self._cam, self._backend
+        self._cam, self._backend = None, None
+        if camera is None:
+            return
+        try:
+            if backend == "pi":
+                try:
+                    camera.stop()
+                finally:
+                    camera.close()
+            else:
+                camera.release()
+        except Exception:
+            logger.warning("Camera cleanup failed", exc_info=True)
 
     def start(self):
-        if self._mode in ("pi", "auto"):
+        self._close_camera()
+        if self._requested_mode in ("pi", "auto"):
             try:
                 from picamera2 import Picamera2
                 self._cam = Picamera2()
+                self._backend = "pi"
                 cam_config = self._cam.create_video_configuration(
                     main={"size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT), "format": "RGB888"}
                 )
@@ -56,40 +79,46 @@ class Camera:
                 self._is_rgb = True
                 logger.info("Pi Camera initialized (RGB mode)")
                 return
-            except Exception as e:
-                if self._mode == "pi":
-                    raise RuntimeError(f"Pi Camera failed: {e}")
-                logger.info(f"Pi Camera not available ({e}), trying USB...")
-
-        self._cam = cv2.VideoCapture(config.CAMERA_INDEX)
-        self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-        self._cam.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
-        if not self._cam.isOpened():
-            raise RuntimeError("No camera available")
-        self._mode = "usb"
-        self._is_rgb = False
-        logger.info("USB Camera initialized (BGR mode)")
+            except Exception as exc:
+                self._close_camera()
+                if self._requested_mode == "pi":
+                    raise RuntimeError(f"Pi Camera failed: {exc}") from exc
+                logger.info("Pi Camera not available (%s), trying USB...", exc)
+        try:
+            self._cam = cv2.VideoCapture(config.CAMERA_INDEX)
+            self._backend = "usb"
+            self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
+            self._cam.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
+            if not self._cam.isOpened():
+                raise RuntimeError("No camera available")
+            self._mode = "usb"
+            self._is_rgb = False
+            logger.info("USB Camera initialized (BGR mode)")
+        except Exception:
+            self._close_camera()
+            raise
 
     def capture(self):
-        """Returns (bgr_frame, rgb_frame)"""
-        if self._mode == "pi":
-            rgb = self._cam.capture_array()
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            return bgr, rgb
-        else:
+        """Reopen failed capture devices after bounded backoff; never reuse them."""
+        if self._cam is None and self._clock() < self._retry_at:
+            raise RuntimeError("Camera reconnect pending")
+        try:
+            if self._cam is None:
+                self.start()
+            if self._mode == "pi":
+                rgb = self._cam.capture_array()
+                return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), rgb
             ret, bgr = self._cam.read()
             if not ret:
                 raise RuntimeError("Failed to capture frame")
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            return bgr, rgb
+            return bgr, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        except Exception:
+            self._close_camera()
+            self._retry_at = self._clock() + self._retry_seconds
+            raise
 
     def stop(self):
-        if self._cam is None:
-            return
-        if self._mode == "pi":
-            self._cam.stop()
-        else:
-            self._cam.release()
+        self._close_camera()
 
 
 GOLD = (11, 134, 184)
@@ -529,6 +558,11 @@ def run(args):
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
                 logger.error("Capture error: %s", e)
+                web_app.set_frame(None)
+                web_app.update_status(
+                    state="ERROR", message="Camera unavailable - reconnecting. Please ask your supervisor",
+                    worker_name=None, worker_id=None, face_detected=False,
+                )
                 if camera_healthy:
                     camera_healthy = False
                     web_app.update_health(camera_ok=False, degraded_reason="camera_error")
@@ -538,6 +572,8 @@ def run(args):
             if not camera_healthy:
                 camera_healthy = True
                 web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
+                web_app.update_status(state="IDLE", message="Step toward camera", worker_name=None,
+                                      worker_id=None, face_detected=False)
 
             now = time.time()
 
