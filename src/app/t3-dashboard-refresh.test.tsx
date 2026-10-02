@@ -19,20 +19,24 @@ function payload(url: string, workerName: string, attendance: unknown[] = []) {
   if (url.includes('/api/system-health')) return { checked_at: '2026-10-02T08:00:00Z', portal: { status: 'online' }, face_service: { status: 'online', model_ready: true }, kiosks: { total: 0, counts: { online: 0, offline: 0, stale: 0, never_synced: 0 }, rows: [] }, sync: {}, warnings: [] };
   return { backend_unavailable: true, exceptions: [], summary: { open: 0 }, blockers: [] };
 }
-it('keeps the later poll when an older request finishes and aborts on unmount', async () => {
+it('aborts the pending older workers read and keeps the later visibility refresh result', async () => {
   const visible = setupDocument();
   let resolve!: (response: Response) => void;
   const old = new Promise<Response>(yes => { resolve = yes; });
-  let workers = 0; const signals: AbortSignal[] = [];
+  let workers = 0;
+  let oldWorkerSignal!: AbortSignal;
   vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => {
-    signals.push(init.signal as AbortSignal);
-    if (url.includes('/api/workers') && ++workers === 1) return old;
+    if (url.includes('/api/workers') && ++workers === 1) {
+      oldWorkerSignal = init.signal as AbortSignal;
+      return old;
+    }
     return Promise.resolve(Response.json(payload(url, 'Current synthetic')));
   }));
   await act(async () => { tree = create(<Dashboard />); });
+  expect(oldWorkerSignal.aborted).toBe(false);
   await act(async () => visible());
   expect(JSON.stringify(tree!.toJSON())).toContain('Current synthetic');
-  expect(signals[0].aborted).toBe(true);
+  expect(oldWorkerSignal.aborted).toBe(true);
   await act(async () => resolve(Response.json(payload('/api/workers', 'Old synthetic'))));
   expect(JSON.stringify(tree!.toJSON())).not.toContain('Old synthetic');
   await act(async () => tree!.unmount()); tree = undefined;
@@ -74,13 +78,19 @@ it('publishes healthy signals after one hung response times out', async () => {
   expect(tree!.root.findByProps({ 'data-worker': 'Available worker' }).props['data-stale']).toBe(true);
   expect(JSON.stringify(tree!.toJSON())).toContain('timed out');
 });
-it('aborts all reads when an outstanding batch unmounts', async () => {
-  setupDocument(); const signals: AbortSignal[] = [];
-  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
-    signals.push(init.signal as AbortSignal); return new Promise<Response>(() => {});
+it('aborts a pending read on unmount without cancelling already completed reads', async () => {
+  setupDocument();
+  const reads: { url: string; signal: AbortSignal }[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => {
+    reads.push({ url, signal: init.signal as AbortSignal });
+    return url.includes('/api/attendance') ? new Promise<Response>(() => {})
+      : Promise.resolve(Response.json(payload(url, 'Synthetic worker')));
   }));
   await act(async () => { tree = create(<Dashboard />); });
+  expect(reads).toHaveLength(7);
+  const pending = reads.find(read => read.url.includes('/api/attendance'))!;
+  expect(pending.signal.aborted).toBe(false);
   await act(async () => tree!.unmount()); tree = undefined;
-  expect(signals).toHaveLength(7);
-  expect(signals.every(signal => signal.aborted)).toBe(true);
+  expect(pending.signal.aborted).toBe(true);
+  expect(reads.filter(read => read !== pending).every(read => !read.signal.aborted)).toBe(true);
 });
