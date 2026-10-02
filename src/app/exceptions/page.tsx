@@ -17,6 +17,9 @@ import {
 } from '@/lib/types';
 
 const typeLabels: Record<string, string> = {
+  ambiguous_schedule: 'Ambiguous schedule assignment',
+  unassigned_schedule: 'No matching schedule',
+  unsupported_schedule: 'Unsupported schedule',
   missing_arrival: 'Missing arrival',
   late_arrival: 'Late arrival',
   missing_clock_out: 'Still clocked in',

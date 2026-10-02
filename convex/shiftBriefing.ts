@@ -4,7 +4,8 @@ import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
-import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { isSupportedScheduleTimeRange } from "./scheduleTimes";
+import { resolveScheduleAssignment, scheduleDays } from "./scheduleAssignment";
 
 type WorkerCoverageStatus = "present" | "late" | "missing" | "clocked_out" | "still_clocked_in";
 type DepartmentCoverageStatus = "covered" | "short" | "critical" | "unscheduled";
@@ -48,15 +49,6 @@ function getMinutesFromTimestamp(timestamp?: string | null): number | null {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
-function parseScheduleDays(days: string): number[] {
-  try {
-    const parsed = JSON.parse(days);
-    return Array.isArray(parsed) ? parsed.filter((day) => Number.isInteger(day)) : [];
-  } catch {
-    return [];
-  }
-}
-
 function normalizeText(value?: string | null) {
   const trimmed = value?.trim();
   return trimmed || "";
@@ -67,18 +59,6 @@ function getEncodingStatus(encoding?: number[]) {
   return SUPPORTED_ENCODING_LENGTHS.has(encoding.length) && encoding.every((value) => Number.isFinite(value))
     ? "valid"
     : "invalid";
-}
-
-function getScheduleForWorker(worker: any, schedules: any[], dayOfWeek: number) {
-  const todaysSchedules = schedules.filter((schedule) => parseScheduleDays(schedule.days).includes(dayOfWeek));
-  const workerDepartment = normalizeText(worker.department).toLowerCase();
-  return (
-    todaysSchedules.find(
-      (schedule) => normalizeText(schedule.department).toLowerCase() === workerDepartment,
-    ) ||
-    todaysSchedules.find((schedule) => !normalizeText(schedule.department)) ||
-    null
-  );
 }
 
 function getKioskStatus(lastSync?: string | null): KioskStatus {
@@ -193,6 +173,7 @@ function buildShiftTrustBrief(input: {
   actionItems: any[];
   todaysSchedules: any[];
   unavailableWorkers: number;
+  uncertainWorkers: number;
   workers: any[];
   openExceptions: any[];
   criticalExceptions: any[];
@@ -229,8 +210,8 @@ function buildShiftTrustBrief(input: {
   }
   if (input.unavailableWorkers > 0) {
     readinessBlockers.push(risk(
-      "schedule:unsupported", "schedule", "critical", "Schedule coverage unavailable",
-      `${plural(input.unavailableWorkers, "worker")} excluded from coverage counts. ${SCHEDULE_TIME_ERROR}`,
+      "schedule:unavailable", "schedule", input.uncertainWorkers === input.unavailableWorkers ? "warning" : "critical", "Schedule coverage unavailable",
+      `${plural(input.unavailableWorkers, "worker")} have no unique supported schedule for this date. Counts include only workers with unique supported assignments; raw scans remain available.`,
       input.unavailableWorkers, "/schedules",
     ));
   }
@@ -387,7 +368,7 @@ function buildShiftTrustBrief(input: {
       ? "Morning readiness is blocked"
       : "Morning readiness needs attention";
   const coverageCaveat = input.unavailableWorkers > 0
-    ? ` Coverage is unavailable for ${plural(input.unavailableWorkers, "worker")} with unsupported schedules; counts include supported schedules only.`
+    ? ` Coverage is unavailable for ${plural(input.unavailableWorkers, "worker")} without unique supported schedules; counts include unique supported assignments only.`
     : "";
   const summarySentence = `${statusLead}: ${input.summary.present}/${input.summary.expected} expected workers are present, ${input.summary.late} late, ${input.summary.missing} missing, ${input.summary.open_exceptions} open exceptions, and ${input.summary.kiosk_warnings} kiosk warnings.${coverageCaveat}`;
   const primaryAction = input.actionItems[0]
@@ -479,7 +460,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
         .collect(),
     ]) as [any[], any[], any[], any[], any[], any[]];
 
-    const todaysSchedules = schedules.filter((schedule) => parseScheduleDays(schedule.days).includes(dayOfWeek));
+    const todaysSchedules = schedules.filter((schedule) => scheduleDays(schedule.days).includes(dayOfWeek));
     const eventsByWorker = new Map<string, any[]>();
     for (const event of attendance) {
       const events = eventsByWorker.get(event.workerId) || [];
@@ -497,13 +478,27 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     let attended = 0;
     let arrivedLate = 0;
     let unavailableWorkers = 0;
+    let uncertainWorkers = 0;
+    const scheduleWarnings: {
+      worker_id: string; worker_name: string; department: string; kind: "none" | "ambiguous" | "unsupported";
+      tier: "department" | "default" | null;
+      candidates: { id: string; name: string; start: string; end: string; days: string; department: string }[];
+      first_seen: string | null; last_seen: string | null; event_count: number;
+    }[] = [];
 
     for (const worker of workers) {
-      const schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
-      if (!schedule) continue;
+      const assignment = resolveScheduleAssignment(worker.department, schedules, dayOfWeek);
+      const schedule = assignment.kind === "unique" ? assignment.schedule : null;
       // Do not fall back to another schedule when the assigned schedule is invalid.
-      if (!isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
+      if (!schedule || !isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
         unavailableWorkers += 1;
+        if (assignment.kind === "none") uncertainWorkers += 1;
+        const events = eventsByWorker.get(String(worker._id)) || [];
+        const candidates = assignment.kind === "unique" ? [assignment.schedule] : assignment.candidates;
+        scheduleWarnings.push({ worker_id: String(worker._id), worker_name: worker.name || "Unknown worker", department: worker.department || "Unassigned",
+          kind: assignment.kind === "unique" ? "unsupported" : assignment.kind, tier: assignment.tier,
+          candidates: candidates.map(candidate => ({ id: String(candidate._id), name: candidate.name, start: candidate.startTime, end: candidate.endTime, days: candidate.days, department: candidate.department || "" })),
+          first_seen: events[0]?.timestamp || null, last_seen: events[events.length - 1]?.timestamp || null, event_count: events.length });
         continue;
       }
 
@@ -615,10 +610,10 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     const exceptionActions = openExceptions.filter((exception) => exception.type !== "recognition_review");
     const actionItems = [
       ...(unavailableWorkers > 0 ? [{
-        id: "schedules:unsupported",
-        priority: "critical" as ActionPriority,
+        id: "schedules:unavailable",
+        priority: (uncertainWorkers === unavailableWorkers ? "warning" : "critical") as ActionPriority,
         label: "Schedule coverage unavailable",
-        description: `${plural(unavailableWorkers, "worker")} excluded from coverage counts. ${SCHEDULE_TIME_ERROR}`,
+        description: `${plural(unavailableWorkers, "worker")} have missing, ambiguous or unsupported schedule assignments. Review assignments; no attendance expectation is inferred for unmatched workers.`,
         href: "/schedules",
       }] : []),
       ...departmentRows
@@ -706,6 +701,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       actionItems,
       todaysSchedules,
       unavailableWorkers,
+      uncertainWorkers,
       workers,
       openExceptions,
       criticalExceptions,
@@ -723,6 +719,10 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       summary,
       daily_attendance: { expected, present: attended, late: arrivedLate, missing },
       coverage_unavailable: unavailableWorkers,
+      schedule_assignment_warnings: scheduleWarnings,
+      // Canonical source identities also remain available after an exception disposition.
+      coverage_evidence: scheduleWarnings.map(row => [row.worker_id, row.kind, row.tier, row.candidates])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
       departments: departmentRows,
       workers: workerRows,
       action_items: actionItems,
