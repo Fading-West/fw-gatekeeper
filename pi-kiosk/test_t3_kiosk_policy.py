@@ -99,7 +99,9 @@ class KioskPolicyTests(unittest.TestCase):
              mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 1e20), \
              mock.patch.object(app.database, "get_worker_by_id", return_value=worker), \
              mock.patch.object(app.database, "log_attendance", return_value=42) as record:
-            client.post("/supervisor/unlock", json={"pin": "synthetic-pin"}, headers=headers)
+            boot_nonce = client.get("/health").get_json().get("supervisor_boot_nonce")
+            unlocked = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "boot_nonce": boot_nonce}, headers=headers)
+            self.assertEqual(unlocked.status_code, 200)
             self.assertEqual(client.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 200)
             with mock.patch.object(config, "KIOSK_TYPE", "entyr"):
                 self.assertEqual(client.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 503)
