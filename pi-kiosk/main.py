@@ -525,6 +525,14 @@ def run(args):
                 initial_model_loaded = True
                 model_healthy = True
                 web_app.update_health(model_ok=True, degraded_reason=base_degraded_reason())
+                # Initialization recovery must be visible even with no face in view.
+                # Other standing faults retain their own degraded state below.
+                if base_degraded_reason() is None:
+                    web_app.replace_status_if(
+                        "SERVICE_DEGRADED", "Recognition unavailable - please ask your supervisor",
+                        state="IDLE", message="Step toward camera",
+                        worker_name=None, worker_id=None, face_detected=False,
+                    )
             active_liveness = recognizer.liveness_checker
             if active_liveness is not liveness:
                 liveness = active_liveness

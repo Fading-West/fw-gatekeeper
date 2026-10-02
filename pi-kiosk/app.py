@@ -83,6 +83,16 @@ def update_status(**kwargs):
         _status["timestamp"] = datetime.now().isoformat(timespec="seconds")
 
 
+def replace_status_if(expected_state, expected_message, **kwargs):
+    """Recover a specific fault without overwriting a concurrent confirmation."""
+    with _status_lock:
+        if _status.get("state") != expected_state or _status.get("message") != expected_message:
+            return False
+        _status.update(kwargs)
+        _status["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        return True
+
+
 def update_health(**kwargs):
     """Update kiosk health fields (camera/model/sync/queue state)."""
     with _health_lock:

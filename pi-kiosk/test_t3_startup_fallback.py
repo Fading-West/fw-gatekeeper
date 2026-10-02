@@ -88,6 +88,32 @@ class ModelRecoveryTests(unittest.TestCase):
         web.update_health.assert_called_once()
         self.assertFalse(web.update_health.call_args.kwargs["model_ok"])
 
+    def test_empty_camera_model_recovery_clears_only_its_own_fault(self):
+        source = ast.parse(Path(__file__).with_name("main.py").read_text())
+        transition = next(node for node in ast.walk(source) if isinstance(node, ast.If)
+                          and ast.unparse(node.test) == 'model_recovery.ready and (not initial_model_loaded)')
+        for fault in (None, 'no_workers_synced', 'liveness_required_unavailable'):
+            web = mock.Mock()
+            context = {'model_recovery': types.SimpleNamespace(ready=True), 'initial_model_loaded': False,
+                       'web_app': web, 'base_degraded_reason': lambda: fault}
+            exec(compile(ast.Module(body=[transition], type_ignores=[]), 'production-recovery', 'exec'), context)
+            self.assertTrue(context['model_healthy'])
+            self.assertEqual(web.replace_status_if.call_count, int(fault is None))
+
+    def test_recovery_status_comparison_preserves_manual_confirmation(self):
+        source = ast.parse(Path(__file__).with_name('app.py').read_text())
+        helper = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'replace_status_if')
+        status = {'state': 'CLOCKED_IN', 'message': 'Attendance recorded'}
+        context = {'_status': status, '_status_lock': threading.Lock(),
+                   'datetime': __import__('datetime').datetime}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), 'production-status', 'exec'), context)
+        replace = context['replace_status_if']
+        self.assertFalse(replace('SERVICE_DEGRADED', 'Recognition unavailable', state='IDLE', message='Ready'))
+        self.assertEqual(status['state'], 'CLOCKED_IN')
+        status.update(state='SERVICE_DEGRADED', message='Recognition unavailable')
+        self.assertTrue(replace('SERVICE_DEGRADED', 'Recognition unavailable', state='IDLE', message='Ready'))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,3 +7,5 @@ Scope: master-based startup ordering and initial model recovery. Compose with PR
 Regression code: test_t3_startup_fallback.py covers blocked initialization, one in-flight load, failed/recovered loads, cancellation and production startup ordering executed with synthetic IO adapters. No physical camera/model/data used.
 
 Validation status: source-only; git diff --check. No tests/runtime/builds performed pending explicit serialized host admission. Exact checks and normal kiosk supervisor fallback/recovery acceptance remain required before PR readiness. Physical device, deployed backend and production release remain pending.
+
+Review correction: empty-camera recovery now clears the model-unavailable status through an atomic compare-and-update, retaining other standing faults and concurrent manual confirmations. Synthetic regression source covers the production transition and status helper. No runtime checks executed; root serialized verification remains required.
