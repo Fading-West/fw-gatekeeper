@@ -21,6 +21,7 @@ import config
 import database
 from embeddings import embed_face, model_ready as recognition_model_ready
 from matching import FreshFaceMatcher
+from scan_freshness import is_fresh_scan
 from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
@@ -140,9 +141,10 @@ def largest_face(face_locations):
     return max(face_locations, key=lambda loc: (loc[2] - loc[0]) * (loc[1] - loc[3]))
 
 
-def _empty_recognition_result(face_loc, decision="rejected_unknown"):
+def _empty_recognition_result(face_loc, decision="rejected_unknown", frame_ts=None):
     return {
         "face_loc": face_loc,
+        "frame_ts": frame_ts,
         "name": None,
         "confidence": 0.0,
         "candidate_worker_id": None,
@@ -358,12 +360,12 @@ def run(args):
                 except Exception as e:
                     logger.error("ONNX encoding error: %s", e)
                     embedding_history.clear()
-                    current_result[0] = _empty_recognition_result(face_loc, decision="rejected_model_error")
+                    current_result[0] = _empty_recognition_result(face_loc, decision="rejected_model_error", frame_ts=frame_ts)
                     continue
 
                 if embedding is None:
                     embedding_history.clear()
-                    current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding")
+                    current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding", frame_ts=frame_ts)
                     continue
 
                 # Match against known workers
@@ -395,7 +397,7 @@ def run(args):
                         # failed recognition.
                         logger.warning("Dim mismatch: no roster encodings match live dim=%d", cand_dim)
                         embedding_history.clear()
-                        current_result[0] = _empty_recognition_result(face_loc, decision="rejected_dim_mismatch")
+                        current_result[0] = _empty_recognition_result(face_loc, decision="rejected_dim_mismatch", frame_ts=frame_ts)
                         continue
 
                     scores, frame_accepted = embedding_history.match(
@@ -458,6 +460,7 @@ def run(args):
 
     # Liveness wait state: set when a matched worker still needs to blink.
     pending_clock = [None]
+    camera_invalidated_at = [0.0]
 
     def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
                      server_worker_id=None):
@@ -529,6 +532,13 @@ def run(args):
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
                 logger.error("Capture error: %s", e)
+                camera_invalidated_at[0] = time.time()
+                pending_clock[0] = None
+                current_result[0] = None
+                with detect_lock:
+                    pending_frame[0] = None
+                if liveness is not None:
+                    liveness.reset()
                 if camera_healthy:
                     camera_healthy = False
                     web_app.update_health(camera_ok=False, degraded_reason="camera_error")
@@ -582,6 +592,9 @@ def run(args):
             pending = pending_clock[0]
             if pending is not None:
                 fresh = current_result[0]
+                if not is_fresh_scan(fresh, now, camera_invalidated_at[0]):
+                    fresh = None
+                    current_result[0] = None
                 identity_changed = False
                 if fresh is not None:
                     current_result[0] = None
@@ -599,6 +612,7 @@ def run(args):
                             and fresh.get("frame_ts", 0.0) > pending["blink_confirmed_at"]
                         ):
                             pending["post_blink_confirmed"] = True
+                            pending["result"] = fresh
                         if fresh.get("face_loc") is not None:
                             box_loc = fresh.get("face_loc")
 
@@ -687,6 +701,8 @@ def run(args):
             result = current_result[0]
             if result is not None:
                 current_result[0] = None
+                if not is_fresh_scan(result, now, camera_invalidated_at[0]):
+                    result = None
 
             # Roster degradation tracks sync state alone - it must not wait
             # for someone to scan, in either direction.
