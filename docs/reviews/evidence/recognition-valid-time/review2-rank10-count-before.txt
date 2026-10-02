@@ -1,0 +1,4 @@
+retryable selection: [] reported count: 1
+Traceback (most recent call last):
+  File "<stdin>", line 9, in <module>
+AssertionError: Active quarantine must not inflate retryable telemetry count

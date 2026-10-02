@@ -25,6 +25,7 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
     knownWorkers: count('known_workers'),
     queuedLogs: count('queued_logs'),
     queuedAttempts: count('queued_attempts'),
+    rejectedAttempts: count('rejected_attempts'),
     degradedReason: text('degraded_reason'),
     lastScanAt: text('last_scan_at'),
   };

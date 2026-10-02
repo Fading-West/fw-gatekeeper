@@ -1,0 +1,1 @@
+PASS: actual kiosk status distinguishes retained rejected evidence from retryable queue online/offline
