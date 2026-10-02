@@ -193,6 +193,7 @@ function ShiftCloseoutPageContent() {
     const editableDraft = payload?.closeout?.status === 'completed' ? null : retained;
     setSupervisorName(editableDraft?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
     setNotes(editableDraft?.notes ?? payload?.closeout?.notes ?? '');
+
     setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
     if (retained) {
       setUnsavedConflictDraft(payload?.closeout?.status === 'completed' ? retained : null);
@@ -428,8 +429,10 @@ function ShiftCloseoutPageContent() {
               <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
             {unsavedConflictDraft?.date === date && completed && (
-              <div role="alert" className="rounded-lg border border-amber-400/30 p-3 text-sm text-amber-200">
-                Another supervisor completed this record. The signed notes are shown below. Your unsaved draft was: {unsavedConflictDraft.notes || '(empty notes)'}
+              <div role="alert" className="rounded-xl border border-amber-400/30 p-3 text-sm">
+                <p>The record was completed while your action was rejected. This unsaved draft is separate from the signed record.</p>
+                <p>Draft supervisor: {unsavedConflictDraft.supervisorName || 'Not set'}</p>
+                <p className="whitespace-pre-wrap">{unsavedConflictDraft.notes || 'No draft notes'}</p>
               </div>
             )}
             <label className="space-y-1.5 block">

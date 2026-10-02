@@ -334,11 +334,12 @@ async function buildCloseoutPayload(ctx: any, date: string) {
         record?.health?.modelOk ?? null, record?.health?.livenessAvailable ?? null,
         record?.health?.degradedReason ?? null];
     }));
-  const blockerEvidence = JSON.stringify({ version: 1, date,
+  const blockerEvidence = JSON.stringify({ version: 2, date,
     exceptions: openExceptions.filter((exception: any) => exception.severity === "critical" ||
       exception.type === "missing_clock_out" || exception.type === "recognition_review")
       .map((exception: any) => [exception.key, exception.type, exception.severity, exception.first_seen,
-        exception.last_seen, exception.event_count, exception.scheduled_start, exception.scheduled_end])
+        exception.last_seen, exception.event_count, exception.scheduled_start, exception.scheduled_end,
+        exception.kiosk_id, exception.source_event_ids || []])
       .sort((a: any[], b: any[]) => String(a[0]).localeCompare(String(b[0]))),
     kiosks: kioskEvidence.sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   });
