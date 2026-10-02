@@ -3,6 +3,8 @@ import { convexTest } from 'convex-test';
 import type { FunctionArgs } from 'convex/server';
 import { describe, expect, it } from 'vitest';
 import { api } from './_generated/api';
+import type { Id } from './_generated/dataModel';
+import type { MutationCtx } from './_generated/server';
 import schema from './schema';
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-03';
@@ -25,7 +27,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     const { t, actor } = await setup();
     const workerId = await t.run(ctx => ctx.db.insert('workers', { name: 'Synthetic worker', department: 'Synthetic', active: true, enrolledAt: date }));
     await t.run(ctx => ctx.db.insert('schedules', { name: 'Synthetic shift', department: 'Synthetic', startTime: '08:00', endTime: '17:00', days: '[0,1,2,3,4,5,6]', active: true, createdAt: date }));
-    const insert = (ctx: any) => kind === 'raw'
+    const insert = (ctx: MutationCtx): Promise<Id<'attendance'> | Id<'attendanceCorrections'>> => kind === 'raw'
       ? ctx.db.insert('attendance', { workerId: String(workerId), eventType: 'clock_in', timestamp: `${date}T08:00:00`, synced: true })
       : ctx.db.insert('attendanceCorrections', { date, workerId: String(workerId), action: 'add_clock_in', eventType: 'clock_in', correctedTimestamp: `${date}T08:00:00`, reason: 'Synthetic correction', createdAt: date, updatedAt: date });
     const sourceId = await t.run(insert);
