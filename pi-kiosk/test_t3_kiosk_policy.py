@@ -32,14 +32,14 @@ class KioskPolicyTests(unittest.TestCase):
         for name, values in {
             "RECOGNITION_MATCH_THRESHOLD": [float("nan"), float("inf"), -1, 0, 1.1, "0.45", True, 10**1000],
             "RECOGNITION_NEAR_MISS_MARGIN": [-0.1, 1.1, float("nan")],
-            "RECOGNITION_EMBEDDING_WINDOW": [0, -1, 1.5, "3", True],
+            "RECOGNITION_EMBEDDING_WINDOW": [0, -1, 1.5, "3", True, sys.maxsize + 1, 10**1000],
             "RECOGNITION_UNKNOWN_STREAK": [0, False],
             "LIVENESS_REQUIRED": ["false", 0, None],
             "LIVENESS_EAR_THRESHOLD": [0, -1, float("inf")],
             "LIVENESS_BLINK_FRAMES": [0, True, 2.5],
             "LIVENESS_TIMEOUT_SEC": [0, float("nan")],
             "LIVENESS_WAIT_SEC": [-1, "8"],
-            "CLOCK_DEBOUNCE_MINUTES": [-1, float("inf")],
+            "CLOCK_DEBOUNCE_MINUTES": [-1, float("inf"), 1e20],
             "DISPLAY_TIME_SEC": [-1, "5"],
             "DISPLAY_TIME_SUCCESS_SEC": [float("nan")],
         }.items():
@@ -48,6 +48,10 @@ class KioskPolicyTests(unittest.TestCase):
                     policy = validate_kiosk_policy(self.settings(**{name: value}))
                     self.assertIn(name, policy.recognition_errors)
                     self.assertEqual(policy.action_errors, ())
+
+    def test_consumer_bounds_do_not_invent_smaller_operational_limits(self):
+        self.assertTrue(validate_kiosk_policy(self.settings(RECOGNITION_EMBEDDING_WINDOW=sys.maxsize)).valid)
+        self.assertTrue(validate_kiosk_policy(self.settings(CLOCK_DEBOUNCE_MINUTES=1e9)).valid)
 
     def test_invalid_startup_keeps_ui_and_sync_before_native_model_work(self):
         source = ast.parse(Path(__file__).with_name("main.py").read_text())
@@ -69,11 +73,17 @@ class KioskPolicyTests(unittest.TestCase):
                      "web_app": web, "SyncWorker": Sync, "time": types.SimpleNamespace(sleep=stop_loop),
                      "logger": mock.Mock(), "recognition_model_ready": forbidden, "FaceRecognizer": forbidden}
         exec(compile(ast.Module(body=[run], type_ignores=[]), "actual-policy-startup", "exec"), namespace)
-        with mock.patch.object(config, "RECOGNITION_MATCH_THRESHOLD", float("nan")):
-            namespace["run"](types.SimpleNamespace(server=None, kiosk_id=None))
-        self.assertEqual(calls[:2], ["database", "ui"])
-        self.assertIn({"model_ok": False, "camera_ok": False, "degraded_reason": "kiosk_policy_error"}, calls)
-        self.assertEqual(calls[-3:], ["sync", "sync-start", "sync-stop"])
+        namespace["FreshFaceMatcher"] = forbidden
+        namespace["threading"] = types.SimpleNamespace(Thread=forbidden, Lock=forbidden)
+        for setting, value in (("RECOGNITION_MATCH_THRESHOLD", float("nan")),
+                               ("RECOGNITION_EMBEDDING_WINDOW", 10**1000),
+                               ("CLOCK_DEBOUNCE_MINUTES", 1e20)):
+            calls.clear()
+            with self.subTest(setting=setting), mock.patch.object(config, setting, value):
+                namespace["run"](types.SimpleNamespace(server=None, kiosk_id=None))
+            self.assertEqual(calls[:2], ["database", "ui"])
+            self.assertIn({"model_ok": False, "camera_ok": False, "degraded_reason": "kiosk_policy_error"}, calls)
+            self.assertEqual(calls[-3:], ["sync", "sync-start", "sync-stop"])
 
     def test_recognition_fault_allows_supervised_manual_but_invalid_mode_does_not_infer(self):
         with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
@@ -85,6 +95,8 @@ class KioskPolicyTests(unittest.TestCase):
              mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "synthetic-pin", create=True), \
              mock.patch.object(config, "KIOSK_TYPE", "entry"), \
              mock.patch.object(config, "RECOGNITION_MATCH_THRESHOLD", float("nan")), \
+             mock.patch.object(config, "RECOGNITION_EMBEDDING_WINDOW", 10**1000), \
+             mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 1e20), \
              mock.patch.object(app.database, "get_worker_by_id", return_value=worker), \
              mock.patch.object(app.database, "log_attendance", return_value=42) as record:
             client.post("/supervisor/unlock", json={"pin": "synthetic-pin"}, headers=headers)
@@ -97,6 +109,8 @@ class KioskPolicyTests(unittest.TestCase):
             health = client.get("/health").get_json()
             self.assertFalse(health["policy_ok"])
             self.assertIn("RECOGNITION_MATCH_THRESHOLD", health["policy_errors"])
+            self.assertIn("RECOGNITION_EMBEDDING_WINDOW", health["policy_errors"])
+            self.assertIn("CLOCK_DEBOUNCE_MINUTES", health["policy_errors"])
             self.assertEqual(health["degraded_reason"], "kiosk_policy_error")
 
 

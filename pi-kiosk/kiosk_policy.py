@@ -4,7 +4,9 @@ No coercion or silent fallback: local Python overrides must use the documented
 types. Errors identify setting names only, never configured credentials.
 """
 from dataclasses import dataclass
+from datetime import timedelta
 import math
+import sys
 from typing import Any
 
 
@@ -42,22 +44,31 @@ def validate_kiosk_policy(settings: Any) -> KioskPolicy:
                 or (maximum is not None and value > maximum)):
             recognition_errors.append(name)
 
-    def positive_integer(name: str) -> None:
+    def positive_integer(name: str, maximum: int | None = None) -> None:
         value = getattr(settings, name, None)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if (isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                or (maximum is not None and value > maximum)):
             recognition_errors.append(name)
 
     if not isinstance(getattr(settings, "LIVENESS_REQUIRED", None), bool):
         recognition_errors.append("LIVENESS_REQUIRED")
     number("RECOGNITION_MATCH_THRESHOLD", maximum=1, positive=True)
     number("RECOGNITION_NEAR_MISS_MARGIN", maximum=1)
-    positive_integer("RECOGNITION_EMBEDDING_WINDOW")
+    # deque(maxlen=...) consumes Py_ssize_t, even though Python integers grow.
+    positive_integer("RECOGNITION_EMBEDDING_WINDOW", maximum=sys.maxsize)
     positive_integer("RECOGNITION_UNKNOWN_STREAK")
     number("LIVENESS_EAR_THRESHOLD", maximum=1, positive=True)
     positive_integer("LIVENESS_BLINK_FRAMES")
     number("LIVENESS_TIMEOUT_SEC", positive=True)
     number("LIVENESS_WAIT_SEC", positive=True)
     number("CLOCK_DEBOUNCE_MINUTES")
+    if "CLOCK_DEBOUNCE_MINUTES" not in recognition_errors:
+        # Match the attendance consumer's actual representable range rather
+        # than inventing an operational maximum for a site's policy.
+        try:
+            timedelta(minutes=settings.CLOCK_DEBOUNCE_MINUTES)
+        except (OverflowError, ValueError):
+            recognition_errors.append("CLOCK_DEBOUNCE_MINUTES")
     number("DISPLAY_TIME_SEC")
     number("DISPLAY_TIME_SUCCESS_SEC")
     return KioskPolicy(tuple(action_errors), tuple(recognition_errors))
