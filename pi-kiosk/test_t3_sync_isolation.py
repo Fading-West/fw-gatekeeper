@@ -9,6 +9,7 @@ import sync
 
 class SyncIsolationTests(unittest.TestCase):
     setUp = mapping.AttendanceServerIdMappingTests.setUp
+    _close_db = staticmethod(mapping.AttendanceServerIdMappingTests._close_db)
 
     def cycle(self, *, roster_error=None, reload_error=None, attendance_error=None, telemetry_error=None):
         recognizer = mock.Mock()
