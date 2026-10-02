@@ -1,0 +1,32 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+ ❯ review13-sync-arrival-order.test.ts (2 tests | 1 failed) 15ms
+   × orders concurrent health observations by route arrival even when older authentication finishes last 13ms
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  03:24:00
+   Duration  321ms (transform 35ms, setup 0ms, import 136ms, tests 15ms, environment 0ms)
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review13-sync-arrival-order.test.ts > orders concurrent health observations by route arrival even when older authentication finishes last
+AssertionError: expected 1790942402000 to be 1790942400000 // Object.is equality
+
+- Expected
++ Received
+
+- 1790942400000
++ 1790942402000
+
+ ❯ review13-sync-arrival-order.test.ts:20:35
+     18|  const newerCall=mocks.update.mock.calls.find(call=>call[2]?.cameraOk=…
+     19|  const olderCall=mocks.update.mock.calls.find(call=>call[2]?.cameraOk=…
+     20|  expect(Date.parse(olderCall[1])).toBe(firstArrival);
+       |                                   ^
+     21|  expect(Date.parse(newerCall[1])).toBe(firstArrival+1000);
+     22|  expect(Date.parse(olderCall[1])).toBeLessThan(Date.parse(newerCall[1]…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯

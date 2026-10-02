@@ -159,6 +159,13 @@ export const updateLastSyncFromHttp = internalMutation({
     const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
     if (!kiosk) return { updated: false };
 
+    const now = Date.now();
+    const incomingAt = Date.parse(args.lastSync);
+    if (!Number.isFinite(incomingAt) || incomingAt > now + 60_000) {
+      throw new ConvexError({ code: "INVALID_KIOSK_SYNC_TIME", message: "Kiosk sync time must be a valid recent or past instant" });
+    }
+    const storedAt = kiosk.lastSync ? Date.parse(kiosk.lastSync) : NaN;
+    if (Number.isFinite(storedAt) && storedAt <= now + 60_000 && incomingAt <= storedAt) return { updated: true };
     await ctx.db.patch(kiosk._id, {
       lastSync: args.lastSync,
       ...(args.health ? { health: args.health } : {}),
