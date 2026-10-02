@@ -134,7 +134,8 @@ class ManualWorkerSelectionTests(WorkerIdentityTests):
         with mock.patch.object(config, "KIOSK_UI_KEY", "test-ui", create=True), mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "test-pin", create=True):
             client = app.app.test_client()
             headers = {"X-Kiosk-UI-Key": "test-ui"}
-            unlocked = client.post('/supervisor/unlock', json={"pin": "test-pin", "request_id": "synthetic-worker-selection"}, headers=headers)
+            boot_nonce = client.get('/health').get_json()['supervisor_boot_nonce']
+            unlocked = client.post('/supervisor/unlock', json={"pin": "test-pin", "request_id": "synthetic-worker-selection", "boot_nonce": boot_nonce}, headers=headers)
             self.assertEqual(unlocked.status_code, 200)
             database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
             other = database.add_worker('Alex', -ENCODING, server_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')

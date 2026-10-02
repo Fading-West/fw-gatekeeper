@@ -25,7 +25,13 @@ _supervisor_unlocks: dict[str, str] = {}
 # Retain cancelled operations until restart: an arbitrarily delayed request
 # must never mint a new credential after its lock has been acknowledged.
 _cancelled_supervisor_unlocks: set[str] = set()
+_supervisor_boot_nonce = secrets.token_hex(16)
 _supervisor_session_lock = threading.Lock()
+
+
+def get_supervisor_boot_nonce() -> str:
+    """Public process generation; it is not an authorization credential."""
+    return _supervisor_boot_nonce
 
 
 class SupervisorAttemptLimiter:

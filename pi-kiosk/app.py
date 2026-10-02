@@ -21,6 +21,7 @@ from kiosk_ui_auth import (
     SUPERVISOR_SESSION_TTL_SECONDS,
     SupervisorAttemptLimiter,
     get_kiosk_ui_host,
+    get_supervisor_boot_nonce,
     has_valid_kiosk_ui_credential,
     has_valid_supervisor_credential,
     kiosk_ui_session_token,
@@ -93,7 +94,9 @@ def update_health(**kwargs):
 
 def get_health_snapshot() -> dict:
     with _health_lock:
-        return dict(_health)
+        snapshot = dict(_health)
+    snapshot["supervisor_boot_nonce"] = get_supervisor_boot_nonce()
+    return snapshot
 
 
 def get_status_snapshot() -> dict:
@@ -293,6 +296,8 @@ def supervisor_unlock():
         }), 429
     payload = request.get_json(silent=True) or {}
     operation = payload.get("request_id")
+    if payload.get("boot_nonce") != get_supervisor_boot_nonce():
+        return jsonify({"success": False, "error": "Kiosk session changed. Refresh before unlocking."}), 409
     if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
         return jsonify({"success": False, "error": "Invalid unlock request"}), 400
     if not has_valid_supervisor_credential(provided_pin=str(payload.get("pin", ""))):

@@ -585,6 +585,7 @@
         let supervisorLockNeeded = false;
         let supervisorUnlockPending = false;
         let activeUnlockRequest = null;
+        let supervisorBootNonce = null;
 
         function tickClock() {
             const now = new Date();
@@ -704,17 +705,24 @@
             const version = supervisorStateVersion;
             let requestStarted = false;
             try {
+                if (!supervisorBootNonce) throw new Error("Kiosk session not yet observed");
                 const operation = createSupervisorUnlockRequestId();
                 activeUnlockRequest = operation;
                 const pin = supervisorPin.value;
                 requestStarted = true;
                 const response = await fetch("/supervisor/unlock", {
                     method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ pin, request_id: operation })
+                    body: JSON.stringify({ pin, request_id: operation, boot_nonce: supervisorBootNonce })
                 });
                 if (version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
                 if (!response.ok) {
                     if (response.status >= 500) throw new Error("Unlock not confirmed");
+                    if (response.status === 409) {
+                        supervisorBootNonce = null;
+                        supervisorError.textContent = "Kiosk session changed. Wait for status and unlock again.";
+                        fetchStatus();
+                        return;
+                    }
                     supervisorError.textContent = "Supervisor authentication failed.";
                     supervisorPin.select();
                     return;
@@ -729,7 +737,9 @@
                         supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
                         supervisorUnlock.textContent = "Unlock uncertain. Lock supervisor controls";
                     } else {
-                        supervisorError.textContent = "Secure unlock identity unavailable. Retry on the kiosk browser.";
+                        supervisorError.textContent = supervisorBootNonce
+                            ? "Secure unlock identity unavailable. Retry on the kiosk browser."
+                            : "Wait for kiosk status before unlocking.";
                     }
                 }
             } finally {
@@ -748,6 +758,8 @@
             try {
                 const response = await fetch("/status", { cache: "no-store" });
                 const data = await response.json();
+                const observedBoot = data.health?.supervisor_boot_nonce;
+                supervisorBootNonce = typeof observedBoot === "string" && /^[a-f0-9]{32}$/.test(observedBoot) ? observedBoot : null;
                 const msg = statusMessageFromState(
                     data.state,
                     data.message,

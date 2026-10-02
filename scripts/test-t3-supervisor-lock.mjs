@@ -10,6 +10,7 @@ let outcome = false;
 let unlockResponse;
 const context = vm.createContext({
     adminVisible: true, supervisorStateVersion: 0, supervisorUnlock: {}, supervisorSubmit: {},
+    supervisorBootNonce: 'a'.repeat(32),
     supervisorPin: { value: 'synthetic', select() {} }, supervisorError: {},
     supervisorDialog: { close() {} }, crypto: { randomUUID() { return 'synthetic-operation'; } },
     setAdminVisible(visible) { if (context.adminVisible !== visible) context.supervisorStateVersion += 1; context.adminVisible = visible; },
@@ -34,6 +35,7 @@ calls = [];
 const pending = context.unlockSupervisorControls();
 await context.unlockSupervisorControls();
 assert.equal(calls.length, 1, 'double submission sends one unlock request');
+assert.equal(calls[0].body.boot_nonce, 'a'.repeat(32));
 assert.equal(context.supervisorSubmit.disabled, true);
 context.cancelSupervisorUnlock();
 await Promise.resolve();

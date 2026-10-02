@@ -52,7 +52,8 @@ class SupervisorLockTests(unittest.TestCase):
         first = app.app.test_client()
         copied = app.app.test_client()
         headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
-        unlocked = first.post("/supervisor/unlock", json={"pin": "synthetic-pin"}, headers=headers)
+        boot_nonce = first.get("/health").get_json()["supervisor_boot_nonce"]
+        unlocked = first.post("/supervisor/unlock", json={"pin": "synthetic-pin", "boot_nonce": boot_nonce}, headers=headers)
         self.assertEqual(unlocked.status_code, 200)
         token = first.get_cookie(auth.KIOSK_SUPERVISOR_SESSION_COOKIE).value
         copied.set_cookie(auth.KIOSK_SUPERVISOR_SESSION_COOKIE, token)
@@ -77,9 +78,30 @@ class SupervisorLockTests(unittest.TestCase):
         client = app.app.test_client()
         headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
         self.assertEqual(client.post("/supervisor/lock", json={"request_id": "cancelled"}, headers=headers).status_code, 200)
-        response = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "request_id": "cancelled"}, headers=headers)
+        boot_nonce = client.get("/health").get_json()["supervisor_boot_nonce"]
+        response = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "request_id": "cancelled", "boot_nonce": boot_nonce}, headers=headers)
         self.assertEqual(response.status_code, 409)
         self.assertIsNone(client.get_cookie(auth.KIOSK_SUPERVISOR_SESSION_COOKIE))
+
+    def test_cancel_restart_late_unlock_denied_and_fresh_explicit_unlock_allowed(self):
+        with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
+            import app
+        client = app.app.test_client()
+        headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
+        old_boot = client.get("/health").get_json()["supervisor_boot_nonce"]
+        self.assertEqual(client.post("/supervisor/lock", json={"request_id": "old-operation"}, headers=headers).status_code, 200)
+        with mock.patch.object(auth, "_supervisor_boot_nonce", "a" * 32), \
+             mock.patch.object(auth, "_supervisor_sessions", {}), \
+             mock.patch.object(auth, "_supervisor_unlocks", {}), \
+             mock.patch.object(auth, "_cancelled_supervisor_unlocks", set()):
+            late = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "request_id": "old-operation", "boot_nonce": old_boot}, headers=headers)
+            self.assertEqual(late.status_code, 409)
+            self.assertIsNone(client.get_cookie(auth.KIOSK_SUPERVISOR_SESSION_COOKIE))
+            new_boot = client.get("/health").get_json()["supervisor_boot_nonce"]
+            fresh = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "request_id": "fresh-operation", "boot_nonce": new_boot}, headers=headers)
+            self.assertEqual(fresh.status_code, 200)
+            token = client.get_cookie(auth.KIOSK_SUPERVISOR_SESSION_COOKIE).value
+            self.assertTrue(auth.has_valid_supervisor_credential(session_token=token))
 
 
 if __name__ == "__main__":
