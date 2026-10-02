@@ -75,7 +75,7 @@ assert.doesNotMatch(dashboardPage, /3\.0-mobilefacenet|face_service\.version \|\
 assert.match(dashboardPage, /Attendance roster|Today.s workers/, 'Dashboard worker search/cards must have a nearby section heading.');
 assert.match(dashboardPage, /source: 'system-warning' as const/, 'Recent Events system warnings should be typed as timeline/system signals distinct from action items.');
 assert.match(dashboardPage, /data-event-source=\{event\.source\}/, 'Recent Events cards should expose event source markers for QA and styling.');
-assert.match(dashboardPage, /fetch\('\/api\/workers\?scope=dashboard'\s*[,)]/, 'Dashboard must fetch worker readiness metadata through the dashboard read scope without requesting full biometric vectors.');
+assert.match(dashboardPage, /fetch\('\/api\/workers\?scope=dashboard'(?:,\s*\{[^}]*\})?\)/, 'Dashboard must fetch worker readiness metadata through the dashboard read scope without requesting full biometric vectors.');
 assert.doesNotMatch(dashboardPage, /fetch\('\/api\/workers\?include_encodings=true'\)/, 'Dashboard must not download full biometric vectors every poll.');
 
 const appShell = read('src/components/AppShell.tsx');
