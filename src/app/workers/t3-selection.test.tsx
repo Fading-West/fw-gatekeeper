@@ -36,3 +36,23 @@ it('keeps the latest active result when an older inactive request fails', async 
   expect(JSON.stringify(tree!.toJSON())).toContain('Current synthetic');
   expect(JSON.stringify(tree!.toJSON())).not.toContain('old request failed');
 });
+it('does not let an old mutation refresh replace the newly selected roster', async () => {
+  const mutation = deferred(); let activeReads = 0; let inactiveReads = 0;
+  vi.stubGlobal('confirm', () => true);
+  vi.stubGlobal('fetch', vi.fn((url: string, options?: RequestInit) => {
+    if (options?.method === 'DELETE') return mutation.promise;
+    if (url === '/api/kiosks') return Promise.resolve(Response.json([]));
+    if (url.includes('active=false')) { inactiveReads++; return Promise.resolve(Response.json([worker('Current inactive', 0)])); }
+    activeReads++; return Promise.resolve(Response.json([worker('Old active')]));
+  }));
+  await act(async () => { tree = create(<WorkersPage />); });
+  const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
+  let pending!: Promise<void>;
+  await act(async () => { pending = tree!.root.findAllByType('button').find(node => label(node) === 'Deactivate')!.props.onClick(); });
+  await act(async () => tree!.root.findAllByType('input').find(input => input.props.type === 'checkbox')!.props.onChange({ target: { checked: true } }));
+  await act(async () => { mutation.resolve(Response.json({ ok: true })); await pending; });
+  expect(activeReads).toBe(1);
+  expect(inactiveReads).toBe(1);
+  expect(JSON.stringify(tree!.toJSON())).toContain('Current inactive');
+  expect(JSON.stringify(tree!.toJSON())).not.toContain('Old active');
+});
