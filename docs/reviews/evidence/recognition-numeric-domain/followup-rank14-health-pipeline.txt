@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/14-recognition-numeric-domain
+
+
+ Test Files  2 passed (2)
+      Tests  7 passed (7)
+   Start at  03:36:21
+   Duration  472ms (transform 140ms, setup 0ms, import 335ms, tests 99ms, environment 0ms)

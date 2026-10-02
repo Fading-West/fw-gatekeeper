@@ -1,0 +1,19 @@
+test_auth_conflict_and_server_errors_keep_all_rows_retryable (test_recognition_poison_isolation.RecognitionPoisonQA.test_auth_conflict_and_server_errors_keep_all_rows_retryable) ... Recognition sync not acknowledged (status=401); keeping 1 attempts queued
+Recognition sync not acknowledged (status=409); keeping 1 attempts queued
+Recognition sync not acknowledged (status=500); keeping 1 attempts queued
+Recognition sync not acknowledged (status=400); keeping 1 attempts queued
+ok
+test_invalid_metric_is_quarantined_without_erasing_source_evidence (test_recognition_poison_isolation.RecognitionPoisonQA.test_invalid_metric_is_quarantined_without_erasing_source_evidence) ... Recognition attempt 1 needs review: Invalid bestScore; inspect recognition_rejections.py list
+ok
+test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain (test_recognition_poison_isolation.RecognitionPoisonQA.test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain) ... Recognition attempt 1 needs review: Recognition metric must be finite and within its measurement domain; inspect recognition_rejections.py list
+ok
+test_nonfinite_local_metric_cannot_poison_batch_before_http (test_recognition_poison_isolation.RecognitionPoisonQA.test_nonfinite_local_metric_cannot_poison_batch_before_http) ... Recognition attempt 1 needs review: Recognition evidence cannot be encoded as finite JSON; inspect recognition_rejections.py list
+ok
+test_operator_release_preserves_original_row_and_rejection_audit (test_recognition_poison_isolation.RecognitionPoisonQA.test_operator_release_preserves_original_row_and_rejection_audit) ... ok
+test_partial_success_retains_original_source_identity_for_retry (test_recognition_poison_isolation.RecognitionPoisonQA.test_partial_success_retains_original_source_identity_for_retry) ... Recognition sync not acknowledged (status=201); keeping 1 attempts queued
+ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.098s
+
+OK

@@ -709,11 +709,13 @@
                     livenessNote.textContent = "";
                 }
 
-                const rejected = health.rejected_logs || 0;
+                const rejectedAttendance = health.rejected_logs || 0;
+                const rejectedRecognition = health.rejected_attempts || 0;
+                const rejected = rejectedAttendance + rejectedRecognition;
                 const queued = (health.retryable_logs || 0) + (health.queued_attempts || 0);
                 if (health.sync_online === true) {
                     syncChip.textContent = rejected > 0
-                        ? `Needs attention - ${rejected} attendance record${rejected === 1 ? "" : "s"} rejected; ${queued} retryable queued. Review with attendance_rejections.py list`
+                        ? `Needs attention - ${rejectedAttendance} attendance and ${rejectedRecognition} recognition records rejected; ${queued} retryable queued. Supervisor review required.`
                         : queued > 0
                         ? `Syncing - ${queued} record${queued === 1 ? "" : "s"} queued`
                         : (health.last_sync_at

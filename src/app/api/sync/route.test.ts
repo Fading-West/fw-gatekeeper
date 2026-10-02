@@ -77,3 +77,8 @@ it('requires kiosk authentication and a matching pending acknowledgement', async
   expect((await POST(req())).status).toBe(409);
   expect(acknowledgeRosterReceipt).toHaveBeenCalledWith('kiosk-document', 'token-1');
 });
+
+it('forwards retryable and rejected recognition counts separately after kiosk authentication', async () => {
+  expect((await GET(request('queued_attempts=1&rejected_attempts=4'))).status).toBe(200);
+  expect(updateKioskLastSync).toHaveBeenCalledWith('kiosk-document', expect.any(String), expect.objectContaining({ queuedAttempts: 1, rejectedAttempts: 4 }));
+});

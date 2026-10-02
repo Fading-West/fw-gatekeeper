@@ -1,0 +1,14 @@
+test_auth_conflict_and_server_errors_keep_all_rows_retryable (__main__.RecognitionPoisonQA.test_auth_conflict_and_server_errors_keep_all_rows_retryable) ... Recognition sync not acknowledged (status=401); keeping 1 attempts queued
+Recognition sync not acknowledged (status=409); keeping 1 attempts queued
+Recognition sync not acknowledged (status=500); keeping 1 attempts queued
+Recognition sync not acknowledged (status=400); keeping 1 attempts queued
+ok
+test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain (__main__.RecognitionPoisonQA.test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain) ... Recognition attempt 1 needs review: Recognition timestamp must identify a valid instant; inspect recognition_rejections.py list
+ok
+test_partial_success_retains_original_source_identity_for_retry (__main__.RecognitionPoisonQA.test_partial_success_retains_original_source_identity_for_retry) ... Recognition sync not acknowledged (status=201); keeping 1 attempts queued
+ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.100s
+
+OK
