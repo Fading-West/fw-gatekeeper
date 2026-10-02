@@ -27,3 +27,7 @@ NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud NEXT_TELEMETRY_DISABLED=1 np
 Physical acceptance procedure: In an isolated staging installation with authorized test users and existing configuration, exercise the changed path and its denial/retry cases, check manager views and audit/attendance preservation, then perform release checks before deploying. No production or physical-device acceptance was run in this task.
 
 Evidence: Automated regression failures before the change and passing checks after it are retained in the task evidence. Final PR descriptions identify the exact published head and its executed checks. No deployment, merge, or physical acceptance is implied.
+
+## Integration review revision
+
+Public status, manager detail and shift briefing now use one pure sync-clock classifier. Malformed or future clocks show offline consistently; current valid clocks retain the existing online/stale/offline thresholds. Tests exercise actual shift briefing with corrupted persisted clocks.

@@ -1,3 +1,4 @@
+import { getKioskSyncStatus, ONLINE_THRESHOLD_MS, STALE_THRESHOLD_MS } from "@/lib/kiosk-sync-status";
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
@@ -8,8 +9,6 @@ import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
-const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
-const STALE_THRESHOLD_MS = 60 * 60 * 1000;
 const CACHE_TTL_MS = 30 * 1000;
 
 type KioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
@@ -79,12 +78,7 @@ function asHealthUrl(rawUrl: string) {
 }
 
 function getKioskStatus(lastSync: string | null): KioskStatus {
-  if (!lastSync) return 'never_synced';
-  const ageMs = Date.now() - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return 'offline';
-  if (ageMs <= ONLINE_THRESHOLD_MS) return 'online';
-  if (ageMs <= STALE_THRESHOLD_MS) return 'stale';
-  return 'offline';
+  return getKioskSyncStatus(lastSync);
 }
 
 
