@@ -6,7 +6,8 @@ export function isSupportedEncoding(encoding: unknown): encoding is number[] {
   return (
     Array.isArray(encoding) &&
     SUPPORTED_ENCODING_LENGTHS.has(encoding.length) &&
-    encoding.every((value) => typeof value === 'number' && Number.isFinite(value))
+    encoding.every((value) => typeof value === 'number' && Number.isFinite(value)) &&
+    Math.hypot(...encoding) > 0 && Number.isFinite(Math.hypot(...encoding))
   );
 }
 
