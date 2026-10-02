@@ -11,7 +11,7 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 async function health(body: object, status = 200) {
-  const fetchMock = vi.fn(async () => Response.json(body, { status }));
+  const fetchMock = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
   vi.stubGlobal('fetch', fetchMock);
   const { GET } = await import('./route');
   const response = await GET(new NextRequest('http://synthetic.test/api/system-health?date=2026-10-02'));

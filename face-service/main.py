@@ -202,6 +202,7 @@ def get_face_crop(img: np.ndarray, reject_competing_faces: bool = False) -> Opti
 
 def embed_face_crop(face: np.ndarray) -> list[float]:
     """Get the L2-normalised 512-dim embedding of a 112x112 BGR face crop."""
+    global _rec_failed
     session = get_rec_session()
 
     # Preprocess: BGR -> RGB, normalize to [-1, 1], NCHW
@@ -211,15 +212,18 @@ def embed_face_crop(face: np.ndarray) -> list[float]:
     face_chw = np.transpose(face_float, (2, 0, 1))
     batch = np.expand_dims(face_chw, axis=0)
 
-    input_name = session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: batch})
-    embedding = outputs[0][0]
-
-    norm = np.linalg.norm(embedding)
-    if norm > 0:
-        embedding = embedding / norm
-
-    return embedding.tolist()
+    try:
+        input_name = session.get_inputs()[0].name
+        outputs = session.run(None, {input_name: batch})
+        embedding = np.asarray(outputs[0][0], dtype=np.float64)
+        if embedding.shape != (512,) or not _validate_encoding_vector(embedding.tolist()):
+            raise ValueError("Invalid model output")
+        result = (embedding / np.linalg.norm(embedding)).tolist()
+    except Exception:
+        _rec_failed = True
+        raise HTTPException(503, "Recognition service is unavailable. Please try again.") from None
+    _rec_failed = False
+    return result
 
 
 def get_embedding(img: np.ndarray) -> Optional[list[float]]:
@@ -233,7 +237,7 @@ def get_embedding(img: np.ndarray) -> Optional[list[float]]:
 @app.get("/health")
 def health():
     auth_ready = bool(get_configured_face_service_key())
-    model_ready = _rec_session is not None
+    model_ready = _rec_session is not None and not _rec_failed
     reason = ("authentication_not_configured" if not auth_ready else
               "model_loading" if _rec_loading else
               "model_unavailable" if not model_ready else None)
