@@ -493,6 +493,21 @@ function ShiftBriefingPageContent() {
         </div>
       </section>
 
+      {payload?.schedule_assignment_warnings?.length ? (
+        <section className="glass-card p-5 space-y-3" aria-label="Unavailable schedule assignments">
+          <h2 className="font-display font-semibold text-slate-100">Schedule coverage unavailable</h2>
+          <p className="text-sm text-slate-400">Attendance classifications and totals cover unique supported assignments. Unmatched workers are not presumed missing. Their scans remain in the activity log.</p>
+          {payload.schedule_assignment_warnings.map(row => (
+            <div key={row.worker_id} className="border-t border-navy-600/50 pt-3 text-sm">
+              <p className="text-amber-200">{row.worker_name} ({row.department}): {row.kind === 'none' ? 'No matching schedule for this date' : row.kind === 'ambiguous' ? `Multiple ${row.tier} schedules match` : 'Unsupported schedule time range'}</p>
+              {row.candidates.length > 0 && <p className="text-slate-400">{row.candidates.map(candidate => `${candidate.name} (${candidate.start}–${candidate.end})`).join(', ')}</p>}
+              <Link href={`/log?date=${payload.date}&worker_id=${encodeURIComponent(row.worker_id)}`} className="text-gold">{row.event_count} effective scans — open worker activity</Link>
+              <Link href="/schedules" className="ml-3 text-gold">Review schedules</Link>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
