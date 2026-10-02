@@ -580,6 +580,8 @@
         const syncChip = document.getElementById("syncChip");
         let adminVisible = false;
         let supervisorStateVersion = 0;
+        let manualSubmitting = false;
+        let pendingManualRequest = null;
 
         function tickClock() {
             const now = new Date();
@@ -763,19 +765,28 @@
         }
 
         async function submitManualClock() {
+            if (manualSubmitting) return;
             const workerId = manualName.value;
             if (!workerId) {
                 manualResult.textContent = "Select a worker.";
                 manualResult.style.color = "#ff9e8f";
                 return;
             }
+            if (!pendingManualRequest || pendingManualRequest.worker_id !== Number(workerId)) {
+                pendingManualRequest = { worker_id: Number(workerId), request_id: crypto.randomUUID() };
+            }
+            manualSubmitting = true;
+            manualBtn.disabled = true;
+            manualName.disabled = true;
+            const operation = pendingManualRequest;
+            const operationStateVersion = supervisorStateVersion;
             manualResult.textContent = "Submitting...";
             manualResult.style.color = "#9ea1a8";
             try {
                 const response = await fetch("/manual-clock", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ worker_id: Number(workerId) })
+                    body: JSON.stringify(operation)
                 });
                 const data = await response.json();
                 if (!response.ok || !data.success) {
@@ -784,17 +795,27 @@
                         openSupervisorDialog("Supervisor session expired. Unlock again to retry.");
                         return;
                     }
+                    if (response.status >= 400 && response.status < 500) pendingManualRequest = null;
+                    if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                     manualResult.textContent = data.error || "Manual clock failed.";
                     manualResult.style.color = "#ff9e8f";
                     return;
                 }
+                pendingManualRequest = null;
+                if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                 manualResult.textContent = `${data.worker_name}: ${data.action.replace("_", " ")}`;
                 manualResult.style.color = "#87dfb3";
                 manualName.value = "";
                 fetchLog();
             } catch (error) {
-                manualResult.textContent = "Connection error.";
-                manualResult.style.color = "#ff9e8f";
+                if (operationStateVersion === supervisorStateVersion && adminVisible) {
+                    manualResult.textContent = "Connection error. Retry to confirm this attendance.";
+                    manualResult.style.color = "#ff9e8f";
+                }
+            } finally {
+                manualSubmitting = false;
+                manualBtn.disabled = false;
+                manualName.disabled = pendingManualRequest !== null;
             }
         }
 
