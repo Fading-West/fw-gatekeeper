@@ -334,7 +334,9 @@ async function buildCloseoutPayload(ctx: any, date: string) {
         record?.health?.modelOk ?? null, record?.health?.livenessAvailable ?? null,
         record?.health?.degradedReason ?? null];
     }));
-  const blockerEvidence = JSON.stringify({ version: 2, date,
+  const blockerEvidence = JSON.stringify({ version: 3, date,
+    // Composed schedule coverage remains a blocker after its exception is reviewed.
+    coverage: "coverage_evidence" in briefing ? briefing.coverage_evidence : [],
     exceptions: openExceptions.filter((exception: any) => exception.severity === "critical" ||
       exception.type === "missing_clock_out" || exception.type === "recognition_review")
       .map((exception: any) => [exception.key, exception.type, exception.severity, exception.first_seen,
