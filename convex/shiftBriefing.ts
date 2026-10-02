@@ -1,3 +1,4 @@
+import { getKioskSyncStatus } from "../src/lib/kiosk-sync-status";
 import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
@@ -23,8 +24,6 @@ type ShiftTrustRisk = {
   exact: boolean;
 };
 
-const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
-const STALE_THRESHOLD_MS = 60 * 60 * 1000;
 // Kiosks match exclusively 512-dim MobileFaceNet embeddings.
 const SUPPORTED_ENCODING_LENGTHS = new Set([512]);
 
@@ -81,12 +80,7 @@ function getScheduleForWorker(worker: any, schedules: any[], dayOfWeek: number) 
 }
 
 function getKioskStatus(lastSync?: string | null): KioskStatus {
-  if (!lastSync) return "never_synced";
-  const ageMs = Date.now() - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return "online";
-  if (ageMs <= ONLINE_THRESHOLD_MS) return "online";
-  if (ageMs <= STALE_THRESHOLD_MS) return "stale";
-  return "offline";
+  return getKioskSyncStatus(lastSync);
 }
 
 function actionRank(priority: ActionPriority) {
