@@ -19,6 +19,23 @@ async function setup() {
   return { t, actor, input, ...ids };
 }
 describe('reviews bind to current exception sources', () => {
+  it('accepts repeated current-source dispositions and preserves every audit through reopen', async () => {
+    const { t, actor, input, attendanceId, userId } = await setup();
+    const statuses = ['reviewed', 'reviewed', 'ignored', 'resolved', 'open', 'reviewed'] as const;
+    const results = [];
+    for (const status of statuses) results.push(await actor.mutation(api.shiftExceptions.review, { ...input, status }));
+    expect(new Set(results.map(result => result.id)).size).toBe(1);
+    const reviews = await t.run(ctx => ctx.db.query('exceptionReviews').collect());
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({ date, type: 'scan_sequence', status: 'reviewed', note: input.note });
+    const audits = await t.run(ctx => ctx.db.query('auditLog').collect());
+    expect(audits).toHaveLength(statuses.length);
+    expect(audits.every(row => row.actorUserId === userId && row.targetId === results[0].id)).toBe(true);
+    await t.run(ctx => ctx.db.delete(attendanceId));
+    await expect(actor.mutation(api.shiftExceptions.review, input)).rejects.toThrow('no longer matches');
+    expect(await t.run(ctx => ctx.db.query('exceptionReviews').collect())).toEqual(reviews);
+    expect(await t.run(ctx => ctx.db.query('auditLog').collect())).toEqual(audits);
+  });
   it.each(['unknown', 'date', 'type'] as const)('rejects %s attribution without storing a disposition or audit', async variant => {
     const { t, actor, input } = await setup();
     const invalid = variant === 'unknown' ? { ...input, exceptionKey: `${date}:scan_sequence:missing` }
