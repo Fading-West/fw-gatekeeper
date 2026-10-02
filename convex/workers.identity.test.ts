@@ -50,9 +50,9 @@ describe('worker identity and enrollment permissions', () => {
     await admin.mutation(api.workers.remove, { id: retired.id });
     await t.run(ctx => ctx.db.patch(retired.id, { employeeId: storedId }));
     const other = await admin.mutation(api.workers.create, { name: 'Other Person', employeeId: 'F-88', faceEncoding, consentAt });
-    await expect(admin.mutation(api.workers.update, { id: other.id, employeeId: ' f-77 ' })).rejects.toThrow('already belongs to Retired Person');
+    await expect(admin.mutation(api.workers.update, { id: other.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: other.id }))?.identity_revision, employeeId: ' f-77 ' })).rejects.toThrow('already belongs to Retired Person');
     expect(await t.run(ctx => ctx.db.get(other.id))).toMatchObject({ employeeId: 'F-88' });
-    await expect(admin.mutation(api.workers.update, { id: other.id, employeeId: ' f-88 ' })).resolves.toEqual({ ok: true });
+    await expect(admin.mutation(api.workers.update, { id: other.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: other.id }))?.identity_revision, employeeId: ' f-88 ' })).resolves.toEqual({ ok: true });
     const restored = await admin.mutation(api.workers.create, { name: 'Returning Person', employeeId: 'F-77', faceEncoding, consentAt });
     expect(restored.id).toBe(retired.id);
   });
@@ -76,9 +76,9 @@ describe('worker identity and enrollment permissions', () => {
     const second = await admin.mutation(api.workers.create, { name: 'Second Person', employeeId: 'F-88', faceEncoding, consentAt });
     await admin.mutation(api.workers.remove, { id: second.id });
     await t.run(ctx => ctx.db.patch(second.id, { employeeId: ' f-77 ' }));
-    await expect(admin.mutation(api.workers.update, { id: first.id, employeeId: 'F-77' })).rejects.toThrow('belongs to multiple workers');
+    await expect(admin.mutation(api.workers.update, { id: first.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: first.id }))?.identity_revision, employeeId: 'F-77' })).rejects.toThrow('belongs to multiple workers');
     // An administrator can still repair the collision by assigning a free ID.
-    await expect(admin.mutation(api.workers.update, { id: first.id, employeeId: 'F-99' })).resolves.toEqual({ ok: true });
+    await expect(admin.mutation(api.workers.update, { id: first.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: first.id }))?.identity_revision, employeeId: 'F-99' })).resolves.toEqual({ ok: true });
   });
 
   it('fails closed when legacy identity checks exceed the bounded roster', async () => {
@@ -100,7 +100,7 @@ describe('worker identity and enrollment permissions', () => {
     for (const change of [{ name: 'Off Roster Person' }, { employeeId: 'OTHER-1' }, { department: 'Leadership' }]) {
       await expect(enrollment.mutation(api.workers.update, { id: worker.id, ...change })).rejects.toThrow('Only admins');
     }
-    await expect(enrollment.mutation(api.workers.update, { id: worker.id, name: ' Roster   Person ', employeeId: 'f-77', department: ' Operations ', faceEncoding, consentAt })).resolves.toEqual({ ok: true });
+    await expect(enrollment.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await enrollment.query(api.workers.get, { id: worker.id }))?.identity_revision, name: ' Roster   Person ', employeeId: 'f-77', department: ' Operations ', faceEncoding, consentAt })).resolves.toEqual({ ok: true });
   });
 
   it('does not allow updates to retired identities or client-written enrollment timestamps', async () => {
@@ -109,6 +109,6 @@ describe('worker identity and enrollment permissions', () => {
     await admin.mutation(api.workers.update, { id: worker.id, enrolledAt: 'forged' });
     expect((await t.run(ctx => ctx.db.get(worker.id as Id<"workers">)))!.enrolledAt).not.toBe('forged');
     await admin.mutation(api.workers.remove, { id: worker.id });
-    await expect(admin.mutation(api.workers.update, { id: worker.id, name: 'Replacement Person' })).rejects.toThrow('Active worker not found');
+    await expect(admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))?.identity_revision, name: 'Replacement Person' })).rejects.toThrow('Active worker not found');
   });
 });

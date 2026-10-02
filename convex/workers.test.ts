@@ -57,7 +57,7 @@ describe("worker identity safeguards", () => {
       consentAt: new Date().toISOString(),
     });
 
-    await expect(admin.mutation(api.workers.update, { id: second.id, employeeId: "f-1" }))
+    await expect(admin.mutation(api.workers.update, { id: second.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: second.id }))?.identity_revision, employeeId: "f-1" }))
       .rejects.toThrow("Employee ID F-1 already belongs to First Worker");
   });
 

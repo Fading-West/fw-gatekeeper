@@ -7,6 +7,8 @@ import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
 import { consumeEnrollmentPhotos } from "./enrollmentPhotos";
 import { findEmployeeDirectoryById } from "../src/lib/employee-directory";
+import { workerIdentityRevision } from "../src/lib/worker-revision";
+import { ConvexError } from "convex/values";
 
 // The kiosk matches exclusively 512-dim MobileFaceNet embeddings; legacy
 // 128-dim dlib encodings are invalid and require re-enrollment.
@@ -119,6 +121,7 @@ export const list = query({
         id: w._id,
         name: w.name,
         employee_id: w.employeeId || "",
+        identity_revision: workerIdentityRevision(w),
         department: w.department,
         photo_url: null,
         ...(args.includeEncodings ? { face_encoding: w.faceEncoding || null } : {}),
@@ -141,6 +144,7 @@ export const get = query({
       id: w._id,
       name: w.name,
       employee_id: w.employeeId || "",
+      identity_revision: workerIdentityRevision(w),
       department: w.department,
       photo_url: null,
       face_encoding: w.faceEncoding || null,
@@ -308,6 +312,7 @@ export const findByEmployeeId = query({
 export const update = mutation({
   args: {
     id: v.id("workers"),
+    expectedIdentityRevision: v.optional(v.string()),
     name: v.optional(v.string()),
     employeeId: v.optional(v.string()),
     department: v.optional(v.string()),
@@ -328,6 +333,14 @@ export const update = mutation({
       (fields.department !== undefined && normalizeDepartment(fields.department) !== normalizeDepartment(worker.department))
     )) {
       throw new Error("Only admins may change worker identity or department");
+    }
+    const identityChanges =
+      (fields.name !== undefined && normalizeName(fields.name) !== normalizeName(worker.name)) ||
+      (fields.employeeId !== undefined && normalizeEmployeeId(fields.employeeId) !== normalizeEmployeeId(worker.employeeId)) ||
+      (fields.department !== undefined && normalizeDepartment(fields.department) !== normalizeDepartment(worker.department));
+    if ((identityChanges || fields.expectedIdentityRevision !== undefined) &&
+        fields.expectedIdentityRevision !== workerIdentityRevision(worker)) {
+      throw new ConvexError({ code: "WORKER_IDENTITY_CONFLICT", message: "Worker identity changed. Review the current record before saving your draft." });
     }
     const writesBiometrics = fields.faceEncoding !== undefined || fields.photoStorageIds !== undefined;
     if (writesBiometrics) assertBiometricConsent(fields.consentAt);
