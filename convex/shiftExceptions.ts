@@ -4,6 +4,7 @@ import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
+import { writeAuditLog } from "./audit";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
@@ -686,7 +687,7 @@ export const review = mutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const now = new Date().toISOString();
     const existing = await ctx.db
       .query("exceptionReviews")
@@ -701,15 +702,20 @@ export const review = mutation({
       updatedAt: now,
     };
 
-    if (existing) {
-      await ctx.db.patch(existing._id, patch);
-      return { id: existing._id, ...patch };
-    }
-
-    const id = await ctx.db.insert("exceptionReviews", {
+    const id = existing?._id ?? await ctx.db.insert("exceptionReviews", {
       exceptionKey: args.exceptionKey,
       ...patch,
     });
-    return { id, exceptionKey: args.exceptionKey, ...patch };
+    if (existing) await ctx.db.patch(existing._id, patch);
+    await writeAuditLog(ctx, {
+      actorUserId: actor.userId, action: "exception.review",
+      targetTable: "exceptionReviews", targetId: id,
+      details: JSON.stringify({ exceptionKey: args.exceptionKey, date: args.date, type: args.type,
+        before: existing ? { status: existing.status, note: existing.note ?? null,
+          reviewedAt: existing.reviewedAt ?? null, updatedAt: existing.updatedAt } : null,
+        after: { status: patch.status, note: patch.note ?? null,
+          reviewedAt: patch.reviewedAt ?? null, updatedAt: patch.updatedAt } }),
+    });
+    return existing ? { id, ...patch } : { id, exceptionKey: args.exceptionKey, ...patch };
   },
 });

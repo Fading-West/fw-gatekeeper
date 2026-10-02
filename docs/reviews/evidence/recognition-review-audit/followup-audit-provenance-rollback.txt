@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+
+ Test Files  2 passed (2)
+      Tests  5 passed (5)
+   Start at  03:36:19
+   Duration  544ms (transform 241ms, setup 0ms, import 538ms, tests 167ms, environment 0ms)

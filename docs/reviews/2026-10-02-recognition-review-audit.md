@@ -31,3 +31,7 @@ Evidence: Automated regression failures before the change and passing checks aft
 ## Integration review revision
 
 Audit before/after payloads include the effective reviewedAt timestamp as well as review state, label and note. Timestamp-only review edits and returning to unreviewed (including removal of reviewedAt) remain reconstructable in the append-only audit; authorized actor attribution and atomic mutation behavior are retained.
+
+## Follow-up review revision
+
+Follow-up review: the Exceptions-page review mutation now writes actor-attributed append-only audit records in the same transaction as every exception review create/edit/reopen, including recognition review overrides. Before is null when no override row existed, preserving accurate creation provenance even after a Recognition Lab review; updates record previous/new status, note, reviewedAt and updatedAt. Tests cover permission denial, repeated same-row identity, close/note-edit/reopen and Lab-confirm followed by first exception reopen.
