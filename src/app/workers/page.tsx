@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useToast } from '@/components/Toast';
 import { Worker } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { workerIdentityRevision } from '@/lib/worker-revision';
 
 function getEncodingStatus(worker: Worker) {
   if (worker.encoding_status) return worker.encoding_status;
@@ -25,6 +26,8 @@ export default function WorkersPage() {
   const [kioskPurgeStatus, setKioskPurgeStatus] = useState<{ pending: number; unconfirmed: number } | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [editRevision, setEditRevision] = useState('');
+  const [editConflict, setEditConflict] = useState('');
   const [name, setName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [department, setDepartment] = useState('');
@@ -81,6 +84,7 @@ export default function WorkersPage() {
 
   const resetEdit = () => {
     setEditId(null);
+    setEditConflict('');
     setName('');
     setEmployeeId('');
     setDepartment('');
@@ -97,8 +101,13 @@ export default function WorkersPage() {
       const res = await fetch('/api/workers', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: editId, name, employee_id: employeeId, department }),
+        body: JSON.stringify({ id: editId, name, employee_id: employeeId, department, expected_identity_revision: editRevision }),
       });
+      if (res.status === 409) {
+        const result = await res.json();
+        setEditConflict(result.error || 'Worker changed. Review the current record before saving.');
+        return;
+      }
       if (!res.ok) throw new Error('Failed to update worker');
       toast(`${name} updated successfully`);
       resetEdit();
@@ -156,6 +165,17 @@ export default function WorkersPage() {
     setName(w.name);
     setEmployeeId(w.employee_id || '');
     setDepartment(w.department);
+    setEditRevision(w.identity_revision ?? workerIdentityRevision({ name: w.name, employeeId: w.employee_id, department: w.department }));
+    setEditConflict('');
+  };
+
+  const loadCurrentEdit = async () => {
+    if (!editId) return;
+    try {
+      const res = await fetch(`/api/workers?id=${encodeURIComponent(editId)}`);
+      if (!res.ok) throw new Error('The current worker record is unavailable. Your draft is retained.');
+      startEdit(await res.json());
+    } catch (error) { toast(error instanceof Error ? error.message : 'Unable to reload worker', 'error'); }
   };
 
   const enrolledCount = workers.filter(hasFaceEncoding).length;
@@ -258,6 +278,7 @@ export default function WorkersPage() {
             Edit Worker Details
           </h2>
           <div className="space-y-4">
+            {editConflict && <div role="alert" className="text-sm text-amber-300">{editConflict} Your draft is retained. <button type="button" onClick={loadCurrentEdit} className="btn-secondary">Load current record</button></div>}
             <div>
               <label className="section-label mb-1.5 block">Full Name</label>
               <input placeholder="e.g. John Smith" value={name} onChange={(e) => setName(e.target.value)} className="input-field" />

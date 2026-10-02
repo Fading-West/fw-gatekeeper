@@ -81,6 +81,7 @@ function EnrollPageContent() {
   const employeeIdRef = useRef(employeeId);
   const departmentRef = useRef(department);
   const workerIdRef = useRef(workerId);
+  const identityRevisionRef = useRef<string | undefined>(undefined);
   const [suggestions, setSuggestions] = useState<EmployeeDirectoryEnrollmentEntry[]>([]);
   nameRef.current = name;
   employeeIdRef.current = employeeId;
@@ -118,6 +119,7 @@ function EnrollPageContent() {
   }, [name, statusFilter, workerId]);
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
+    identityRevisionRef.current = undefined;
     setConsentConfirmed(false);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
@@ -182,6 +184,7 @@ function EnrollPageContent() {
 
   useEffect(() => {
     setConsentConfirmed(false);
+    identityRevisionRef.current = undefined;
     if (!workerId) return;
     let cancelled = false;
     async function loadWorker() {
@@ -193,6 +196,7 @@ function EnrollPageContent() {
         setName(worker.name || '');
         setEmployeeId(worker.employee_id || '');
         setDepartment(worker.department || '');
+        identityRevisionRef.current = worker.identity_revision;
       } catch (err) {
         if (cancelled) return;
         setErrorMsg(err instanceof Error ? err.message : 'Unable to load worker for re-enrollment');
@@ -265,6 +269,7 @@ function EnrollPageContent() {
           employeeId: employeeIdRef.current.trim(),
           department: departmentRef.current.trim(),
           workerId: workerIdRef.current,
+          expected_identity_revision: identityRevisionRef.current,
           photos: capturedPhotos,
           consent: consentConfirmed,
         }),
@@ -340,6 +345,7 @@ function EnrollPageContent() {
   }, [cameraReady, captureFrame, consentConfirmed, stopCamera]);
 
   const enrollNext = () => {
+    identityRevisionRef.current = undefined;
     stopCamera();
     setStep('name');
     setName('');
