@@ -1,5 +1,6 @@
 """Synthetic policy domains and fail-closed workflow regressions; no models."""
 import ast
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import types
@@ -39,7 +40,7 @@ class KioskPolicyTests(unittest.TestCase):
             "LIVENESS_BLINK_FRAMES": [0, True, 2.5],
             "LIVENESS_TIMEOUT_SEC": [0, float("nan")],
             "LIVENESS_WAIT_SEC": [-1, "8"],
-            "CLOCK_DEBOUNCE_MINUTES": [-1, float("inf"), 1e20],
+            "CLOCK_DEBOUNCE_MINUTES": [-1, float("inf"), 1e20, 5e11],
             "DISPLAY_TIME_SEC": [-1, "5"],
             "DISPLAY_TIME_SUCCESS_SEC": [float("nan")],
         }.items():
@@ -52,6 +53,15 @@ class KioskPolicyTests(unittest.TestCase):
     def test_consumer_bounds_do_not_invent_smaller_operational_limits(self):
         self.assertTrue(validate_kiosk_policy(self.settings(RECOGNITION_EMBEDDING_WINDOW=sys.maxsize)).valid)
         self.assertTrue(validate_kiosk_policy(self.settings(CLOCK_DEBOUNCE_MINUTES=1e9)).valid)
+        # A huge timedelta can exist while the actual query's datetime cannot.
+        duration = timedelta(minutes=5e11)
+        with self.assertRaises(OverflowError):
+            datetime.now() - duration
+        self.assertIn("CLOCK_DEBOUNCE_MINUTES", validate_kiosk_policy(
+            self.settings(CLOCK_DEBOUNCE_MINUTES=5e11)).recognition_errors)
+        large_representable = (datetime.now() - datetime.min).total_seconds() / 60 - 60
+        self.assertTrue(validate_kiosk_policy(
+            self.settings(CLOCK_DEBOUNCE_MINUTES=large_representable)).valid)
 
     def test_invalid_startup_keeps_ui_and_sync_before_native_model_work(self):
         source = ast.parse(Path(__file__).with_name("main.py").read_text())
@@ -77,13 +87,36 @@ class KioskPolicyTests(unittest.TestCase):
         namespace["threading"] = types.SimpleNamespace(Thread=forbidden, Lock=forbidden)
         for setting, value in (("RECOGNITION_MATCH_THRESHOLD", float("nan")),
                                ("RECOGNITION_EMBEDDING_WINDOW", 10**1000),
-                               ("CLOCK_DEBOUNCE_MINUTES", 1e20)):
+                               ("CLOCK_DEBOUNCE_MINUTES", 1e20),
+                               ("CLOCK_DEBOUNCE_MINUTES", 5e11)):
             calls.clear()
             with self.subTest(setting=setting), mock.patch.object(config, setting, value):
                 namespace["run"](types.SimpleNamespace(server=None, kiosk_id=None))
             self.assertEqual(calls[:2], ["database", "ui"])
             self.assertIn({"model_ok": False, "camera_ok": False, "degraded_reason": "kiosk_policy_error"}, calls)
             self.assertEqual(calls[-3:], ["sync", "sync-start", "sync-stop"])
+
+    def test_datetime_underflow_degrades_without_blocking_supervised_manual(self):
+        with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
+            import app
+        client = app.app.test_client()
+        headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
+        worker = {"id": 1, "name": "Synthetic Worker", "employee_id": "S1", "server_id": None}
+        with mock.patch.object(config, "KIOSK_UI_KEY", "synthetic-ui", create=True), \
+             mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "synthetic-pin", create=True), \
+             mock.patch.object(config, "KIOSK_TYPE", "entry"), \
+             mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 5e11), \
+             mock.patch.object(app.database, "get_worker_by_id", return_value=worker), \
+             mock.patch.object(app.database, "log_attendance", return_value=42) as record:
+            boot_nonce = client.get("/health").get_json().get("supervisor_boot_nonce")
+            unlocked = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "boot_nonce": boot_nonce}, headers=headers)
+            self.assertEqual(unlocked.status_code, 200)
+            health = client.get("/health").get_json()
+            self.assertFalse(health["policy_ok"])
+            self.assertEqual(health["policy_errors"], ["CLOCK_DEBOUNCE_MINUTES"])
+            self.assertEqual(health["degraded_reason"], "kiosk_policy_error")
+            self.assertEqual(client.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 200)
+            record.assert_called_once()
 
     def test_recognition_fault_allows_supervised_manual_but_invalid_mode_does_not_infer(self):
         with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):

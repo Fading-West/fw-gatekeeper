@@ -4,7 +4,7 @@ No coercion or silent fallback: local Python overrides must use the documented
 types. Errors identify setting names only, never configured credentials.
 """
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import math
 import sys
 from typing import Any
@@ -66,7 +66,9 @@ def validate_kiosk_policy(settings: Any) -> KioskPolicy:
         # Match the attendance consumer's actual representable range rather
         # than inventing an operational maximum for a site's policy.
         try:
-            timedelta(minutes=settings.CLOCK_DEBOUNCE_MINUTES)
+            # SQLite's recent-attendance query subtracts this duration from
+            # the current local datetime; timedelta alone has a wider domain.
+            datetime.now() - timedelta(minutes=settings.CLOCK_DEBOUNCE_MINUTES)
         except (OverflowError, ValueError):
             recognition_errors.append("CLOCK_DEBOUNCE_MINUTES")
     number("DISPLAY_TIME_SEC")
