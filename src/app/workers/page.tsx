@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useToast } from '@/components/Toast';
 import { Worker } from '@/lib/types';
@@ -40,6 +40,17 @@ export default function WorkersPage() {
   const [sortBy, setSortBy] = useState<'name' | 'employee_id' | 'status'>('name');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const canEdit = currentRole === 'admin';
+  const editGeneration = useRef(0);
+  const editRole = useRef(currentRole);
+  const editAccess = useRef(canEdit);
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  if (editRole.current !== currentRole) {
+    editRole.current = currentRole;
+    editGeneration.current += 1;
+  }
+  editAccess.current = canEdit;
+  const editorGeneration = editGeneration.current;
   // Re-enrollment is an enrollment-role workflow too: /api/enroll and the
   // worker-by-id prefill both authorize it, and it preserves metadata.
   const canEnroll = currentRole === 'admin' || currentRole === 'enrollment';
@@ -83,6 +94,7 @@ export default function WorkersPage() {
   useEffect(() => { if (currentRole === 'admin') void fetchKioskPurgeStatus(); }, [currentRole, fetchKioskPurgeStatus]);
 
   const resetEdit = () => {
+    editGeneration.current += 1;
     setEditId(null);
     setEditConflict('');
     setName('');
@@ -91,12 +103,16 @@ export default function WorkersPage() {
   };
 
   const handleSubmit = async () => {
-    if (!editId) return;
+    if (!editId || !editAccess.current || editorGeneration !== editGeneration.current || savingRef.current) return;
     if (!name.trim()) {
       toast('Name is required', 'error');
       return;
     }
 
+    const submittedGeneration = editGeneration.current;
+    const isCurrent = () => editAccess.current && submittedGeneration === editGeneration.current;
+    savingRef.current = true;
+    setSaving(true);
     try {
       const res = await fetch('/api/workers', {
         method: 'PATCH',
@@ -105,15 +121,18 @@ export default function WorkersPage() {
       });
       if (res.status === 409) {
         const result = await res.json();
-        setEditConflict(result.error || 'Worker changed. Review the current record before saving.');
+        if (isCurrent()) setEditConflict(result.error || 'Worker changed. Review the current record before saving.');
         return;
       }
       if (!res.ok) throw new Error('Failed to update worker');
       toast(`${name} updated successfully`);
-      resetEdit();
+      if (isCurrent()) resetEdit();
       fetchWorkers();
     } catch {
-      toast('Failed to save worker', 'error');
+      if (isCurrent()) toast('Failed to save worker', 'error');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -161,6 +180,8 @@ export default function WorkersPage() {
   };
 
   const startEdit = (w: Worker) => {
+    if (!editAccess.current) return;
+    editGeneration.current += 1;
     setEditId(w.id);
     setName(w.name);
     setEmployeeId(w.employee_id || '');
@@ -170,13 +191,23 @@ export default function WorkersPage() {
   };
 
   const loadCurrentEdit = async () => {
-    if (!editId) return;
+    if (!editId || !editAccess.current || editorGeneration !== editGeneration.current) return;
+    const generation = editGeneration.current;
+    const isCurrent = () => editAccess.current && generation === editGeneration.current;
     try {
       const res = await fetch(`/api/workers?id=${encodeURIComponent(editId)}`);
       if (!res.ok) throw new Error('The current worker record is unavailable. Your draft is retained.');
-      startEdit(await res.json());
-    } catch (error) { toast(error instanceof Error ? error.message : 'Unable to reload worker', 'error'); }
+      const worker = await res.json();
+      if (isCurrent()) startEdit(worker);
+    } catch (error) { if (isCurrent()) toast(error instanceof Error ? error.message : 'Unable to reload worker', 'error'); }
   };
+
+  useEffect(() => {
+    if (!canEdit) resetEdit();
+    // resetEdit retires the current editor; it does not read a draft.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canEdit]);
+  useEffect(() => () => { editGeneration.current += 1; }, []);
 
   const enrolledCount = workers.filter(hasFaceEncoding).length;
   const invalidFaceCount = workers.filter((worker) => getEncodingStatus(worker) === 'invalid').length;
@@ -269,7 +300,7 @@ export default function WorkersPage() {
         </div>
       </div>
 
-      {editId && (
+      {canEdit && editId && (
         <div className="glass-card p-6 mb-8 animate-slide-up">
           <h2 className="font-display font-semibold text-gold mb-4 flex items-center gap-2">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -281,18 +312,18 @@ export default function WorkersPage() {
             {editConflict && <div role="alert" className="text-sm text-amber-300">{editConflict} Your draft is retained. <button type="button" onClick={loadCurrentEdit} className="btn-secondary">Load current record</button></div>}
             <div>
               <label className="section-label mb-1.5 block">Full Name</label>
-              <input placeholder="e.g. John Smith" value={name} onChange={(e) => setName(e.target.value)} className="input-field" />
+              <input disabled={saving} placeholder="e.g. John Smith" value={name} onChange={(e) => setName(e.target.value)} className="input-field" />
             </div>
             <div>
               <label className="section-label mb-1.5 block">Employee ID Number</label>
-              <input placeholder="e.g. F-2" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} className="input-field" />
+              <input disabled={saving} placeholder="e.g. F-2" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} className="input-field" />
             </div>
             <div>
               <label className="section-label mb-1.5 block">Department</label>
-              <input placeholder="e.g. Production, QC, Electrical" value={department} onChange={(e) => setDepartment(e.target.value)} className="input-field" />
+              <input disabled={saving} placeholder="e.g. Production, QC, Electrical" value={department} onChange={(e) => setDepartment(e.target.value)} className="input-field" />
             </div>
             <div className="flex gap-3 flex-wrap">
-              <button onClick={handleSubmit} className="btn-primary">Save Changes</button>
+              <button disabled={saving} onClick={handleSubmit} className="btn-primary">{saving ? 'Saving…' : 'Save Changes'}</button>
               <button onClick={resetEdit} className="btn-secondary">Cancel</button>
             </div>
           </div>

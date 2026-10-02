@@ -82,6 +82,9 @@ function EnrollPageContent() {
   const departmentRef = useRef(department);
   const workerIdRef = useRef(workerId);
   const identityRevisionRef = useRef<string | undefined>(undefined);
+  const identityTargetRef = useRef('');
+  const [identityReady, setIdentityReady] = useState(false);
+  const enrollmentWorkerId = selectedEmployee?.workerId || workerId;
   const [suggestions, setSuggestions] = useState<EmployeeDirectoryEnrollmentEntry[]>([]);
   nameRef.current = name;
   employeeIdRef.current = employeeId;
@@ -120,6 +123,7 @@ function EnrollPageContent() {
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
     identityRevisionRef.current = undefined;
+    setIdentityReady(false);
     setConsentConfirmed(false);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
@@ -185,18 +189,22 @@ function EnrollPageContent() {
   useEffect(() => {
     setConsentConfirmed(false);
     identityRevisionRef.current = undefined;
-    if (!workerId) return;
+    setIdentityReady(false);
+    if (!enrollmentWorkerId || !canEnroll) return;
     let cancelled = false;
     async function loadWorker() {
       try {
-        const res = await fetch(`/api/workers?id=${encodeURIComponent(workerId)}`);
+        const res = await fetch(`/api/workers?id=${encodeURIComponent(enrollmentWorkerId)}`);
         if (!res.ok) throw new Error('Worker not found');
         const worker = await res.json();
         if (cancelled) return;
         setName(worker.name || '');
         setEmployeeId(worker.employee_id || '');
         setDepartment(worker.department || '');
+        if (typeof worker.identity_revision !== 'string' || !worker.identity_revision) throw new Error('Worker identity revision is unavailable. Reload enrollment before continuing.');
+        identityTargetRef.current = enrollmentWorkerId;
         identityRevisionRef.current = worker.identity_revision;
+        setIdentityReady(true);
       } catch (err) {
         if (cancelled) return;
         setErrorMsg(err instanceof Error ? err.message : 'Unable to load worker for re-enrollment');
@@ -205,10 +213,10 @@ function EnrollPageContent() {
     }
     loadWorker();
     return () => { cancelled = true; };
-  }, [workerId]);
+  }, [enrollmentWorkerId, canEnroll]);
 
   const startCamera = async () => {
-    if (!canEnroll || cameraOpeningRef.current) return;
+    if (!canEnroll || cameraOpeningRef.current || (workerIdRef.current && (!identityRevisionRef.current || identityTargetRef.current !== workerIdRef.current))) return;
     setConsentConfirmed(false);
     cameraOpeningRef.current = true;
     setCameraOpening(true);
@@ -260,6 +268,7 @@ function EnrollPageContent() {
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
+      if (workerIdRef.current && (!identityRevisionRef.current || identityTargetRef.current !== workerIdRef.current)) throw new Error('Reload this worker before capturing new enrollment photos.');
       if (!consentConfirmed) throw new Error('Confirm biometric consent for this worker before enrolling.');
       const res = await fetch('/api/enroll', {
         method: 'POST',
@@ -607,7 +616,7 @@ function EnrollPageContent() {
 
             <button
               onClick={startCamera}
-              disabled={!canEnroll || cameraOpening || !name.trim() || (!workerId && !selectedEmployee && !manualEntry)}
+              disabled={!canEnroll || cameraOpening || (Boolean(enrollmentWorkerId) && !identityReady) || !name.trim() || (!workerId && !selectedEmployee && !manualEntry)}
               className="btn-primary w-full py-3.5 text-base flex items-center justify-center gap-2"
             >
               {cameraOpening ? 'Opening camera…' : selectedEmployee?.workerId || workerId ? 'Continue to Re-enrollment' : 'Continue to Camera'}

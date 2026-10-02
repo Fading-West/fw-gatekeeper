@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       const existingForEnrollment = await convex.query(api.workers.get, { id: workerId as any });
       if (!existingForEnrollment) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
       expectedIdentityRevision = existingForEnrollment.identity_revision ?? workerIdentityRevision({ name: existingForEnrollment.name, employeeId: existingForEnrollment.employee_id, department: existingForEnrollment.department });
-      if (expected_identity_revision !== undefined && expected_identity_revision !== expectedIdentityRevision) {
+      if (typeof expected_identity_revision !== 'string' || expected_identity_revision !== expectedIdentityRevision) {
         return NextResponse.json({ error: 'Worker identity changed. Reload enrollment before capturing new photos.', code: 'WORKER_IDENTITY_CONFLICT' }, { status: 409 });
       }
       if (!isAdminSession) {
