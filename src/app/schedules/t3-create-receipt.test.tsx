@@ -27,6 +27,11 @@ async function openDraft() {
   await act(async () => tree!.root.findAllByType('input').find(node =>
     node.props.placeholder === 'e.g. Default Mon-Fri')!.props.onChange({ target: { value: 'Synthetic shared schedule' } }));
 }
+const storageAdapter = (storage: Map<string, string>) => ({
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => { storage.set(key, value); },
+  removeItem: (key: string) => { storage.delete(key); },
+});
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -40,11 +45,7 @@ async function setup() {
     return result;
   });
   const storage = new Map<string, string>();
-  vi.stubGlobal('sessionStorage', {
-    getItem: (key: string) => storage.get(key) ?? null,
-    setItem: (key: string, value: string) => storage.set(key, value),
-    removeItem: (key: string) => storage.delete(key),
-  });
+  vi.stubGlobal('sessionStorage', storageAdapter(storage));
   session.actor = String(ids[0]);
   const calls: { actor: string; requestId: string; id: string }[] = [];
   const commit = async (init: RequestInit) => {
@@ -131,6 +132,104 @@ it('does not let a late response from an unmounted form erase a newer identical 
   expect(storage.size).toBe(1);
   await act(async () => button('Create Schedule').props.onClick());
   expect(calls[3]).toEqual(calls[2]);
+  expect(await rows()).toHaveLength(2);
+  expect(storage.size).toBe(0);
+});
+
+it.each(['get', 'set', 'silent-set', 'readback'] as const)('sends no creation before or after remount when receipt storage fails at %s', async fault => {
+  const { storage, calls, commit, rows } = await setup();
+  const adapter = storageAdapter(storage);
+  let reads = 0;
+  vi.stubGlobal('sessionStorage', {
+    ...adapter,
+    getItem: (key: string) => {
+      if (fault === 'get') throw new Error('Synthetic blocked reads');
+      reads += 1;
+      if (fault === 'readback' && reads % 2 === 0) return null;
+      return adapter.getItem(key);
+    },
+    setItem: (key: string, value: string) => {
+      if (fault === 'set') throw new Error('Synthetic blocked writes');
+      if (fault !== 'silent-set') adapter.setItem(key, value);
+    },
+  });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) =>
+    init?.method === 'POST' ? Response.json(await commit(init)) : Response.json([])));
+  await act(async () => { tree = create(<SchedulesPage />); });
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(calls).toHaveLength(0);
+  expect(await rows()).toHaveLength(0);
+  expect(tree!.root.findAllByType('input').some(node => node.props.value === 'Synthetic shared schedule')).toBe(true);
+  await act(async () => tree!.unmount());
+  await act(async () => { tree = create(<SchedulesPage />); });
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(calls).toHaveLength(0);
+  expect(await rows()).toHaveLength(0);
+});
+
+it.each(['remove', 'silent-remove', 'read-after-remove'] as const)('retains the confirmed original receipt and unchanged form after %s failure', async fault => {
+  const { storage, calls, commit, rows } = await setup();
+  const adapter = storageAdapter(storage);
+  let failRead = false;
+  vi.stubGlobal('sessionStorage', {
+    ...adapter,
+    getItem: (key: string) => {
+      if (failRead) { failRead = false; throw new Error('Synthetic unconfirmed removal'); }
+      return adapter.getItem(key);
+    },
+    removeItem: (key: string) => {
+      if (fault === 'remove') throw new Error('Synthetic blocked removal');
+      if (fault === 'read-after-remove') { adapter.removeItem(key); failRead = true; }
+    },
+  });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) =>
+    init?.method === 'POST' ? Response.json(await commit(init)) : Response.json([])));
+  await act(async () => { tree = create(<SchedulesPage />); });
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(await rows()).toHaveLength(1);
+  expect([...storage.values()]).toEqual([calls[0].requestId]);
+  expect(tree!.root.findAllByType('input').some(node => node.props.value === 'Synthetic shared schedule')).toBe(true);
+  expect(button('Create Schedule').props.disabled).toBe(false);
+  vi.stubGlobal('sessionStorage', adapter);
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(calls[1]).toEqual(calls[0]);
+  expect(await rows()).toHaveLength(1);
+  expect(storage.size).toBe(0);
+});
+
+it('retires a hung actor’s flight without allowing its late completion to release the new actor’s pending save', async () => {
+  const { ids, storage, calls, commit, rows } = await setup();
+  const releases: ((response: Response) => void)[] = [];
+  const committed: (() => void)[] = [];
+  const barriers = [0, 1].map(index => new Promise<void>(done => { committed[index] = done; }));
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method !== 'POST') return Response.json([]);
+    await commit(init);
+    const index = calls.length - 1;
+    const delayed = new Promise<Response>(done => { releases[index] = done; });
+    committed[index]();
+    return delayed;
+  }));
+  await act(async () => { tree = create(<SchedulesPage />); });
+  await openDraft();
+  let oldRequest!: Promise<void>;
+  await act(async () => { oldRequest = button('Create Schedule').props.onClick(); await barriers[0]; });
+  session.actor = String(ids[1]);
+  await act(async () => tree!.update(<SchedulesPage />));
+  await openDraft();
+  expect(button('Create Schedule').props.disabled).toBe(false);
+  let newRequest!: Promise<void>;
+  await act(async () => { newRequest = button('Create Schedule').props.onClick(); await barriers[1]; });
+  expect(storage.size).toBe(2);
+  await act(async () => { releases[0](Response.json({ id: calls[0].id })); await oldRequest; });
+  expect([...storage.values()]).toEqual([calls[1].requestId]);
+  expect(button('Create Schedule').props.disabled).toBe(true);
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(calls).toHaveLength(2);
+  await act(async () => { releases[1](Response.json({ id: calls[1].id })); await newRequest; });
   expect(await rows()).toHaveLength(2);
   expect(storage.size).toBe(0);
 });

@@ -34,6 +34,7 @@ export default function SchedulesPage() {
   const currentActor = useRef(actorId);
   currentActor.current = actorId;
   const savingRef = useRef(false);
+  const saveGeneration = useRef(0);
   const formGeneration = useRef(0);
   const editAccess = useRef(canEdit);
   editAccess.current = canEdit;
@@ -81,7 +82,7 @@ export default function SchedulesPage() {
     setDays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort());
   };
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     formGeneration.current += 1;
     setName('');
     setDays([1, 2, 3, 4, 5]);
@@ -92,7 +93,7 @@ export default function SchedulesPage() {
     setEditId(null);
     setConflict('');
     setShowForm(false);
-  };
+  }, []);
 
   const handleEdit = (s: Schedule) => {
     formGeneration.current += 1;
@@ -117,6 +118,8 @@ export default function SchedulesPage() {
     }
 
     const submittedGeneration = formGeneration.current;
+    const submittedFlight = ++saveGeneration.current;
+    const ownsFlight = () => saveGeneration.current === submittedFlight && currentActor.current === actorId;
     savingRef.current = true;
     setSaving(true);
     try {
@@ -131,24 +134,28 @@ export default function SchedulesPage() {
           return;
         }
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
+        if (!ownsFlight()) return;
         toast(`Schedule "${name}" updated`);
       } else {
         const requestId = scheduleRequestId(actorId, body);
         const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
         const responseBody = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
-        if (typeof responseBody.id !== 'string') throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
-        acknowledgeScheduleRequest(actorId, body, requestId);
+        if (typeof responseBody.id !== 'string' || !responseBody.id) throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
+        if (!acknowledgeScheduleRequest(actorId, body, requestId)) throw new Error('The saved receipt no longer matches this response. Keep the current creation intent for recovery.');
+        if (!ownsFlight()) return;
         toast(`Schedule "${name}" created`);
       }
 
       if (submittedGeneration === formGeneration.current) resetForm();
       fetchSchedules();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to save schedule', 'error');
+      if (ownsFlight()) toast(err instanceof Error ? err.message : 'Failed to save schedule', 'error');
     } finally {
-      savingRef.current = false;
-      setSaving(false);
+      if (ownsFlight()) {
+        savingRef.current = false;
+        setSaving(false);
+      }
     }
   };
 
@@ -183,11 +190,13 @@ export default function SchedulesPage() {
   };
 
   useEffect(() => {
+    saveGeneration.current += 1;
+    savingRef.current = false;
+    setSaving(false);
     resetForm();
-    return () => { formGeneration.current += 1; };
+    return () => { formGeneration.current += 1; saveGeneration.current += 1; savingRef.current = false; };
     // Drafts belong to the authenticated actor; receipts remain available to that actor.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actorId, canEdit]);
+  }, [actorId, canEdit, resetForm]);
 
   const parseDays = (daysJson: string): string => {
     const days = parseScheduleDays(daysJson);

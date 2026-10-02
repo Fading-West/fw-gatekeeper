@@ -8,6 +8,8 @@ let tree: ReactTestRenderer | undefined;
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
 afterEach(async () => { if (tree) await act(async () => tree!.unmount()); vi.unstubAllGlobals(); });
 it('does not erase a newly opened draft when an earlier creation finishes', async () => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal('sessionStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
   let resolve!: (value: Response) => void;
   vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => init?.method === 'POST'
     ? new Promise<Response>(done => { resolve = done; }) : Promise.resolve(Response.json([]))));
