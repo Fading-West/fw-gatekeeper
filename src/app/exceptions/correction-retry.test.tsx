@@ -35,3 +35,34 @@ it('reuses the posted request ID after a lost response, including closing and re
   expect(posted[1]).toEqual(posted[0]);
   expect(posted[2]).toEqual(posted[0]);
 });
+
+it('retains a conflicted correction draft, refreshes evidence and disables its stale save', async () => {
+  vi.stubGlobal('document', { activeElement: null });
+  vi.stubGlobal('HTMLElement', class {});
+  let reads = 0;
+  let writes = 0;
+  const exception = {
+    key: 'source', date: '2026-09-01', worker_id: 'worker', worker_name: 'Synthetic worker',
+    type: 'missing_clock_out', status: 'open', severity: 'warning', title: 'Still clocked in', links: {},
+    suggested_resolution: { can_apply: true, action: 'add_clock_out', corrected_time: '18:00',
+      source_exception_key: 'source', reason: 'Verified departure', label: 'Add clock-out', cta: 'Correct scan' },
+  };
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      writes++;
+      return { ok: false, status: 409, json: async () => ({ code: 'CORRECTION_SOURCE_CONFLICT', error: 'Source changed' }) };
+    }
+    reads++;
+    return { ok: true, json: async () => ({ date: '2026-09-01', summary: {}, exceptions: reads === 1 ? [exception] : [] }) };
+  }));
+  await act(async () => { tree = create(<ExceptionsPage />); });
+  const button = (text: string) => tree.root.findAllByType('button').find(node => label(node) === text)!;
+  await act(async () => button('Correct scan').props.onClick());
+  await act(async () => button('Save correction').props.onClick());
+  expect(reads).toBe(2);
+  expect(tree.root.findAllByType('textarea').some(node => node.props.value === 'Verified departure')).toBe(true);
+  expect(button('Save correction').props.disabled).toBe(true);
+  expect(tree.root.findAllByProps({ role: 'alert' }).some(node => label(node).includes('Source changed'))).toBe(true);
+  await act(async () => button('Save correction').props.onClick());
+  expect(writes).toBe(1);
+});

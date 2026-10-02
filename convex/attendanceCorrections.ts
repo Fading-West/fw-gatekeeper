@@ -3,6 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { timestampBelongsToFactoryLocalDate } from "./localDate";
 import { isValidAttendanceTimestamp } from "./attendanceValidation";
+import { buildShiftExceptions } from "./shiftExceptions";
 
 const nullableString = v.union(v.string(), v.null());
 
@@ -154,6 +155,18 @@ export const create = mutation({
     const worker = await ctx.db.get(args.workerId);
     if (!worker) {
       throw new Error("Worker not found.");
+    }
+
+    // Replays above keep their committed receipt after the source disappears.
+    // First commits must match current evidence in this same transaction.
+    if (evidence.relatedExceptionKey) {
+      const source = (await buildShiftExceptions(ctx, args.date))
+        .find(exception => exception.key === evidence.relatedExceptionKey);
+      if (!source || source.date !== args.date || source.worker_id !== args.workerId ||
+          !source.suggested_resolution.can_apply || source.suggested_resolution.action !== args.action ||
+          (args.action === "void_event" && source.attendance_id !== args.originalAttendanceId)) {
+        throw new ConvexError({ code: "CORRECTION_SOURCE_CONFLICT", message: "The source exception changed or is no longer correctable. Review the current exceptions before creating a new correction." });
+      }
     }
 
     if (args.action === "void_event") {
