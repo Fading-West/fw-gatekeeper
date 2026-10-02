@@ -634,10 +634,8 @@ def run(args):
                             return False
                         return cosine_sim(pending["encoding"], emb) >= config.RECOGNITION_MATCH_THRESHOLD
 
-                    blink_ok = (
-                        recognizer.liveness_policy.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
-                        if box_loc is not None
-                        else False
+                    blink_ok = recognizer.liveness_policy.update(
+                        bgr_frame, box_loc, frame_check=_frame_matches_pending,
                     )
                     if blink_ok:
                         # Identity-bound blink complete - now require a fresh
