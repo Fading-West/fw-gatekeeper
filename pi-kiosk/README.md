@@ -10,6 +10,12 @@ supervisor to check the local kiosk API-key configuration; queued evidence
 and local offline attendance remain available. Public health success alone
 does not clear a protected authorization fault.
 
+Only validated successful responses confirm protected sync. Observations are
+process-local: after restart every protected phase is unknown, and the footer
+says protected sync is not fully confirmed until all four phases have actually
+succeeded. Restarting does not establish that credentials have been repaired;
+idle phases can stay unknown until their next request.
+
 ## How It Works
 
 - `main.py` is the entry point (run by the `fw-gatekeeper-kiosk` systemd service).

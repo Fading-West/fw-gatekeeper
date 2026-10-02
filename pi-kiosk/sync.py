@@ -160,6 +160,7 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
     sync_auth_health.observe("attendance", response.status_code)
     if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
         database.mark_synced(log_ids)
+        sync_auth_health.observe("attendance", response.status_code, validated=True)
         logger.info("Synced %d gatekeeper logs to server", len(log_ids))
         return True
     reason = _rejection_reason(response)
@@ -287,8 +288,9 @@ def sync_recognition_attempts() -> bool:
             timeout=15,
         )
         sync_auth_health.observe("recognition", r.status_code)
-        if 200 <= r.status_code < 300:
+        if 200 <= r.status_code < 300 and _recognition_acknowledged(r, len(payload_attempts)):
             database.mark_recognition_attempts_synced(synced_attempt_ids)
+            sync_auth_health.observe("recognition", r.status_code, validated=True)
             logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
             return True
 
@@ -300,6 +302,29 @@ def sync_recognition_attempts() -> bool:
         return False
     except requests.RequestException:
         logger.exception("Recognition attempt sync request failed")
+        return False
+
+
+def _recognition_acknowledged(response, submitted: int) -> bool:
+    # Same complete-ack contract preserved by PR107; health cannot accept less.
+    try:
+        acknowledgement = response.json()
+    except (ValueError, requests.RequestException):
+        return False
+    if not isinstance(acknowledgement, dict):
+        return False
+    ingested, skipped = acknowledgement.get("ingested"), acknowledgement.get("skipped")
+    return (type(ingested) is int and type(skipped) is int and ingested >= 0 and skipped >= 0
+            and ingested + skipped == submitted)
+
+
+def _valid_sync_timestamp(value) -> bool:
+    if not isinstance(value, str) or "T" not in value:
+        return False
+    try:
+        datetime.fromisoformat(value)
+        return True
+    except ValueError:
         return False
 
 
@@ -478,6 +503,8 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             database.delete_sync_state("roster_pending_receipt")
             database.set_sync_state("last_worker_sync", data.get("synced_at") or datetime.now().isoformat())
         logger.info("Worker sync complete: %d workers", len(workers))
+        if "workers" in data and _valid_sync_timestamp(data.get("synced_at")):
+            sync_auth_health.observe("roster", r.status_code, validated=True)
         return True
 
     except requests.RequestException as e:
@@ -505,12 +532,14 @@ def acknowledge_applied_roster() -> bool:
             logger.warning("Roster acknowledgement failed with status=%d", response.status_code)
             return False
         body = response.json()
-        if body.get("acknowledged") is not True or not isinstance(body.get("applied_at"), str):
+        if (not isinstance(body, dict) or body.get("acknowledged") is not True
+                or not _valid_sync_timestamp(body.get("applied_at"))):
             logger.warning("Roster acknowledgement response was incomplete")
             return False
         database.set_sync_state("last_roster_applied_at", body["applied_at"])
         database.set_sync_state("last_worker_sync", body["applied_at"])
         database.delete_sync_state("roster_pending_receipt")
+        sync_auth_health.observe("roster_ack", response.status_code, validated=True)
         return True
     except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
         logger.warning("Roster acknowledgement unavailable; will reapply and retry: %s", exc)

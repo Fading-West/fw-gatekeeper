@@ -23,12 +23,16 @@ class SyncAuthHealthTests(unittest.TestCase):
         self.assertIsNone(self.tracker.snapshot()["sync_auth_ok"])
         self.tracker.observe("attendance", 401)
         self.tracker.observe("recognition", 403)
-        self.tracker.observe("roster", 200)
+        self.tracker.observe("roster", 200, validated=True)
         self.tracker.observe("attendance", 500)
         self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["attendance", "recognition"])
         self.tracker.observe("attendance", 200)
+        self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["attendance", "recognition"])
+        self.tracker.observe("attendance", 200, validated=True)
         self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["recognition"])
-        self.tracker.observe("recognition", 200)
+        self.tracker.observe("recognition", 200, validated=True)
+        self.assertIsNone(self.tracker.snapshot()["sync_auth_ok"])
+        self.tracker.observe("roster_ack", 200, validated=True)
         self.assertTrue(self.tracker.snapshot()["sync_auth_ok"])
 
     def test_public_reachability_and_health_never_clear_denial(self):
@@ -68,7 +72,7 @@ class SyncAuthHealthTests(unittest.TestCase):
             self.assertFalse(sync.acknowledge_applied_roster())
             clear_receipt.assert_not_called()
         self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["roster", "roster_ack"])
-        self.tracker.observe("roster", 200)
+        self.tracker.observe("roster", 200, validated=True)
         self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["roster_ack"])
 
     def test_recognition_denial_retains_queued_attempt(self):
@@ -98,6 +102,38 @@ class SyncAuthHealthTests(unittest.TestCase):
             worker._running = True
             worker._run()
         self.assertFalse(reports[-1]["sync_auth_ok"])
+
+    def test_malformed_success_cannot_clear_denials_or_acknowledge_evidence(self):
+        for phase in self.tracker.PHASES:
+            self.tracker.observe(phase, 401)
+        with mock.patch.object(sync.requests, "post", return_value=mock.Mock(status_code=200, text="", json=lambda: {})), \
+             mock.patch.object(sync.database, "mark_synced") as attendance_ack, \
+             mock.patch.object(sync.database, "mark_recognition_attempts_synced") as recognition_ack, \
+             mock.patch.object(sync.database, "get_unsynced_recognition_attempts", return_value=[{"id": 1, "source_attempt_id": "synthetic"}]), \
+             mock.patch.object(sync.database, "get_sync_state", return_value=json.dumps({"receipt": "synthetic"})), \
+             mock.patch.object(sync.database, "delete_sync_state") as receipt_ack:
+            self.assertFalse(sync._upload_attendance([1], [{}], [1], sync.time.monotonic() + 60))
+            self.assertFalse(sync.sync_recognition_attempts())
+            self.assertFalse(sync.acknowledge_applied_roster())
+            attendance_ack.assert_not_called()
+            recognition_ack.assert_not_called()
+            receipt_ack.assert_not_called()
+        with mock.patch.object(sync.database, "has_workers_missing_employee_id", return_value=False), \
+             mock.patch.object(sync.database, "get_sync_state", return_value=None), \
+             mock.patch.object(sync.requests, "get", return_value=mock.Mock(status_code=200, json=lambda: [])):
+            self.assertFalse(sync.sync_workers())
+        self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], list(self.tracker.PHASES))
+
+    def test_new_process_is_unknown_until_every_phase_validates(self):
+        self.tracker.observe("attendance", 403)
+        restarted = SyncAuthHealth()
+        self.assertIsNone(restarted.snapshot()["sync_auth_ok"])
+        self.assertEqual(restarted.snapshot()["sync_auth_faults"], [])
+        self.assertTrue(all(value is None for value in restarted.snapshot()["sync_auth_phases"].values()))
+        restarted.observe("roster", 200, validated=True)
+        self.assertIsNone(restarted.snapshot()["sync_auth_ok"])
+        restarted.observe("attendance", 401)
+        self.assertFalse(restarted.snapshot()["sync_auth_ok"])
 
 
 if __name__ == "__main__":

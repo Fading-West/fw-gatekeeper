@@ -16,4 +16,13 @@ for (const online of [true, false]) {
     assert.match(context.syncChip.textContent, /3 retryable queued; 2 rejected/);
     assert.doesNotMatch(context.syncChip.textContent, /Connected|Synced/);
 }
-console.log('Protected authorization faults remain visible while public health is online or offline.');
+for (const readiness of [undefined, null]) {
+    const context = vm.createContext({
+        health: { sync_online: true, sync_auth_ok: readiness, last_sync_at: '2026-10-02T12:00:00' },
+        rejected: 0, queued: 0, syncChip: { style: {} },
+    });
+    vm.runInContext(template.slice(start, end), context);
+    assert.match(context.syncChip.textContent, /protected sync not fully confirmed/);
+    assert.doesNotMatch(context.syncChip.textContent, /Connected|Synced/);
+}
+console.log('Protected authorization faults and unknown restart state remain truthful over public reachability.');
