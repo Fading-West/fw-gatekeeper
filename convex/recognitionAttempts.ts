@@ -475,8 +475,8 @@ export const updateReview = mutation({
     await ctx.db.insert("auditLog", {
       actorUserId: actor.userId, action: "recognition.review", targetTable: "recognitionAttempts",
       targetId: args.id, createdAt: now,
-      details: JSON.stringify({ before: { reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
-        after: { reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
+      details: JSON.stringify({ before: { reviewedAt: existing.reviewedAt ?? null, reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
+        after: { reviewedAt: updates.reviewedAt ?? null, reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
           note: args.reviewedNote === undefined ? existing.reviewedNote ?? null : updates.reviewedNote ?? null } }),
     });
 
