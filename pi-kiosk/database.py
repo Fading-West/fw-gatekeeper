@@ -416,6 +416,11 @@ def remove_worker(name: str) -> bool:
 
 
 def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:
+    with _photo_publication_lock():
+        return _remove_worker_by_server_id_unlocked(server_id, strict_cleanup=strict_cleanup)
+
+
+def _remove_worker_by_server_id_unlocked(server_id: str, *, strict_cleanup: bool = False) -> bool:
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
     rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
@@ -436,7 +441,7 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
     try:
-        recover_photo_cleanup()
+        _recover_photo_cleanup_unlocked()
     except (OSError, ValueError) as exc:
         if strict_cleanup:
             raise
@@ -505,6 +510,14 @@ def recover_photo_cleanup() -> None:
         _recover_photo_cleanup_unlocked()
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _recover_photo_cleanup_unlocked() -> None:
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
@@ -518,6 +531,9 @@ def _recover_photo_cleanup_unlocked() -> None:
     for entry in journal:
         path = Path(entry["path"])
         candidate = path.resolve()
+        if path.is_symlink():
+            first_error = first_error or ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+            continue
         if entry["kind"] == "published" and candidate in references:
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
@@ -525,6 +541,12 @@ def _recover_photo_cleanup_unlocked() -> None:
         if entry["kind"] == "retired" and candidate in references:
             continue
         if not path.exists() and not path.is_symlink():
+            if path.parent.exists():
+                try:
+                    _fsync_directory(path.parent)
+                except OSError as exc:
+                    first_error = first_error or exc
+                    continue
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
             continue
@@ -533,6 +555,7 @@ def _recover_photo_cleanup_unlocked() -> None:
             continue
         try:
             candidate.unlink(missing_ok=True)
+            _fsync_directory(candidate.parent)
         except OSError as exc:
             first_error = first_error or exc
             continue
@@ -550,17 +573,44 @@ def publish_local_enrollment(name: str, encoding: np.ndarray, photo_bytes: list[
     """
     if not photo_bytes or any(not isinstance(photo, bytes) or not photo for photo in photo_bytes):
         raise ValueError("Every accepted capture must have encoded photo bytes")
+    return _publish_worker_photos(name, encoding, photo_bytes)
+
+
+def publish_synced_worker(name: str, encoding: np.ndarray, photo_bytes: list[bytes], *,
+                          enrolled_at: Optional[str], server_id: str,
+                          employee_id: Optional[str]) -> int:
+    """Publish downloaded bytes using the same ownership lock as local capture."""
+    if any(not isinstance(photo, bytes) or not photo for photo in photo_bytes):
+        raise ValueError("Downloaded photos must contain bytes")
+    return _publish_worker_photos(name, encoding, photo_bytes, enrolled_at=enrolled_at,
+                                 server_id=server_id, employee_id=employee_id)
+
+
+def _publish_worker_photos(name: str, encoding: np.ndarray, photo_bytes: list[bytes], *,
+                           enrolled_at: Optional[str] = None, server_id: Optional[str] = None,
+                           employee_id: Optional[str] = None) -> int:
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
-    photo_root.mkdir(parents=True, exist_ok=True)
     with _photo_publication_lock():
-        old = _find_worker_update_row(conn, name.strip(), None, "")
+        missing = []
+        parent = photo_root
+        while not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        photo_root.mkdir(parents=True, exist_ok=True)
+        for created in reversed(missing):
+            _fsync_directory(created.parent)
+        old = _find_worker_update_row(conn, name.strip(), server_id, employee_id or "")
         retired = []
         if old:
             retired = [Path(path).resolve() for path in json.loads(old["photo_paths"] or "[]")
                        if Path(path).resolve() != photo_root and Path(path).resolve().is_relative_to(photo_root)]
         identity = uuid.uuid4().hex
-        paths = [photo_root / f"local-{identity}-{index + 1}.jpg" for index in range(len(photo_bytes))]
+        prefix = "sync" if server_id else "local"
+        paths = [photo_root / f"{prefix}-{identity}-{index + 1}.jpg" for index in range(len(photo_bytes))]
+        if server_id:
+            retired = replaced_worker_photo_paths(name, server_id, employee_id,
+                                                  [str(path) for path in paths])
         if any(path.exists() or path.is_symlink() for path in paths):
             raise ValueError("Capture destination exists; retry with a new enrollment intent")
         # This commit precedes any photo write; interrupted writes remain attributable.
@@ -573,7 +623,9 @@ def publish_local_enrollment(name: str, encoding: np.ndarray, photo_bytes: list[
                     handle.write(photo)
                     handle.flush()
                     os.fsync(handle.fileno())
-            worker_id = add_worker(name, encoding, photo_paths=[str(path) for path in paths])
+            _fsync_directory(photo_root)
+            worker_id = add_worker(name, encoding, photo_paths=[str(path) for path in paths],
+                                   enrolled_at=enrolled_at, server_id=server_id, employee_id=employee_id)
         except BaseException:
             conn.rollback()
             try:
