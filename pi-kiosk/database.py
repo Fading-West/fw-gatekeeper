@@ -470,10 +470,8 @@ def replaced_worker_photo_paths(name: str, server_id: str, employee_id: Optional
     referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
     retired = []
     for path in owned:
-        candidate = path.resolve()
-        if candidate == photo_root or not candidate.is_relative_to(photo_root):
-            raise ValueError(f"Worker photo path needs manual cleanup: {path}")
-        if candidate not in keep and candidate not in referenced:
+        candidate = _owned_photo_path(path, photo_root)
+        if candidate.resolve() not in keep and candidate.resolve() not in referenced:
             retired.append(candidate)
     return retired
 
@@ -518,6 +516,17 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _owned_photo_path(path: Path, root: Path) -> Path:
+    """Retain the owned directory entry; never turn a symlink into its target."""
+    candidate = path.absolute()
+    resolved = candidate.resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError(f"Worker photo path needs manual cleanup: {path}")
+    if any(part.is_symlink() for part in (candidate, *candidate.parents) if part != root):
+        raise ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+    return candidate
+
+
 def _recover_photo_cleanup_unlocked() -> None:
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
@@ -531,7 +540,7 @@ def _recover_photo_cleanup_unlocked() -> None:
     for entry in journal:
         path = Path(entry["path"])
         candidate = path.resolve()
-        if path.is_symlink():
+        if any(part.is_symlink() for part in (path, *path.parents) if part != photo_root):
             first_error = first_error or ValueError(f"Worker photo symlink needs manual cleanup: {path}")
             continue
         if entry["kind"] == "published" and candidate in references:
@@ -554,8 +563,8 @@ def _recover_photo_cleanup_unlocked() -> None:
             first_error = first_error or ValueError(f"Worker photo path needs manual cleanup: {path}")
             continue
         try:
-            candidate.unlink(missing_ok=True)
-            _fsync_directory(candidate.parent)
+            path.unlink(missing_ok=True)
+            _fsync_directory(path.parent)
         except OSError as exc:
             first_error = first_error or exc
             continue
@@ -603,7 +612,7 @@ def _publish_worker_photos(name: str, encoding: np.ndarray, photo_bytes: list[by
         old = _find_worker_update_row(conn, name.strip(), server_id, employee_id or "")
         retired = []
         if old:
-            retired = [Path(path).resolve() for path in json.loads(old["photo_paths"] or "[]")
+            retired = [_owned_photo_path(Path(path), photo_root) for path in json.loads(old["photo_paths"] or "[]")
                        if Path(path).resolve() != photo_root and Path(path).resolve().is_relative_to(photo_root)]
         identity = uuid.uuid4().hex
         prefix = "sync" if server_id else "local"
@@ -651,7 +660,7 @@ def remove_local_worker_owned(name: str) -> bool:
             if worker is None:
                 conn.rollback()
                 return False
-            owned = [Path(path).resolve() for path in worker["photo_paths"]
+            owned = [_owned_photo_path(Path(path), root) for path in worker["photo_paths"]
                      if Path(path).resolve() != root and Path(path).resolve().is_relative_to(root)]
             conn.executemany("INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, 'retired')",
                              ((str(path),) for path in owned))

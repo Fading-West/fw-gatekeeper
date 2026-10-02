@@ -129,6 +129,26 @@ class LocalPhotoOwnershipTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"preserve")
         self.assertTrue(link.is_symlink())
 
+    def test_replacement_and_removal_do_not_resolve_owned_symlinks_into_targets(self):
+        self.photos.mkdir()
+        unknown = self.photos / "unknown.jpg"
+        unknown.write_bytes(b"preserve")
+        link = self.photos / "Alex.jpg"
+        link.symlink_to(unknown)
+        local = database.add_worker("Alex", self.encoding, photo_paths=[str(link)])
+        for action in (lambda: database.publish_local_enrollment("Alex", self.encoding, [b"new"]),
+                       lambda: database.remove_local_worker_owned("Alex")):
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                action()
+            self.assertEqual(database.get_worker_by_id(local)["photo_paths"], [str(link)])
+        synced = database.add_worker("Remote", self.encoding, server_id="server-alex", photo_paths=[str(link)])
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            database.publish_synced_worker("Remote", self.encoding, [b"new"],
+                enrolled_at=None, server_id="server-alex", employee_id=None)
+        self.assertEqual(database.get_worker_by_id(synced)["photo_paths"], [str(link)])
+        self.assertEqual(unknown.read_bytes(), b"preserve")
+        self.assertTrue(link.is_symlink())
+
 
 if __name__ == "__main__":
     unittest.main()
