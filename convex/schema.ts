@@ -255,6 +255,9 @@ export default defineSchema({
     .index("by_resolved", ["resolvedAt"]),
 
   schedules: defineTable({
+    creationRequestId: v.optional(v.string()),
+    creationActorId: v.optional(v.id("users")),
+    creationIntent: v.optional(v.string()),
     name: v.string(),
     days: v.string(),
     startTime: v.string(),
@@ -262,5 +265,6 @@ export default defineSchema({
     department: v.optional(v.string()),
     active: v.boolean(),
     createdAt: v.string(),
-  }).index("by_active", ["active"]),
+  }).index("by_active", ["active"])
+    .index("by_creation_actor_and_request", ["creationActorId", "creationRequestId"]),
 });

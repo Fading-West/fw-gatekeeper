@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Schedule } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { scheduleRequestId, acknowledgeScheduleRequest } from '@/lib/schedule-request';
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
 import { parseScheduleDays, SCHEDULE_DAYS_ERROR } from '../../../convex/scheduleValidation';
@@ -26,6 +27,8 @@ export default function SchedulesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const canEdit = currentRole === 'admin';
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
 
   const fetchSchedules = useCallback(async () => {
     setLoading(true);
@@ -92,11 +95,14 @@ export default function SchedulesPage() {
   };
 
   const handleSubmit = async () => {
+    if (!canEdit || savingRef.current) return;
     if (!name.trim() || days.length === 0) {
       toast('Schedule name and at least one day required', 'error');
       return;
     }
 
+    savingRef.current = true;
+    setSaving(true);
     try {
       if (!isSupportedScheduleTimeRange(startTime, endTime)) throw new Error(SCHEDULE_TIME_ERROR);
       const body = { id: editId, name: name.trim(), days, start_time: startTime, end_time: endTime, department: department || null };
@@ -107,9 +113,11 @@ export default function SchedulesPage() {
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
         toast(`Schedule "${name}" updated`);
       } else {
-        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: scheduleRequestId(body) }) });
         const responseBody = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
+        if (typeof responseBody.id !== 'string') throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
+        acknowledgeScheduleRequest(body);
         toast(`Schedule "${name}" created`);
       }
 
@@ -117,6 +125,9 @@ export default function SchedulesPage() {
       fetchSchedules();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to save schedule', 'error');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -252,7 +263,7 @@ export default function SchedulesPage() {
 
           <button
             onClick={handleSubmit}
-            disabled={!name.trim() || days.length === 0}
+            disabled={saving || !name.trim() || days.length === 0}
             className="btn-primary"
           >
             {editId ? 'Update Schedule' : 'Create Schedule'}
