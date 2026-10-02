@@ -1,11 +1,11 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { getFactoryLocalDateKey, getFactoryLocalTimestamp, isValidFactoryLocalDateKey } from "./localDate";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
@@ -686,16 +686,26 @@ export const review = mutation({
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
     note: v.optional(v.string()),
   },
+  returns: v.object({ id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), date: v.string(), type: v.string(),
+    status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
+    note: v.optional(v.string()), reviewedAt: v.optional(v.string()), updatedAt: v.string() }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
+    if (!isValidFactoryLocalDateKey(args.date)) {
+      throw new ConvexError({ code: "INVALID_EXCEPTION_SOURCE", message: "date must be a valid YYYY-MM-DD date." });
+    }
+    const source = (await buildShiftExceptions(ctx, args.date)).find(exception => exception.key === args.exceptionKey);
+    if (!source || source.date !== args.date || source.type !== args.type) {
+      throw new ConvexError({ code: "EXCEPTION_SOURCE_CONFLICT", message: "This exception no longer matches current evidence. Refresh the queue and review its current source." });
+    }
     const now = new Date().toISOString();
     const existing = await ctx.db
       .query("exceptionReviews")
       .withIndex("by_key", (q) => q.eq("exceptionKey", args.exceptionKey))
       .first();
     const patch = {
-      date: args.date,
-      type: args.type,
+      date: source.date,
+      type: source.type,
       status: args.status,
       note: normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,

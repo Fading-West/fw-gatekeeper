@@ -215,9 +215,12 @@ describe("scan sequence event identity", () => {
   it("does not reuse ambiguous legacy reviews even after all but one same-time scan is voided", async () => {
     const { admin, sequences, ids, workerId } = await seedRepeatedScans();
     const legacyKey = `${DATE}:scan_sequence:${workerId}:${DATE}T08:00:00:clock_in`;
-    await admin.mutation(api.shiftExceptions.review, {
+    // Preserve a pre-upgrade stored disposition without allowing the current
+    // mutation to create reviews for obsolete timestamp-only source keys.
+    await admin.run(ctx => ctx.db.insert("exceptionReviews", {
       exceptionKey: legacyKey, date: DATE, type: "scan_sequence", status: "ignored",
-    });
+      updatedAt: `${DATE}T18:00:00Z`,
+    }));
     expect((await sequences()).every(row => row.status === "open")).toBe(true);
     await admin.run(async ctx => {
       for (const id of ids.slice(0, 2)) await ctx.db.insert("attendanceCorrections", {
