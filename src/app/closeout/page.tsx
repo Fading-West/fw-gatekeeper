@@ -178,7 +178,7 @@ function ShiftCloseoutPageContent() {
   const canOperate = canOperateCloseout(currentRole);
   const selectedContext = useRef({ actorId, date, canOperate });
   selectedContext.current = { actorId, date, canOperate };
-  const selectedPendingAction = pendingAction?.actorId === actorId && pendingAction.intent.date === date ? pendingAction : null;
+  const selectedPendingAction = pendingAction && pendingAction.actorId === actorId && pendingAction.intent.date === date ? pendingAction : null;
 
   useEffect(() => {
     setPendingAction(actorId ? loadCloseoutAction(actorId, date) : null);

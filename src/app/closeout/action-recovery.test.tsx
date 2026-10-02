@@ -1,7 +1,7 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import CloseoutPage from './page';
-const context = vi.hoisted(() => ({ actor: 'synthetic-recovery-0', next: 0, role: 'enrollment' }));
+const context = vi.hoisted((): { actor: string | undefined; next: number; role: string } => ({ actor: 'synthetic-recovery-0', next: 0, role: 'enrollment' }));
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-03') }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => context.role }));
 vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => context.actor }));
@@ -16,6 +16,19 @@ beforeEach(() => {
 });
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); vi.unstubAllGlobals(); });
 const button = (text: string) => tree.root.findAllByType('button').find(node => label(node) === text)!;
+it('renders while actor identity is loading without selecting a missing receipt', async () => {
+  context.actor = undefined;
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ date: '2026-09-03', closeout: null,
+    blocker_evidence: 'current-evidence', summary: {}, checklist: [], blockers: [], action_links: [], can_complete: true }) }));
+  vi.stubGlobal('fetch', fetchMock);
+  await act(async () => { tree = create(<CloseoutPage />); });
+  expect(tree.root.findAllByProps({ 'data-testid': 'saved-closeout-action' })).toHaveLength(0);
+  expect(button('Complete closeout').props.disabled).toBe(true);
+  context.actor = `synthetic-membership-ready-${context.next}`;
+  await act(async () => tree.update(<CloseoutPage />));
+  expect(tree.root.findAllByProps({ 'data-testid': 'saved-closeout-action' })).toHaveLength(0);
+  expect(button('Complete closeout').props.disabled).toBe(false);
+});
 it.each(['lost response', 'malformed acknowledgement', 'untyped 500'])('restores and retries original completion after %s and a later reopen', async failure => {
   const posts: any[] = []; let reads = 0;
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
