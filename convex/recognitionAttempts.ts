@@ -451,7 +451,7 @@ export const updateReview = mutation({
     reviewedAt: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const existing = await ctx.db.get(args.id);
     if (!existing) {
       throw new Error("Recognition attempt not found");
@@ -472,6 +472,13 @@ export const updateReview = mutation({
     updates.reviewedAt = reviewed ? normalizeOptionalText(args.reviewedAt) || existing.reviewedAt || now : undefined;
 
     await ctx.db.patch(args.id, updates);
+    await ctx.db.insert("auditLog", {
+      actorUserId: actor.userId, action: "recognition.review", targetTable: "recognitionAttempts",
+      targetId: args.id, createdAt: now,
+      details: JSON.stringify({ before: { reviewedAt: existing.reviewedAt ?? null, reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
+        after: { reviewedAt: updates.reviewedAt ?? null, reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
+          note: args.reviewedNote === undefined ? existing.reviewedNote ?? null : updates.reviewedNote ?? null } }),
+    });
 
     const updated = await ctx.db.get(args.id);
     return updated ? serializeAttempt(updated) : null;

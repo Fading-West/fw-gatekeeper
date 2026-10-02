@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/15-recognition-review-audit
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:52:21
+   Duration  403ms (transform 69ms, setup 0ms, import 200ms, tests 38ms, environment 0ms)
