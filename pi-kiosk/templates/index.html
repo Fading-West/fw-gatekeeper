@@ -580,6 +580,8 @@
         const syncChip = document.getElementById("syncChip");
         let adminVisible = false;
         let supervisorStateVersion = 0;
+        let supervisorLockPending = false;
+        let supervisorLockNeeded = false;
 
         function tickClock() {
             const now = new Date();
@@ -652,9 +654,24 @@
         }
 
         async function toggleSupervisorControls() {
-            if (adminVisible) {
-                await fetch("/supervisor/lock", { method: "POST" });
+            if (supervisorLockPending) return;
+            if (adminVisible || supervisorLockNeeded) {
                 setAdminVisible(false);
+                supervisorLockPending = true;
+                supervisorLockNeeded = true;
+                supervisorUnlock.disabled = true;
+                supervisorUnlock.textContent = "Locking supervisor session...";
+                try {
+                    const response = await fetch("/supervisor/lock", { method: "POST" });
+                    if (!response.ok) throw new Error("Lock not confirmed");
+                    supervisorLockNeeded = false;
+                    supervisorUnlock.textContent = "Supervisor controls (A)";
+                } catch (_) {
+                    supervisorUnlock.textContent = "Lock not confirmed. Retry locking controls";
+                } finally {
+                    supervisorLockPending = false;
+                    supervisorUnlock.disabled = false;
+                }
                 return;
             }
             openSupervisorDialog();

@@ -24,6 +24,7 @@ from kiosk_ui_auth import (
     has_valid_supervisor_credential,
     kiosk_ui_session_token,
     require_kiosk_ui_key,
+    revoke_supervisor_session,
     supervisor_session_token,
 )
 
@@ -315,6 +316,7 @@ def supervisor_unlock():
 @app.route("/supervisor/lock", methods=["POST"])
 @kiosk_ui_auth_required
 def supervisor_lock():
+    revoke_supervisor_session(request.cookies.get(KIOSK_SUPERVISOR_SESSION_COOKIE))
     response = jsonify({"success": True})
     response.delete_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, samesite="Strict")
     return response
