@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
+import { ConvexError } from 'convex/values';
 import convex from '@/lib/convex';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -119,10 +120,14 @@ export async function PATCH(req: NextRequest) {
       supervisorName: optionalString(body.supervisor_name) || optionalString(body.supervisorName),
       notes: optionalString(body.notes),
       acknowledgedBlockers: Boolean(body.acknowledged_blockers ?? body.acknowledgedBlockers),
+      blockerEvidence: optionalString(body.blocker_evidence ?? body.blockerEvidence),
     });
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'CLOSEOUT_BLOCKERS_CHANGED') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     console.error('Shift closeout PATCH error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to update shift closeout' },

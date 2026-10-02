@@ -169,6 +169,7 @@ function ShiftCloseoutPageContent() {
   const [acknowledgedBlockers, setAcknowledgedBlockers] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const mutationPendingRef = useRef(false);
+  const conflictDraftRef = useRef<{ date: string; notes: string; supervisorName: string } | null>(null);
   const canOperate = canOperateCloseout(currentRole);
 
   useEffect(() => {
@@ -186,9 +187,11 @@ function ShiftCloseoutPageContent() {
   const dataReady = Boolean(payload && !loading && !error);
 
   useEffect(() => {
-    setSupervisorName(payload?.closeout?.supervisor_name || '');
-    setNotes(payload?.closeout?.notes || '');
+    const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
+    setSupervisorName(retained?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
+    setNotes(retained?.notes ?? payload?.closeout?.notes ?? '');
     setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
+    if (retained) conflictDraftRef.current = null;
   }, [payload]);
 
 
@@ -265,9 +268,17 @@ function ShiftCloseoutPageContent() {
             supervisor_name: supervisorName,
             notes,
             acknowledged_blockers: acknowledgedBlockers,
+            blocker_evidence: payload?.blocker_evidence,
           }),
         });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && body.code === 'CLOSEOUT_BLOCKERS_CHANGED') {
+          conflictDraftRef.current = { date, notes, supervisorName };
+          setAcknowledgedBlockers(false);
+          await fetchCloseout();
+          toast(body.error, 'error');
+          return;
+        }
         if (!res.ok) throw new Error(body?.error || 'Failed to update closeout');
         toast(action === 'complete' ? 'Shift closeout completed' : action === 'reopen' ? 'Shift closeout reopened' : 'Closeout notes saved');
         await fetchCloseout();
@@ -524,7 +535,10 @@ function ShiftCloseoutPageContent() {
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
-            {blockerCount > 0 && !completed && (
+            {payload?.closeout?.acknowledgement_stale && !completed && (
+              <p role="alert" className="text-sm text-amber-300">The blockers changed since the saved acknowledgement. Review and acknowledge the current evidence.</p>
+            )}
+            {sourceBlockerCount > 0 && !completed && (
               <label className="flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-100">
                 <input
                   type="checkbox"
