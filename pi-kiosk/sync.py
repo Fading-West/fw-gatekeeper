@@ -277,27 +277,75 @@ def sync_recognition_attempts() -> bool:
         )
         synced_attempt_ids.append(int(attempt["id"]))
 
-    try:
-        r = requests.post(
-            f"{config.SERVER_URL}{config.RECOGNITION_ATTEMPTS_ENDPOINT}",
-            json={"kiosk_id": config.KIOSK_ID, "attempts": payload_attempts},
-            headers=_auth_headers(),
-            timeout=15,
-        )
-        if 200 <= r.status_code < 300:
-            database.mark_recognition_attempts_synced(synced_attempt_ids)
-            logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
-            return True
+    return _upload_recognition(synced_attempt_ids, payload_attempts, [64], time.monotonic() + 60)
 
-        logger.warning(
-            "Recognition attempt sync failed with status=%d body=%s",
-            r.status_code,
-            r.text[:1000],
+
+def _recognition_acknowledged(response, submitted: int) -> bool:
+    try:
+        acknowledgement = response.json()
+    except (ValueError, requests.RequestException):
+        return False
+    if not isinstance(acknowledgement, dict):
+        return False
+    ingested, skipped = acknowledgement.get("ingested"), acknowledgement.get("skipped")
+    return (type(ingested) is int and type(skipped) is int and ingested >= 0 and skipped >= 0
+            and ingested + skipped == submitted)
+
+
+def _recognition_rejection_reason(response) -> Optional[str]:
+    if response.status_code != 400:
+        return None
+    try:
+        data = response.json()
+    except (ValueError, requests.RequestException):
+        return None
+    if (isinstance(data, dict) and data.get("code") in
+            {"INVALID_RECOGNITION_TIMESTAMP", "INVALID_RECOGNITION_METRIC"}
+            and isinstance(data.get("error"), str)):
+        return data["error"].strip() or "Invalid recognition evidence"
+    return None
+
+
+def _upload_recognition(attempt_ids: list[int], payload: list[dict], budget: list[int], deadline: float) -> bool:
+    remaining = deadline - time.monotonic()
+    if budget[0] <= 0 or remaining <= 0:
+        return False
+    budget[0] -= 1
+    # Deterministic local JSON failures never reach the server validator. Isolate
+    # them before HTTP so one corrupt metric cannot starve valid later evidence.
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (ValueError, TypeError):
+        return _isolate_recognition(attempt_ids, payload, budget, deadline,
+                                    "Recognition evidence cannot be encoded as finite JSON")
+    try:
+        response = requests.post(
+            f"{config.SERVER_URL}{config.RECOGNITION_ATTEMPTS_ENDPOINT}",
+            json={"kiosk_id": config.KIOSK_ID, "attempts": payload},
+            headers=_auth_headers(), timeout=min(15, remaining),
         )
-        return False
     except requests.RequestException:
-        logger.exception("Recognition attempt sync request failed")
+        logger.exception("Recognition sync request failed; keeping unresolved evidence queued")
         return False
+    if 200 <= response.status_code < 300 and _recognition_acknowledged(response, len(payload)):
+        database.mark_recognition_attempts_synced(attempt_ids)
+        return True
+    reason = _recognition_rejection_reason(response)
+    if reason:
+        return _isolate_recognition(attempt_ids, payload, budget, deadline, reason)
+    logger.warning("Recognition sync not acknowledged (status=%d); keeping %d attempts queued", response.status_code, len(payload))
+    return False
+
+
+def _isolate_recognition(attempt_ids: list[int], payload: list[dict], budget: list[int],
+                         deadline: float, reason: str) -> bool:
+    if len(attempt_ids) == 1:
+        database.reject_recognition_attempt(attempt_ids[0], reason)
+        logger.error("Recognition attempt %s needs review: %s; inspect recognition_rejections.py list", attempt_ids[0], reason)
+        return True
+    midpoint = len(attempt_ids) // 2
+    return (_upload_recognition(attempt_ids[:midpoint], payload[:midpoint], budget, deadline)
+            and _upload_recognition(attempt_ids[midpoint:], payload[midpoint:], budget, deadline))
 
 
 def _health_params(health: Optional[dict]) -> dict:

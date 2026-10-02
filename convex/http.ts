@@ -277,6 +277,9 @@ const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
     });
     return jsonResponse(result, 201);
   } catch (error) {
+    if (error instanceof ConvexError && ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.data?.code)) {
+      return jsonResponse({ error: error.data.message, code: error.data.code }, 400);
+    }
     if (error instanceof ConvexError && error.data?.code === 'RECOGNITION_ATTEMPT_CONFLICT') {
       return jsonResponse({ error: error.data.message, code: error.data.code }, 409);
     }
