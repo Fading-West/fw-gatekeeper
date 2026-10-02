@@ -584,7 +584,9 @@
         let supervisorLockPending = false;
         let supervisorLockNeeded = false;
         let supervisorUnlockPending = false;
+        let supervisorUnlockGeneration = 0;
         let activeUnlockRequest = null;
+        let activeUnlockController = null;
         let supervisorBootNonce = null;
 
         function tickClock() {
@@ -672,6 +674,15 @@
                         body: JSON.stringify({ request_id: activeUnlockRequest })
                     });
                     if (!response.ok) throw new Error("Lock not confirmed");
+                    // The server has retired this operation, so recovery need
+                    // not wait for its original response to ever arrive.
+                    supervisorUnlockGeneration += 1;
+                    supervisorUnlockPending = false;
+                    supervisorSubmit.disabled = false;
+                    const retiredController = activeUnlockController;
+                    activeUnlockController = null;
+                    activeUnlockRequest = null;
+                    retiredController?.abort();
                     supervisorLockNeeded = false;
                     supervisorUnlock.textContent = "Supervisor controls (A)";
                 } catch (_) {
@@ -702,19 +713,23 @@
             if (supervisorUnlockPending || supervisorLockPending || supervisorLockNeeded) return;
             supervisorUnlockPending = true;
             supervisorSubmit.disabled = true;
+            const generation = ++supervisorUnlockGeneration;
             const version = supervisorStateVersion;
             let requestStarted = false;
             try {
                 if (!supervisorBootNonce) throw new Error("Kiosk session not yet observed");
                 const operation = createSupervisorUnlockRequestId();
                 activeUnlockRequest = operation;
+                const controller = new AbortController();
+                activeUnlockController = controller;
                 const pin = supervisorPin.value;
                 requestStarted = true;
                 const response = await fetch("/supervisor/unlock", {
                     method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ pin, request_id: operation, boot_nonce: supervisorBootNonce })
+                    body: JSON.stringify({ pin, request_id: operation, boot_nonce: supervisorBootNonce }),
+                    signal: controller.signal
                 });
-                if (version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
+                if (generation !== supervisorUnlockGeneration || version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
                 if (!response.ok) {
                     if (response.status >= 500) throw new Error("Unlock not confirmed");
                     if (response.status === 409) {
@@ -731,7 +746,7 @@
                 setAdminVisible(true);
                 fetchStatus();
             } catch (_) {
-                if (version === supervisorStateVersion) {
+                if (generation === supervisorUnlockGeneration && version === supervisorStateVersion) {
                     if (requestStarted) {
                         supervisorLockNeeded = true;
                         supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
@@ -743,8 +758,11 @@
                     }
                 }
             } finally {
-                supervisorUnlockPending = false;
-                supervisorSubmit.disabled = false;
+                if (generation === supervisorUnlockGeneration) {
+                    supervisorUnlockPending = false;
+                    supervisorSubmit.disabled = false;
+                    activeUnlockController = null;
+                }
             }
         }
 
