@@ -31,6 +31,14 @@ class SetupPolicyTests(unittest.TestCase):
         source = config_update.updated_source('raise RuntimeError("must not execute")\nLIVENESS_REQUIRED = True\n', self.values())
         self.assertIn('raise RuntimeError', source)
 
+    def test_managed_assignments_keep_their_order_before_dependent_policy(self):
+        old = 'KIOSK_NAME = "old"\nMODEL_DIR = KIOSK_NAME + "/models"\nKIOSK_NAME = "old again"\nDB_PATH = KIOSK_NAME + "/attendance.db"\n'
+        source = config_update.updated_source(old, self.values())
+        namespace = {}
+        exec(compile(source, "synthetic_config", "exec"), {}, namespace)
+        self.assertEqual(namespace['MODEL_DIR'], self.values()['KIOSK_NAME'] + '/models')
+        self.assertEqual(namespace['DB_PATH'], self.values()['KIOSK_NAME'] + '/attendance.db')
+
     def test_atomic_failure_retains_old_file_and_only_removes_own_temporary_file(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "config_local.py"

@@ -23,7 +23,9 @@ def updated_source(existing: str, values: dict[str, str]) -> str:
         # Do not print the invalid source line: it may contain credentials.
         raise ValueError("Existing local configuration is invalid; repair it before setup") from None
     lines = existing.splitlines(keepends=True)
+    replacements = {}
     removed: set[int] = set()
+    written = set()
     for node in module.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -36,12 +38,15 @@ def updated_source(existing: str, values: dict[str, str]) -> str:
                          and other.lineno <= node.end_lineno and other.end_lineno >= node.lineno]
                 if peers:
                     raise ValueError("Managed settings must each occupy their own lines")
-                removed.update(range(node.lineno - 1, node.end_lineno))
-    preserved = "".join(line for index, line in enumerate(lines) if index not in removed).rstrip()
+                name = targets[0].id
+                replacements[node.lineno - 1] = f"{name} = {values[name]!r}\n"
+                removed.update(range(node.lineno, node.end_lineno))
+                written.add(name)
+    preserved = "".join(replacements.get(index, line) for index, line in enumerate(lines) if index not in removed).rstrip()
     if not preserved:
         preserved = '"""Local kiosk configuration; operator overrides are preserved by setup."""'
     result = preserved + "\n\n# Installer-managed connection and display settings.\n"
-    result += "".join(f"{name} = {values[name]!r}\n" for name in MANAGED_NAMES)
+    result += "".join(f"{name} = {values[name]!r}\n" for name in MANAGED_NAMES if name not in written)
     try:
         compile(result, "config_local.py", "exec")
     except SyntaxError:
