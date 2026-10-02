@@ -724,6 +724,23 @@ def log_attendance(
     return log_id
 
 
+def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_encoding=None, **fields):
+    """Reject a removed or re-enrolled face before committing automatic attendance.
+
+    BEGIN IMMEDIATE prevents a concurrent sync deletion/replacement between the
+    identity check and insert. Existing offline rows remain untouched.
+    """
+    conn = _get_conn()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        worker = get_worker_by_id(worker_id)
+        if (not worker or (worker.get("server_id") or None) != server_worker_id
+                or expected_encoding is None
+                or not np.array_equal(worker["face_encoding"], expected_encoding)):
+            raise ValueError("Worker enrollment changed during recognition; scan again")
+        return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
+
+
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
