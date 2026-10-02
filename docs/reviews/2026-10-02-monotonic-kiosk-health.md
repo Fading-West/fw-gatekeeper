@@ -27,3 +27,7 @@ NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud NEXT_TELEMETRY_DISABLED=1 np
 Physical acceptance procedure: In an isolated staging installation with authorized test users and existing configuration, exercise the changed path and its denial/retry cases, check manager views and audit/attendance preservation, then perform release checks before deploying. No production or physical-device acceptance was run in this task.
 
 Evidence: Automated regression failures before the change and passing checks after it are retained in the task evidence. Final PR descriptions identify the exact published head and its executed checks. No deployment, merge, or physical acceptance is implied.
+
+## Integration review revision
+
+An incoming healthy report can repair a stored clock beyond the accepted future window. Monotonic rejection of older incoming reports applies only when the stored watermark is itself finite and within now plus one minute. Tests verify corrupt-future repair followed by ordinary older-report rejection.
