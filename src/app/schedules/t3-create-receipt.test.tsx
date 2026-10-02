@@ -5,10 +5,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { api } from '../../../convex/_generated/api';
 import schema from '../../../convex/schema';
 
-const session = vi.hoisted(() => ({ actor: undefined as string | undefined }));
+const session = vi.hoisted(() => ({ actor: undefined as string | undefined, toast: vi.fn() }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'admin' }));
 vi.mock('@/hooks/useScheduleActor', () => ({ useScheduleActor: () => session.actor }));
-vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: session.toast }) }));
 import SchedulesPage from './page';
 
 const modules = import.meta.glob('../../../convex/**/*.ts');
@@ -17,6 +17,7 @@ afterEach(async () => {
   if (tree) await act(async () => tree!.unmount());
   tree = undefined;
   session.actor = undefined;
+  session.toast.mockClear();
   vi.unstubAllGlobals();
 });
 const label = (node: ReactTestInstance | string): string =>
@@ -32,6 +33,9 @@ const storageAdapter = (storage: Map<string, string>) => ({
   setItem: (key: string, value: string) => { storage.set(key, value); },
   removeItem: (key: string) => { storage.delete(key); },
 });
+const receipts = (storage: Map<string, string>) => [...storage.values()].map(value =>
+  JSON.parse(value) as { requestId: string; savedId?: string });
+const pendingReceipts = (storage: Map<string, string>) => receipts(storage).filter(receipt => !receipt.savedId);
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -86,7 +90,7 @@ it('keeps admin A’s lost receipt through admin B’s identical save and replay
   expect(calls[1].actor).not.toBe(calls[0].actor);
   expect(calls[1].requestId).not.toBe(calls[0].requestId);
   expect(await rows()).toHaveLength(2);
-  expect(storage.size).toBe(1); // A's uncertain receipt survives B's acknowledgement.
+  expect(pendingReceipts(storage).map(receipt => receipt.requestId)).toEqual([calls[0].requestId]);
 
   session.actor = String(ids[0]);
   await act(async () => tree!.update(<SchedulesPage />));
@@ -94,7 +98,7 @@ it('keeps admin A’s lost receipt through admin B’s identical save and replay
   await act(async () => button('Create Schedule').props.onClick());
   expect(calls[2]).toEqual(calls[0]);
   expect(await rows()).toHaveLength(2);
-  expect(storage.size).toBe(0);
+  expect(pendingReceipts(storage)).toHaveLength(0);
 });
 
 it('does not let a late response from an unmounted form erase a newer identical creation receipt', async () => {
@@ -122,7 +126,7 @@ it('does not let a late response from an unmounted form erase a newer identical 
   await openDraft();
   await act(async () => button('Create Schedule').props.onClick());
   expect(calls[1]).toEqual(calls[0]);
-  expect(storage.size).toBe(0);
+  expect(pendingReceipts(storage)).toHaveLength(0);
 
   await openDraft();
   await act(async () => button('Create Schedule').props.onClick());
@@ -133,7 +137,7 @@ it('does not let a late response from an unmounted form erase a newer identical 
   await act(async () => button('Create Schedule').props.onClick());
   expect(calls[3]).toEqual(calls[2]);
   expect(await rows()).toHaveLength(2);
-  expect(storage.size).toBe(0);
+  expect(pendingReceipts(storage)).toHaveLength(0);
 });
 
 it.each(['get', 'set', 'silent-set', 'readback'] as const)('sends no creation before or after remount when receipt storage fails at %s', async fault => {
@@ -169,7 +173,7 @@ it.each(['get', 'set', 'silent-set', 'readback'] as const)('sends no creation be
   expect(await rows()).toHaveLength(0);
 });
 
-it.each(['remove', 'silent-remove', 'read-after-remove'] as const)('retains the confirmed original receipt and unchanged form after %s failure', async fault => {
+it.each(['completion-write', 'silent-completion-write', 'completion-readback'] as const)('retains the confirmed original ID and unchanged form after %s failure', async fault => {
   const { storage, calls, commit, rows } = await setup();
   const adapter = storageAdapter(storage);
   let failRead = false;
@@ -179,10 +183,14 @@ it.each(['remove', 'silent-remove', 'read-after-remove'] as const)('retains the 
       if (failRead) { failRead = false; throw new Error('Synthetic unconfirmed removal'); }
       return adapter.getItem(key);
     },
-    removeItem: (key: string) => {
-      if (fault === 'remove') throw new Error('Synthetic blocked removal');
-      if (fault === 'read-after-remove') { adapter.removeItem(key); failRead = true; }
+    setItem: (key: string, value: string) => {
+      if (!JSON.parse(value).savedId) { adapter.setItem(key, value); return; }
+      if (fault === 'completion-write') throw new Error('Synthetic blocked completion write');
+      if (fault === 'silent-completion-write') return;
+      adapter.setItem(key, value);
+      failRead = true;
     },
+    removeItem: () => { throw new Error('Receipts must never be destructively removed'); },
   });
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) =>
     init?.method === 'POST' ? Response.json(await commit(init)) : Response.json([])));
@@ -190,14 +198,15 @@ it.each(['remove', 'silent-remove', 'read-after-remove'] as const)('retains the 
   await openDraft();
   await act(async () => button('Create Schedule').props.onClick());
   expect(await rows()).toHaveLength(1);
-  expect([...storage.values()]).toEqual([calls[0].requestId]);
+  expect(receipts(storage).map(receipt => receipt.requestId)).toEqual([calls[0].requestId]);
   expect(tree!.root.findAllByType('input').some(node => node.props.value === 'Synthetic shared schedule')).toBe(true);
   expect(button('Create Schedule').props.disabled).toBe(false);
   vi.stubGlobal('sessionStorage', adapter);
   await act(async () => button('Create Schedule').props.onClick());
-  expect(calls[1]).toEqual(calls[0]);
+  if (fault === 'completion-readback') expect(calls).toHaveLength(1);
+  else expect(calls[1]).toEqual(calls[0]);
   expect(await rows()).toHaveLength(1);
-  expect(storage.size).toBe(0);
+  expect(pendingReceipts(storage)).toHaveLength(0);
 });
 
 it('retires a hung actor’s flight without allowing its late completion to release the new actor’s pending save', async () => {
@@ -225,11 +234,81 @@ it('retires a hung actor’s flight without allowing its late completion to rele
   await act(async () => { newRequest = button('Create Schedule').props.onClick(); await barriers[1]; });
   expect(storage.size).toBe(2);
   await act(async () => { releases[0](Response.json({ id: calls[0].id })); await oldRequest; });
-  expect([...storage.values()]).toEqual([calls[1].requestId]);
+  expect(pendingReceipts(storage).map(receipt => receipt.requestId)).toEqual([calls[1].requestId]);
   expect(button('Create Schedule').props.disabled).toBe(true);
   await act(async () => button('Create Schedule').props.onClick());
   expect(calls).toHaveLength(2);
   await act(async () => { releases[1](Response.json({ id: calls[1].id })); await newRequest; });
   expect(await rows()).toHaveLength(2);
-  expect(storage.size).toBe(0);
+  expect(pendingReceipts(storage)).toHaveLength(0);
+});
+
+it.each(['blocked-followup-write', 'silent-followup-write', 'silent-completion-write'] as const)('keeps the original durable ID across compound %s and a full module/page reload', async fault => {
+  const { storage, calls, commit, rows } = await setup();
+  const adapter = storageAdapter(storage);
+  let completionAttempted = false;
+  let failRead = false;
+  let faultsActive = true;
+  const remove = vi.fn(() => { throw new Error('Destructive receipt removal is forbidden'); });
+  vi.stubGlobal('sessionStorage', {
+    ...adapter,
+    getItem: (key: string) => {
+      if (failRead) { failRead = false; throw new Error('Synthetic completion readback failed'); }
+      return adapter.getItem(key);
+    },
+    setItem: (key: string, value: string) => {
+      if (!faultsActive) { adapter.setItem(key, value); return; }
+      if (completionAttempted) {
+        if (fault === 'blocked-followup-write') throw new Error('Synthetic followup write blocked');
+        return; // Simulate silent loss of any attempted restoration/write.
+      }
+      if (JSON.parse(value).savedId) {
+        completionAttempted = true;
+        if (fault !== 'silent-completion-write') adapter.setItem(key, value);
+        failRead = true;
+        return;
+      }
+      adapter.setItem(key, value);
+    },
+    removeItem: remove,
+  });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) =>
+    init?.method === 'POST' ? Response.json(await commit(init)) : Response.json([])));
+  await act(async () => { tree = create(<SchedulesPage />); });
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  const original = calls[0];
+  expect(receipts(storage).map(receipt => receipt.requestId)).toEqual([original.requestId]);
+  expect(session.toast.mock.calls.some(([message]) => message.includes('Schedule save was confirmed'))).toBe(true);
+  await act(async () => tree!.unmount());
+  // Clear the helper's memory as a real page reload does, while keeping the
+  // same tab's durable storage and the independently committed database.
+  vi.resetModules();
+  const ReloadedSchedulesPage = (await import('./page')).default;
+  await act(async () => { tree = create(<ReloadedSchedulesPage />); });
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  if (fault === 'silent-completion-write') {
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(original);
+  } else expect(calls).toHaveLength(1);
+  expect(await rows()).toHaveLength(1);
+  expect(receipts(storage).map(receipt => receipt.requestId)).toEqual([original.requestId]);
+  expect(remove).not.toHaveBeenCalled();
+  if (fault !== 'silent-completion-write') {
+    expect(session.toast.mock.calls.some(([message]) => message.includes('original save is confirmed'))).toBe(true);
+  }
+
+  faultsActive = false;
+  if (fault === 'silent-completion-write') {
+    await act(async () => button('Create Schedule').props.onClick());
+    expect(calls[1]).toEqual(original);
+    expect(await rows()).toHaveLength(1);
+  }
+  // After observing the confirmed outcome, explicit New remains a distinct,
+  // intentional creation even when every schedule field is identical.
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(calls.at(-1)?.requestId).not.toBe(original.requestId);
+  expect(await rows()).toHaveLength(2);
 });
