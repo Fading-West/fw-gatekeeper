@@ -31,3 +31,7 @@ Evidence: Automated regression failures before the change and passing checks aft
 ## Integration review revision
 
 An incoming healthy report can repair a stored clock beyond the accepted future window. Monotonic rejection of older incoming reports applies only when the stored watermark is itself finite and within now plus one minute. Tests verify corrupt-future repair followed by ordinary older-report rejection.
+
+## Follow-up review revision
+
+Follow-up review: Next.js captures the observation timestamp at handler entry before asynchronous portal/device authentication. A deferred-auth concurrent request regression proves the older arrival cannot acquire a later ordering timestamp; denied credentials cannot advance health.
