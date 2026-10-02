@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReturnType } from 'convex/server';
 import { describe, expect, it } from 'vitest';
 import { api } from './_generated/api';
 import schema from './schema';
@@ -22,7 +23,7 @@ describe('reviews bind to current exception sources', () => {
   it('accepts repeated current-source dispositions and preserves every audit through reopen', async () => {
     const { t, actor, input, attendanceId, userId } = await setup();
     const statuses = ['reviewed', 'reviewed', 'ignored', 'resolved', 'open', 'reviewed'] as const;
-    const results = [];
+    const results: FunctionReturnType<typeof api.shiftExceptions.review>[] = [];
     for (const status of statuses) results.push(await actor.mutation(api.shiftExceptions.review, { ...input, status }));
     expect(new Set(results.map(result => result.id)).size).toBe(1);
     const reviews = await t.run(ctx => ctx.db.query('exceptionReviews').collect());
