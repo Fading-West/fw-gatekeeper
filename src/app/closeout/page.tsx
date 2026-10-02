@@ -170,6 +170,7 @@ function ShiftCloseoutPageContent() {
   const [isPending, setIsPending] = useState(false);
   const mutationPendingRef = useRef(false);
   const conflictDraftRef = useRef<{ date: string; notes: string; supervisorName: string } | null>(null);
+  const [unsavedConflictDraft, setUnsavedConflictDraft] = useState<{ notes: string; supervisorName: string } | null>(null);
   const canOperate = canOperateCloseout(currentRole);
 
   useEffect(() => {
@@ -188,8 +189,10 @@ function ShiftCloseoutPageContent() {
 
   useEffect(() => {
     const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
-    setSupervisorName(retained?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
-    setNotes(retained?.notes ?? payload?.closeout?.notes ?? '');
+    const editableDraft = payload?.closeout?.status === 'completed' ? null : retained;
+    setSupervisorName(editableDraft?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
+    setNotes(editableDraft?.notes ?? payload?.closeout?.notes ?? '');
+    setUnsavedConflictDraft(retained && payload?.closeout?.status === 'completed' ? retained : null);
     setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
     if (retained) conflictDraftRef.current = null;
   }, [payload]);
@@ -425,6 +428,13 @@ function ShiftCloseoutPageContent() {
               <h2 className="font-display font-semibold text-slate-100">Supervisor signoff</h2>
               <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
+            {unsavedConflictDraft && (
+              <div role="alert" className="rounded-xl border border-amber-400/30 p-3 text-sm">
+                <p>The record was completed while your action was rejected. This unsaved draft is separate from the signed record.</p>
+                <p>Draft supervisor: {unsavedConflictDraft.supervisorName || 'Not set'}</p>
+                <p className="whitespace-pre-wrap">{unsavedConflictDraft.notes || 'No draft notes'}</p>
+              </div>
+            )}
             <label className="space-y-1.5 block">
               <span className="section-label block">Date</span>
               <input type="date" disabled={isPending} value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />

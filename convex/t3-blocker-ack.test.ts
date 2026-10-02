@@ -20,6 +20,24 @@ async function acknowledge(actor: Awaited<ReturnType<typeof setup>>['actor'], ac
   return actor.mutation(api.shiftCloseouts.save, { date, action, notes: 'Synthetic blocker evidence reviewed', acknowledgedBlockers: true, blockerEvidence: payload.blocker_evidence });
 }
 describe('closeout acknowledgement is bound to reviewed evidence', () => {
+  it.each(['raw', 'correction'] as const)('invalidates a same-time, same-count %s source replacement', async kind => {
+    const { t, actor } = await setup();
+    const workerId = await t.run(ctx => ctx.db.insert('workers', { name: 'Synthetic worker', department: 'Synthetic', active: true, enrolledAt: date }));
+    await t.run(ctx => ctx.db.insert('schedules', { name: 'Synthetic shift', department: 'Synthetic', startTime: '08:00', endTime: '17:00', days: '[0,1,2,3,4,5,6]', active: true, createdAt: date }));
+    const insert = (ctx: any) => kind === 'raw'
+      ? ctx.db.insert('attendance', { workerId: String(workerId), eventType: 'clock_in', timestamp: `${date}T08:00:00`, synced: true })
+      : ctx.db.insert('attendanceCorrections', { date, workerId: String(workerId), action: 'add_clock_in', eventType: 'clock_in', correctedTimestamp: `${date}T08:00:00`, reason: 'Synthetic correction', createdAt: date, updatedAt: date });
+    const sourceId = await t.run(insert);
+    const original = await actor.query(api.shiftCloseouts.get, { date });
+    await acknowledge(actor);
+    await t.run(async ctx => { await ctx.db.delete(sourceId); await insert(ctx); });
+    const replacement = await actor.query(api.shiftCloseouts.get, { date });
+    expect(replacement.summary).toEqual(original.summary);
+    expect(replacement.blocker_evidence).not.toBe(original.blocker_evidence);
+    expect(replacement.closeout?.acknowledged_blockers).toBe(false);
+    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old sources' })).rejects.toThrow('blockers changed');
+    expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
+  });
   it('requires fresh acknowledgement when another kiosk replaces the same-count blocker', async () => {
     const { t, actor, kioskId } = await setup();
     const original = await actor.query(api.shiftCloseouts.get, { date });
