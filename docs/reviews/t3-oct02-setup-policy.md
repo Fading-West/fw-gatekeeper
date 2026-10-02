@@ -1,0 +1,9 @@
+# Preserve kiosk operator policy during setup configuration updates
+
+Rank10 of the next twenty; high privacy/reliability impact is an engineering estimate. A setup rerun currently erases operator-selected liveness, camera, threshold and storage settings, and ordinary quote-containing inputs can generate invalid Python.
+
+Scope: isolated configuration updater and installer invocation. It parses without executing existing configuration, preserves unmanaged statements, serializes each managed value as a Python literal, validates complete source before replacement, and writes an atomic private file while preserving its owner. Invalid or ambiguous managed assignments fail before modifying the file. It never rotates live credentials itself; inputs are existing operator-supplied settings. No secrets or full configuration are logged. Normal cleanup only removes the updater's own temporary file.
+
+Acceptance and tests: synthetic upgrade preserves LIVENESS_REQUIRED and camera/storage/threshold values; quotes, unicode, newlines and backslashes round trip; missing inputs/invalid existing Python/compound managed assignments fail conservatively; pre-replace interruption preserves original and unrelated evidence; success remains0600. Installer is never invoked by the new tests; actual Pi installation remains pending.
+
+Branch fix/t3-oct02-setup-policy; initialbase0ab3795986cb0bad446a644f7b91394a83f2cff8. Regression code authored and diffcheck only. Exact tests/types/lint/build/CI and normal isolated operator acceptance are PENDING explicit runtime admission behind FWCRM then UnitFlow. No validation or review-ready claim. No production settings, real data or protected artifacts changed.
