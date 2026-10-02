@@ -39,6 +39,8 @@ export interface Kiosk {
 export interface AttendanceWithWorker extends AttendanceEvent {
   worker_name: string;
   worker_department: string;
+  // Current roster label; stable matching must use worker_id.
+  worker_employee_id?: string | null;
   kiosk_name?: string;
 }
 
