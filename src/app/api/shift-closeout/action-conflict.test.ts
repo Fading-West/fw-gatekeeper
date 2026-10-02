@@ -22,3 +22,9 @@ it.each([undefined, {}, { id: 'synthetic', status: 'open', revision: 1, requestI
   vi.mocked(convex.mutation).mockResolvedValue(result);
   expect((await PATCH(request({ request_id: 'synthetic-save', expected_revision: null }))).status).toBe(502);
 });
+it('returns a definite note rejection as a recoverable conflict rather than uncertain failure', async () => {
+  vi.mocked(convex.mutation).mockRejectedValue(new ConvexError({ code: 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED', message: 'Add an acknowledgement note' }));
+  const response = await PATCH(request({ request_id: 'synthetic-blank-note', expected_revision: null }));
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ code: 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED', error: 'Add an acknowledgement note' });
+});

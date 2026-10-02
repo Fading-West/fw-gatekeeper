@@ -139,7 +139,7 @@ export async function PATCH(req: NextRequest) {
     }
     return NextResponse.json(result);
   } catch (error) {
-    if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(error.data?.code)) {
+    if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(error.data?.code)) {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
     }
     if (error instanceof ConvexError && error.data?.code === 'INVALID_CLOSEOUT_ACTION') {

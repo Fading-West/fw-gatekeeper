@@ -19,6 +19,18 @@ async function setup() {
   return { t, first: t.withIdentity({ subject: userIds[0] }), second: t.withIdentity({ subject: userIds[1] }), userIds };
 }
 describe('closeout action identity and revisions', () => {
+  it('rejects changed blockers and blank acknowledgement notes before creating a record or receipt', async () => {
+    const { t, first } = await setup();
+    const original = await first.query(api.shiftCloseouts.get, { date });
+    await t.run(ctx => ctx.db.insert('kiosks', { name: 'New synthetic gate', type: 'entry', location: 'Synthetic', active: true }));
+    await expect(first.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'changed-blockers', expectedRevision: null, notes: 'Original evidence', blockerEvidence: original.blocker_evidence })).rejects.toThrow('Refresh the evidence');
+    const current = await first.query(api.shiftCloseouts.get, { date });
+    await expect(first.mutation(api.shiftCloseouts.save, { date, action: 'save', requestId: 'blank-ack-note', expectedRevision: null, notes: ' ', acknowledgedBlockers: true, blockerEvidence: current.blocker_evidence })).rejects.toThrow('acknowledgement note');
+    expect(await t.run(ctx => ctx.db.query('shiftCloseouts').collect())).toEqual([]);
+    expect(await t.run(ctx => ctx.db.query('shiftCloseoutActionReceipts').collect())).toEqual([]);
+    const signed = await first.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'reviewed-new-evidence', expectedRevision: null, notes: 'New evidence reviewed', acknowledgedBlockers: true, blockerEvidence: current.blocker_evidence });
+    expect(signed.status).toBe('completed');
+  });
   it('isolates equal request IDs between actors and returns the authenticated receipt identity', async () => {
     const { t, first, second, userIds } = await setup();
     const saved = await first.mutation(api.shiftCloseouts.save, { date, action: 'save', requestId: 'shared-id', expectedRevision: null, notes: 'First actor' });

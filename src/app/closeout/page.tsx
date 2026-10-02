@@ -273,6 +273,10 @@ function ShiftCloseoutPageContent() {
       toast('Add an acknowledgement note before completing with blockers.', 'error');
       return;
     }
+    if (action !== 'reopen' && sourceBlockerCount > 0 && acknowledgedBlockers && !notes.trim()) {
+      toast('Add an acknowledgement note before saving acknowledged blockers.', 'error');
+      return;
+    }
 
     const request = { date, action, expected_revision: payload?.closeout ? payload.closeout.revision ?? 0 : null,
       supervisor_name: supervisorName, notes, acknowledged_blockers: acknowledgedBlockers, blocker_evidence: payload?.blocker_evidence };
@@ -298,7 +302,7 @@ function ShiftCloseoutPageContent() {
           body: JSON.stringify({ ...savedAction.intent, request_id: savedAction.requestId }),
         });
         const body = await res.json().catch(() => ({}));
-        if (res.status === 409 && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(body.code)) {
+        if (res.status === 409 && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(body.code)) {
           const rejected = rejectCloseoutAction(savedAction);
           if (!stillSelected()) return;
           setPendingAction(rejected);
@@ -375,6 +379,8 @@ function ShiftCloseoutPageContent() {
               <p className="text-xs text-slate-500">{label}</p>
               <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
             </div>
+          ))}
+        </div>
             {selectedPendingAction && (
               <div className="rounded-xl border border-amber-400/30 p-3 text-sm" data-testid="saved-closeout-action">
                 <p>{selectedPendingAction.rejected ? 'This saved action was rejected. Review the current record before starting another action.' : 'This action has no confirmed response. Retry its original details to recover the result.'}</p>
@@ -388,8 +394,6 @@ function ShiftCloseoutPageContent() {
                 }}>Review current record</button>}
               </div>
             )}
-          ))}
-        </div>
         {nextStep && (
           <div className="mt-5 border-l-4 border-gold/70 bg-navy-950/25 px-4 py-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">

@@ -519,11 +519,12 @@ export const save = mutation({
     }
 
     if (hasSourceBlockers && acknowledgedBlockers && !nextNotes) {
-      throw new Error("Closeout has blockers. Add an acknowledgement note before acknowledging blockers.");
+      throw new ConvexError({ code: "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED", message: "Closeout has blockers. Add an acknowledgement note before acknowledging blockers." });
     }
 
     if (args.action === "complete" && hasSourceBlockers && (!acknowledgedBlockers || !nextNotes)) {
-      throw new Error("Closeout has blockers. Add an acknowledgement note before completing.");
+      throw new ConvexError({ code: args.blockerEvidence !== current.blocker_evidence ? "CLOSEOUT_BLOCKERS_CHANGED" : "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED",
+        message: "Closeout has blockers. Refresh the evidence and add an acknowledgement note before completing." });
     }
 
     const status: CloseoutStatus =
