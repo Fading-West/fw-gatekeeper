@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { Schedule } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useScheduleActor } from '@/hooks/useScheduleActor';
 import { scheduleRequestId, acknowledgeScheduleRequest } from '@/lib/schedule-request';
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
@@ -26,9 +27,12 @@ export default function SchedulesPage() {
   const [department, setDepartment] = useState('');
   const [departments, setDepartments] = useState<string[]>([]);
   const currentRole = usePortalRole();
+  const actorId = useScheduleActor();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const canEdit = currentRole === 'admin';
+  const canEdit = currentRole === 'admin' && Boolean(actorId);
+  const currentActor = useRef(actorId);
+  currentActor.current = actorId;
   const savingRef = useRef(false);
   const formGeneration = useRef(0);
   const editAccess = useRef(canEdit);
@@ -106,7 +110,7 @@ export default function SchedulesPage() {
   };
 
   const handleSubmit = async () => {
-    if (!editAccess.current || editorGeneration !== formGeneration.current || savingRef.current) return;
+    if (!editAccess.current || !actorId || currentActor.current !== actorId || editorGeneration !== formGeneration.current || savingRef.current) return;
     if (!name.trim() || days.length === 0) {
       toast('Schedule name and at least one day required', 'error');
       return;
@@ -123,17 +127,18 @@ export default function SchedulesPage() {
         const res = await fetch('/api/schedules', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const responseBody = await res.json().catch(() => ({}));
         if (res.status === 409) {
-          if (editAccess.current && submittedGeneration === formGeneration.current) setConflict(responseBody?.error || 'Schedule changed. Review the current schedule.');
+          if (editAccess.current && currentActor.current === actorId && submittedGeneration === formGeneration.current) setConflict(responseBody?.error || 'Schedule changed. Review the current schedule.');
           return;
         }
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
         toast(`Schedule "${name}" updated`);
       } else {
-        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: scheduleRequestId(body) }) });
+        const requestId = scheduleRequestId(actorId, body);
+        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
         const responseBody = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
         if (typeof responseBody.id !== 'string') throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
-        acknowledgeScheduleRequest(body);
+        acknowledgeScheduleRequest(actorId, body, requestId);
         toast(`Schedule "${name}" created`);
       }
 
@@ -162,9 +167,9 @@ export default function SchedulesPage() {
   };
 
   const loadCurrentSchedule = async () => {
-    if (!editAccess.current || editorGeneration !== formGeneration.current || !editId) return;
+    if (!editAccess.current || !actorId || currentActor.current !== actorId || editorGeneration !== formGeneration.current || !editId) return;
     const generation = editorGeneration;
-    const isCurrent = () => editAccess.current && generation === formGeneration.current;
+    const isCurrent = () => editAccess.current && currentActor.current === actorId && generation === formGeneration.current;
     try {
       const res = await fetch('/api/schedules');
       if (!res.ok) throw new Error('Current schedule unavailable. Your draft is retained.');
@@ -178,11 +183,11 @@ export default function SchedulesPage() {
   };
 
   useEffect(() => {
-    if (!canEdit) resetForm();
+    resetForm();
     return () => { formGeneration.current += 1; };
-    // resetForm only sets local draft fields; the boundary follows authority.
+    // Drafts belong to the authenticated actor; receipts remain available to that actor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit]);
+  }, [actorId, canEdit]);
 
   const parseDays = (daysJson: string): string => {
     const days = parseScheduleDays(daysJson);
