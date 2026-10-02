@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -62,7 +63,7 @@ class FaceReadinessTests(unittest.TestCase):
 
     def test_native_inference_failure_stays_degraded_until_valid_authenticated_inference(self):
         session = Mock()
-        session.get_inputs.return_value = [Mock(name="input")]
+        session.get_inputs.return_value = [SimpleNamespace(name="input")]
         client = TestClient(main.app)
         image = np.zeros((112, 112, 3), dtype=np.uint8)
         with patch.object(main, "_rec_session", session), \
@@ -70,22 +71,24 @@ class FaceReadinessTests(unittest.TestCase):
              patch.object(main, "get_face_crop", return_value=image):
             for bad_output in (RuntimeError("synthetic native fault"),
                                [np.zeros((1, 512))], [np.full((1, 512), np.nan)],
-                               [np.ones((1, 128))]):
+                               [np.ones((1, 128))], [np.full((1, 512), 1e308)]):
                 session.run.side_effect = bad_output if isinstance(bad_output, Exception) else None
                 session.run.return_value = bad_output
-                response = client.post("/match", json={"photo": "synthetic", "encodings": []},
+                payload = {"photo": "synthetic", "encodings": [{"worker_id": "synthetic", "encoding": [0.1] * 512}]}
+                response = client.post("/match", json=payload,
                                        headers={"x-face-service-key": "synthetic-readiness-key"})
                 self.assertEqual(response.status_code, 503, response.text)
+                self.assertGreater(session.run.call_count, 0)
                 count = session.run.call_count
                 self.assertFalse(client.get("/health").json()["model_ready"])
                 self.assertEqual(main.health()["status"], "degraded")
                 self.assertEqual(session.run.call_count, count)
-                unauthorized = client.post("/match", json={"photo": "synthetic", "encodings": []})
+                unauthorized = client.post("/match", json=payload)
                 self.assertEqual(unauthorized.status_code, 401)
                 self.assertFalse(main.health()["model_ready"])
                 session.run.side_effect = None
                 session.run.return_value = [np.ones((1, 512))]
-                response = client.post("/match", json={"photo": "synthetic", "encodings": []},
+                response = client.post("/match", json=payload,
                                        headers={"x-face-service-key": "synthetic-readiness-key"})
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertTrue(main.health()["model_ready"])

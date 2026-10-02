@@ -82,7 +82,9 @@ class MultipleFacesError(ValueError):
 
 
 def _validate_encoding_vector(encoding: list[float]) -> bool:
-    return len(encoding) == 512 and bool(np.isfinite(encoding).all()) and float(np.linalg.norm(encoding)) > 0
+    with np.errstate(over="ignore", invalid="ignore"):
+        norm = float(np.linalg.norm(encoding))
+    return len(encoding) == 512 and bool(np.isfinite(encoding).all()) and np.isfinite(norm) and norm > 0
 
 
 def ensure_models():
@@ -203,7 +205,10 @@ def get_face_crop(img: np.ndarray, reject_competing_faces: bool = False) -> Opti
 def embed_face_crop(face: np.ndarray) -> list[float]:
     """Get the L2-normalised 512-dim embedding of a 112x112 BGR face crop."""
     global _rec_failed
-    session = get_rec_session()
+    try:
+        session = get_rec_session()
+    except Exception:
+        raise HTTPException(503, "Recognition service is unavailable. Please try again.") from None
 
     # Preprocess: BGR -> RGB, normalize to [-1, 1], NCHW
     face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
@@ -219,6 +224,8 @@ def embed_face_crop(face: np.ndarray) -> list[float]:
         if embedding.shape != (512,) or not _validate_encoding_vector(embedding.tolist()):
             raise ValueError("Invalid model output")
         result = (embedding / np.linalg.norm(embedding)).tolist()
+        if not _validate_encoding_vector(result):
+            raise ValueError("Invalid normalized model output")
     except Exception:
         _rec_failed = True
         raise HTTPException(503, "Recognition service is unavailable. Please try again.") from None
@@ -361,6 +368,8 @@ def match(req: MatchRequest):
     try:
         img = decode_image(req.photo)
         emb = get_embedding(img)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(422, "Could not process photo")
 
