@@ -1,0 +1,151 @@
+test_auth_conflict_and_server_errors_keep_all_rows_retryable (__main__.RecognitionPoisonQA.test_auth_conflict_and_server_errors_keep_all_rows_retryable) ... Recognition sync not acknowledged (status=401); keeping 1 attempts queued
+Recognition sync not acknowledged (status=409); keeping 1 attempts queued
+Recognition sync not acknowledged (status=500); keeping 1 attempts queued
+Recognition sync not acknowledged (status=400); keeping 1 attempts queued
+ok
+test_invalid_metric_is_quarantined_without_erasing_source_evidence (__main__.RecognitionPoisonQA.test_invalid_metric_is_quarantined_without_erasing_source_evidence) ... Recognition attempt 1 needs review: Invalid bestScore; inspect recognition_rejections.py list
+ok
+test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain (__main__.RecognitionPoisonQA.test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain) ... Recognition attempt 1 needs review: Recognition timestamp must identify a valid instant; inspect recognition_rejections.py list
+ok
+test_nonfinite_local_metric_cannot_poison_batch_before_http (__main__.RecognitionPoisonQA.test_nonfinite_local_metric_cannot_poison_batch_before_http) ... Recognition sync request failed; keeping unresolved evidence queued
+Traceback (most recent call last):
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 592, in prepare_body
+    body = complexjson.dumps(json, allow_nan=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+          ^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/encoder.py", line 200, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/encoder.py", line 258, in iterencode
+    return _iterencode(o, 0)
+           ^^^^^^^^^^^^^^^^^
+ValueError: Out of range float values are not JSON compliant
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/sync.py", line 315, in _upload_recognition
+    response = requests.post(
+               ^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1124, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1128, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1189, in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/test_recognition_poison_isolation.py", line 16, in encode_request
+    requests.Request('POST','https://synthetic.invalid',json=kwargs['json']).prepare()
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 361, in prepare
+    p.prepare(
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 442, in prepare
+    self.prepare_body(data, files, json)
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 594, in prepare_body
+    raise InvalidJSONError(ve, request=self)
+requests.exceptions.InvalidJSONError: Out of range float values are not JSON compliant
+Recognition sync request failed; keeping unresolved evidence queued
+Traceback (most recent call last):
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 592, in prepare_body
+    body = complexjson.dumps(json, allow_nan=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+          ^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/encoder.py", line 200, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/encoder.py", line 258, in iterencode
+    return _iterencode(o, 0)
+           ^^^^^^^^^^^^^^^^^
+ValueError: Out of range float values are not JSON compliant
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/sync.py", line 315, in _upload_recognition
+    response = requests.post(
+               ^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1124, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1128, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1189, in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/test_recognition_poison_isolation.py", line 16, in encode_request
+    requests.Request('POST','https://synthetic.invalid',json=kwargs['json']).prepare()
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 361, in prepare
+    p.prepare(
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 442, in prepare
+    self.prepare_body(data, files, json)
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 594, in prepare_body
+    raise InvalidJSONError(ve, request=self)
+requests.exceptions.InvalidJSONError: Out of range float values are not JSON compliant
+Recognition sync request failed; keeping unresolved evidence queued
+Traceback (most recent call last):
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 592, in prepare_body
+    body = complexjson.dumps(json, allow_nan=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/__init__.py", line 238, in dumps
+    **kw).encode(obj)
+          ^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/encoder.py", line 200, in encode
+    chunks = self.iterencode(o, _one_shot=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/json/encoder.py", line 258, in iterencode
+    return _iterencode(o, 0)
+           ^^^^^^^^^^^^^^^^^
+ValueError: Out of range float values are not JSON compliant
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/sync.py", line 315, in _upload_recognition
+    response = requests.post(
+               ^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1124, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1128, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15_4/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/mock.py", line 1189, in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/test_recognition_poison_isolation.py", line 16, in encode_request
+    requests.Request('POST','https://synthetic.invalid',json=kwargs['json']).prepare()
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 361, in prepare
+    p.prepare(
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 442, in prepare
+    self.prepare_body(data, files, json)
+  File "<isolated-workspace>/gatekeeper-venv/lib/python3.11/site-packages/requests/models.py", line 594, in prepare_body
+    raise InvalidJSONError(ve, request=self)
+requests.exceptions.InvalidJSONError: Out of range float values are not JSON compliant
+FAIL
+test_partial_success_retains_original_source_identity_for_retry (__main__.RecognitionPoisonQA.test_partial_success_retains_original_source_identity_for_retry) ... Recognition sync not acknowledged (status=201); keeping 1 attempts queued
+ok
+
+======================================================================
+FAIL: test_nonfinite_local_metric_cannot_poison_batch_before_http (__main__.RecognitionPoisonQA.test_nonfinite_local_metric_cannot_poison_batch_before_http)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/14-recognition-numeric-domain/pi-kiosk/test_recognition_poison_isolation.py", line 23, in test_nonfinite_local_metric_cannot_poison_batch_before_http
+    self.assertEqual(database.get_unsynced_recognition_attempts(),[])
+AssertionError: Lists differ: [{'id': 1, 'timestamp': '2026-10-01T08:00:[865 chars]one}] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+{'id': 1, 'timestamp': '2026-10-01T08:00:00', 'kiosk_id': 'synthetic-kiosk', 'face_detected': True, 'candidate_worker_id': None, 'candidate_worker_name': None, 'best_score': inf, 'second_best_score': None, 'score_margin': None, 'decision': 'near_miss', 'threshold': 0.45, 'liveness_confirmed': False, 'model_version': None, 'source_attempt_id': '540fe5fa-9fab-4c5d-9624-f90d52e66c22', 'legacy_source_attempt_id': None, 'candidate_server_worker_id': None}
+
+Diff is 1043 characters long. Set self.maxDiff to None to see it.
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.092s
+
+FAILED (failures=1)
