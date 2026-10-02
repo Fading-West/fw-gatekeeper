@@ -1,6 +1,7 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'admin' }));
+vi.mock('@/hooks/useScheduleActor', () => ({ useScheduleActor: () => 'synthetic-admin' }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 import SchedulesPage from './page';
 let tree: ReactTestRenderer | undefined;

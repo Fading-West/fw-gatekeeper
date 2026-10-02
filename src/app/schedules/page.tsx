@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { Schedule } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useScheduleActor } from '@/hooks/useScheduleActor';
 import { scheduleRequestId, acknowledgeScheduleRequest } from '@/lib/schedule-request';
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
@@ -24,11 +25,15 @@ export default function SchedulesPage() {
   const [department, setDepartment] = useState('');
   const [departments, setDepartments] = useState<string[]>([]);
   const currentRole = usePortalRole();
+  const actorId = useScheduleActor();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const canEdit = currentRole === 'admin';
+  const canEdit = currentRole === 'admin' && Boolean(actorId);
+  const currentActor = useRef(actorId);
+  currentActor.current = actorId;
   const savingRef = useRef(false);
   const formGeneration = useRef(0);
+  const editorGeneration = formGeneration.current;
   const [saving, setSaving] = useState(false);
 
   const fetchSchedules = useCallback(async () => {
@@ -98,7 +103,7 @@ export default function SchedulesPage() {
   };
 
   const handleSubmit = async () => {
-    if (!canEdit || savingRef.current) return;
+    if (!canEdit || !actorId || currentActor.current !== actorId || editorGeneration !== formGeneration.current || savingRef.current) return;
     if (!name.trim() || days.length === 0) {
       toast('Schedule name and at least one day required', 'error');
       return;
@@ -117,11 +122,12 @@ export default function SchedulesPage() {
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
         toast(`Schedule "${name}" updated`);
       } else {
-        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: scheduleRequestId(body) }) });
+        const requestId = scheduleRequestId(actorId, body);
+        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
         const responseBody = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
         if (typeof responseBody.id !== 'string') throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
-        acknowledgeScheduleRequest(body);
+        acknowledgeScheduleRequest(actorId, body, requestId);
         toast(`Schedule "${name}" created`);
       }
 
@@ -147,6 +153,13 @@ export default function SchedulesPage() {
       toast('Failed to delete schedule', 'error');
     }
   };
+
+  useEffect(() => {
+    resetForm();
+    return () => { formGeneration.current += 1; };
+    // Drafts belong to the authenticated actor; receipts remain available to that actor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actorId, canEdit]);
 
   const parseDays = (daysJson: string): string => {
     const days = parseScheduleDays(daysJson);
