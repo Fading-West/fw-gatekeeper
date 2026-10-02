@@ -1,7 +1,10 @@
 """Synthetic configuration updates; never invokes the real installer."""
 import importlib.util
+import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -14,6 +17,13 @@ spec.loader.exec_module(config_update)
 class SetupPolicyTests(unittest.TestCase):
     def values(self):
         return {name: "synthetic 'quoted' \\\n unicode é" for name in config_update.MANAGED_NAMES} | {"KIOSK_TYPE": "entry"}
+
+    def run_updater(self, directory, values=None):
+        return subprocess.run(
+            [sys.executable, str(Path(config_update.__file__).resolve())],
+            cwd=directory, env=os.environ | (self.values() if values is None else values),
+            capture_output=True, text=True, timeout=10,
+        )
 
     def test_upgrade_preserves_operator_policy_and_round_trips_managed_values(self):
         old = 'LIVENESS_REQUIRED = True\nRECOGNITION_MATCH_THRESHOLD = 0.65\nDB_PATH = "custom.db"\nCAMERA_INDEX = 2\nKIOSK_NAME = "old"\n'
@@ -67,6 +77,68 @@ class SetupPolicyTests(unittest.TestCase):
         values = self.values() | {"KIOSK_UI_KEY": ""}
         with self.assertRaises(ValueError):
             config_update.updated_source('', values)
+
+    def test_cli_rejects_unsupported_managed_bindings_without_changing_files(self):
+        mutations = [
+            'if True:\n    KIOSK_TYPE = "exit"\n',
+            'if True:\n    KIOSK_TYPE: str = "exit"\n',
+            'KIOSK_API_KEY += "-suffix"\n',
+            'del KIOSK_TYPE\n',
+            'for KIOSK_ID in ["other"]:\n    pass\n',
+            'with open("unused") as KIOSK_API_KEY:\n    pass\n',
+            'if (KIOSK_TYPE := "exit"):\n    pass\n',
+            'import os as KIOSK_API_KEY\n',
+            'from os import name as KIOSK_TYPE\n',
+            'from os import *\n',
+            'def KIOSK_TYPE():\n    return "exit"\n',
+            'def policy(KIOSK_TYPE):\n    return KIOSK_TYPE\n',
+            'class KIOSK_TYPE:\n    pass\n',
+            'try:\n    pass\nexcept Exception as KIOSK_API_KEY:\n    pass\n',
+            'match "exit":\n    case KIOSK_TYPE:\n        pass\n',
+            'match []:\n    case [*KIOSK_ID]:\n        pass\n',
+            'match {}:\n    case {**KIOSK_API_KEY}:\n        pass\n',
+            'KIOSK_TYPE, CAMERA_INDEX = "exit", 2\n',
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as root:
+                path = Path(root) / "config_local.py"
+                original = ('KIOSK_TYPE = "entry"\n'
+                            'KIOSK_API_KEY = "synthetic-secret-must-stay-private"\n'
+                            'LIVENESS_REQUIRED = True\n' + mutation).encode()
+                path.write_bytes(original)
+                evidence = Path(root) / "operator-evidence.txt"
+                evidence.write_text("protected")
+                result = self.run_updater(root)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertNotIn("synthetic-secret-must-stay-private", result.stderr)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(evidence.read_text(), "protected")
+                self.assertEqual(sorted(p.name for p in Path(root).iterdir()),
+                                 ["config_local.py", "operator-evidence.txt"])
+
+    def test_cli_preserves_unrelated_code_and_compiled_settings_match_new_inputs(self):
+        old = ('"""Operator policy docstring."""\nfrom pathlib import Path\n'
+               + ''.join(f'{name} = "old"\n' for name in config_update.MANAGED_NAMES)
+               + 'if KIOSK_TYPE == "exit":\n    LIVENESS_REQUIRED = True\n'
+                 'else:\n    LIVENESS_REQUIRED = False\n'
+                 'MODEL_DIR = Path(KIOSK_NAME) / "models"\n')
+        values = self.values() | {"KIOSK_TYPE": "exit"}
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "config_local.py"
+            path.write_text(old)
+            result = self.run_updater(root, values)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            source = path.read_text()
+            namespace = {}
+            exec(compile(source, "synthetic_config", "exec"), namespace)
+            for name, value in values.items():
+                self.assertEqual(namespace[name], value)
+            self.assertEqual(namespace["__doc__"], "Operator policy docstring.")
+            self.assertTrue(namespace["LIVENESS_REQUIRED"])
+            self.assertEqual(namespace["MODEL_DIR"], Path(values["KIOSK_NAME"]) / "models")
+            self.assertIn('from pathlib import Path\n', source)
+            self.assertIn('if KIOSK_TYPE == "exit":\n    LIVENESS_REQUIRED = True\n', source)
 
 
 if __name__ == "__main__":
