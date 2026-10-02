@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Schedule } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useScheduleActor } from '@/hooks/useScheduleActor';
+import { prepareScheduleRequest, observeScheduleCompletion, acknowledgeScheduleRequest } from '@/lib/schedule-request';
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
 import { parseScheduleDays, SCHEDULE_DAYS_ERROR } from '../../../convex/scheduleValidation';
@@ -23,9 +25,17 @@ export default function SchedulesPage() {
   const [department, setDepartment] = useState('');
   const [departments, setDepartments] = useState<string[]>([]);
   const currentRole = usePortalRole();
+  const actorId = useScheduleActor();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const canEdit = currentRole === 'admin';
+  const canEdit = currentRole === 'admin' && Boolean(actorId);
+  const currentActor = useRef(actorId);
+  currentActor.current = actorId;
+  const savingRef = useRef(false);
+  const saveGeneration = useRef(0);
+  const formGeneration = useRef(0);
+  const editorGeneration = formGeneration.current;
+  const [saving, setSaving] = useState(false);
 
   const fetchSchedules = useCallback(async () => {
     setLoading(true);
@@ -68,7 +78,8 @@ export default function SchedulesPage() {
     setDays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort());
   };
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
+    formGeneration.current += 1;
     setName('');
     setDays([1, 2, 3, 4, 5]);
     setInvalidStoredDays(null);
@@ -77,9 +88,10 @@ export default function SchedulesPage() {
     setDepartment('');
     setEditId(null);
     setShowForm(false);
-  };
+  }, []);
 
   const handleEdit = (s: Schedule) => {
+    formGeneration.current += 1;
     const parsedDays = parseScheduleDays(s.days);
     setEditId(s.id);
     setName(s.name);
@@ -92,11 +104,17 @@ export default function SchedulesPage() {
   };
 
   const handleSubmit = async () => {
+    if (!canEdit || !actorId || currentActor.current !== actorId || editorGeneration !== formGeneration.current || savingRef.current) return;
     if (!name.trim() || days.length === 0) {
       toast('Schedule name and at least one day required', 'error');
       return;
     }
 
+    const submittedGeneration = formGeneration.current;
+    const submittedFlight = ++saveGeneration.current;
+    const ownsFlight = () => saveGeneration.current === submittedFlight && currentActor.current === actorId;
+    savingRef.current = true;
+    setSaving(true);
     try {
       if (!isSupportedScheduleTimeRange(startTime, endTime)) throw new Error(SCHEDULE_TIME_ERROR);
       const body = { id: editId, name: name.trim(), days, start_time: startTime, end_time: endTime, department: department || null };
@@ -105,18 +123,35 @@ export default function SchedulesPage() {
         const res = await fetch('/api/schedules', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const responseBody = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
+        if (!ownsFlight()) return;
         toast(`Schedule "${name}" updated`);
       } else {
-        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const responseBody = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
-        toast(`Schedule "${name}" created`);
+        const receipt = prepareScheduleRequest(actorId, body);
+        if (receipt.savedId) {
+          observeScheduleCompletion(actorId, body, receipt.requestId);
+          toast(`Schedule "${name}" was already saved. The original save is confirmed; use New Schedule to intentionally create another.`);
+        } else {
+          const requestId = receipt.requestId;
+          const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
+          const responseBody = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
+          if (typeof responseBody.id !== 'string' || !responseBody.id) throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
+          if (!acknowledgeScheduleRequest(actorId, body, requestId, responseBody.id)) throw new Error('The saved receipt no longer matches this response. Keep the current creation intent for recovery.');
+          if (!ownsFlight()) return;
+          observeScheduleCompletion(actorId, body, requestId);
+          toast(`Schedule "${name}" created`);
+        }
       }
 
-      resetForm();
+      if (submittedGeneration === formGeneration.current) resetForm();
       fetchSchedules();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Failed to save schedule', 'error');
+      if (ownsFlight()) toast(err instanceof Error ? err.message : 'Failed to save schedule', 'error');
+    } finally {
+      if (ownsFlight()) {
+        savingRef.current = false;
+        setSaving(false);
+      }
     }
   };
 
@@ -132,6 +167,15 @@ export default function SchedulesPage() {
       toast('Failed to delete schedule', 'error');
     }
   };
+
+  useEffect(() => {
+    saveGeneration.current += 1;
+    savingRef.current = false;
+    setSaving(false);
+    resetForm();
+    return () => { formGeneration.current += 1; saveGeneration.current += 1; savingRef.current = false; };
+    // Drafts belong to the authenticated actor; receipts remain available to that actor.
+  }, [actorId, canEdit, resetForm]);
 
   const parseDays = (daysJson: string): string => {
     const days = parseScheduleDays(daysJson);
@@ -182,6 +226,7 @@ export default function SchedulesPage() {
           <div>
             <label className="section-label mb-1.5 block">Schedule Name</label>
             <input
+              disabled={saving}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Default Mon-Fri"
@@ -202,6 +247,7 @@ export default function SchedulesPage() {
               {DAY_LABELS.map((label, i) => (
                 <button
                   key={i}
+                  disabled={saving}
                   onClick={() => toggleDay(i)}
                   className={`w-11 h-11 rounded-xl text-xs font-display font-medium transition-all ${
                     days.includes(i)
@@ -220,6 +266,7 @@ export default function SchedulesPage() {
               <label className="section-label mb-1.5 block">Start Time</label>
               <input
                 type="time"
+                disabled={saving}
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
                 className="input-field font-mono"
@@ -229,6 +276,7 @@ export default function SchedulesPage() {
               <label className="section-label mb-1.5 block">End Time</label>
               <input
                 type="time"
+                disabled={saving}
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
                 className="input-field font-mono"
@@ -239,6 +287,7 @@ export default function SchedulesPage() {
           <div>
             <label className="section-label mb-1.5 block">Department (optional)</label>
             <select
+              disabled={saving}
               value={department}
               onChange={(e) => setDepartment(e.target.value)}
               className="input-field"
@@ -252,7 +301,7 @@ export default function SchedulesPage() {
 
           <button
             onClick={handleSubmit}
-            disabled={!name.trim() || days.length === 0}
+            disabled={saving || !name.trim() || days.length === 0}
             className="btn-primary"
           >
             {editId ? 'Update Schedule' : 'Create Schedule'}

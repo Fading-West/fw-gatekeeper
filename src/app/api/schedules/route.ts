@@ -53,7 +53,11 @@ export async function POST(req: NextRequest) {
     const inputError = scheduleInputError(fields, true);
     if (inputError) return NextResponse.json({ error: inputError }, { status: 400 });
     const { name, days, start_time, end_time, department } = fields;
+    if (fields.request_id !== undefined && (typeof fields.request_id !== 'string' || !fields.request_id.trim() || fields.request_id.length > 200)) {
+      return NextResponse.json({ error: 'request_id must contain 1 to 200 characters.' }, { status: 400 });
+    }
     const result = await convex.mutation(api.schedules.create, {
+      requestId: fields.request_id,
       name: name.trim(),
       days: typeof days === 'string' ? days : JSON.stringify(days),
       startTime: start_time,
@@ -62,6 +66,9 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof ConvexError && typeof error.data === 'object' && error.data?.code === 'SCHEDULE_REQUEST_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     const inputError = badScheduleInput(error);
     if (inputError) return NextResponse.json({ error: inputError }, { status: 400 });
     console.error('Schedules POST error:', error);

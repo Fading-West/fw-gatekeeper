@@ -1,0 +1,21 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { acknowledgeScheduleRequest, observeScheduleCompletion, prepareScheduleRequest } from './schedule-request';
+afterEach(() => vi.unstubAllGlobals());
+it('keeps an uncertain request for retry and allocates a new intent after acknowledgement', () => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal('sessionStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+  const payload = { name: 'Synthetic', days: [1], start_time: '06:00', end_time: '14:30' };
+  const actor = 'synthetic-admin';
+  const first = prepareScheduleRequest(actor, payload).requestId;
+  expect(prepareScheduleRequest(actor, payload).requestId).toBe(first);
+  expect(storage.size).toBe(1);
+  acknowledgeScheduleRequest(actor, payload, first, 'synthetic-saved-id');
+  expect(storage.size).toBe(1);
+  expect(prepareScheduleRequest(actor, payload)).toEqual({ requestId: first, savedId: 'synthetic-saved-id' });
+  observeScheduleCompletion(actor, payload, first);
+  const second = prepareScheduleRequest(actor, payload).requestId;
+  expect(second).not.toBe(first);
+  expect(acknowledgeScheduleRequest(actor, payload, first, 'synthetic-saved-id')).toBe(false);
+  expect(prepareScheduleRequest(actor, payload).requestId).toBe(second);
+  acknowledgeScheduleRequest(actor, payload, second, 'synthetic-second-id');
+});
