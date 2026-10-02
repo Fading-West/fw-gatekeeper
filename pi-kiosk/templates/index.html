@@ -699,7 +699,10 @@
 
                 // Footer claims must match what the kiosk actually enforces.
                 const health = data.health || {};
-                if (data.liveness_required && health.liveness_available) {
+                if (health.policy_ok === false) {
+                    livenessNote.textContent = "Configuration needs attention - automatic scans paused; ask your supervisor";
+                    livenessNote.style.color = "#e0a343";
+                } else if (data.liveness_required && health.liveness_available) {
                     livenessNote.textContent = "Blink verification required before recognition";
                     livenessNote.style.color = "";
                 } else if (data.liveness_required) {

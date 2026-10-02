@@ -25,6 +25,7 @@ from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
 from kiosk_ui_auth import require_kiosk_ui_key
+from kiosk_policy import require_kiosk_action_type, validate_kiosk_policy
 import app as web_app
 
 logging.basicConfig(
@@ -212,14 +213,36 @@ def run(args):
     os.makedirs(config.MODEL_DIR, exist_ok=True)
     database.init_db()
 
+    logger.info("Starting web UI on port %d...", config.KIOSK_PORT)
+    web_app.start_server()
+
+    policy = validate_kiosk_policy(config)
+    if not policy.valid:
+        logger.critical("Automatic attendance blocked: invalid kiosk settings: %s", ", ".join(policy.errors))
+        web_app.update_health(model_ok=False, camera_ok=False, degraded_reason="kiosk_policy_error")
+        web_app.update_status(state="SERVICE_DEGRADED",
+                              message="Kiosk configuration needs attention - please ask your supervisor")
+        # Keep protected local manual attendance and durable queues available.
+        # Recognition-only errors do not invalidate an explicit supervisor action.
+        sync_worker = (SyncWorker(recognizer=None, health_provider=web_app.get_health_snapshot,
+                                  health_reporter=web_app.update_health) if sync_enabled else None)
+        if sync_worker:
+            sync_worker.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if sync_worker:
+                sync_worker.stop()
+        return
+
     # Download and load the MobileFaceNet model, but continue booting if it
     # is unavailable (offline or corrupt) - health reports it truthfully.
     model_ready = recognition_model_ready()
     if not model_ready:
         logger.warning("Recognition model unavailable at startup; kiosk will keep retrying in the background.")
-
-    logger.info("Starting web UI on port %d...", config.KIOSK_PORT)
-    web_app.start_server()
 
     recognizer = FaceRecognizer()
     recognizer.load_faces()
@@ -462,9 +485,15 @@ def run(args):
     def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
                      server_worker_id=None):
         """Log the clock event + telemetry, update the display. Returns True on success."""
-        if config.KIOSK_TYPE == "entry":
+        try:
+            kiosk_type = require_kiosk_action_type(config)
+        except ValueError:
+            web_app.update_health(degraded_reason="kiosk_policy_error")
+            web_app.update_status(state="SERVICE_DEGRADED", message="Kiosk configuration needs attention - please ask your supervisor")
+            return False
+        if kiosk_type == "entry":
             action = "clock_in"
-        elif config.KIOSK_TYPE == "exit":
+        elif kiosk_type == "exit":
             action = "clock_out"
         else:
             last_action = database.get_last_action(worker_id)
