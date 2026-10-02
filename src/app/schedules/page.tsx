@@ -31,6 +31,9 @@ export default function SchedulesPage() {
   const canEdit = currentRole === 'admin';
   const savingRef = useRef(false);
   const formGeneration = useRef(0);
+  const editAccess = useRef(canEdit);
+  editAccess.current = canEdit;
+  const editorGeneration = formGeneration.current;
   const [saving, setSaving] = useState(false);
 
   const fetchSchedules = useCallback(async () => {
@@ -103,7 +106,7 @@ export default function SchedulesPage() {
   };
 
   const handleSubmit = async () => {
-    if (!canEdit || savingRef.current) return;
+    if (!editAccess.current || editorGeneration !== formGeneration.current || savingRef.current) return;
     if (!name.trim() || days.length === 0) {
       toast('Schedule name and at least one day required', 'error');
       return;
@@ -119,7 +122,10 @@ export default function SchedulesPage() {
       if (editId) {
         const res = await fetch('/api/schedules', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const responseBody = await res.json().catch(() => ({}));
-        if (res.status === 409) { setConflict(responseBody?.error || 'Schedule changed. Review the current schedule.'); return; }
+        if (res.status === 409) {
+          if (editAccess.current && submittedGeneration === formGeneration.current) setConflict(responseBody?.error || 'Schedule changed. Review the current schedule.');
+          return;
+        }
         if (!res.ok) throw new Error(responseBody?.error || 'Failed to update schedule');
         toast(`Schedule "${name}" updated`);
       } else {
@@ -156,16 +162,27 @@ export default function SchedulesPage() {
   };
 
   const loadCurrentSchedule = async () => {
+    if (!editAccess.current || editorGeneration !== formGeneration.current || !editId) return;
+    const generation = editorGeneration;
+    const isCurrent = () => editAccess.current && generation === formGeneration.current;
     try {
       const res = await fetch('/api/schedules');
       if (!res.ok) throw new Error('Current schedule unavailable. Your draft is retained.');
       const rows: Schedule[] = await res.json();
+      if (!isCurrent()) return;
       const current = rows.find(row => row.id === editId);
       if (!current) throw new Error('This schedule was removed. Cancel this draft and reload the list.');
       handleEdit(current);
       setSchedules(rows);
-    } catch (error) { toast(error instanceof Error ? error.message : 'Unable to reload schedule', 'error'); }
+    } catch (error) { if (isCurrent()) toast(error instanceof Error ? error.message : 'Unable to reload schedule', 'error'); }
   };
+
+  useEffect(() => {
+    if (!canEdit) resetForm();
+    return () => { formGeneration.current += 1; };
+    // resetForm only sets local draft fields; the boundary follows authority.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canEdit]);
 
   const parseDays = (daysJson: string): string => {
     const days = parseScheduleDays(daysJson);
