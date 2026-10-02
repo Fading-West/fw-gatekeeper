@@ -74,7 +74,7 @@ class LocalEnrollmentFlowTests(unittest.TestCase):
         self.assertEqual(workers[0]["photo_count"], 3)
         self.assertEqual(self.embed.call_count, 4)
         self.assertTrue(any("Samples do not match" in text for text in messages))
-        np.testing.assert_allclose(workers[0]["encoding"], self.same)
+        np.testing.assert_allclose(workers[0]["face_encoding"], self.same)
         self.camera.release.assert_called_once()
 
     def test_operator_cancel_never_publishes_a_worker(self):
