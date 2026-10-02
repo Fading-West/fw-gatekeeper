@@ -1,0 +1,10 @@
+.Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+.
+----------------------------------------------------------------------
+Ran 2 tests in 0.018s
+
+OK
