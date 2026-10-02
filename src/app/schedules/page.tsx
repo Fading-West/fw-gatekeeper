@@ -28,6 +28,7 @@ export default function SchedulesPage() {
   const [error, setError] = useState('');
   const canEdit = currentRole === 'admin';
   const savingRef = useRef(false);
+  const formGeneration = useRef(0);
   const [saving, setSaving] = useState(false);
 
   const fetchSchedules = useCallback(async () => {
@@ -72,6 +73,7 @@ export default function SchedulesPage() {
   };
 
   const resetForm = () => {
+    formGeneration.current += 1;
     setName('');
     setDays([1, 2, 3, 4, 5]);
     setInvalidStoredDays(null);
@@ -83,6 +85,7 @@ export default function SchedulesPage() {
   };
 
   const handleEdit = (s: Schedule) => {
+    formGeneration.current += 1;
     const parsedDays = parseScheduleDays(s.days);
     setEditId(s.id);
     setName(s.name);
@@ -101,6 +104,7 @@ export default function SchedulesPage() {
       return;
     }
 
+    const submittedGeneration = formGeneration.current;
     savingRef.current = true;
     setSaving(true);
     try {
@@ -121,7 +125,7 @@ export default function SchedulesPage() {
         toast(`Schedule "${name}" created`);
       }
 
-      resetForm();
+      if (submittedGeneration === formGeneration.current) resetForm();
       fetchSchedules();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Failed to save schedule', 'error');
@@ -193,6 +197,7 @@ export default function SchedulesPage() {
           <div>
             <label className="section-label mb-1.5 block">Schedule Name</label>
             <input
+              disabled={saving}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Default Mon-Fri"
@@ -213,6 +218,7 @@ export default function SchedulesPage() {
               {DAY_LABELS.map((label, i) => (
                 <button
                   key={i}
+                  disabled={saving}
                   onClick={() => toggleDay(i)}
                   className={`w-11 h-11 rounded-xl text-xs font-display font-medium transition-all ${
                     days.includes(i)
@@ -231,6 +237,7 @@ export default function SchedulesPage() {
               <label className="section-label mb-1.5 block">Start Time</label>
               <input
                 type="time"
+                disabled={saving}
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
                 className="input-field font-mono"
@@ -240,6 +247,7 @@ export default function SchedulesPage() {
               <label className="section-label mb-1.5 block">End Time</label>
               <input
                 type="time"
+                disabled={saving}
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
                 className="input-field font-mono"
@@ -250,6 +258,7 @@ export default function SchedulesPage() {
           <div>
             <label className="section-label mb-1.5 block">Department (optional)</label>
             <select
+              disabled={saving}
               value={department}
               onChange={(e) => setDepartment(e.target.value)}
               className="input-field"
