@@ -542,7 +542,7 @@
             <div id="supervisorError" class="supervisor-error" role="alert" aria-live="polite"></div>
             <div class="supervisor-dialog-actions">
                 <button id="supervisorCancel" type="button">Cancel</button>
-                <button type="submit">Unlock</button>
+                <button id="supervisorSubmit" type="submit">Unlock</button>
             </div>
         </form>
     </dialog>
@@ -574,12 +574,20 @@
         const supervisorPin = document.getElementById("supervisorPin");
         const supervisorError = document.getElementById("supervisorError");
         const supervisorCancel = document.getElementById("supervisorCancel");
+        const supervisorSubmit = document.getElementById("supervisorSubmit");
         const adminPanel = document.getElementById("adminPanel");
         const lastUpdated = document.getElementById("lastUpdated");
         const livenessNote = document.getElementById("livenessNote");
         const syncChip = document.getElementById("syncChip");
         let adminVisible = false;
         let supervisorStateVersion = 0;
+        let supervisorLockPending = false;
+        let supervisorLockNeeded = false;
+        let supervisorUnlockPending = false;
+        let supervisorUnlockGeneration = 0;
+        let activeUnlockRequest = null;
+        let activeUnlockController = null;
+        let supervisorBootNonce = null;
 
         function tickClock() {
             const now = new Date();
@@ -652,29 +660,115 @@
         }
 
         async function toggleSupervisorControls() {
-            if (adminVisible) {
-                await fetch("/supervisor/lock", { method: "POST" });
+            if (supervisorLockPending) return;
+            if (adminVisible || supervisorLockNeeded || supervisorUnlockPending) {
+                supervisorStateVersion += 1;
                 setAdminVisible(false);
+                supervisorLockPending = true;
+                supervisorLockNeeded = true;
+                supervisorUnlock.disabled = true;
+                supervisorUnlock.textContent = "Locking supervisor session...";
+                try {
+                    const response = await fetch("/supervisor/lock", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ request_id: activeUnlockRequest })
+                    });
+                    if (!response.ok) throw new Error("Lock not confirmed");
+                    // The server has retired this operation, so recovery need
+                    // not wait for its original response to ever arrive.
+                    supervisorUnlockGeneration += 1;
+                    supervisorUnlockPending = false;
+                    supervisorSubmit.disabled = false;
+                    const retiredController = activeUnlockController;
+                    activeUnlockController = null;
+                    activeUnlockRequest = null;
+                    retiredController?.abort();
+                    supervisorLockNeeded = false;
+                    supervisorUnlock.textContent = "Supervisor controls (A)";
+                } catch (_) {
+                    supervisorUnlock.textContent = "Lock not confirmed. Retry locking controls";
+                } finally {
+                    supervisorLockPending = false;
+                    supervisorUnlock.disabled = false;
+                }
                 return;
             }
             openSupervisorDialog();
         }
 
-        async function unlockSupervisorControls() {
-            const pin = supervisorPin.value;
-            const response = await fetch("/supervisor/unlock", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pin })
-            });
-            if (!response.ok) {
-                supervisorError.textContent = "Supervisor authentication failed.";
-                supervisorPin.select();
-                return;
+        function createSupervisorUnlockRequestId() {
+            const cryptography = globalThis.crypto;
+            if (typeof cryptography?.randomUUID === "function") {
+                try { return cryptography.randomUUID(); } catch (_) { /* Try the cryptographic fallback. */ }
             }
+            if (typeof cryptography?.getRandomValues !== "function") {
+                throw new Error("Secure unlock identity unavailable");
+            }
+            const bytes = new Uint8Array(16);
+            cryptography.getRandomValues(bytes);
+            return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+        }
+
+        async function unlockSupervisorControls() {
+            if (supervisorUnlockPending || supervisorLockPending || supervisorLockNeeded) return;
+            supervisorUnlockPending = true;
+            supervisorSubmit.disabled = true;
+            const generation = ++supervisorUnlockGeneration;
+            const version = supervisorStateVersion;
+            let requestStarted = false;
+            try {
+                if (!supervisorBootNonce) throw new Error("Kiosk session not yet observed");
+                const operation = createSupervisorUnlockRequestId();
+                activeUnlockRequest = operation;
+                const controller = new AbortController();
+                activeUnlockController = controller;
+                const pin = supervisorPin.value;
+                requestStarted = true;
+                const response = await fetch("/supervisor/unlock", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pin, request_id: operation, boot_nonce: supervisorBootNonce }),
+                    signal: controller.signal
+                });
+                if (generation !== supervisorUnlockGeneration || version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
+                if (!response.ok) {
+                    if (response.status >= 500) throw new Error("Unlock not confirmed");
+                    if (response.status === 409) {
+                        supervisorBootNonce = null;
+                        supervisorError.textContent = "Kiosk session changed. Wait for status and unlock again.";
+                        fetchStatus();
+                        return;
+                    }
+                    supervisorError.textContent = "Supervisor authentication failed.";
+                    supervisorPin.select();
+                    return;
+                }
+                supervisorDialog.close();
+                setAdminVisible(true);
+                fetchStatus();
+            } catch (_) {
+                if (generation === supervisorUnlockGeneration && version === supervisorStateVersion) {
+                    if (requestStarted) {
+                        supervisorLockNeeded = true;
+                        supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
+                        supervisorUnlock.textContent = "Unlock uncertain. Lock supervisor controls";
+                    } else {
+                        supervisorError.textContent = supervisorBootNonce
+                            ? "Secure unlock identity unavailable. Retry on the kiosk browser."
+                            : "Wait for kiosk status before unlocking.";
+                    }
+                }
+            } finally {
+                if (generation === supervisorUnlockGeneration) {
+                    supervisorUnlockPending = false;
+                    supervisorSubmit.disabled = false;
+                    activeUnlockController = null;
+                }
+            }
+        }
+
+        function cancelSupervisorUnlock() {
             supervisorDialog.close();
-            setAdminVisible(true);
-            fetchStatus();
+            if (supervisorUnlockPending || supervisorLockNeeded) toggleSupervisorControls();
         }
 
         async function fetchStatus() {
@@ -682,6 +776,8 @@
             try {
                 const response = await fetch("/status", { cache: "no-store" });
                 const data = await response.json();
+                const observedBoot = data.health?.supervisor_boot_nonce;
+                supervisorBootNonce = typeof observedBoot === "string" && /^[a-f0-9]{32}$/.test(observedBoot) ? observedBoot : null;
                 const msg = statusMessageFromState(
                     data.state,
                     data.message,
@@ -803,7 +899,11 @@
             event.preventDefault();
             unlockSupervisorControls();
         });
-        supervisorCancel.addEventListener("click", () => supervisorDialog.close());
+        supervisorCancel.addEventListener("click", cancelSupervisorUnlock);
+        supervisorDialog.addEventListener("cancel", (event) => {
+            event.preventDefault();
+            cancelSupervisorUnlock();
+        });
         supervisorDialog.addEventListener("close", () => supervisorUnlock.focus());
 
         document.addEventListener("keydown", (event) => {
