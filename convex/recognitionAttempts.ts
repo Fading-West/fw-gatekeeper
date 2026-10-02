@@ -299,7 +299,7 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
     reviewedAt?: string;
   }>;
 }) {
-    const seenLegacyKeys = new Set<string>();
+    const seenLegacyEvidence = new Map<string, ReturnType<typeof normalizeAttempt>[]>();
     const insertedIds = [];
     let skipped = 0;
     const now = new Date().toISOString();
@@ -344,11 +344,20 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
       } else {
         // Preserve the previous behavior for unkeyed legacy clients.
         const key = `${normalized.kioskId}:${normalized.timestamp}:${normalized.candidateWorkerId || ""}:${normalized.decision}`;
-        if (seenLegacyKeys.has(key)) {
+        if (seenLegacyEvidence.get(key)?.some(row => sameEvidence(row, normalized))) {
           skipped++;
           continue;
         }
-        seenLegacyKeys.add(key);
+        seenLegacyEvidence.set(key, [...seenLegacyEvidence.get(key) ?? [], normalized]);
+        const prior = await ctx.db.query("recognitionAttempts")
+          .withIndex("by_kiosk_timestamp_candidate_decision", q => q.eq("kioskId", normalized.kioskId).eq("timestamp", normalized.timestamp).eq("candidateWorkerId", normalized.candidateWorkerId).eq("decision", normalized.decision))
+          .filter(q => q.and(q.eq(q.field("sourceAttemptId"), undefined),
+            ...evidenceFields.map(field => q.eq(q.field(field), normalized[field]))))
+          .first();
+        if (prior && sameEvidence(prior, normalized)) {
+          skipped++;
+          continue;
+        }
       }
 
       const id = await ctx.db.insert("recognitionAttempts", {
