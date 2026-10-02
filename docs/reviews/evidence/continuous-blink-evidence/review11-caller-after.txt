@@ -1,0 +1,11 @@
+test_actual_enrollment_capture_failure_resets_closed_eye_sequence (__main__.BlinkIntegrationQA.test_actual_enrollment_capture_failure_resets_closed_eye_sequence) ... ok
+test_actual_enrollment_face_dropout_resets_closed_eye_sequence (__main__.BlinkIntegrationQA.test_actual_enrollment_face_dropout_resets_closed_eye_sequence) ... ok
+test_consecutive_valid_identity_bound_blink_completes (__main__.BlinkIntegrationQA.test_consecutive_valid_identity_bound_blink_completes) ... ok
+test_dropouts_and_invalid_rectangles_cannot_complete_blink (__main__.BlinkIntegrationQA.test_dropouts_and_invalid_rectangles_cannot_complete_blink) ... ok
+test_nonfinite_or_degenerate_landmarks_cannot_complete_blink (__main__.BlinkIntegrationQA.test_nonfinite_or_degenerate_landmarks_cannot_complete_blink) ... ok
+test_one_degenerate_eye_cannot_supply_closed_eye_evidence (__main__.BlinkIntegrationQA.test_one_degenerate_eye_cannot_supply_closed_eye_evidence) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.015s
+
+OK

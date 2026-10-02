@@ -136,7 +136,8 @@ class LivenessChecker:
         left_ear = _eye_aspect_ratio(left_eye)
         right_ear = _eye_aspect_ratio(right_eye)
         self._current_ear = (left_ear + right_ear) / 2.0
-        if not math.isfinite(self._current_ear) or self._current_ear <= 0:
+        if (not math.isfinite(left_ear) or not math.isfinite(right_ear)
+                or left_ear <= 0 or right_ear <= 0):
             self.reset()
             return False
 

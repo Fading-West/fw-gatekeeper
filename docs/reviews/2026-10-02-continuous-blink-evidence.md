@@ -27,3 +27,7 @@ NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud NEXT_TELEMETRY_DISABLED=1 np
 Physical acceptance procedure: On a physical kiosk, test blink/no-blink and interrupt face/landmark tracking between closed/open phases. Reacquisition must require a fresh uninterrupted blink.
 
 Evidence: Automated regression failures before the change and passing checks after it are retained in the task evidence. Final PR descriptions identify the exact published head and its executed checks. No deployment, merge, or physical acceptance is implied.
+
+## Integration review revision
+
+Both kiosk and standalone enrollment call the liveness policy when no face is detected; camera read failure resets enrollment liveness. Each eye measurement must independently be finite and positive before blink progress advances. Tests execute production caller AST paths for a closed-eye, absent-face, open-eye sequence and verify recovery requires fresh valid continuity. Physical blink/model accuracy remains unverified.
