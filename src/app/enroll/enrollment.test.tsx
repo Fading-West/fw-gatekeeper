@@ -102,3 +102,22 @@ describe('enrollment lifecycle', () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 });
+
+it('retains the checkbox acknowledgement time through capture and submission', async () => {
+  await readyCamera();
+  const acknowledgedAt = new Date().toISOString();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  await click('Start Capture');
+  await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+  const call = fetchMock.mock.calls.find(([url]) => url === '/api/enroll')!;
+  expect(JSON.parse(call[1].body)).toMatchObject({ consent: true, consentAt: acknowledgedAt });
+});
+it('requires a new acknowledgement after consent has expired before capture', async () => {
+  await readyCamera();
+  await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000 + 1); });
+  await click('Start Capture');
+  await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+  expect(fetchMock.mock.calls.filter(([url]) => url === '/api/enroll')).toHaveLength(0);
+  expect(stop).toHaveBeenCalled();
+  expect(label(tree.toJSON())).toContain('Consent expired');
+});

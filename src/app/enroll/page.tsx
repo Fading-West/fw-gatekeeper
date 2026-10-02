@@ -1,5 +1,6 @@
 'use client';
 
+import { isRecentBiometricConsent } from "@/lib/biometric-consent";
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -69,6 +70,7 @@ function EnrollPageContent() {
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const [consentAt, setConsentAt] = useState<string | null>(null);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [photoIssues, setPhotoIssues] = useState<string[]>([]);
@@ -119,6 +121,7 @@ function EnrollPageContent() {
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
     setConsentConfirmed(false);
+    setConsentAt(null);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
     setDepartment(employee.department);
@@ -130,6 +133,7 @@ function EnrollPageContent() {
 
   const handleNameChange = (value: string) => {
     setConsentConfirmed(false);
+    setConsentAt(null);
     if (selectedEmployee && value !== selectedEmployee.name) {
       if (employeeId === selectedEmployee.employeeId) setEmployeeId('');
       if (department === selectedEmployee.department) setDepartment('');
@@ -182,6 +186,7 @@ function EnrollPageContent() {
 
   useEffect(() => {
     setConsentConfirmed(false);
+    setConsentAt(null);
     if (!workerId) return;
     let cancelled = false;
     async function loadWorker() {
@@ -206,6 +211,7 @@ function EnrollPageContent() {
   const startCamera = async () => {
     if (!canEnroll || cameraOpeningRef.current) return;
     setConsentConfirmed(false);
+    setConsentAt(null);
     cameraOpeningRef.current = true;
     setCameraOpening(true);
     setCameraReady(false);
@@ -256,7 +262,7 @@ function EnrollPageContent() {
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
-      if (!consentConfirmed) throw new Error('Confirm biometric consent for this worker before enrolling.');
+      if (!consentConfirmed || !isRecentBiometricConsent(consentAt)) throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
       const res = await fetch('/api/enroll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -267,6 +273,7 @@ function EnrollPageContent() {
           workerId: workerIdRef.current,
           photos: capturedPhotos,
           consent: consentConfirmed,
+          consentAt,
         }),
       });
 
@@ -300,6 +307,12 @@ function EnrollPageContent() {
 
   const startCapturing = useCallback(() => {
     if (!consentConfirmed) return;
+    if (!isRecentBiometricConsent(consentAt)) {
+      stopCamera();
+      setErrorMsg('Consent expired. Confirm biometric consent again before enrolling.');
+      setStep('error');
+      return;
+    }
     if (!cameraReady || captureTimerRef.current) return;
     setStep('capturing');
     setCaptureCount(0);
@@ -337,7 +350,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [cameraReady, captureFrame, consentConfirmed, stopCamera]);
+  }, [cameraReady, captureFrame, consentConfirmed, consentAt, stopCamera]);
 
   const enrollNext = () => {
     stopCamera();
@@ -354,6 +367,7 @@ function EnrollPageContent() {
     setErrorMsg('');
     setResultMsg('');
     setConsentConfirmed(false);
+    setConsentAt(null);
     setPhotoIssues([]);
     setCompletionSummary(null);
     setStatusFilter('remaining');
@@ -659,7 +673,7 @@ function EnrollPageContent() {
               id="biometric-consent"
               type="checkbox"
               checked={consentConfirmed}
-              onChange={(event) => setConsentConfirmed(event.target.checked)}
+              onChange={(event) => { setConsentConfirmed(event.target.checked); setConsentAt(event.target.checked ? new Date().toISOString() : null); }}
               className="mt-1 h-4 w-4 shrink-0 accent-gold"
               required
             />
