@@ -5,7 +5,7 @@ import { Schedule } from '@/lib/types';
 import { useToast } from '@/components/Toast';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useScheduleActor } from '@/hooks/useScheduleActor';
-import { scheduleRequestId, acknowledgeScheduleRequest } from '@/lib/schedule-request';
+import { prepareScheduleRequest, observeScheduleCompletion, acknowledgeScheduleRequest } from '@/lib/schedule-request';
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from '../../../convex/scheduleTimes';
 import { parseScheduleDays, SCHEDULE_DAYS_ERROR } from '../../../convex/scheduleValidation';
@@ -137,14 +137,21 @@ export default function SchedulesPage() {
         if (!ownsFlight()) return;
         toast(`Schedule "${name}" updated`);
       } else {
-        const requestId = scheduleRequestId(actorId, body);
-        const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
-        const responseBody = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
-        if (typeof responseBody.id !== 'string' || !responseBody.id) throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
-        if (!acknowledgeScheduleRequest(actorId, body, requestId)) throw new Error('The saved receipt no longer matches this response. Keep the current creation intent for recovery.');
-        if (!ownsFlight()) return;
-        toast(`Schedule "${name}" created`);
+        const receipt = prepareScheduleRequest(actorId, body);
+        if (receipt.savedId) {
+          observeScheduleCompletion(actorId, body, receipt.requestId);
+          toast(`Schedule "${name}" was already saved. The original save is confirmed; use New Schedule to intentionally create another.`);
+        } else {
+          const requestId = receipt.requestId;
+          const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
+          const responseBody = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
+          if (typeof responseBody.id !== 'string' || !responseBody.id) throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
+          if (!acknowledgeScheduleRequest(actorId, body, requestId, responseBody.id)) throw new Error('The saved receipt no longer matches this response. Keep the current creation intent for recovery.');
+          if (!ownsFlight()) return;
+          observeScheduleCompletion(actorId, body, requestId);
+          toast(`Schedule "${name}" created`);
+        }
       }
 
       if (submittedGeneration === formGeneration.current) resetForm();
