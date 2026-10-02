@@ -84,6 +84,7 @@ function EnrollPageContent() {
   const identityRevisionRef = useRef<string | undefined>(undefined);
   const identityTargetRef = useRef('');
   const [identityReady, setIdentityReady] = useState(false);
+  const [identityRefresh, setIdentityRefresh] = useState(0);
   const enrollmentWorkerId = selectedEmployee?.workerId || workerId;
   const [suggestions, setSuggestions] = useState<EmployeeDirectoryEnrollmentEntry[]>([]);
   nameRef.current = name;
@@ -213,7 +214,7 @@ function EnrollPageContent() {
     }
     loadWorker();
     return () => { cancelled = true; };
-  }, [enrollmentWorkerId, canEnroll]);
+  }, [enrollmentWorkerId, canEnroll, identityRefresh]);
 
   const startCamera = async () => {
     if (!canEnroll || cameraOpeningRef.current || (workerIdRef.current && (!identityRevisionRef.current || identityTargetRef.current !== workerIdRef.current))) return;
@@ -847,6 +848,13 @@ function EnrollPageContent() {
         <div className="space-y-3">
           <button
             onClick={() => {
+              // A 409 may have retired the captured identity. Re-read current
+              // metadata and revision before any existing-worker retry can capture.
+              if (workerIdRef.current) {
+                identityRevisionRef.current = undefined;
+                setIdentityReady(false);
+                setIdentityRefresh(generation => generation + 1);
+              }
               setPhotos([]);
               setCaptureCount(0);
               setErrorMsg('');
