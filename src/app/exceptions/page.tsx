@@ -44,6 +44,7 @@ type CorrectionDraft = {
   suggestedCorrectedTime: string;
   originalAttendanceId: string | null;
   sourceExceptionKey: string;
+  sourceFingerprint: string;
   sourceHref: string | null;
   reason: string;
   reasonWasSuggested: boolean;
@@ -304,6 +305,7 @@ function ExceptionsPageContent() {
       suggestedCorrectedTime: resolution.corrected_time || '',
       originalAttendanceId: resolution.original_attendance_id,
       sourceExceptionKey: resolution.source_exception_key,
+      sourceFingerprint: exception.source_fingerprint,
       sourceHref: resolution.source_href,
       reason: existingReason || resolution.reason,
       reasonWasSuggested: !existingReason,
@@ -413,6 +415,7 @@ function ExceptionsPageContent() {
       corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
       original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
       related_exception_key: correctionDraft.sourceExceptionKey,
+      source_fingerprint: correctionDraft.sourceFingerprint,
       reason: correctionDraft.reason.trim(),
       supervisor_name: correctionDraft.supervisorName.trim(),
     };

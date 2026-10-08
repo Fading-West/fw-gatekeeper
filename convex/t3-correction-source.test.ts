@@ -19,7 +19,8 @@ async function setup() {
     return { userId, workerId };
   });
   const actor = t.withIdentity({ subject: ids.userId });
-  const request = { requestId: 'synthetic-missing-out', date, workerId: ids.workerId, action: 'add_clock_out' as const,
+  const source = (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.type === "missing_clock_out")!;
+  const request = { sourceFingerprint: source.source_fingerprint, requestId: 'synthetic-missing-out', date, workerId: ids.workerId, action: 'add_clock_out' as const,
     correctedTimestamp: `${date}T18:00:00`, relatedExceptionKey: `${date}:missing_clock_out:${ids.workerId}`, reason: 'Supervisor verified departure' };
   return { t, actor, request, ...ids };
 }

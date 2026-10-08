@@ -114,6 +114,7 @@ export const create = mutation({
     correctedTimestamp: v.optional(v.string()),
     originalAttendanceId: v.optional(v.id("attendance")),
     relatedExceptionKey: v.optional(v.string()),
+    sourceFingerprint: v.optional(v.string()),
     reason: v.string(),
     supervisorName: v.optional(v.string()),
   },
@@ -138,6 +139,7 @@ export const create = mutation({
       correctedTimestamp: args.action === "void_event" ? undefined : correctedTimestamp,
       originalAttendanceId: args.originalAttendanceId,
       relatedExceptionKey: normalizeText(args.relatedExceptionKey),
+      sourceFingerprint: args.sourceFingerprint,
       reason,
       supervisorName: normalizeText(args.supervisorName),
     };
@@ -162,7 +164,7 @@ export const create = mutation({
     if (evidence.relatedExceptionKey) {
       const source = (await buildShiftExceptions(ctx, args.date))
         .find(exception => exception.key === evidence.relatedExceptionKey);
-      if (!source || source.date !== args.date || source.worker_id !== args.workerId ||
+      if (!source || source.source_fingerprint !== args.sourceFingerprint || source.date !== args.date || source.worker_id !== args.workerId ||
           !source.suggested_resolution.can_apply || source.suggested_resolution.action !== args.action ||
           (args.action === "void_event" && source.attendance_id !== args.originalAttendanceId)) {
         throw new ConvexError({ code: "CORRECTION_SOURCE_CONFLICT", message: "The source exception changed or is no longer correctable. Review the current exceptions before creating a new correction." });

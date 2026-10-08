@@ -71,6 +71,7 @@ export async function POST(req: NextRequest) {
     const correctedTimestamp = optionalString(body.corrected_timestamp) || optionalString(body.correctedTimestamp);
     const originalAttendanceId = optionalString(body.original_attendance_id) || optionalString(body.originalAttendanceId);
     const relatedExceptionKey = optionalString(body.related_exception_key) || optionalString(body.relatedExceptionKey);
+    const sourceFingerprint = optionalString(body.source_fingerprint) || optionalString(body.sourceFingerprint);
     const reason = optionalString(body.reason);
     const supervisorName = optionalString(body.supervisor_name) || optionalString(body.supervisorName);
 
@@ -98,6 +99,7 @@ export async function POST(req: NextRequest) {
       correctedTimestamp,
       originalAttendanceId,
       relatedExceptionKey,
+      sourceFingerprint,
       reason,
       supervisorName,
     });
