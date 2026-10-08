@@ -10,12 +10,12 @@ import { findEmployeeDirectoryById } from "../src/lib/employee-directory";
 
 // The kiosk matches exclusively 512-dim MobileFaceNet embeddings; legacy
 // 128-dim dlib encodings are invalid and require re-enrollment.
-const SUPPORTED_ENCODING_LENGTHS = new Set([512]);
+import { isSupportedEncoding } from "../src/lib/encoding";
 
 function isSupportedFaceEncoding(encoding?: number[]) {
   return (
     encoding === undefined ||
-    (SUPPORTED_ENCODING_LENGTHS.has(encoding.length) && encoding.every((value) => Number.isFinite(value)))
+    isSupportedEncoding(encoding)
   );
 }
 
@@ -175,7 +175,7 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       throw new Error("Worker name is required");
     }
     if (!isSupportedFaceEncoding(args.faceEncoding)) {
-      throw new Error("faceEncoding must contain 512 finite values");
+      throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
     assertBiometricConsent(args.consentAt);
     assertPhotoLimit(args.photoStorageIds);
@@ -335,7 +335,7 @@ export const update = mutation({
     await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId, worker.photoStorageIds);
     const updates: Record<string, unknown> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
-      throw new Error("faceEncoding must contain 512 finite values");
+      throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
     const identities = fields.name !== undefined || fields.employeeId !== undefined
       ? await readWorkerIdentities(ctx) : undefined;

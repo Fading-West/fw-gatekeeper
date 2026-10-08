@@ -1,0 +1,6 @@
+test_attendance_history_requires_supervisor_then_relocks (__main__.LockedAttendancePrivacyTests.test_attendance_history_requires_supervisor_then_relocks) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.017s
+
+OK
