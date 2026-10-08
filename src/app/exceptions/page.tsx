@@ -263,6 +263,7 @@ function ExceptionsPageContent() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             exception_key: exception.key,
+            source_fingerprint: exception.source_fingerprint,
             date: exception.date,
             type: exception.type,
             status: nextStatus,

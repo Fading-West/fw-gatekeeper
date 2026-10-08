@@ -178,6 +178,7 @@ export default defineSchema({
 
   exceptionReviews: defineTable({
     exceptionKey: v.string(),
+    sourceFingerprint: v.optional(v.string()),
     date: v.string(),
     type: v.string(),
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),

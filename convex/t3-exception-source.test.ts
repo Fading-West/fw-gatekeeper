@@ -17,7 +17,8 @@ async function setup() {
   });
   const actor = t.withIdentity({ subject: ids.userId });
   const input = { exceptionKey: `${date}:scan_sequence:${ids.workerId}:${ids.attendanceId}`, date, type: 'scan_sequence', status: 'reviewed' as const, note: 'Evidence reviewed' };
-  return { t, actor, input, ...ids };
+  const source = (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.key === input.exceptionKey)!;
+  return { t, actor, input: { ...input, sourceFingerprint: source.source_fingerprint }, ...ids };
 }
 describe('reviews bind to current exception sources', () => {
   it('accepts repeated current-source dispositions and preserves every audit through reopen', async () => {

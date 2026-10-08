@@ -12,8 +12,10 @@ it.each([false,true])('rolls back the alternate review change when append-only a
  const uid=await t.run(async ctx=>{const uid=await ctx.db.insert('users',{email:'synthetic-admin@example.test'});await ctx.db.insert('portalMembers',{userId:uid,role:'admin',active:true,createdAt:'2026-10-01'});
   const attempt=await ctx.db.insert('recognitionAttempts',{timestamp:'2026-10-01T08:00:00',kioskId:'synthetic',faceDetected:true,decision:'near_miss',threshold:.45,reviewed:false,createdAt:'2026-10-01T08:00:00Z'});exceptionKey=`2026-10-01:recognition_review:${attempt}`;
   if(existing)await ctx.db.insert('exceptionReviews',{exceptionKey,date:'2026-10-01',type:'recognition_review',status:'reviewed',note:'Original evidence review',reviewedAt:'2026-10-01T09:00:00Z',updatedAt:'2026-10-01T09:00:00Z'});return uid;});
+ const actor=t.withIdentity({subject:uid});
+ const source=(await actor.query(api.shiftExceptions.summary,{date:'2026-10-01'})).exceptions.find(row=>row.key===exceptionKey)!;
  const before=await t.run(ctx=>ctx.db.query('exceptionReviews').collect());
- await expect(t.withIdentity({subject:uid}).mutation(api.shiftExceptions.review,{exceptionKey,date:'2026-10-01',type:'recognition_review',status:'open',note:'New review'})).rejects.toThrow('Synthetic audit persistence unavailable');
+ await expect(t.withIdentity({subject:uid}).mutation(api.shiftExceptions.review,{exceptionKey,sourceFingerprint:source.source_fingerprint,date:'2026-10-01',type:'recognition_review',status:'open',note:'New review'})).rejects.toThrow('Synthetic audit persistence unavailable');
  expect(audit.write).toHaveBeenCalledOnce();
  expect(await t.run(ctx=>ctx.db.query('exceptionReviews').collect())).toEqual(before);
  expect(await t.run(ctx=>ctx.db.query('auditLog').collect())).toHaveLength(0);

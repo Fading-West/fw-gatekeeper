@@ -11,18 +11,23 @@ let tree: ReactTestRenderer;
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 it('refreshes an obsolete review source and retains the operator note without reporting success', async () => {
   let reads = 0;
-  const source = { key: 'synthetic-source', date: '2026-09-03', type: 'scan_sequence', worker_name: 'Synthetic worker',
+  const source = { key: 'synthetic-source', source_fingerprint: 'old-source', date: '2026-09-03', type: 'scan_sequence', worker_name: 'Synthetic worker',
     title: 'Scan issue', status: 'open', severity: 'warning', review_note: '', links: {},
     suggested_resolution: { can_apply: false, action: 'review_only', label: 'Review source', reason: 'Check evidence' } };
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-    if (init?.method === 'PATCH') return { ok: false, status: 409, json: async () => ({ code: 'EXCEPTION_SOURCE_CONFLICT', error: 'Refresh current evidence' }) };
+    if (init?.method === 'PATCH') {
+      expect(JSON.parse(String(init.body)).source_fingerprint).toBe(reads === 1 ? 'old-source' : 'current-source');
+      return { ok: false, status: 409, json: async () => ({ code: 'EXCEPTION_SOURCE_CONFLICT', error: 'Refresh current evidence' }) };
+    }
     reads++;
-    return { ok: true, json: async () => ({ date: '2026-09-03', summary: {}, exceptions: [source] }) };
+    return { ok: true, json: async () => ({ date: '2026-09-03', summary: {}, exceptions: [{ ...source, source_fingerprint: reads === 1 ? 'old-source' : 'current-source' }] }) };
   }));
   await act(async () => { tree = create(<ExceptionsPage />); });
   await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Operator draft retained' } }));
   await act(async () => tree.root.findAllByType('button').find(node => label(node) === 'Reviewed')!.props.onClick());
   expect(reads).toBe(2);
+  await act(async () => tree.root.findAllByType('button').find(node => label(node) === 'Reviewed')!.props.onClick());
+  expect(reads).toBe(3);
   expect(tree.root.findByType('textarea').props.value).toBe('Operator draft retained');
   expect(toast).toHaveBeenCalledWith('Refresh current evidence', 'error');
   expect(toast.mock.calls.some(([text]) => String(text).includes('marked'))).toBe(false);

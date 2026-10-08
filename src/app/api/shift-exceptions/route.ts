@@ -126,6 +126,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const exceptionKey = optionalString(body.exception_key) || optionalString(body.exceptionKey);
+    const sourceFingerprint = optionalString(body.source_fingerprint) || optionalString(body.sourceFingerprint);
     const date = optionalString(body.date);
     const type = optionalString(body.type);
     const status = optionalString(body.status) || 'reviewed';
@@ -142,6 +143,7 @@ export async function PATCH(req: NextRequest) {
 
     const result = await convex.mutation((api as any).shiftExceptions.review, {
       exceptionKey,
+      sourceFingerprint,
       date,
       type,
       status,
