@@ -1,0 +1,7 @@
+# Keep roster results tied to the current selection
+
+Rank 13; engineering impact estimate: high privacy and operational reliability. Administrators switching active/inactive lists or losing admin access could receive an older response in the current view. Worker reads now use the existing request ownership hook, include role in the selection, cancel superseded requests and hide previous-selection rows immediately. The edit form also disappears when edit authority is lost.
+
+Acceptance: active and inactive response order cannot affect the current selection; downgraded viewers cannot retain an inactive response; stale failures and mutation refreshes cannot overwrite a new selection. No worker policy changes. Regression coverage: t3-selection.test.tsx plus the existing request ownership hook tests. Normal-role browser verification, exact source/tests/types/lint/build and CI remain pending serialized runtime admission. Synthetic fixtures only; no deployment or physical acceptance claimed.
+
+Follow-up source audit found no concrete defect in request ownership. Added a normal deactivation regression: change to the inactive roster while a DELETE response is held, then finish the old mutation; its captured refresh must not reload the old active selection. Existing delayed response/role downgrade tests remain. Only git diff --check was run here; component tests, types/lint/build, normal-role runtime and CI remain pending root validation.
