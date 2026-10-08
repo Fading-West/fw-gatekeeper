@@ -118,7 +118,7 @@ function normalizeAttempt(attempt: {
   reviewedNote?: string;
   reviewedAt?: string;
 }) {
-  const reviewed = attempt.reviewed ?? false;
+  const reviewed = false; // Kiosks supply evidence; only portal operators may review it.
   return {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),
     kioskId: normalizeRequiredText(attempt.kioskId, "kioskId"),
@@ -139,9 +139,9 @@ function normalizeAttempt(attempt: {
     brightness: attempt.brightness,
     blur: attempt.blur,
     reviewed,
-    reviewedLabel: normalizeOptionalText(attempt.reviewedLabel),
-    reviewedNote: normalizeOptionalText(attempt.reviewedNote),
-    reviewedAt: reviewed ? normalizeOptionalText(attempt.reviewedAt) : undefined,
+    reviewedLabel: undefined,
+    reviewedNote: undefined,
+    reviewedAt: undefined,
   };
 }
 
@@ -152,7 +152,7 @@ const evidenceFields = [
   "livenessConfirmed", "modelVersion", "imageQuality", "faceQuality", "brightness", "blur",
 ] as const;
 function sameEvidence(
-  existing: Partial<ReturnType<typeof normalizeAttempt>>,
+  existing: Partial<Pick<ReturnType<typeof normalizeAttempt>, typeof evidenceFields[number]>>,
   incoming: ReturnType<typeof normalizeAttempt>,
 ) {
   return evidenceFields.every(field => existing[field] === incoming[field]);
