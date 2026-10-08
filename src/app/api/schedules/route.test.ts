@@ -27,7 +27,8 @@ async function setup(role: 'admin' | 'viewer' | 'enrollment' = 'admin') {
   // as an explicit department clear before the real mutation runs.
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+    // POST and PATCH use generated references, not HTTP client future references.
+    return actor.mutation(ref as typeof api.schedules.create | typeof api.schedules.update, JSON.parse(JSON.stringify(args)));
   });
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/schedules', {
     method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, ...fields }),
