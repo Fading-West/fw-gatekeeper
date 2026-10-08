@@ -210,12 +210,12 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
         enrolledAt: now,
         updatedAt: now,
         active: true,
-        consentAt: now,
+        consentAt: args.consentAt,
         consentRecordedBy: actorUserId,
         // A fresh enrollment supersedes any earlier purge marker.
         biometricsPurgedAt: undefined,
       });
-      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: now }) });
+      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: args.consentAt }) });
       return { id: existing._id, name, employeeId, department };
     }
 
@@ -228,10 +228,10 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       enrolledAt: now,
       updatedAt: now,
       active: true,
-      consentAt: now,
+      consentAt: args.consentAt,
       consentRecordedBy: actorUserId,
     });
-    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: now }) });
+    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: args.consentAt }) });
     await ctx.db.insert("peopleAlertEvents", {
       kind: "worker",
       targetId: id,
@@ -364,7 +364,7 @@ export const update = mutation({
     if (fields.photoStorageIds !== undefined) updates.photoStorageIds = fields.photoStorageIds;
     if (fields.faceEncoding !== undefined) updates.enrolledAt = new Date().toISOString();
     if (writesBiometrics) {
-      updates.consentAt = new Date().toISOString();
+      updates.consentAt = fields.consentAt;
       updates.consentRecordedBy = member.userId;
       // An updated template supersedes its old enrollment photographs too.
       await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, fields.photoStorageIds);
