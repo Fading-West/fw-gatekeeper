@@ -1,5 +1,6 @@
 """Synthetic asynchronous model recovery and real startup ordering coverage."""
 import ast
+from datetime import datetime, timedelta
 import logging
 import threading
 import types
@@ -11,6 +12,40 @@ from model_recovery import ModelRecovery
 
 
 class ModelRecoveryTests(unittest.TestCase):
+    def test_initialization_loop_preserves_manual_confirmation_then_restores_fault(self):
+        source = ast.parse(Path(__file__).with_name('app.py').read_text())
+        helpers = [node for node in source.body if isinstance(node, ast.FunctionDef)
+                   and node.name in {'update_status', 'update_status_unless_confirming'}]
+        now = [datetime(2026, 10, 8, 12, 0, 0)]
+        class Clock(datetime):
+            @classmethod
+            def now(cls):
+                return now[0]
+        status = {'state': 'CLOCKED_IN', 'message': 'Attendance recorded', 'timestamp': now[0].isoformat()}
+        namespace = {'_status': status, '_status_lock': threading.Lock(), 'datetime': Clock,
+                     'config': types.SimpleNamespace(DISPLAY_TIME_SUCCESS_SEC=3)}
+        exec(compile(ast.Module(body=helpers, type_ignores=[]), 'production-confirmation', 'exec'), namespace)
+        tree = ast.parse(Path(__file__).with_name('main.py').read_text())
+        run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+        waiting = next(node for node in ast.walk(run) if isinstance(node, ast.If)
+                       and ast.unparse(node.test) == 'not model_recovery.ready'
+                       and any(isinstance(child, ast.Expr) and isinstance(child.value, ast.Call)
+                               and ast.unparse(child.value.func) == 'web_app.update_health' for child in node.body))
+        web = types.SimpleNamespace(update_health=mock.Mock(), update_status=namespace['update_status'],
+            update_status_unless_confirming=namespace['update_status_unless_confirming'])
+        context = {'model_recovery': types.SimpleNamespace(ready=False), 'web_app': web,
+                   'pending_clock': [None], 'current_result': [None],
+                   'recognizer': types.SimpleNamespace(known_count=1), 'time': mock.Mock()}
+        wrapper = ast.Module(body=[ast.For(target=ast.Name(id='_once', ctx=ast.Store()),
+            iter=ast.List(elts=[ast.Constant(value=0)], ctx=ast.Load()), body=[waiting], orelse=[])], type_ignores=[])
+        compiled = compile(ast.fix_missing_locations(wrapper), 'production-model-wait', 'exec')
+        exec(compiled, context)
+        self.assertEqual(status['state'], 'CLOCKED_IN')
+        now[0] += timedelta(seconds=3)
+        exec(compiled, context)
+        self.assertEqual(status['state'], 'SERVICE_DEGRADED')
+        self.assertIn('Recognition unavailable', status['message'])
+
     def test_blocked_loader_does_not_block_start_and_starts_only_once(self):
         entered, release = threading.Event(), threading.Event()
         def checker():

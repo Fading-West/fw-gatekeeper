@@ -93,6 +93,19 @@ def replace_status_if(expected_state, expected_message, **kwargs):
         return True
 
 
+def update_status_unless_confirming(**kwargs):
+    """Keep a manual attendance confirmation visible while models initialize."""
+    with _status_lock:
+        now = datetime.now()
+        if _status.get("state") == "CLOCKED_IN" and _status.get("timestamp"):
+            age = (now - datetime.fromisoformat(_status["timestamp"])).total_seconds()
+            if 0 <= age < config.DISPLAY_TIME_SUCCESS_SEC:
+                return False
+        _status.update(kwargs)
+        _status["timestamp"] = now.isoformat(timespec="seconds")
+        return True
+
+
 def update_health(**kwargs):
     """Update kiosk health fields (camera/model/sync/queue state)."""
     with _health_lock:

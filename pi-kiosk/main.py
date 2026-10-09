@@ -576,7 +576,7 @@ def run(args):
                 box_loc = None
                 box_label = None
                 web_app.update_health(model_ok=False, degraded_reason="model_error")
-                web_app.update_status(
+                web_app.update_status_unless_confirming(
                     state="SERVICE_DEGRADED",
                     message="Recognition unavailable - please ask your supervisor",
                     worker_name=None, worker_id=None, face_detected=False,
