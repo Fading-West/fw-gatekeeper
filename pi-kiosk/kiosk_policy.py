@@ -4,7 +4,7 @@ No coercion or silent fallback: local Python overrides must use the documented
 types. Errors identify setting names only, never configured credentials.
 """
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 import sys
 from typing import Any
@@ -59,7 +59,7 @@ def validate_kiosk_policy(settings: Any) -> KioskPolicy:
     positive_integer("RECOGNITION_UNKNOWN_STREAK")
     number("LIVENESS_EAR_THRESHOLD", maximum=1, positive=True)
     positive_integer("LIVENESS_BLINK_FRAMES")
-    number("LIVENESS_TIMEOUT_SEC", positive=True)
+    positive_integer("LIVENESS_TIMEOUT_SEC")
     number("LIVENESS_WAIT_SEC", positive=True)
     number("CLOCK_DEBOUNCE_MINUTES")
     if "CLOCK_DEBOUNCE_MINUTES" not in recognition_errors:
@@ -67,9 +67,9 @@ def validate_kiosk_policy(settings: Any) -> KioskPolicy:
         # than inventing an operational maximum for a site's policy.
         try:
             # SQLite's recent-attendance query subtracts this duration from
-            # the current local datetime; timedelta alone has a wider domain.
-            datetime.now() - timedelta(minutes=settings.CLOCK_DEBOUNCE_MINUTES)
-        except (OverflowError, ValueError):
+            # the current UTC datetime; timedelta alone has a wider domain.
+            (datetime.now(timezone.utc) - timedelta(minutes=settings.CLOCK_DEBOUNCE_MINUTES)).timestamp()
+        except (OverflowError, ValueError, OSError):
             recognition_errors.append("CLOCK_DEBOUNCE_MINUTES")
     number("DISPLAY_TIME_SEC")
     number("DISPLAY_TIME_SUCCESS_SEC")

@@ -1,6 +1,6 @@
 """Synthetic policy domains and fail-closed workflow regressions; no models."""
 import ast
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import types
@@ -38,7 +38,7 @@ class KioskPolicyTests(unittest.TestCase):
             "LIVENESS_REQUIRED": ["false", 0, None],
             "LIVENESS_EAR_THRESHOLD": [0, -1, float("inf")],
             "LIVENESS_BLINK_FRAMES": [0, True, 2.5],
-            "LIVENESS_TIMEOUT_SEC": [0, float("nan")],
+            "LIVENESS_TIMEOUT_SEC": [0, float("nan"), 0.5, 1.9, True],
             "LIVENESS_WAIT_SEC": [-1, "8"],
             "CLOCK_DEBOUNCE_MINUTES": [-1, float("inf"), 1e20, 5e11],
             "DISPLAY_TIME_SEC": [-1, "5"],
@@ -62,6 +62,19 @@ class KioskPolicyTests(unittest.TestCase):
         large_representable = (datetime.now() - datetime.min).total_seconds() / 60 - 60
         self.assertTrue(validate_kiosk_policy(
             self.settings(CLOCK_DEBOUNCE_MINUTES=large_representable)).valid)
+
+    def test_debounce_uses_the_consumers_utc_datetime(self):
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return cls(2026, 10, 8, 12)
+                return cls(2026, 10, 8, 6, tzinfo=tz)
+        # Representable in local wall time but underflows the UTC query.
+        minutes = (Clock.now() - datetime.min).total_seconds() / 60 - 60
+        with mock.patch("kiosk_policy.datetime", Clock):
+            self.assertIn("CLOCK_DEBOUNCE_MINUTES", validate_kiosk_policy(
+                self.settings(CLOCK_DEBOUNCE_MINUTES=minutes)).recognition_errors)
 
     def test_invalid_startup_keeps_ui_and_sync_before_native_model_work(self):
         source = ast.parse(Path(__file__).with_name("main.py").read_text())
