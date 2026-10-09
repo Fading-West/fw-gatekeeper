@@ -2,7 +2,7 @@
 # Production installs use requirements.lock, including transitive versions and hashes.
 # Regenerate with scripts/lock-python-dependencies.sh from the repository root.
 # Keep numpy aligned with the kiosk; the OS/base image is maintained separately.
-fastapi==0.141.1
+fastapi==0.142.1
 uvicorn[standard]==0.54.0
 pydantic==2.13.5
 numpy==1.26.4
