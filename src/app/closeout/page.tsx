@@ -276,7 +276,7 @@ function ShiftCloseoutPageContent() {
           }),
         });
         const body = await res.json().catch(() => ({}));
-        if (res.status === 409 && body.code === 'CLOSEOUT_BLOCKERS_CHANGED') {
+        if (res.status === 409 && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED'].includes(body.code)) {
           conflictDraftRef.current = { date, notes, supervisorName };
           setAcknowledgedBlockers(false);
           await fetchCloseout();

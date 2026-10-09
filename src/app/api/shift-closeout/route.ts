@@ -139,7 +139,7 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
-    if (error instanceof ConvexError && error.data?.code === 'CLOSEOUT_BLOCKERS_CHANGED') {
+    if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED'].includes(error.data?.code)) {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
     }
     console.error('Shift closeout PATCH error:', error);

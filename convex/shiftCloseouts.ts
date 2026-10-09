@@ -334,14 +334,14 @@ async function buildCloseoutPayload(ctx: any, date: string) {
         record?.health?.modelOk ?? null, record?.health?.livenessAvailable ?? null,
         record?.health?.degradedReason ?? null];
     }));
-  const blockerEvidence = JSON.stringify({ version: 3, date,
+  const blockerEvidence = JSON.stringify({ version: 4, date,
     // Composed schedule coverage remains a blocker after its exception is reviewed.
-    coverage: "coverage_evidence" in briefing ? briefing.coverage_evidence : [],
+    coverage: briefing.coverage_evidence,
     exceptions: openExceptions.filter((exception: any) => exception.severity === "critical" ||
       exception.type === "missing_clock_out" || exception.type === "recognition_review")
       .map((exception: any) => [exception.key, exception.type, exception.severity, exception.first_seen,
         exception.last_seen, exception.event_count, exception.scheduled_start, exception.scheduled_end,
-        exception.kiosk_id, exception.source_event_ids || []])
+        exception.kiosk_id, exception.source_event_ids || [], exception.source_evidence || null])
       .sort((a: any[], b: any[]) => String(a[0]).localeCompare(String(b[0]))),
     kiosks: kioskEvidence.sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   });
@@ -498,11 +498,12 @@ export const save = mutation({
     }
 
     if (hasSourceBlockers && acknowledgedBlockers && !nextNotes) {
-      throw new Error("Closeout has blockers. Add an acknowledgement note before acknowledging blockers.");
+      throw new ConvexError({ code: "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED", message: "Closeout has blockers. Add an acknowledgement note before acknowledging blockers." });
     }
 
     if (args.action === "complete" && hasSourceBlockers && (!acknowledgedBlockers || !nextNotes)) {
-      throw new Error("Closeout has blockers. Add an acknowledgement note before completing.");
+      throw new ConvexError({ code: args.blockerEvidence !== current.blocker_evidence ? "CLOSEOUT_BLOCKERS_CHANGED" : "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED",
+        message: "Closeout has blockers. Refresh the evidence and add an acknowledgement note before completing." });
     }
 
     const status: CloseoutStatus =
