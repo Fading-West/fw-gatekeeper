@@ -21,6 +21,7 @@ import config
 import database
 from embeddings import embed_face, model_ready as recognition_model_ready
 from matching import FreshFaceMatcher
+from model_recovery import ModelRecovery
 from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
@@ -212,11 +213,10 @@ def run(args):
     os.makedirs(config.MODEL_DIR, exist_ok=True)
     database.init_db()
 
-    # Download and load the MobileFaceNet model, but continue booting if it
-    # is unavailable (offline or corrupt) - health reports it truthfully.
-    model_ready = recognition_model_ready()
-    if not model_ready:
-        logger.warning("Recognition model unavailable at startup; kiosk will keep retrying in the background.")
+    # Start local supervisor controls before any potentially slow model download.
+    # A single background worker retries initialization; detection does not race it.
+    model_ready = False
+    model_recovery = ModelRecovery(recognition_model_ready)
 
     logger.info("Starting web UI on port %d...", config.KIOSK_PORT)
     web_app.start_server()
@@ -272,6 +272,8 @@ def run(args):
         if config.LIVENESS_REQUIRED and liveness is None:
             return "liveness_required_unavailable"
         return None
+
+    model_recovery.start()
 
     sync_worker = (
         SyncWorker(
@@ -332,6 +334,10 @@ def run(args):
                 continue
 
             bgr_frame, rgb_frame, frame_ts = frames
+            if not model_recovery.ready:
+                embedding_history.clear()
+                current_result[0] = None
+                continue
 
             try:
                 # Use dlib for face DETECTION (finding where the face is)
@@ -511,10 +517,23 @@ def run(args):
 
     camera_healthy = True
     model_healthy = model_ready
+    initial_model_loaded = False
     # roster-derived degraded_reason currently reported
     roster_fault = startup_degraded if startup_degraded in ("no_workers_synced", "encoding_mismatch") else None
     try:
         while True:
+            if model_recovery.ready and not initial_model_loaded:
+                initial_model_loaded = True
+                model_healthy = True
+                web_app.update_health(model_ok=True, degraded_reason=base_degraded_reason())
+                # Initialization recovery must be visible even with no face in view.
+                # Other standing faults retain their own degraded state below.
+                if base_degraded_reason() is None:
+                    web_app.replace_status_if(
+                        "SERVICE_DEGRADED", "Recognition unavailable - please ask your supervisor",
+                        state="IDLE", message="Step toward camera",
+                        worker_name=None, worker_id=None, face_detected=False,
+                    )
             active_liveness = recognizer.liveness_checker
             if active_liveness is not liveness:
                 liveness = active_liveness
@@ -550,6 +569,21 @@ def run(args):
             with detect_lock:
                 if pending_frame[0] is None:
                     pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now)
+
+            if not model_recovery.ready:
+                pending_clock[0] = None
+                current_result[0] = None
+                box_loc = None
+                box_label = None
+                web_app.update_health(model_ok=False, degraded_reason="model_error")
+                web_app.update_status_unless_confirming(
+                    state="SERVICE_DEGRADED",
+                    message="Recognition unavailable - please ask your supervisor",
+                    worker_name=None, worker_id=None, face_detected=False,
+                    known_workers=recognizer.known_count,
+                )
+                time.sleep(0.05)
+                continue
 
             if config.LIVENESS_REQUIRED and liveness is None:
                 # Roster sync may have recovered since startup while this
@@ -851,6 +885,7 @@ def run(args):
         logger.info("Shutting down...")
     finally:
         camera.stop()
+        model_recovery.stop()
         if sync_worker:
             sync_worker.stop()
 
