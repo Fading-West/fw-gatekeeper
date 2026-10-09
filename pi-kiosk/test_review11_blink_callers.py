@@ -5,6 +5,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 import numpy as np
+if Path(__file__).with_name('scan_freshness.py').exists():
+    from scan_freshness import is_fresh_scan
+else:
+    is_fresh_scan = None
 default_root=Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name=='pi-kiosk' else Path(__file__).resolve().parents[1]/'worktrees/11-continuous-blink-evidence'
 root=Path(os.environ.get('GK_CHECKOUT',default_root))
 sys.path.insert(0,str(root/'pi-kiosk'))
@@ -25,12 +29,21 @@ class BlinkIntegrationQA(fixture.BlinkTests):
         checker = self.checker()
         self.feed(checker, .1)
         self.feed(checker, .1)
-        pending = {'result': {}, 'worker_id': 1, 'server_worker_id': 'synthetic', 'blink_confirmed': False}
+        pending = {'result': {}, 'worker_id': 1, 'server_worker_id': 'synthetic', 'blink_confirmed': False,
+                   'deadline': 105.0, 'camera_generation': 0}
         context = {'locs': [], 'frame_ts': 99.0, 'embedding_history': mock.Mock(), 'current_result': [None],
                    'config': type('Settings', (), {'RECOGNITION_MATCH_THRESHOLD': .45, 'RECOGNITION_MODEL_VERSION': 'synthetic'}),
                    'pending': pending, 'pending_clock': [pending], 'liveness': checker,
                    '_log_recognition_attempt': mock.Mock(), 'web_app': mock.Mock(),
-                   'recognizer': type('Recognizer', (), {'known_count': 1}), 'GOLD': 'gold'}
+                   'recognizer': type('Recognizer', (), {'known_count': 1}), 'GOLD': 'gold',
+                   'generation': 0, 'camera_generation': [0], 'now': 100.0, 'camera_invalidated_at': [0.0]}
+        def publish_detection(result, generation):
+            context['current_result'][0] = result
+        def consume_detection():
+            result = context['current_result'][0]
+            context['current_result'][0] = None
+            return result
+        context.update(publish_detection=publish_detection, consume_detection=consume_detection, is_fresh_scan=is_fresh_scan)
         exec(compile(ast.Module(body=[factory], type_ignores=[]), 'production-factory', 'exec'), context)
         execute_branch(dropout, context)
         self.assertIsNotNone(context['current_result'][0], 'Observed absence must reach the pending caller')
