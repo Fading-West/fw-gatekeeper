@@ -458,6 +458,10 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                 database.remove_worker_by_server_id(stale_id, strict_cleanup=True)
 
         if receipt_protocol:
+            # Publication may commit the worker before retired-file cleanup
+            # succeeds. A missing file alone does not prove its deletion was
+            # flushed; finish the journal before certifying this receipt.
+            database.recover_photo_cleanup()
             unmanaged = database.count_unmanaged_local_workers()
             if unmanaged:
                 raise ValueError(f"{unmanaged} unmanaged local worker profile(s) prevent roster acknowledgement; map or remove them after review")

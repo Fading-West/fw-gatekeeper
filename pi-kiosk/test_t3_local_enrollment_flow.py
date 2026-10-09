@@ -83,6 +83,8 @@ class LocalEnrollmentFlowTests(unittest.TestCase):
         self.camera.read.side_effect = [(True, self.frame), KeyboardInterrupt()]
         self.assertEqual(self.enroll.add_worker("Synthetic Worker"), 1)
         self.assertEqual(database.get_all_workers(), [])
+        self.assertFalse(Path(config.PHOTO_DIR).exists())
+        self.assertFalse(Path(config.FACES_DIR).exists())
         self.camera.release.assert_called_once()
 
     def test_final_quality_recheck_can_refuse_publication_after_three_captures(self):
@@ -91,6 +93,8 @@ class LocalEnrollmentFlowTests(unittest.TestCase):
             self.assertEqual(self.enroll.add_worker("Synthetic Worker"), 1)
         self.assertEqual(self.embed.call_count, 3)
         self.assertEqual(database.get_all_workers(), [])
+        self.assertFalse(Path(config.PHOTO_DIR).exists())
+        self.assertFalse(Path(config.FACES_DIR).exists())
         self.camera.release.assert_called_once()
 
 

@@ -349,6 +349,40 @@ class RosterReceiptTests(unittest.TestCase):
             self.assertEqual(photo.read_bytes(), b'original photo')
             self.assertEqual(list(Path(tmp).glob('*.tmp')), [])
 
+    def test_retired_photo_directory_flush_failure_blocks_ack_until_retry(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            old = Path(tmp) / 'Alex.jpg'
+            old.write_bytes(b'original photo')
+            database.add_worker('Alex', ENCODING, server_id=SERVER_ID, photo_paths=[str(old)])
+            row = {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+                   'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid/new'}
+            response = roster([row])
+            response.content = b'new photo'
+            flush = database._fsync_directory
+
+            def fail_after_unlink(path):
+                if not old.exists():
+                    raise OSError('retired directory flush failed')
+                return flush(path)
+
+            with mock.patch.object(database, '_fsync_directory', side_effect=fail_after_unlink):
+                posted, recognizer = self.cycle(response)
+            posted.assert_not_called()
+            recognizer.reload_faces.assert_called_once()
+            self.assertFalse(old.exists())
+            self.assertEqual(database.list_unreferenced_photo_files(), [])
+            self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+            self.assertIsNone(database.get_sync_state('last_worker_sync'))
+            self.assertIsNone(database.get_sync_state('last_roster_applied_at'))
+            new_photo = Path(database.get_worker_by_name('Alex')['photo_paths'][0])
+            self.assertEqual(new_photo.read_bytes(), b'new photo')
+            self._close_db()
+            database.init_db()
+            posted, _ = self.cycle(response, post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            self.assertEqual(database._get_conn().execute('SELECT COUNT(*) FROM photo_cleanup_journal').fetchone()[0], 0)
+            self.assertEqual(database.get_sync_state('last_roster_applied_at'), '2026-09-25T12:00:00Z')
+
     def test_sqlite_update_failure_keeps_old_photo_and_reference(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
             old = Path(tmp) / 'Alex.jpg'
