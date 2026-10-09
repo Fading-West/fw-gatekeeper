@@ -1,3 +1,4 @@
+import { getKioskSyncStatus } from "../src/lib/kiosk-sync-status";
 import { validateReceiptDigests } from "./attendance";
 import { ConvexError } from "convex/values";
 import { validateAttendanceBatch, validateAttendanceEvent } from "./attendanceValidation";
@@ -86,16 +87,13 @@ const activityFeedRead = httpAction(async (ctx, request) => {
 type PublicKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
 function publicKioskStatus(lastSync: string | null, now: number): PublicKioskStatus {
-  if (!lastSync) return 'never_synced';
-  const ageMs = now - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= 15 * 60 * 1000) return 'online';
-  if (ageMs <= 60 * 60 * 1000) return 'stale';
-  return 'offline';
+  return getKioskSyncStatus(lastSync, now);
 }
 
 const publicKioskHealth = httpAction(async (ctx) => {
-  const checkedAtMs = Date.now();
   const kioskPage = await ctx.runQuery(internal.kiosks.internalHealthSnapshot, {});
+  // A sync committed during the read must not appear to be in the future.
+  const checkedAtMs = Date.now();
   const inventoryTruncated = kioskPage.length > 100;
   const kiosks = kioskPage.slice(0, 100);
   const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
