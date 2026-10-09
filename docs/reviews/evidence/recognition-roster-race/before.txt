@@ -1,0 +1,42 @@
+EEE
+======================================================================
+ERROR: test_current_template_records_once (__main__.GuardTests.test_current_template_records_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/test_oct02_recognition_roster_race.py", line 35, in test_current_template_records_once
+    self.record()
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/test_oct02_recognition_roster_race.py", line 23, in record
+    return database.log_recognized_attendance(worker_id=self.worker, server_worker_id='synthetic-server-id', expected_encoding=np.ones(512), worker_name='Synthetic worker', action='clock_in')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'database' has no attribute 'log_recognized_attendance'
+
+======================================================================
+ERROR: test_removed_worker_cannot_record_from_in_flight_result (__main__.GuardTests.test_removed_worker_cannot_record_from_in_flight_result)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/test_oct02_recognition_roster_race.py", line 26, in test_removed_worker_cannot_record_from_in_flight_result
+    database.remove_worker(self.worker)
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/database.py", line 407, in remove_worker
+    worker = get_worker_by_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/database.py", line 550, in get_worker_by_name
+    (name.strip(),),
+     ^^^^^^^^^^
+AttributeError: 'int' object has no attribute 'strip'
+
+======================================================================
+ERROR: test_replaced_template_and_server_identity_cannot_record (__main__.GuardTests.test_replaced_template_and_server_identity_cannot_record)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/test_oct02_recognition_roster_race.py", line 32, in test_replaced_template_and_server_identity_cannot_record
+    with self.assertRaisesRegex(ValueError,'enrollment changed'): self.record()
+                                                                  ^^^^^^^^^^^^^
+  File "<isolated-workspace>/worktrees/02-recognition-roster-race/pi-kiosk/test_oct02_recognition_roster_race.py", line 23, in record
+    return database.log_recognized_attendance(worker_id=self.worker, server_worker_id='synthetic-server-id', expected_encoding=np.ones(512), worker_name='Synthetic worker', action='clock_in')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'database' has no attribute 'log_recognized_attendance'
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.025s
+
+FAILED (errors=3)

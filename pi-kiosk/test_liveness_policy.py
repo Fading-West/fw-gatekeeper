@@ -73,7 +73,7 @@ class RequiredLivenessTests(unittest.TestCase):
     def test_main_write_path_uses_gate_and_displays_actionable_unavailable_state(self):
         from pathlib import Path
         source = Path(__file__).with_name('main.py').read_text()
-        self.assertIn('recognizer.liveness_policy.record(\n                database.log_attendance,', source)
+        self.assertIn('recognizer.liveness_policy.record(\n                database.log_recognized_attendance,', source)
         self.assertIn('if config.LIVENESS_REQUIRED and liveness is None:', source)
         self.assertIn('Blink verification unavailable - please ask your supervisor', source)
         self.assertIn('active_liveness = recognizer.liveness_checker', source)

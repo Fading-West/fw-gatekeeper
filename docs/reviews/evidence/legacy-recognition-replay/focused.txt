@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/09-legacy-recognition-replay
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:51:01
+   Duration  394ms (transform 67ms, setup 0ms, import 199ms, tests 36ms, environment 0ms)
