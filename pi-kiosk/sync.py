@@ -3,14 +3,11 @@
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
-import uuid
 import time
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -441,43 +438,19 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             if receipt_protocol and (encoding.ndim != 1 or encoding.size not in {128, 512} or not np.isfinite(encoding).all()):
                 raise ValueError("Worker encoding must be a 128-dim or 512-dim vector")
 
-            # Download photo if provided
-            photo_path = None
-            staged_photo = None
+            # Network work stays outside the publication lock; downloaded bytes
+            # acquire ownership only when the SQLite reference can be committed.
+            photo_bytes = []
             if photo_url:
-                photo_download = _download_photo(str(server_id), photo_url)
-                if photo_download:
-                    staged_photo, photo_path = photo_download
+                downloaded = _download_photo(str(server_id), photo_url)
+                if downloaded:
+                    photo_bytes.append(downloaded)
                 elif receipt_protocol:
                     raise ValueError(f"Worker photo download failed for {server_id}")
-
-            try:
-                retired_photos = database.replaced_worker_photo_paths(
-                    name, str(server_id), employee_id, [photo_path] if photo_path else [],
-                )
-                database.record_photo_cleanup(retired_photos, "retired")
-                if staged_photo:
-                    database.record_photo_cleanup([Path(photo_path)], "published")
-                    os.replace(staged_photo, photo_path)
-                    staged_photo = None
-                try:
-                    database.add_worker(
-                        name=name,
-                        encoding=encoding,
-                        photo_paths=[photo_path] if photo_path else [],
-                        enrolled_at=enrolled_at,
-                        server_id=str(server_id),
-                        employee_id=employee_id,
-                    )
-                except Exception:
-                    # The journal knows this file is not referenced after the
-                    # failed SQLite update, including across a process crash.
-                    database.recover_photo_cleanup()
-                    raise
-                database.recover_photo_cleanup()
-            finally:
-                if staged_photo and os.path.exists(staged_photo):
-                    os.unlink(staged_photo)
+            database.publish_synced_worker(
+                name, encoding, photo_bytes, enrolled_at=enrolled_at,
+                server_id=str(server_id), employee_id=employee_id,
+            )
             logger.info("Synced worker: %s (server_id=%s)", name, server_id)
 
         if full_roster:
@@ -485,6 +458,10 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                 database.remove_worker_by_server_id(stale_id, strict_cleanup=True)
 
         if receipt_protocol:
+            # Publication may commit the worker before retired-file cleanup
+            # succeeds. A missing file alone does not prove its deletion was
+            # flushed; finish the journal before certifying this receipt.
+            database.recover_photo_cleanup()
             unmanaged = database.count_unmanaged_local_workers()
             if unmanaged:
                 raise ValueError(f"{unmanaged} unmanaged local worker profile(s) prevent roster acknowledgement; map or remove them after review")
@@ -541,28 +518,14 @@ def acknowledge_applied_roster() -> bool:
         return False
 
 
-def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
-    """Stage a worker photo; caller publishes it after row validation."""
-    staged = None
+def _download_photo(name: str, url: str) -> Optional[bytes]:
+    """Download bytes without exposing an unreferenced file to cleanup."""
     try:
-        os.makedirs(config.PHOTO_DIR, exist_ok=True)
-        safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
-        identifier = uuid.uuid4().hex
-        path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{identifier}.jpg")
-        staged = os.path.join(config.PHOTO_DIR, f".{safe_name}-{identifier}.tmp")
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            database.record_photo_cleanup([Path(staged)], "published")
-            with open(staged, "xb") as f:
-                f.write(r.content)
-            return staged, path
-    except Exception as e:
-        if staged:
-            try:
-                os.unlink(staged)
-            except OSError:
-                logger.warning("Could not remove incomplete staged photo: %s", staged)
-        logger.warning("Failed to download photo for %s: %s", name, e)
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200 and response.content:
+            return response.content
+    except requests.RequestException as exc:
+        logger.warning("Failed to download photo for %s: %s", name, exc)
     return None
 
 
