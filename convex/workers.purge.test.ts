@@ -181,9 +181,11 @@ describe("biometric write consent and replacement", () => {
 
   it("preserves consent and photos when changing metadata only", async () => {
     const { actor, test, workerId, storageIds } = await setup("admin");
+    const originalConsentAt = await test.run(async (ctx) => (await ctx.db.get(workerId))!.consentAt);
+    expect(originalConsentAt).toEqual(expect.any(String));
     await actor.mutation(api.workers.update, { id: workerId, department: "New", consentAt: "forged" });
     await test.run(async (ctx) => {
-      expect((await ctx.db.get(workerId))!.consentAt).not.toBe("forged");
+      expect((await ctx.db.get(workerId))!.consentAt).toBe(originalConsentAt);
       for (const id of storageIds) expect(await ctx.storage.getUrl(id)).not.toBeNull();
     });
   });

@@ -23,18 +23,25 @@ export async function POST(req: NextRequest) {
   const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId, consent, consentAgeMs } = body as {
+    const { name, employeeId, department, photos, workerId, consent, consentAt: legacyConsentAt, consentAgeMs } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
       consent?: boolean;
+      consentAt?: unknown;
       consentAgeMs?: unknown;
     };
 
     // Biometric consent must be acknowledged on every enrollment and
     // re-enrollment before any photo is processed. See RETENTION.md.
+    if (consentAgeMs === undefined && (consent !== undefined || legacyConsentAt !== undefined)) {
+      return NextResponse.json(
+        { error: 'This enrollment page is out of date. Reload the page and confirm consent again.' },
+        { status: 400 },
+      );
+    }
     if (consent !== true || !isRecentBiometricConsentAge(consentAgeMs)) {
       return NextResponse.json(
         { error: BIOMETRIC_CONSENT_ERROR_MESSAGE },

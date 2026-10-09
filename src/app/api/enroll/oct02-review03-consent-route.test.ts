@@ -40,7 +40,7 @@ it.each([-60 * 60_000, 60 * 60_000])('ignores a legacy browser wall clock skewed
   expect(mocks.mutation.mock.calls.find(c => c[1].faceEncoding)?.[1].consentAt)
     .toBe(new Date(serverNow - 30_000).toISOString());
 });
-it.each([undefined, null, -1, 10 * 60_000 + 1, '30000', 'invalid', {}, true, 0.5, NaN, Infinity])(
+it.each([null, -1, 10 * 60_000 + 1, '30000', 'invalid', {}, true, 0.5, NaN, Infinity])(
   'rejects an invalid elapsed age before photo processing (%s)', async consentAgeMs => {
     const response = await POST(req(consentAgeMs));
     expect(response.status).toBe(400);
@@ -53,8 +53,28 @@ it.each([undefined, null, -1, 10 * 60_000 + 1, '30000', 'invalid', {}, true, 0.5
 it.each([NaN, Infinity, -Infinity])('rejects non-finite ages even without JSON normalization (%s)', age => {
   expect(isRecentBiometricConsentAge(age)).toBe(false);
 });
-it('rejects a legacy timestamp-only request and an unchecked acknowledgement', async () => {
-  expect((await POST(req(undefined, { consentAt: new Date(serverNow).toISOString() }))).status).toBe(400);
+it.each([
+  {},
+  { consentAt: new Date(serverNow).toISOString() },
+  { consent: undefined, consentAt: new Date(serverNow).toISOString() },
+])('tells legacy pages to reload before any photo processing (%j)', async extra => {
+  const response = await POST(req(undefined, extra));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: 'This enrollment page is out of date. Reload the page and confirm consent again.' });
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  expect(mocks.query).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
+it('rejects a request with no consent fields before any photo processing', async () => {
+  const response = await POST(req(undefined, { consent: undefined }));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE });
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
+it('rejects an unchecked acknowledgement', async () => {
   expect((await POST(req(0, { consent: false }))).status).toBe(400);
 });
 it('preserves the derived time through encoding and uploads', async () => {

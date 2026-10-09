@@ -103,9 +103,9 @@ describe('enrollment lifecycle', () => {
   });
 });
 
-it.each([-60 * 60_000, 60 * 60_000])('sends monotonic elapsed consent age despite browser wall-clock skew of %s ms', async skew => {
-  await readyCamera();
+it.each([-60 * 60_000, 60 * 60_000])('sends elapsed consent age despite static browser wall-clock skew of %s ms', async skew => {
   vi.setSystemTime(Date.now() + skew);
+  await readyCamera();
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   await click('Start Capture');
   await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
@@ -113,6 +113,45 @@ it.each([-60 * 60_000, 60 * 60_000])('sends monotonic elapsed consent age despit
   const body = JSON.parse(call[1].body);
   expect(body).toMatchObject({ consent: true, consentAgeMs: 33_500 });
   expect(body).not.toHaveProperty('consentAt');
+});
+
+it('falls back to monotonic elapsed time when the wall clock moves backward', async () => {
+  await readyCamera();
+  vi.setSystemTime(Date.now() - 60 * 60_000);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  await click('Start Capture');
+  await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+  const call = fetchMock.mock.calls.find(([url]) => url === '/api/enroll')!;
+  expect(JSON.parse(call[1].body)).toMatchObject({ consent: true, consentAgeMs: 33_500 });
+});
+
+it('includes sleep in the submitted age when the monotonic clock pauses', async () => {
+  await readyCamera();
+  // setSystemTime advances only the wall clock, simulating sleep on these platforms.
+  vi.setSystemTime(Date.now() + 60_000);
+  await click('Start Capture');
+  await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+  const call = fetchMock.mock.calls.find(([url]) => url === '/api/enroll')!;
+  expect(JSON.parse(call[1].body)).toMatchObject({ consent: true, consentAgeMs: 63_500 });
+});
+
+it('requires a new acknowledgement after sleeping beyond the consent window before capture', async () => {
+  await readyCamera();
+  vi.setSystemTime(Date.now() + 30 * 60_000);
+  await click('Start Capture');
+  await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(false);
+  expect(stop).toHaveBeenCalled();
+  expect(label(tree.toJSON())).toContain('Consent expired');
+});
+
+it('rechecks consent after sleeping during capture before submitting', async () => {
+  await readyCamera();
+  await click('Start Capture');
+  vi.setSystemTime(Date.now() + 30 * 60_000);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(false);
+  expect(label(tree.toJSON())).toContain('Consent expired');
 });
 it('requires a new acknowledgement after consent has expired before capture', async () => {
   await readyCamera();

@@ -1,6 +1,6 @@
 'use client';
 
-import { isRecentBiometricConsentAge } from "@/lib/biometric-consent";
+import { biometricConsentAgeMs, isRecentBiometricConsentAge, type BiometricConsentStart } from "@/lib/biometric-consent";
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -70,7 +70,7 @@ function EnrollPageContent() {
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
-  const [consentStartedAt, setConsentStartedAt] = useState<number | null>(null);
+  const [consentStartedAt, setConsentStartedAt] = useState<BiometricConsentStart | null>(null);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [photoIssues, setPhotoIssues] = useState<string[]>([]);
@@ -262,7 +262,7 @@ function EnrollPageContent() {
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
-      const consentAgeMs = consentStartedAt === null ? null : Math.ceil(performance.now() - consentStartedAt);
+      const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
       if (!consentConfirmed || !isRecentBiometricConsentAge(consentAgeMs)) throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
       const res = await fetch('/api/enroll', {
         method: 'POST',
@@ -308,7 +308,7 @@ function EnrollPageContent() {
 
   const startCapturing = useCallback(() => {
     if (!consentConfirmed) return;
-    const consentAgeMs = consentStartedAt === null ? null : Math.ceil(performance.now() - consentStartedAt);
+    const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
     if (!isRecentBiometricConsentAge(consentAgeMs)) {
       stopCamera();
       setErrorMsg('Consent expired. Confirm biometric consent again before enrolling.');
@@ -675,7 +675,7 @@ function EnrollPageContent() {
               id="biometric-consent"
               type="checkbox"
               checked={consentConfirmed}
-              onChange={(event) => { setConsentConfirmed(event.target.checked); setConsentStartedAt(event.target.checked ? performance.now() : null); }}
+              onChange={(event) => { setConsentConfirmed(event.target.checked); setConsentStartedAt(event.target.checked ? { monotonicMs: performance.now(), wallMs: Date.now() } : null); }}
               className="mt-1 h-4 w-4 shrink-0 accent-gold"
               required
             />
