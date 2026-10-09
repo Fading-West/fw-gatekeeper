@@ -7,6 +7,7 @@ import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { resolveScheduleAssignment } from "./scheduleAssignment";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -123,27 +124,6 @@ function getActivityLogHref(date: string, workerId?: string | null, attendanceId
   });
 }
 
-function parseScheduleDays(days: string): number[] {
-  try {
-    const parsed = JSON.parse(days);
-    return Array.isArray(parsed) ? parsed.filter((day) => Number.isInteger(day)) : [];
-  } catch {
-    return [];
-  }
-}
-
-function getScheduleForWorker(worker: any, schedules: any[], dayOfWeek: number) {
-  const todaysSchedules = schedules.filter((schedule) => parseScheduleDays(schedule.days).includes(dayOfWeek));
-  const workerDepartment = String(worker.department || "").trim().toLowerCase();
-  return (
-    todaysSchedules.find(
-      (schedule) => String(schedule.department || "").trim().toLowerCase() === workerDepartment,
-    ) ||
-    todaysSchedules.find((schedule) => !normalizeText(schedule.department)) ||
-    null
-  );
-}
-
 function getReviewStatus(review: any): ExceptionStatus {
   if (review?.status === "reviewed" || review?.status === "ignored" || review?.status === "resolved") {
     return review.status;
@@ -218,6 +198,12 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
     return { ...base, action: "review_only", label: "Fix schedule", cta: "Open schedules",
       reason: SCHEDULE_TIME_ERROR, href: exception.links.schedules || null,
       source_href: exception.links.schedules || null, disabled_reason: SCHEDULE_TIME_ERROR };
+  }
+
+  if (exception.type === "ambiguous_schedule" || exception.type === "unassigned_schedule") {
+    return { ...base, action: "review_only", label: "Review schedule assignment", cta: "Open schedules",
+      reason: "No unique schedule supports a schedule-based attendance correction for this worker and date.",
+      href: "/schedules", can_apply: false, disabled_reason: "Review the worker's schedule assignment first." };
   }
 
   if (exception.type === "missing_arrival") {
@@ -394,7 +380,8 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   for (const worker of workers) {
-    let schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
+    const assignment = resolveScheduleAssignment(worker.department, schedules, dayOfWeek);
+    let schedule = assignment.kind === "unique" ? assignment.schedule : null;
     const workerId = String(worker._id);
     const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
@@ -409,6 +396,22 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       worker: `/workers`,
       schedules: "/schedules",
     };
+
+    if (assignment.kind !== "unique") {
+      const ambiguous = assignment.kind === "ambiguous";
+      exceptions.push(createException({
+        key: `${date}:${ambiguous ? "ambiguous_schedule" : "unassigned_schedule"}:${workerId}`,
+        date, type: ambiguous ? "ambiguous_schedule" : "unassigned_schedule", severity: ambiguous ? "critical" : "warning",
+        title: `${workerName} has ${ambiguous ? "ambiguous" : "no matching"} schedule coverage`,
+        description: ambiguous
+          ? `${assignment.candidates.length} ${assignment.tier} schedules match this worker and day: ${assignment.candidates.map(candidate => candidate.name).join(", ")}. No schedule is selected; schedule-based attendance checks are unavailable.`
+          : "No active department or default schedule matches this worker and day. This does not establish that the worker was expected; schedule-based attendance checks are unavailable.",
+        worker_id: workerId, worker_name: workerName, department,
+        kiosk_id: null, kiosk_name: null, first_seen: firstIn?.timestamp || null, last_seen: lastEvent?.timestamp || null,
+        schedule_name: null, scheduled_start: null, scheduled_end: null,
+        event_count: workerEvents.length, links: baseLinks,
+      }));
+    }
 
     if (schedule && !isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
       exceptions.push(createException({

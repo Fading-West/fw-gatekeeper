@@ -92,8 +92,8 @@ function buildChecklist(input: {
       status: input.acknowledgedBlockers ? "clear" : "blocked",
       count: input.unavailableWorkers,
       href: "/schedules",
-      proof: proof(input.unavailableWorkers, "workers with unsupported schedules", "/schedules", false),
-      description: `${input.unavailableWorkers} workers are excluded from attendance totals until their unsupported schedules are fixed.`,
+      proof: proof(input.unavailableWorkers, "workers without unique supported schedules", "/schedules", false),
+      description: `${input.unavailableWorkers} workers cannot be classified against a unique supported schedule for this date. Totals cover unique supported assignments only; review unavailable coverage before signoff.`,
     }] : []),
     {
       id: "critical_exceptions",
