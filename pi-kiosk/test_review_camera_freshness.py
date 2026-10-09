@@ -17,13 +17,14 @@ class FreshnessBoundaryTests(unittest.TestCase):
         writer = next(node for node in RUN.body if isinstance(node, ast.FunctionDef) and node.name == "record_clock")
         policy = mock.Mock()
         context = {"is_fresh_scan": is_fresh_scan, "time": SimpleNamespace(time=lambda: 106.0),
+                   "camera_healthy": True, "camera_generation": [0],
                    "camera_invalidated_at": [0.0], "recognizer": SimpleNamespace(liveness_policy=policy, known_count=1),
                    "config": SimpleNamespace(KIOSK_TYPE="entry"), "database": mock.Mock(),
                    "last_clocks": {}, "datetime": datetime, "timezone": timezone, "web_app": mock.Mock(),
                    "base_degraded_reason": lambda: None, "_now_iso": lambda: "synthetic-time",
                    "_log_recognition_attempt": mock.Mock(), "logger": mock.Mock()}
         exec(compile(ast.Module(body=[writer], type_ignores=[]), "production-write", "exec"), context)
-        result = {"frame_ts": 100.0}
+        result = {"frame_ts": 100.0, "camera_generation": 0}
         # It was fresh when consumption began, before expensive blink work.
         self.assertTrue(is_fresh_scan(result, 104.0))
         self.assertFalse(context["record_clock"](result, 1, "Synthetic worker", "1", .9, True))
@@ -33,6 +34,7 @@ class FreshnessBoundaryTests(unittest.TestCase):
         branch = next(node for node in ast.walk(RUN) if isinstance(node, ast.If)
                       and ast.unparse(node.test) == "pending is not None")
         pending = {"deadline": 100.0, "result": {"frame_ts": 99.0}, "blink_confirmed": True,
+                   "camera_generation": 0,
                    "blink_confirmed_at": 99.0, "worker_id": 1, "server_worker_id": "synthetic",
                    "post_blink_confirmed": False, "display_name": "Synthetic worker", "display_id": "1", "confidence": .9}
         recorder = mock.Mock()
@@ -42,7 +44,12 @@ class FreshnessBoundaryTests(unittest.TestCase):
                    "liveness": mock.Mock(), "web_app": mock.Mock(), "record_clock": recorder,
                    "recognizer": SimpleNamespace(known_count=1), "_log_recognition_attempt": mock.Mock(),
                    "config": SimpleNamespace(DISPLAY_TIME_SUCCESS_SEC=3), "display_until": [0.0],
-                   "is_fresh_scan": is_fresh_scan, "camera_invalidated_at": [0.0]}
+                   "is_fresh_scan": is_fresh_scan, "camera_invalidated_at": [0.0], "camera_generation": [0]}
+        def consume_detection():
+            result = context["current_result"][0]
+            context["current_result"][0] = None
+            return result
+        context["consume_detection"] = consume_detection
         wrapper = ast.Module(body=[ast.For(target=ast.Name(id="_once", ctx=ast.Store()),
             iter=ast.List(elts=[ast.Constant(value=0)], ctx=ast.Load()), body=[branch], orelse=[])], type_ignores=[])
         exec(compile(ast.fix_missing_locations(wrapper), "production-pending", "exec"), context)
