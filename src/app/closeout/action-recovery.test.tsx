@@ -105,3 +105,30 @@ it('reconciles a definite new-blocker rejection and completes with a fresh expli
   expect(tree.root.findAllByProps({ 'data-testid': 'saved-closeout-action' })).toHaveLength(0);
   expect(tree.root.findByType('textarea').props.readOnly).toBe(true);
 });
+it.each(['open', 'completed'])('retains a rejected draft after reload and reconciliation against a %s record', async status => {
+  let reads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'PATCH') return { ok: false, status: 409, json: async () => ({ code: 'CLOSEOUT_REVISION_CONFLICT', error: 'Review the current record' }) };
+    reads++;
+    return { ok: true, json: async () => ({ date: '2026-09-03', closeout: { status: reads === 1 ? 'open' : status, revision: reads === 1 ? 1 : 2, notes: 'Current server notes', supervisor_name: 'Current supervisor', snapshot: {} },
+      blocker_evidence: 'current-evidence', summary: {}, checklist: [], blockers: [], action_links: [], can_complete: true }) };
+  }));
+  await act(async () => { tree = create(<CloseoutPage />); });
+  await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Rejected original draft' } }));
+  await act(async () => tree.root.findAllByType('input').find(node => node.props.placeholder === 'Supervisor name')!.props.onChange({ target: { value: 'Draft supervisor' } }));
+  await act(async () => button('Save notes').props.onClick());
+  await act(async () => tree.unmount());
+  await act(async () => { tree = create(<CloseoutPage />); });
+  expect(tree.root.findByType('textarea').props.value).toBe('Current server notes');
+  expect(label(tree.root.findByProps({ 'data-testid': 'saved-closeout-action' }))).toContain('Rejected original draft');
+  await act(async () => button('Review current record').props.onClick());
+  expect(tree.root.findAllByProps({ 'data-testid': 'saved-closeout-action' })).toHaveLength(0);
+  if (status === 'completed') {
+    expect(tree.root.findByType('textarea').props.value).toBe('Current server notes');
+    expect(label(tree.root.findByProps({ role: 'alert' }))).toContain('Rejected original draft');
+    expect(label(tree.root.findByProps({ role: 'alert' }))).toContain('Draft supervisor');
+  } else {
+    expect(tree.root.findByType('textarea').props.value).toBe('Rejected original draft');
+    expect(tree.root.findAllByType('input').find(node => node.props.placeholder === 'Supervisor name')!.props.value).toBe('Draft supervisor');
+  }
+});

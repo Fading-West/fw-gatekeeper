@@ -390,7 +390,15 @@ function ShiftCloseoutPageContent() {
                 {!closeoutActionStored(selectedPendingAction) && <p>Tab storage is unavailable. Keep this page open until the action is confirmed.</p>}
                 <button type="button" className="btn-secondary mt-2" disabled={isPending || !dataReady || !canOperate} onClick={() => sendCloseoutAction(selectedPendingAction)}>Retry saved action</button>
                 {selectedPendingAction.rejected && <button type="button" className="btn-secondary mt-2" disabled={isPending || !dataReady || !canOperate} onClick={() => {
+                  const draft = { date, notes: selectedPendingAction.intent.notes, supervisorName: selectedPendingAction.intent.supervisor_name };
                   reconcileRejectedCloseoutAction(selectedPendingAction);
+                  if (completed) {
+                    setUnsavedConflictDraft(draft);
+                  } else {
+                    setNotes(draft.notes);
+                    setSupervisorName(draft.supervisorName);
+                  }
+                  setAcknowledgedBlockers(false);
                   setPendingAction(null);
                 }}>Review current record</button>}
               </div>

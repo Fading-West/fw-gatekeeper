@@ -97,7 +97,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     expect(changed.summary).toEqual(original.summary);
     expect(changed.blocker_evidence).not.toBe(original.blocker_evidence);
     expect(changed.closeout?.acknowledged_blockers).toBe(false);
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old schedule' })).rejects.toThrow('blockers changed');
+    await expect(save(actor, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old schedule' })).rejects.toThrow('blockers changed');
     expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
   });
   it('invalidates recognition acknowledgement when the same source changes decision or risk scores', async () => {
@@ -109,7 +109,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     const changed = await actor.query(api.shiftCloseouts.get, { date });
     expect(changed.summary).toEqual(original.summary);
     expect(changed.blocker_evidence).not.toBe(original.blocker_evidence);
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old recognition' })).rejects.toThrow('blockers changed');
+    await expect(save(actor, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old recognition' })).rejects.toThrow('blockers changed');
   });
   it('returns a recoverable conflict when clear evidence acquires its first blocker', async () => {
     const { t, actor, kioskId } = await setup();
@@ -117,7 +117,7 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     const original = await actor.query(api.shiftCloseouts.get, { date });
     expect(original.can_complete).toBe(true);
     await t.run(ctx => ctx.db.patch(kioskId, { active: true }));
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: false, blockerEvidence: original.blocker_evidence, notes: 'Clear draft' })).rejects.toMatchObject({ data: { code: 'CLOSEOUT_BLOCKERS_CHANGED' } });
+    await expect(save(actor, { date, action: 'complete', acknowledgedBlockers: false, blockerEvidence: original.blocker_evidence, notes: 'Clear draft' })).rejects.toMatchObject({ data: { code: 'CLOSEOUT_BLOCKERS_CHANGED' } });
     expect(await t.run(ctx => ctx.db.query('shiftCloseouts').collect())).toEqual([]);
   });
   it('does not inherit unbound legacy acknowledgements and preserves an unchanged bound acknowledgement', async () => {

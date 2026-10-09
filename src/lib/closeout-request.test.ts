@@ -39,3 +39,11 @@ it('restores an explicit rejection and clears it only through deliberate reconci
   reloaded.reconcileRejectedCloseoutAction(action);
   expect(reloaded.loadCloseoutAction(action.actorId, intent.date)).toBeNull();
 });
+it('keeps a confirmed action cleared in memory when tab storage cannot remove its stale value', async () => {
+  const helper = await import('./closeout-request');
+  const action = helper.beginCloseoutAction('synthetic-remove-failure', intent);
+  vi.stubGlobal('sessionStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: () => { throw new Error('Storage unavailable'); } });
+  expect(helper.acknowledgeCloseoutAction(action, { id: 'synthetic-closeout', status: 'completed', revision: 1, requestId: action.requestId, actorUserId: action.actorId })).toBe(true);
+  expect(helper.loadCloseoutAction(action.actorId, intent.date)).toBeNull();
+  expect(helper.beginCloseoutAction(action.actorId, intent).requestId).not.toBe(action.requestId);
+});

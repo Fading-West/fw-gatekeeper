@@ -15,7 +15,7 @@ it('forwards the reviewed blocker token and returns a refreshable conflict', asy
 
 it('refreshes a completion draft that was clear before new blockers appeared', async () => {
   vi.mocked(convex.mutation).mockRejectedValue(new ConvexError({ code: 'CLOSEOUT_BLOCKERS_CHANGED', message: 'Refresh current evidence' }));
-  const response = await PATCH(new NextRequest('http://localhost/api/shift-closeout', { method: 'PATCH', body: JSON.stringify({ date: '2026-09-03', action: 'complete', acknowledged_blockers: false, blocker_evidence: 'previously-clear' }) }));
+  const response = await PATCH(new NextRequest('http://localhost/api/shift-closeout', { method: 'PATCH', body: JSON.stringify({ date: '2026-09-03', action: 'complete', request_id: 'new-blocker-draft', expected_revision: null, acknowledged_blockers: false, blocker_evidence: 'previously-clear' }) }));
   expect(response.status).toBe(409);
   expect(await response.json()).toMatchObject({ code: 'CLOSEOUT_BLOCKERS_CHANGED' });
 });

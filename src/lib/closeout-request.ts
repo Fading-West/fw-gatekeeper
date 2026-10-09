@@ -14,6 +14,7 @@ export type PendingCloseoutAction = {
   rejected: boolean;
 };
 const pending = new Map<string, PendingCloseoutAction>();
+const cleared = new Set<string>();
 const prefix = 'gatekeeper:closeout-intent:v1:';
 const keyFor = (actor: string, date: string) => prefix + JSON.stringify([actor, date]);
 function valid(value: unknown, actor: string, date: string): value is PendingCloseoutAction {
@@ -31,11 +32,13 @@ function valid(value: unknown, actor: string, date: string): value is PendingClo
 const copy = (action: PendingCloseoutAction): PendingCloseoutAction => ({ ...action, intent: { ...action.intent } });
 function persist(action: PendingCloseoutAction) {
   const key = keyFor(action.actorId, action.intent.date);
+  cleared.delete(key);
   pending.set(key, copy(action));
   try { sessionStorage.setItem(key, JSON.stringify(action)); } catch { /* The current page still retains the complete intent. */ }
 }
 export function loadCloseoutAction(actor: string, date: string): PendingCloseoutAction | null {
   const key = keyFor(actor, date);
+  if (cleared.has(key)) return null;
   let action = pending.get(key);
   if (!action) {
     try {
@@ -60,6 +63,7 @@ function clear(action: PendingCloseoutAction) {
   const key = keyFor(action.actorId, action.intent.date);
   if (loadCloseoutAction(action.actorId, action.intent.date)?.requestId !== action.requestId) return;
   pending.delete(key);
+  cleared.add(key);
   try { sessionStorage.removeItem(key); } catch { /* In-memory acknowledgement remains available. */ }
 }
 export function acknowledgeCloseoutAction(action: PendingCloseoutAction, receipt: unknown): boolean {
