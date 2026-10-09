@@ -35,3 +35,7 @@ Audit before/after payloads include the effective reviewedAt timestamp as well a
 ## Follow-up review revision
 
 Follow-up review: the Exceptions-page review mutation now writes actor-attributed append-only audit records in the same transaction as every exception review create/edit/reopen, including recognition review overrides. Before is null when no override row existed, preserving accurate creation provenance even after a Recognition Lab review; updates record previous/new status, note, reviewedAt and updatedAt. Tests cover permission denial, repeated same-row identity, close/note-edit/reopen and Lab-confirm followed by first exception reopen.
+
+## Merge-readiness review
+
+The branch now includes current master, including kiosk review-authority and recognition replay protections. Recognition Lab audit snapshots also preserve the prior/new updatedAt values used to order competing reviews. Exception snapshots preserve prior/new date and type attribution rather than recording only the newly submitted attribution. Both review mutations validate their return payloads. Recognition Lab uses the shared audit writer, with regressions proving an audit-write failure rolls back both review and reopen changes, and proving retained/cleared metadata is recorded accurately. These checks use isolated synthetic records; no backend deployment or physical acceptance is implied.
