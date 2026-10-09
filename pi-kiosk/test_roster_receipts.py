@@ -80,6 +80,82 @@ class RosterReceiptTests(unittest.TestCase):
         recognizer.reload_faces.assert_called_once()
         self.assertEqual(database.get_sync_state('last_roster_applied_at'), '2026-09-25T12:00:00Z')
 
+    def test_failed_update_cannot_block_later_explicit_revocations(self):
+        update = {'id': 'other-worker', 'name': 'Other', 'active': True,
+                  'face_encoding': ENCODING.tolist(), 'photo_url': 'https://photo.invalid'}
+        failures = [update, {**update, 'face_encoding': [0.1]}, {'id': 'malformed'}, None]
+        watermark = '2026-09-01T00:00:00Z'
+        for failed_row in failures:
+            with self.subTest(failed_row=failed_row):
+                database.add_worker('Revoked', ENCODING, server_id=SERVER_ID)
+                database.add_worker('Unenrolled', ENCODING, server_id='null-template')
+                database.add_worker('Preserved', ENCODING, server_id='not-in-response')
+                database.set_sync_state('last_worker_sync', watermark)
+                rows = [failed_row, {'id': SERVER_ID, 'active': False},
+                        {'id': 'null-template', 'name': 'Unenrolled', 'active': True,
+                         'face_encoding': None, 'photo_url': None}]
+                with mock.patch.object(sync, '_download_photo', return_value=None):
+                    posted, recognizer = self.cycle(roster(rows))
+                posted.assert_not_called()
+                recognizer.reload_faces.assert_called_once()
+                self.assertIsNone(database.get_worker_by_name('Revoked'))
+                self.assertIsNone(database.get_worker_by_name('Unenrolled'))
+                # A failed full response cannot authorize deleting omitted rows.
+                self.assertIsNotNone(database.get_worker_by_name('Preserved'))
+                self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+                self.assertEqual(database.get_sync_state('last_worker_sync'), watermark)
+
+    def test_pending_cleanup_and_failed_revocation_cleanup_do_not_block_removals(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'PHOTO_DIR', tmp):
+            orphan = Path(tmp) / 'retired.jpg'
+            orphan.write_bytes(b'pending cleanup from previous sync')
+            database.record_photo_cleanup([orphan], 'retired')
+            database.add_worker('Revoked', ENCODING, server_id=SERVER_ID)
+            database.add_worker('Unenrolled', ENCODING, server_id='null-template')
+            rows = [{'id': SERVER_ID, 'active': False},
+                    {'id': 'null-template', 'name': 'Unenrolled', 'active': True,
+                     'face_encoding': None, 'photo_url': None}]
+            with mock.patch.object(Path, 'unlink', side_effect=PermissionError('read-only disk')):
+                posted, recognizer = self.cycle(roster(rows))
+            posted.assert_not_called()
+            recognizer.reload_faces.assert_called_once()
+            self.assertIsNone(database.get_worker_by_name('Revoked'))
+            self.assertIsNone(database.get_worker_by_name('Unenrolled'))
+            self.assertTrue(orphan.exists())
+            self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+            self.assertIsNone(database.get_sync_state('last_worker_sync'))
+            posted, _ = self.cycle(roster(rows), post=lambda *a, **kw: ack())
+            self.assertEqual(posted.call_count, 1)
+            self.assertFalse(orphan.exists())
+
+    def test_failed_revocation_database_write_does_not_block_later_revocations(self):
+        database.add_worker('Blocked', ENCODING, server_id='blocked-worker')
+        database.add_worker('Revoked', ENCODING, server_id=SERVER_ID)
+        conn = database._get_conn()
+        conn.execute("CREATE TRIGGER fail_one_delete BEFORE DELETE ON workers "
+                     "WHEN OLD.server_id = 'blocked-worker' BEGIN SELECT RAISE(FAIL, 'disk write failed'); END")
+        rows = [{'id': 'blocked-worker', 'active': False}, {'id': SERVER_ID, 'active': False}]
+        posted, recognizer = self.cycle(roster(rows))
+        posted.assert_not_called()
+        recognizer.reload_faces.assert_called_once()
+        self.assertIsNotNone(database.get_worker_by_name('Blocked'))
+        self.assertIsNone(database.get_worker_by_name('Revoked'))
+        self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+        self.assertIsNone(database.get_sync_state('last_worker_sync'))
+
+    def test_legacy_invalid_update_cannot_block_explicit_deactivation(self):
+        database.add_worker('Revoked', ENCODING, server_id=SERVER_ID)
+        legacy = mock.Mock(status_code=200, json=lambda: {
+            'workers': [{'id': 'other-worker', 'name': 'Other', 'active': True,
+                         'face_encoding': ['invalid']}, {'id': SERVER_ID, 'active': False}],
+            'synced_at': '2026-09-25T12:00:00Z',
+        })
+        posted, recognizer = self.cycle(legacy)
+        posted.assert_not_called()
+        recognizer.reload_faces.assert_called_once()
+        self.assertIsNone(database.get_worker_by_name('Revoked'))
+        self.assertIsNone(database.get_sync_state('last_worker_sync'))
+
     def test_lost_ack_reapplies_then_retries_same_receipt(self):
         with self.assertLogs(sync.logger, level='WARNING'):
             posted, _ = self.cycle(roster([]), post=sync.requests.Timeout('lost ack'))
@@ -223,7 +299,10 @@ class RosterReceiptTests(unittest.TestCase):
         })
         malformed_rows = [
             {'id': SERVER_ID},
+            {'id': SERVER_ID, 'active': None},
+            {'id': SERVER_ID, 'active': 'false'},
             {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'photo_url': None},
+            {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'face_encoding': None},
             {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'face_encoding': ENCODING.tolist()},
             {'id': SERVER_ID, 'name': 'Alex', 'active': True, 'face_encoding': [float('nan')] * 512, 'photo_url': None},
         ]
@@ -233,6 +312,18 @@ class RosterReceiptTests(unittest.TestCase):
                 posted.assert_not_called()
                 self.assertIsNotNone(database.get_worker_by_name('Alex'))
                 self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+
+    def test_conflicting_duplicate_rows_revoke_but_cannot_ack(self):
+        database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
+        rows = [{'id': SERVER_ID, 'active': False},
+                {'id': SERVER_ID, 'name': 'Alex', 'active': True,
+                 'face_encoding': ENCODING.tolist(), 'photo_url': None}]
+        posted, recognizer = self.cycle(roster(rows))
+        posted.assert_not_called()
+        recognizer.reload_faces.assert_called_once()
+        self.assertIsNone(database.get_worker_by_name('Alex'))
+        self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+        self.assertIsNone(database.get_sync_state('last_worker_sync'))
 
     def test_explicit_null_template_removes_cached_template_before_ack(self):
         database.add_worker('Alex', ENCODING, server_id=SERVER_ID)

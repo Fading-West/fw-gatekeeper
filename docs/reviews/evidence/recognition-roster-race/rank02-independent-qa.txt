@@ -1,0 +1,8 @@
+test_current_template_records_once (__main__.GuardTests.test_current_template_records_once) ... ok
+test_removed_worker_cannot_record_from_in_flight_result (__main__.GuardTests.test_removed_worker_cannot_record_from_in_flight_result) ... ok
+test_replaced_template_and_server_identity_cannot_record (__main__.GuardTests.test_replaced_template_and_server_identity_cannot_record) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.035s
+
+OK

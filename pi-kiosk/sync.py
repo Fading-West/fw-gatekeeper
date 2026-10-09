@@ -353,6 +353,34 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         full_roster = receipt_protocol and data.get("full_roster") is True
         if receipt_protocol and not database.get_sync_state("last_roster_applied_at") and not full_roster:
             raise ValueError("Initial receipt sync must include full roster")
+
+        # Apply explicit revocations before updates or cleanup recovery can
+        # fail. Only trust rows with an explicit identity and active state;
+        # a malformed row must never imply a deactivation or null template.
+        # Deleting a template commits before strict thumbnail cleanup, so one
+        # cleanup failure must not prevent subsequent revocations either.
+        revocation_error = None
+        revoked_server_ids: set[str] = set()
+        for w in workers:
+            if (not isinstance(w, dict) or not isinstance(w.get("id"), str) or not w["id"] or
+                type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
+                continue
+            revoked = not w["active"] or (
+                receipt_protocol and "face_encoding" in w and w["face_encoding"] is None and
+                "photo_url" in w
+            )
+            if not revoked:
+                continue
+            revoked_server_ids.add(w["id"])
+            try:
+                if database.remove_worker_by_server_id(w["id"], strict_cleanup=receipt_protocol):
+                    logger.info("Removed revoked worker template (server_id=%s)", w["id"])
+            except Exception as exc:
+                revocation_error = revocation_error or exc
+                logger.warning("Worker revocation incomplete (server_id=%s): %s", w["id"], exc)
+        if revocation_error:
+            raise revocation_error
+
         # A prior process may have died between photo publication and the
         # SQLite commit, or between commit and retired-file cleanup.
         try:
@@ -364,12 +392,16 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         seen_server_ids: set[str] = set()
 
         if receipt_protocol:
+            response_ids: set[str] = set()
             for w in workers:
-                if (not isinstance(w, dict) or not w.get("id") or
+                if (not isinstance(w, dict) or not isinstance(w.get("id"), str) or not w["id"] or
                     type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
                     raise ValueError("Receipt sync worker row is missing id or active state")
                 if w["active"] and ("face_encoding" not in w or "photo_url" not in w):
                     raise ValueError("Active receipt sync row is missing face_encoding or photo_url")
+                if w["id"] in response_ids:
+                    raise ValueError("Receipt sync contains duplicate worker ids")
+                response_ids.add(w["id"])
 
         for w in workers:
             if not isinstance(w, dict):
@@ -388,15 +420,12 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             if server_id:
                 seen_server_ids.add(str(server_id))
 
+            if str(server_id) in revoked_server_ids:
+                continue
+
             if server_id and not is_active:
                 if database.remove_worker_by_server_id(str(server_id), strict_cleanup=receipt_protocol):
                     logger.info("Removed deactivated worker: %s (server_id=%s)", name or "unknown", server_id)
-                continue
-
-            if receipt_protocol and server_id and is_active and encoding_data is None:
-                # An active worker with no template must not leave an old
-                # cached template usable on the device.
-                database.remove_worker_by_server_id(str(server_id), strict_cleanup=True)
                 continue
 
             if not server_id or not name or encoding_data is None:
