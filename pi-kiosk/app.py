@@ -264,7 +264,10 @@ def manual_clock():
     try:
         result = database.record_manual_attendance(
             request_id=request_id, worker_id=worker_id, worker_name=worker_name, action=action,
+            action_for_worker=_manual_action_for_worker,
         )
+    except database.ManualAttendancePolicyError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 503
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     except ValueError as exc:

@@ -746,7 +746,12 @@ def log_attendance(
     return log_id
 
 
-def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=None, action=None) -> dict:
+class ManualAttendancePolicyError(ValueError):
+    """The configured kiosk action cannot be inferred safely."""
+
+
+def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=None, action=None,
+                             action_for_worker=None) -> dict:
     """Commit the current worker, toggle, attendance and replay receipt together."""
     request_json = json.dumps({"worker_id": worker_id, "name": worker_name, "action": action}, sort_keys=True)
     conn = _get_conn()
@@ -761,7 +766,12 @@ def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=Non
         if worker is None:
             raise LookupError("Worker not found")
         if action is None:
-            if config.KIOSK_TYPE == "entry":
+            if action_for_worker is not None:
+                try:
+                    action = action_for_worker(worker["id"])
+                except ValueError as exc:
+                    raise ManualAttendancePolicyError(str(exc)) from exc
+            elif config.KIOSK_TYPE == "entry":
                 action = "clock_in"
             elif config.KIOSK_TYPE == "exit":
                 action = "clock_out"

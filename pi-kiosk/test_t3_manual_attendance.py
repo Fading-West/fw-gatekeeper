@@ -73,6 +73,23 @@ class ManualAttendanceTests(unittest.TestCase):
         database.record_manual_attendance(request_id="one", worker_id=worker)
         self.assertEqual(database.count_unsynced_logs(), 1)
 
+    def test_action_policy_runs_inside_transaction_and_replay_skips_it(self):
+        worker = self.worker()
+        def infer(worker_id):
+            self.assertTrue(database._get_conn().in_transaction)
+            self.assertEqual(worker_id, worker)
+            return "clock_out"
+        args = {"request_id": "policy-operation", "worker_id": worker}
+        first = database.record_manual_attendance(**args, action_for_worker=infer)
+        self.assertEqual(first["action"], "clock_out")
+        def invalid_policy(_):
+            raise ValueError("KIOSK_TYPE must be entry, exit, or auto")
+        self.assertEqual(database.record_manual_attendance(**args, action_for_worker=invalid_policy), first)
+        with self.assertRaises(ValueError):
+            database.record_manual_attendance(request_id="invalid-policy", worker_id=worker,
+                                              action_for_worker=invalid_policy)
+        self.assertEqual(database.count_unsynced_logs(), 1)
+
     def test_route_validates_payload_and_keeps_operation_replay(self):
         with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
             import app
@@ -83,6 +100,9 @@ class ManualAttendanceTests(unittest.TestCase):
             headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
             worker = self.worker()
             args = {"worker_id": worker, "request_id": "route-operation"}
+            with mock.patch.object(app, "_manual_action_for_worker", side_effect=ValueError("Invalid kiosk policy")):
+                self.assertEqual(client.post("/manual-clock", json=args, headers=headers).status_code, 503)
+                self.assertEqual(database.count_unsynced_logs(), 0)
             first = client.post("/manual-clock", json=args, headers=headers)
             self.assertEqual(first.status_code, 200)
             self.assertEqual(client.post("/manual-clock", json=args, headers=headers).json, first.json)
