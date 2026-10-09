@@ -68,4 +68,23 @@ describe('reviews bind to current exception sources', () => {
     const { actor, input } = await setup();
     await expect(actor.mutation(api.shiftExceptions.review, { ...input, date: '2026-02-30' })).rejects.toThrow('valid YYYY-MM-DD');
   });
+  it('keeps a large repeated-scan queue and its stored review evidence bounded', async () => {
+    const { t, actor, workerId } = await setup();
+    await t.run(async ctx => {
+      for (let index = 0; index < 500; index++) {
+        await ctx.db.insert('attendance', { workerId, eventType: 'clock_out', timestamp: `${date}T18:00:00`, synced: true });
+      }
+    });
+    const payload = await actor.query(api.shiftExceptions.summary, { date });
+    const sequences = payload.exceptions.filter(row => row.type === 'scan_sequence');
+    expect(sequences).toHaveLength(501);
+    expect(JSON.stringify(payload).length).toBeLessThan(2_000_000);
+    expect(new Set(sequences.map(row => row.source_fingerprint)).size).toBe(1);
+    const source = sequences[0];
+    const result = await actor.mutation(api.shiftExceptions.review, {
+      exceptionKey: source.key, sourceFingerprint: source.source_fingerprint, date, type: source.type, status: 'reviewed',
+    });
+    expect(await t.run(ctx => ctx.db.get(result.id))).toMatchObject({ sourceFingerprint: source.source_fingerprint });
+    expect(source.source_fingerprint).toHaveLength(74);
+  });
 });
