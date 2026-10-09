@@ -43,7 +43,7 @@ assert.match(enrollPage, /Already enrolled[\s\S]*Needs re-enrollment[\s\S]*Ready
 assert.match(enrollPage, /disabled=\{!canEnroll \|\| cameraOpening \|\| !name\.trim\(\) \|\| \(!workerId && !selectedEmployee && !manualEntry\)\}/, 'Enrollment must require a roster selection unless an admin explicitly uses manual entry.');
 assert.match(
   enrollPage,
-  /setResultMsg\([\s\S]*setStep\('done'\);[\s\S]*fetch\('\/api\/employee-directory\?status=not_enrolled'\)/,
+  /setResultMsg\([\s\S]*setStep\('done'\);[\s\S]*fetch\('\/api\/employee-directory\?status=not_enrolled'(?:,\s*\{[^}]*\})?\)/,
   'Enrollment must show success before the non-critical roster progress refresh completes.',
 );
 assert.match(employeeDirectory, /Camilo \(Kevin Rojas\) Pacheco/, 'Employee directory should retain roster aliases used for search.');
