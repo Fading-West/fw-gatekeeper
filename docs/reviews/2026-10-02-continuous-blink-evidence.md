@@ -30,4 +30,4 @@ Evidence: Automated regression failures before the change and passing checks aft
 
 ## Integration review revision
 
-Both kiosk and standalone enrollment call the liveness policy when no face is detected; camera read failure resets enrollment liveness. Each eye measurement must independently be finite and positive before blink progress advances. Tests execute production caller AST paths for a closed-eye, absent-face, open-eye sequence and verify recovery requires fresh valid continuity. Physical blink/model accuracy remains unverified.
+Both kiosk and standalone enrollment reset verification when no face is detected; the kiosk publishes observed absence separately from unfinished inference, and camera read failure resets enrollment liveness. Each eye measurement must independently be finite and nonnegative with positive eye width before blink progress advances. Zero lid separation counts as a fully closed eye; collapsed landmarks do not. Tests execute production caller AST paths for a closed-eye, absent-face, open-eye sequence and verify recovery requires fresh valid continuity. Physical blink/model accuracy remains unverified.
