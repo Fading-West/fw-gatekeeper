@@ -1,0 +1,32 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/06-nonzero-face-template
+
+ ❯ convex/oct02-nonzero-face-template.test.ts (1 test | 1 failed) 11ms
+   × rejects unusable vectors at both enrollment boundaries and flags legacy zero rows 10ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  convex/oct02-nonzero-face-template.test.ts > rejects unusable vectors at both enrollment boundaries and flags legacy zero rows
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ convex/oct02-nonzero-face-template.test.ts:21:39
+     19|  const { admin, t } = await setup();
+     20|  for (const vector of [Array(512).fill(0), Array(512).fill(Number.MAX_…
+     21|   expect(isSupportedEncoding(vector)).toBe(false);
+       |                                       ^
+     22|   await expect(admin.mutation(api.workers.create, { name: 'Synthetic w…
+     23|  }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  01:46:05
+   Duration  342ms (transform 53ms, setup 0ms, import 173ms, tests 11ms, environment 0ms)

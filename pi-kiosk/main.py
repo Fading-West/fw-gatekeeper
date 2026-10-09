@@ -10,7 +10,7 @@ import logging
 import os
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cv2
@@ -99,7 +99,7 @@ RED = (0, 0, 220)
 
 
 def _now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def draw_box(frame_bgr, face_loc, color, label=None):
@@ -476,7 +476,8 @@ def run(args):
         result["liveness_confirmed"] = liveness_confirmed
         try:
             recognizer.liveness_policy.record(
-                database.log_attendance,
+                database.log_recognized_attendance,
+                expected_encoding=result.get("candidate_encoding"),
                 worker_id=worker_id, worker_name=display_name,
                 action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
                 server_worker_id=server_worker_id,
@@ -490,7 +491,7 @@ def run(args):
                                   confidence=confidence, known_workers=recognizer.known_count)
             return False
 
-        last_clocks[worker_id] = datetime.now()
+        last_clocks[worker_id] = datetime.now(timezone.utc)
         web_app.update_health(last_scan_at=_now_iso(), degraded_reason=base_degraded_reason())
 
         # Worker-facing copy: name and time only. Confidence percentages are
@@ -819,7 +820,7 @@ def run(args):
             # actually happened last — an exit kiosk must not say "clocked in".
             last = last_clocks.get(worker_id)
             recently_clocked = (
-                (last and datetime.now() - last < timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES))
+                (last and datetime.now(timezone.utc) - last < timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES))
                 or database.was_recently_clocked(worker_id, config.CLOCK_DEBOUNCE_MINUTES)
             )
             if recently_clocked:
