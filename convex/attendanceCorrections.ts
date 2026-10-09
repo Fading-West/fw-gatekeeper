@@ -164,6 +164,15 @@ export const create = mutation({
       if (!original) {
         throw new Error("Original attendance event not found.");
       }
+      const priorVoids = await ctx.db.query("attendanceCorrections")
+        .withIndex("by_original_attendance", q => q.eq("originalAttendanceId", args.originalAttendanceId!)).take(501);
+      if (priorVoids.length > 500) throw new Error("Correction history exceeds safe void review limit");
+      for (const prior of priorVoids) {
+        if (prior.action !== "void_event") continue;
+        const reversed = await ctx.db.query("attendanceCorrectionReversals")
+          .withIndex("by_correctionId", q => q.eq("correctionId", prior._id)).unique();
+        if (!reversed) throw new Error("This attendance event already has an active void; reverse that correction before voiding it again");
+      }
       if (original.workerId !== args.workerId) {
         throw new Error("Original attendance event belongs to a different worker.");
       }
