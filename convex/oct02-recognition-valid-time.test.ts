@@ -16,7 +16,7 @@ async function setup() {
 }
 it('rejects invalid time atomically and retains valid offline timestamp formats', async () => {
  const { t } = await setup();
- for (const timestamp of ['bad', '2026-02-30T08:00:00', '2026-09-14T25:00:00', '2026-03-08T02:30:00']) {
+ for (const timestamp of ['', ' ', 'bad', '2026-02-30T08:00:00', '2026-09-14T25:00:00', '2026-03-08T02:30:00']) {
   await expect(t.mutation(internal.recognitionAttempts.bulkIngestFromHttp, { attempts: [{ ...attempt, sourceAttemptId: 'first' }, { ...attempt, timestamp }] })).rejects.toThrow('Recognition timestamp');
  }
  expect(await t.run(ctx => ctx.db.query('recognitionAttempts').collect())).toHaveLength(0);
