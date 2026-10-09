@@ -638,6 +638,7 @@
         function setAdminVisible(visible) {
             if (adminVisible !== visible) supervisorStateVersion += 1;
             adminVisible = visible;
+            if (!adminVisible) logList.replaceChildren();
             adminControls.classList.toggle("active", adminVisible);
             adminPanel.classList.toggle("active", adminVisible);
             document.body.classList.toggle("supervisor-mode", adminVisible);
@@ -675,6 +676,7 @@
             supervisorDialog.close();
             setAdminVisible(true);
             fetchStatus();
+            fetchLog();
         }
 
         async function fetchStatus() {
@@ -754,12 +756,18 @@
         }
 
         async function fetchLog() {
+            if (!adminVisible) { logList.replaceChildren(); return; }
+            const requestedVersion = supervisorStateVersion;
             try {
                 const response = await fetch("/log", { cache: "no-store" });
+                if (!response.ok) throw new Error("History unavailable");
                 const logs = await response.json();
+                if (!adminVisible || requestedVersion !== supervisorStateVersion) return;
                 logList.innerHTML = KioskRendering.attendance(logs);
             } catch (error) {
-                logList.innerHTML = `<div class="log-item"><span>Unable to load logs.</span></div>`;
+                if (adminVisible && requestedVersion === supervisorStateVersion) {
+                    logList.innerHTML = `<div class="log-item"><span>Unable to load logs.</span></div>`;
+                }
             }
         }
 
