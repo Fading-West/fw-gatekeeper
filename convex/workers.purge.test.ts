@@ -130,23 +130,25 @@ describe("workers.purgeBiometrics", () => {
     });
   });
 
-  it("records the server consent receipt and authenticated operator on every enrollment", async () => {
+  it("records the validated server-derived consent time and authenticated operator on every enrollment", async () => {
     const { actor, test, userId } = await setup("admin");
+    const createdConsentAt = new Date(Date.now() - 30_000).toISOString();
     const created = await actor.mutation(api.workers.create, {
       name: "Consent Worker",
       employeeId: "F-88",
       department: "Operations",
       faceEncoding: encoding,
-      consentAt: "2026-01-01T00:00:00.000Z",
+      consentAt: createdConsentAt,
     });
     const createdId = created.id as Id<"workers">;
     await test.run(async (ctx) => {
-      expect((await ctx.db.get(createdId))!.consentAt).not.toBe("2026-01-01T00:00:00.000Z");
+      expect((await ctx.db.get(createdId))!.consentAt).toBe(createdConsentAt);
       expect((await ctx.db.get(createdId))!.consentRecordedBy).toBe(userId);
     });
-    await actor.mutation(api.workers.update, { id: createdId, faceEncoding: encoding, consentAt: "2026-02-01T00:00:00.000Z" });
+    const updatedConsentAt = new Date(Date.now() - 10_000).toISOString();
+    await actor.mutation(api.workers.update, { id: createdId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: createdId }))?.identity_revision, faceEncoding: encoding, consentAt: updatedConsentAt });
     await test.run(async (ctx) => {
-      expect((await ctx.db.get(createdId))!.consentAt).not.toBe("2026-02-01T00:00:00.000Z");
+      expect((await ctx.db.get(createdId))!.consentAt).toBe(updatedConsentAt);
       expect((await ctx.db.get(createdId))!.consentRecordedBy).toBe(userId);
     });
   });
@@ -156,21 +158,21 @@ describe("workers.purgeBiometrics", () => {
 describe("biometric write consent and replacement", () => {
   it("requires consent at the database boundary, including direct roster/update calls", async () => {
     const { actor, workerId } = await setup("admin");
-    await expect(actor.mutation(api.workers.create, { name: "No Consent", faceEncoding: encoding })).rejects.toThrow("Biometric consent");
-    await expect(actor.mutation(api.workers.createFromRoster, { employeeId: "F-2", faceEncoding: encoding })).rejects.toThrow("Biometric consent");
-    await expect(actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding })).rejects.toThrow("Biometric consent");
-    await expect(actor.mutation(api.workers.update, { id: workerId, photoStorageIds: [] })).rejects.toThrow("Biometric consent");
-    await expect(actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, consentAt: "invalid" })).rejects.toThrow("Biometric consent");
+    await expect(actor.mutation(api.workers.create, { name: "No Consent", faceEncoding: encoding })).rejects.toMatchObject({ data: { code: "BIOMETRIC_CONSENT_STALE" } });
+    await expect(actor.mutation(api.workers.createFromRoster, { employeeId: "F-2", faceEncoding: encoding })).rejects.toMatchObject({ data: { code: "BIOMETRIC_CONSENT_STALE" } });
+    await expect(actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, faceEncoding: encoding })).rejects.toMatchObject({ data: { code: "BIOMETRIC_CONSENT_STALE" } });
+    await expect(actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, photoStorageIds: [] })).rejects.toMatchObject({ data: { code: "BIOMETRIC_CONSENT_STALE" } });
+    await expect(actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, faceEncoding: encoding, consentAt: "invalid" })).rejects.toMatchObject({ data: { code: "BIOMETRIC_CONSENT_STALE" } });
   });
 
   it("deletes superseded photos while retaining photos still referenced by the replacement", async () => {
     const { actor, test, workerId, storageIds } = await setup("admin");
-    await actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, photoStorageIds: [storageIds[0]], consentAt: new Date().toISOString() });
+    await actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, faceEncoding: encoding, photoStorageIds: [storageIds[0]], consentAt: new Date().toISOString() });
     await test.run(async (ctx) => {
       expect(await ctx.storage.getUrl(storageIds[0])).not.toBeNull();
       expect(await ctx.storage.getUrl(storageIds[1])).toBeNull();
     });
-    await actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, consentAt: new Date().toISOString() });
+    await actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, faceEncoding: encoding, consentAt: new Date().toISOString() });
     await test.run(async (ctx) => {
       expect(await ctx.storage.getUrl(storageIds[0])).toBeNull();
       expect((await ctx.db.get(workerId))!.photoStorageIds).toBeUndefined();
@@ -179,9 +181,11 @@ describe("biometric write consent and replacement", () => {
 
   it("preserves consent and photos when changing metadata only", async () => {
     const { actor, test, workerId, storageIds } = await setup("admin");
+    const originalConsentAt = await test.run(async (ctx) => (await ctx.db.get(workerId))!.consentAt);
+    expect(originalConsentAt).toEqual(expect.any(String));
     await actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, department: "New", consentAt: "forged" });
     await test.run(async (ctx) => {
-      expect((await ctx.db.get(workerId))!.consentAt).not.toBe("forged");
+      expect((await ctx.db.get(workerId))!.consentAt).toBe(originalConsentAt);
       for (const id of storageIds) expect(await ctx.storage.getUrl(id)).not.toBeNull();
     });
   });
@@ -206,6 +210,6 @@ it("accepts up to six quality-approved photos and rejects larger sets", async ()
   const { actor, workerId } = await setup("admin");
   const photos = [];
   for (let i = 0; i < 7; i++) photos.push(await actor.action(api.enrollmentPhotos.upload, { photo: new TextEncoder().encode(String(i)).buffer }));
-  await expect(actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, photoStorageIds: photos.slice(0, 6), consentAt: new Date().toISOString() })).resolves.toEqual({ ok: true });
-  await expect(actor.mutation(api.workers.update, { id: workerId, faceEncoding: encoding, photoStorageIds: photos, consentAt: new Date().toISOString() })).rejects.toThrow("At most 6");
+  await expect(actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, faceEncoding: encoding, photoStorageIds: photos.slice(0, 6), consentAt: new Date().toISOString() })).resolves.toEqual({ ok: true });
+  await expect(actor.mutation(api.workers.update, { id: workerId, expectedIdentityRevision: (await actor.query(api.workers.get, { id: workerId }))?.identity_revision, faceEncoding: encoding, photoStorageIds: photos, consentAt: new Date().toISOString() })).rejects.toThrow("At most 6");
 });

@@ -19,7 +19,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 function request(photos: unknown = ['data:image/jpeg;base64,YQ==','data:image/jpeg;base64,Yg==','data:image/jpeg;base64,Yw==']) {
-  return new NextRequest('https://example.test/api/enroll', { method: 'POST', body: JSON.stringify({ name: 'Test Worker', photos, consent: true }) });
+  return new NextRequest('https://example.test/api/enroll', { method: 'POST', body: JSON.stringify({ name: 'Test Worker', photos, consent: true, consentAgeMs: 0 }) });
 }
 it('stores only photo indexes used by the quality gate', async () => {
   mocks.fetch.mockResolvedValueOnce(Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [1,2] }));
@@ -77,7 +77,7 @@ it('preserves the existing template and photos when reenrollment storage fails',
   mocks.fetch.mockResolvedValueOnce(Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [1,2] }));
   mocks.action.mockReset().mockResolvedValueOnce('new-photo').mockRejectedValueOnce(new Error('Synthetic outage'));
   const response = await POST(new NextRequest('https://example.test/api/enroll', { method: 'POST', body: JSON.stringify({
-    name: 'Test Worker', workerId: 'worker', expected_identity_revision: 'seen', consent: true,
+    name: 'Test Worker', workerId: 'worker', expected_identity_revision: 'seen', consent: true, consentAgeMs: 0,
     photos: ['data:image/jpeg;base64,YQ==','data:image/jpeg;base64,Yg==','data:image/jpeg;base64,Yw=='],
   }) }));
   expect(response.status).toBe(503);

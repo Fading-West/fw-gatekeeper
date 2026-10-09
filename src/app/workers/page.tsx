@@ -6,6 +6,7 @@ import { useToast } from '@/components/Toast';
 import { Worker } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { workerIdentityRevision } from '@/lib/worker-revision';
+import { useSelectedData } from '@/hooks/useSelectedData';
 
 function getEncodingStatus(worker: Worker) {
   if (worker.encoding_status) return worker.encoding_status;
@@ -22,7 +23,6 @@ function getInitials(name: string) {
 
 export default function WorkersPage() {
   const { toast } = useToast();
-  const [workers, setWorkers] = useState<Worker[]>([]);
   const [kioskPurgeStatus, setKioskPurgeStatus] = useState<{ pending: number; unconfirmed: number } | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -32,8 +32,6 @@ export default function WorkersPage() {
   const [employeeId, setEmployeeId] = useState('');
   const [department, setDepartment] = useState('');
   const currentRole = usePortalRole();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'missing' | 'invalid'>('all');
   const [departmentFilter, setDepartmentFilter] = useState('all');
@@ -55,28 +53,23 @@ export default function WorkersPage() {
   // worker-by-id prefill both authorize it, and it preserves metadata.
   const canEnroll = currentRole === 'admin' || currentRole === 'enrollment';
 
-  const fetchWorkers = useCallback(async () => {
-    if (currentRole === undefined) return;
-    setLoading(true);
-    setError('');
-    try {
+  const loadWorkers = useCallback(async (signal: AbortSignal): Promise<Worker[]> => {
+    if (currentRole === undefined) return [];
       // Non-admin roles are only authorized for the read-scoped roster
       // (readiness metadata, no admin management payload).
       const endpoint = currentRole === 'admin' ? (showInactive ? '/api/workers?active=false' : '/api/workers') : '/api/workers?scope=dashboard';
-      const res = await fetch(endpoint);
+      const res = await fetch(endpoint, { signal });
       if (!res.ok) {
         throw new Error(res.status === 401 ? 'Your account does not have access to the worker list.' : 'Failed to load workers');
       }
-      setWorkers(await res.json());
-    } catch (err) {
-      setWorkers([]);
-      setError(err instanceof Error ? err.message : 'Failed to load workers');
-    } finally {
-      setLoading(false);
-    }
+      const rows = await res.json();
+      if (!Array.isArray(rows)) throw new Error('The worker list returned an unexpected response. Try again.');
+      return rows;
   }, [currentRole, showInactive]);
-
-  useEffect(() => { fetchWorkers(); }, [fetchWorkers]);
+  const selection = `${currentRole ?? 'no-access'}|${currentRole === 'admin' && showInactive ? 'inactive' : 'active'}`;
+  const { data, loading: requestLoading, error, refresh: fetchWorkers } = useSelectedData(selection, loadWorkers);
+  const workers = data ?? [];
+  const loading = currentRole === undefined || requestLoading;
 
   const fetchKioskPurgeStatus = useCallback(async () => {
     try {

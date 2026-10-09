@@ -1,0 +1,35 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+stdout | review09-missing-time-route.test.ts > does not fabricate a new timestamp for an unkeyed timestamp-less legacy attempt
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+ ❯ review09-missing-time-route.test.ts (1 test | 1 failed) 15ms
+   × does not fabricate a new timestamp for an unkeyed timestamp-less legacy attempt 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review09-missing-time-route.test.ts > does not fabricate a new timestamp for an unkeyed timestamp-less legacy attempt
+AssertionError: expected 201 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 201
+
+ ❯ review09-missing-time-route.test.ts:10:26
+      8|  const body={attempts:[{faceDetected:true,decision:'near_miss',thresho…
+      9|  const response=await POST(new NextRequest('https://synthetic.test/api…
+     10|  expect(response.status).toBe(400);expect(mocks.ingest).not.toHaveBeen…
+       |                          ^
+     11| });
+     12|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  02:40:38
+   Duration  306ms (transform 33ms, setup 0ms, import 124ms, tests 15ms, environment 0ms)

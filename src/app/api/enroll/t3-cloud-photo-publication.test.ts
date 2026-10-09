@@ -13,11 +13,11 @@ vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn(async () => t
 import { POST } from './route';
 const modules = import.meta.glob('../../../../convex/**/*.ts');
 const encoding = Array(512).fill(0.1);
-const consentAt = '2026-10-02T12:00:00Z';
 
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetAllMocks(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetAllMocks(); vi.useRealTimers(); });
 
 async function setup() {
+  const consentAt = new Date().toISOString();
   const test = convexTest(schema, modules);
   const userId = await test.run(async (ctx) => {
     const id = await ctx.db.insert('users', { email: 'synthetic-admin@example.test' });
@@ -29,7 +29,7 @@ async function setup() {
   const worker = await actor.mutation(api.workers.create, { name: 'Synthetic Worker', faceEncoding: encoding, photoStorageIds: [legacy], consentAt });
   const current = await actor.query(api.workers.get, { id: worker.id });
   const request = () => new NextRequest('https://synthetic.test/api/enroll', { method: 'POST', body: JSON.stringify({
-    workerId: worker.id, expected_identity_revision: current!.identity_revision, name: 'Synthetic Worker', consent: true,
+    workerId: worker.id, expected_identity_revision: current!.identity_revision, name: 'Synthetic Worker', consent: true, consentAgeMs: 0,
     photos: ['data:image/jpeg;base64,YQ==', 'data:image/jpeg;base64,Yg==', 'data:image/jpeg;base64,Yw=='],
   }) });
   mocks.query.mockImplementation((ref, args) => actor.query(ref, args));
@@ -37,7 +37,7 @@ async function setup() {
   mocks.mutation.mockImplementation((ref, args) => actor.mutation(ref, args));
   vi.stubEnv('FACE_SERVICE_KEY', 'synthetic-only');
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ encoding: Array(512).fill(0.2), used_photo_indexes: [0,1,2] })));
-  return { test, actor, legacy, worker, request };
+  return { test, actor, legacy, worker, request, consentAt };
 }
 
 it.each([0,1,2])('keeps persisted biometrics intact when upload %i fails and removes only pending files', async (failedIndex) => {
@@ -53,7 +53,7 @@ it.each([0,1,2])('keeps persisted biometrics intact when upload %i fails and rem
 });
 
 it('preserves committed new photos after a lost save response and retains shared legacy attachments', async () => {
-  const { test, actor, worker, legacy, request } = await setup();
+  const { test, actor, worker, legacy, request, consentAt } = await setup();
   await test.run((ctx) => ctx.db.insert('workers', {
     name: 'Synthetic inactive legacy owner', department: '', active: false, enrolledAt: consentAt, photoStorageIds: [legacy],
   }));
@@ -69,4 +69,21 @@ it('preserves committed new photos after a lost save response and retains shared
   for (const id of stored!.photoStorageIds!) expect(await test.run((ctx) => ctx.storage.getUrl(id))).not.toBeNull();
   expect(await test.run((ctx) => ctx.storage.getUrl(legacy))).not.toBeNull();
   expect(await test.run((ctx) => ctx.db.query('pendingEnrollmentPhotos').collect())).toEqual([]);
+});
+
+it('rejects consent that expires during durable uploads and cleans only the pending photos', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-08T15:00:00Z'));
+  const { test, actor, worker, legacy, request } = await setup();
+  let uploads = 0;
+  mocks.action.mockImplementation(async (ref, args) => {
+    const result = await actor.action(ref, args);
+    if (++uploads === 1) vi.setSystemTime(new Date('2026-10-08T15:11:00Z'));
+    return result;
+  });
+  expect((await POST(request())).status).toBe(400);
+  expect(await test.run(ctx => ctx.db.get(worker.id as Id<'workers'>)))
+    .toMatchObject({ faceEncoding: encoding, photoStorageIds: [legacy] });
+  expect(await test.run(ctx => ctx.storage.getUrl(legacy))).not.toBeNull();
+  expect(await test.run(ctx => ctx.db.query('pendingEnrollmentPhotos').collect())).toEqual([]);
 });
