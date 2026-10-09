@@ -1,5 +1,10 @@
+import {
+  BIOMETRIC_CONSENT_ERROR_CODE,
+  BIOMETRIC_CONSENT_ERROR_MESSAGE,
+  isRecentBiometricConsent,
+} from "../src/lib/biometric-consent";
 import { internalQuery, query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -10,18 +15,18 @@ import { findEmployeeDirectoryById } from "../src/lib/employee-directory";
 
 // The kiosk matches exclusively 512-dim MobileFaceNet embeddings; legacy
 // 128-dim dlib encodings are invalid and require re-enrollment.
-const SUPPORTED_ENCODING_LENGTHS = new Set([512]);
+import { isSupportedEncoding } from "../src/lib/encoding";
 
 function isSupportedFaceEncoding(encoding?: number[]) {
   return (
     encoding === undefined ||
-    (SUPPORTED_ENCODING_LENGTHS.has(encoding.length) && encoding.every((value) => Number.isFinite(value)))
+    isSupportedEncoding(encoding)
   );
 }
 
 function assertBiometricConsent(consentAt?: string) {
-  if (!consentAt || !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:?\d{2})$/i.test(consentAt) || !Number.isFinite(Date.parse(consentAt))) {
-    throw new Error("Biometric consent must be confirmed before saving face data");
+  if (!isRecentBiometricConsent(consentAt)) {
+    throw new ConvexError({ code: BIOMETRIC_CONSENT_ERROR_CODE, message: BIOMETRIC_CONSENT_ERROR_MESSAGE });
   }
 }
 
@@ -175,7 +180,7 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       throw new Error("Worker name is required");
     }
     if (!isSupportedFaceEncoding(args.faceEncoding)) {
-      throw new Error("faceEncoding must contain 512 finite values");
+      throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
     assertBiometricConsent(args.consentAt);
     assertPhotoLimit(args.photoStorageIds);
@@ -209,12 +214,12 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
         enrolledAt: now,
         updatedAt: now,
         active: true,
-        consentAt: now,
+        consentAt: args.consentAt,
         consentRecordedBy: actorUserId,
         // A fresh enrollment supersedes any earlier purge marker.
         biometricsPurgedAt: undefined,
       });
-      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: now }) });
+      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: args.consentAt }) });
       return { id: existing._id, name, employeeId, department };
     }
 
@@ -227,10 +232,10 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       enrolledAt: now,
       updatedAt: now,
       active: true,
-      consentAt: now,
+      consentAt: args.consentAt,
       consentRecordedBy: actorUserId,
     });
-    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: now }) });
+    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: args.consentAt }) });
     await ctx.db.insert("peopleAlertEvents", {
       kind: "worker",
       targetId: id,
@@ -335,7 +340,7 @@ export const update = mutation({
     await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId, worker.photoStorageIds);
     const updates: Record<string, unknown> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
-      throw new Error("faceEncoding must contain 512 finite values");
+      throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
     const identities = fields.name !== undefined || fields.employeeId !== undefined
       ? await readWorkerIdentities(ctx) : undefined;
@@ -363,7 +368,7 @@ export const update = mutation({
     if (fields.photoStorageIds !== undefined) updates.photoStorageIds = fields.photoStorageIds;
     if (fields.faceEncoding !== undefined) updates.enrolledAt = new Date().toISOString();
     if (writesBiometrics) {
-      updates.consentAt = new Date().toISOString();
+      updates.consentAt = fields.consentAt;
       updates.consentRecordedBy = member.userId;
       // An updated template supersedes its old enrollment photographs too.
       await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, fields.photoStorageIds);
