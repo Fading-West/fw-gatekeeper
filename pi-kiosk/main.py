@@ -473,7 +473,8 @@ def run(args):
         result["liveness_confirmed"] = liveness_confirmed
         try:
             recognizer.liveness_policy.record(
-                database.log_attendance,
+                database.log_recognized_attendance,
+                expected_encoding=result.get("candidate_encoding"),
                 worker_id=worker_id, worker_name=display_name,
                 action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
                 server_worker_id=server_worker_id,
