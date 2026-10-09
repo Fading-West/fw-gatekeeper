@@ -12,3 +12,9 @@ Review repair: current-record recovery belongs to the rendered editor generation
 # Creation receipt composition repair
 
 Composes the complete repaired rank15 head 00086dbecb82b3b64a1a044c92fe32e3cf96ff6b, including actor-owned pending creation receipts, verified durable preflight, non-destructive completed markers, captured-request acknowledgement and retired-flight guards. The prior compositions of ea59385c21c531a7cacd56ad12e3b85e4292838a and 5d2e620bbb3e1bae7d1c73b0981b26772b81fc54 remain preserved. Original rank16 head 819cdd45ba1db31cab64f7140c709620a43a87a8 and every earlier revision guard remain parents. Current-schedule recovery checks actor identity as well as authority and editor generation; an admin-to-admin account switch cannot restore the previous actor's edit session. Added that transition to the actual recovery component fixture and updated actor mocks for existing fixtures. The complete dependency's actual component-to-real-Convex durability, full module/page reload, known-completion and hung-flight regressions remain included. Source only; root owns exact runtime gates.
+
+## October 8 review against master
+
+Merged the pushed, fixed #112 parent, which also brings current master into this stack without conflicts. This retains #112's HTTP actor/receipt guard and #113's stale revision checks. Added a real HTTP-route/Convex regression proving stale update and removal responses are 409, the newer row remains intact, and lost-response update/removal retries do not increment revisions twice. No additional correctness issue was found in the revision logic.
+
+Schema review: this PR adds optional numeric `schedules.revision` beyond #112's three optional creation fields and actor/request index. Existing rows are exposed as revision zero and acquire a revision on their first modifying write; no backfill is required. The parent's schema hold also applies to this stack. No schema changes were introduced by this review.
