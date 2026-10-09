@@ -1,14 +1,21 @@
 export const BIOMETRIC_CONSENT_MAX_AGE_MS = 10 * 60_000;
+/**
+ * Allow timer sampling jitter and ordinary gradual NTP slewing over the ten-minute window.
+ * A typical 500 ppm slew adds only 300 ms over ten minutes, leaving ample sampling headroom.
+ * Larger clock disagreement makes the elapsed age uncertain and requires re-acknowledgement.
+ */
+export const BIOMETRIC_CONSENT_CLOCK_TOLERANCE_MS = 2_000;
 export const BIOMETRIC_CONSENT_ERROR_CODE = 'BIOMETRIC_CONSENT_STALE';
 export const BIOMETRIC_CONSENT_ERROR_MESSAGE = 'Confirm biometric consent again before enrolling a face; the acknowledgement must be recent.';
 
 export type BiometricConsentStart = { monotonicMs: number; wallMs: number };
 
-/** Wall elapsed time covers sleep on platforms whose monotonic clock pauses. */
-export function biometricConsentAgeMs(start: BiometricConsentStart): number {
+/** Return null when sleep or a clock correction prevents trusting the elapsed age. */
+export function biometricConsentAgeMs(start: BiometricConsentStart): number | null {
   const monotonicElapsed = performance.now() - start.monotonicMs;
   const wallElapsed = Date.now() - start.wallMs;
-  return Math.ceil(wallElapsed < 0 ? monotonicElapsed : Math.max(monotonicElapsed, wallElapsed));
+  if (Math.abs(wallElapsed - monotonicElapsed) > BIOMETRIC_CONSENT_CLOCK_TOLERANCE_MS) return null;
+  return Math.ceil(Math.max(monotonicElapsed, wallElapsed));
 }
 
 /** The page reports whole elapsed milliseconds since acknowledgement. */

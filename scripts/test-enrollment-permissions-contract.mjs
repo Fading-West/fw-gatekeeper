@@ -126,5 +126,5 @@ console.log('Enrollment permissions contract passed');
 
 const enrollmentConsentPage = read('src/app/enroll/page.tsx');
 assert.match(enrollmentConsentPage, /const startCamera = async \(\) => \{[\s\S]*?setConsentConfirmed\(false\)/, 'Each camera session must collect fresh biometric consent.');
-assert.match(enrollmentConsentPage, /if \(!consentConfirmed \|\| !isRecentBiometricConsentAge\(consentAgeMs\)\) throw new Error/, 'Submitting face data must enforce the current consent choice.');
+assert.match(enrollmentConsentPage, /if \(!consentConfirmed \|\| !isRecentBiometricConsentAge\(consentAgeMs\)\)\s*\{[^}]*throw new Error/, 'Submitting face data must enforce the current consent choice.');
 assert.match(enrollmentConsentPage, /consent: consentConfirmed/, 'Enrollment must send the actual consent choice, never a hard-coded acknowledgement.');

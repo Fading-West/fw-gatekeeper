@@ -263,7 +263,11 @@ function EnrollPageContent() {
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
       const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
-      if (!consentConfirmed || !isRecentBiometricConsentAge(consentAgeMs)) throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
+      if (!consentConfirmed || !isRecentBiometricConsentAge(consentAgeMs)) {
+        setConsentConfirmed(false);
+        setConsentStartedAt(null);
+        throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
+      }
       const res = await fetch('/api/enroll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -310,6 +314,8 @@ function EnrollPageContent() {
     if (!consentConfirmed) return;
     const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
     if (!isRecentBiometricConsentAge(consentAgeMs)) {
+      setConsentConfirmed(false);
+      setConsentStartedAt(null);
       stopCamera();
       setErrorMsg('Consent expired. Confirm biometric consent again before enrolling.');
       setStep('error');
