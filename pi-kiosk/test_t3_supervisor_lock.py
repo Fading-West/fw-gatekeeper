@@ -61,6 +61,16 @@ class SupervisorLockTests(unittest.TestCase):
         self.assertEqual(copied.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 401)
         self.assertEqual(first.post("/supervisor/lock", headers=headers).status_code, 200)
 
+    def test_supervisor_routes_reject_non_object_payloads(self):
+        with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
+            import app
+        client = app.app.test_client()
+        headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
+        for route in ("/supervisor/unlock", "/supervisor/lock"):
+            for payload in (["invalid"], "invalid", 1):
+                with self.subTest(route=route, payload=payload):
+                    self.assertEqual(client.post(route, json=payload, headers=headers).status_code, 400)
+
     def test_cancel_before_generation_and_after_cookie_creation(self):
         auth.revoke_supervisor_session(None, "before")
         with self.assertRaises(ValueError):

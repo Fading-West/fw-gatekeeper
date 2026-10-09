@@ -16,7 +16,7 @@ const context = vm.createContext({
     supervisorDialog: { close() {} }, crypto: { randomUUID() { return 'synthetic-operation'; } },
     setAdminVisible(visible) { if (context.adminVisible !== visible) context.supervisorStateVersion += 1; context.adminVisible = visible; },
     openSupervisorDialog() { throw new Error('Must finish lock before unlocking'); },
-    fetchStatus() {},
+    fetchStatus() {}, fetchLog() {},
     async fetch(url, options) {
         calls.push({ url, body: JSON.parse(options.body), signal: options.signal });
         if (url === '/supervisor/unlock') return new Promise(resolve => { unlockResponse = resolve; });

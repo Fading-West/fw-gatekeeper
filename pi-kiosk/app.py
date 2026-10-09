@@ -296,7 +296,11 @@ def supervisor_unlock():
             "error": "Too many failed attempts. Try again later.",
             "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
         }), 429
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Supervisor request requires an object"}), 400
     operation = payload.get("request_id")
     if payload.get("boot_nonce") != get_supervisor_boot_nonce():
         return jsonify({"success": False, "error": "Kiosk session changed. Refresh before unlocking."}), 409
@@ -331,7 +335,11 @@ def supervisor_unlock():
 @app.route("/supervisor/lock", methods=["POST"])
 @kiosk_ui_auth_required
 def supervisor_lock():
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Supervisor request requires an object"}), 400
     operation = payload.get("request_id")
     if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
         return jsonify({"success": False, "error": "Invalid unlock request"}), 400
