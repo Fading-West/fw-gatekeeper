@@ -220,6 +220,7 @@ export default defineSchema({
       knownWorkers: v.optional(v.float64()),
       queuedLogs: v.optional(v.float64()),
       queuedAttempts: v.optional(v.float64()),
+      rejectedAttempts: v.optional(v.float64()),
       degradedReason: v.optional(v.string()),
       lastScanAt: v.optional(v.string()),
       reportedAt: v.string(),

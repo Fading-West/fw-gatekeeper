@@ -18,7 +18,7 @@ it('acknowledges retries and preserves distinct UUIDs after a database reset', a
 it.each(['timestamp', 'kioskId', 'decision', 'bestScore', 'threshold'] as const)('rejects conflicting %s without committing a partial batch', async field => {
   const t = setup();
   await ingest(t, [attempt]);
-  const conflict = { ...attempt, [field]: typeof attempt[field] === 'number' ? 0.5 : 'changed' };
+  const conflict = { ...attempt, [field]: typeof attempt[field] === 'number' ? 0.5 : field === 'timestamp' ? '2026-09-15T08:00:00' : 'changed' };
   await expect(ingest(t, [{ ...attempt, sourceAttemptId: 'new' }, conflict])).rejects.toThrow('different evidence');
   expect(await t.run(ctx => ctx.db.query('recognitionAttempts').collect())).toHaveLength(1);
 });
