@@ -28,7 +28,7 @@ describe('attendance correction request identity', () => {
     expect(await admin.query(api.attendance.list, { date: args.date })).toHaveLength(1);
   });
 
-  it.each(['date', 'workerId', 'action', 'correctedTimestamp', 'relatedExceptionKey', 'reason', 'supervisorName'] as const)('rejects changed %s with the same key', async (field) => {
+  it.each(['date', 'workerId', 'action', 'correctedTimestamp', 'relatedExceptionKey', 'sourceFingerprint', 'reason', 'supervisorName'] as const)('rejects changed %s with the same key', async (field) => {
     const { admin, args } = await setup();
     await admin.mutation(api.attendanceCorrections.create, args);
     const otherWorkerId = await admin.run((ctx) => ctx.db.insert('workers', { name: 'Other worker', department: 'Operations', active: true, enrolledAt: '2026-09-01' }));

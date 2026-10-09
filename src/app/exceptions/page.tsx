@@ -45,6 +45,7 @@ type CorrectionDraft = {
   suggestedCorrectedTime: string;
   originalAttendanceId: string | null;
   sourceExceptionKey: string;
+  sourceFingerprint: string;
   sourceHref: string | null;
   reason: string;
   reasonWasSuggested: boolean;
@@ -188,6 +189,7 @@ function ExceptionsPageContent() {
   const [status, setStatus] = useState<ShiftExceptionStatus | 'all'>(queryStatus);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [correctionDraft, setCorrectionDraft] = useState<CorrectionDraft | null>(null);
+  const [correctionSourceConflict, setCorrectionSourceConflict] = useState('');
   const [handledIntentKey, setHandledIntentKey] = useState('');
   const [savingCorrection, setSavingCorrection] = useState(false);
   const [isPending, setIsPending] = useState(false);
@@ -278,6 +280,7 @@ function ExceptionsPageContent() {
   }
 
   function openCorrection(exception: ShiftException) {
+    setCorrectionSourceConflict('');
     if (!dataReady || exception.date !== date || reviewPendingRef.current) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can correct attendance.', 'error');
@@ -297,6 +300,7 @@ function ExceptionsPageContent() {
       suggestedCorrectedTime: resolution.corrected_time || '',
       originalAttendanceId: resolution.original_attendance_id,
       sourceExceptionKey: resolution.source_exception_key,
+      sourceFingerprint: exception.source_fingerprint,
       sourceHref: resolution.source_href,
       reason: existingReason || resolution.reason,
       reasonWasSuggested: !existingReason,
@@ -375,6 +379,7 @@ function ExceptionsPageContent() {
   }, [filtered, queryExceptionKey]);
 
   async function submitCorrection() {
+    if (correctionSourceConflict) return;
     if (!dataReady || correctionPendingRef.current || correctionDraft?.exception.date !== date) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can save attendance corrections.', 'error');
@@ -405,6 +410,7 @@ function ExceptionsPageContent() {
       corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
       original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
       related_exception_key: correctionDraft.sourceExceptionKey,
+      source_fingerprint: correctionDraft.sourceFingerprint,
       reason: correctionDraft.reason.trim(),
       supervisor_name: correctionDraft.supervisorName.trim(),
     };
@@ -418,6 +424,12 @@ function ExceptionsPageContent() {
         body: JSON.stringify({ ...request, request_id: correctionRequestId(request) }),
       });
       const body = await res.json().catch(() => ({}));
+      if (res.status === 409 && body.code === 'CORRECTION_SOURCE_CONFLICT') {
+        setCorrectionSourceConflict(body.error);
+        await fetchExceptions();
+        toast(body.error, 'error');
+        return;
+      }
       if (!res.ok) throw new Error(body?.error || 'Failed to save correction');
       acknowledgeCorrectionRequest(request);
       toast('Attendance correction saved');
@@ -788,11 +800,16 @@ function ExceptionsPageContent() {
               />
             </label>
 
+            {correctionSourceConflict && (
+              <p role="alert" className="mt-4 text-sm text-amber-300">
+                {correctionSourceConflict} Your draft is retained below. Close it to review the refreshed source evidence.
+              </p>
+            )}
             <div className="mt-5 flex flex-wrap justify-end gap-3">
               <button type="button" className="btn-secondary" onClick={() => setCorrectionDraft(null)} disabled={savingCorrection}>
                 Cancel
               </button>
-              <button type="button" className="btn-primary" onClick={submitCorrection} disabled={savingCorrection || !correctionDraft.reason.trim()}>
+              <button type="button" className="btn-primary" onClick={submitCorrection} disabled={!dataReady || Boolean(correctionSourceConflict) || savingCorrection || !correctionDraft.reason.trim()}>
                 {savingCorrection ? 'Saving...' : 'Save correction'}
               </button>
             </div>

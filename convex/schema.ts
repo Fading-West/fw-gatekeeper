@@ -120,6 +120,7 @@ export default defineSchema({
     correctedTimestamp: v.optional(v.string()),
     originalAttendanceId: v.optional(v.id("attendance")),
     relatedExceptionKey: v.optional(v.string()),
+    sourceFingerprint: v.optional(v.string()),
     reason: v.string(),
     supervisorName: v.optional(v.string()),
     actorUserId: v.optional(v.id("users")),
