@@ -473,6 +473,11 @@ def run(args):
             last_action = database.get_last_action(worker_id)
             action = "clock_out" if last_action == "clock_in" else "clock_in"
 
+        # Blink-frame inference and metadata reads can outlive the consumer's
+        # freshness check. Recheck at the attendance boundary using the clock
+        # now, rather than the time sampled at the start of this loop tick.
+        if not is_fresh_scan(result, time.time(), camera_invalidated_at[0]):
+            return False
         result["liveness_confirmed"] = liveness_confirmed
         try:
             recognizer.liveness_policy.record(
@@ -592,6 +597,18 @@ def run(args):
             #    cycles can never complete someone else's attendance.
             pending = pending_clock[0]
             if pending is not None:
+                # A late result or slow blink must not extend an expired attempt.
+                if now > pending["deadline"]:
+                    pending_clock[0] = None
+                    current_result[0] = None
+                    _log_recognition_attempt(pending["result"], "rejected_liveness_timeout")
+                    liveness.reset()
+                    box_loc = None
+                    box_label = None
+                    web_app.update_status(state="NOT_RECOGNIZED", message="Verification interrupted - please try again",
+                                          worker_name=None, worker_id=None, face_detected=False,
+                                          known_workers=recognizer.known_count)
+                    continue
                 fresh = current_result[0]
                 if not is_fresh_scan(fresh, now, camera_invalidated_at[0]):
                     fresh = None
