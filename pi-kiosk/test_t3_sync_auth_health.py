@@ -158,6 +158,45 @@ class SyncAuthHealthTests(unittest.TestCase):
             self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], [])
             self.assertTrue(self.tracker.snapshot()["sync_auth_phases"]["roster"])
 
+    def test_failed_legacy_photo_download_cannot_clear_roster_denial(self):
+        response = mock.Mock(status_code=200, json=lambda: {
+            "workers": [{"id": "synthetic-worker", "active": True, "name": "Worker",
+                         "face_encoding": [0.1] * 512, "photo_url": "https://synthetic.test/photo"}],
+            "synced_at": "2026-10-02T12:00:00",
+        })
+        with mock.patch.object(sync.database, "has_workers_missing_employee_id", return_value=False), \
+             mock.patch.object(sync.database, "get_sync_state", return_value=None), \
+             mock.patch.object(sync.database, "set_sync_state"), \
+             mock.patch.object(sync.database, "delete_sync_state"), \
+             mock.patch.object(sync.database, "recover_photo_cleanup"), \
+             mock.patch.object(sync.database, "replaced_worker_photo_paths", return_value=[]), \
+             mock.patch.object(sync.database, "record_photo_cleanup"), \
+             mock.patch.object(sync.database, "add_worker") as applied, \
+             mock.patch.object(sync, "_download_photo", return_value=None), \
+             mock.patch.object(sync.requests, "get", return_value=response):
+            self.tracker.observe("roster", 401)
+            self.assertTrue(sync.sync_workers(), "Retain legacy application compatibility")
+            applied.assert_called_once()
+            self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["roster"])
+
+    def test_legacy_deactivation_cleanup_failure_cannot_clear_roster_denial(self):
+        response = mock.Mock(status_code=200, json=lambda: {
+            "workers": [{"id": "synthetic-worker", "active": False}],
+            "synced_at": "2026-10-02T12:00:00",
+        })
+        # Legacy removal logs cleanup failures without raising. Retry cleanup
+        # after applying rows before calling the protected phase confirmed.
+        with mock.patch.object(sync.database, "has_workers_missing_employee_id", return_value=False), \
+             mock.patch.object(sync.database, "get_sync_state", return_value=None), \
+             mock.patch.object(sync.database, "set_sync_state"), \
+             mock.patch.object(sync.database, "delete_sync_state"), \
+             mock.patch.object(sync.database, "remove_worker_by_server_id", return_value=True), \
+             mock.patch.object(sync.database, "recover_photo_cleanup", side_effect=[None, OSError("cleanup pending")]), \
+             mock.patch.object(sync.requests, "get", return_value=response):
+            self.tracker.observe("roster", 401)
+            self.assertTrue(sync.sync_workers(), "Retain legacy application compatibility")
+            self.assertEqual(self.tracker.snapshot()["sync_auth_faults"], ["roster"])
+
 
 if __name__ == "__main__":
     unittest.main()

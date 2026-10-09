@@ -482,6 +482,8 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     staged_photo, photo_path = photo_download
                 elif receipt_protocol:
                     raise ValueError(f"Worker photo download failed for {server_id}")
+                else:
+                    fully_applied = False
 
             try:
                 retired_photos = database.replaced_worker_photo_paths(
@@ -535,6 +537,14 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             database.delete_sync_state("roster_pending_receipt")
             database.set_sync_state("last_worker_sync", data.get("synced_at") or datetime.now().isoformat())
         logger.info("Worker sync complete: %d workers", len(workers))
+        if not receipt_protocol:
+            # Legacy deactivation keeps its return contract when thumbnail
+            # cleanup fails. Confirm the journal is drained before recovery.
+            try:
+                database.recover_photo_cleanup()
+            except (OSError, ValueError):
+                fully_applied = False
+                logger.warning("Legacy roster sync completed with thumbnail cleanup pending")
         if fully_applied and "workers" in data and _valid_sync_timestamp(data.get("synced_at")):
             sync_auth_health.observe("roster", r.status_code, validated=True)
         return True
