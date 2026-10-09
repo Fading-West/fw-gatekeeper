@@ -1,0 +1,33 @@
+# Ranked gap 3: Require a recent biometric consent acknowledgement
+
+Problem: Any parseable old or future consentAt is accepted and replaced with current server time, making stale consent appear fresh after re-enrollment.
+
+User: Employees and enrollment operators.
+
+Benefit: Requires a current acknowledgement when saving new biometric data and allows ordinary roster metadata edits.
+
+Priority rationale: Every enrollment or face replacement; high privacy impact; small change. Frequency refers to the affected operation, not measured production incident rates; no quantitative time-savings claim is made.
+
+Scope: The implementation and regression tests in this PR. Existing attendance remains preserved; no production configuration, deployed services, real credentials, or real face data are changed.
+
+Acceptance: Reject acknowledgements older than ten minutes or more than one minute ahead; accept fresh explicit-offset timestamps for create and biometric update; identity-only edits remain unaffected.
+
+Dependencies: Independently based on master `0ab3795986cb0bad446a644f7b91394a83f2cff8`. Uses existing Node 22 / locked npm dependencies and isolated Python 3.11 CI dependencies. No new paid service. Other recognition/enrollment PRs touch shared files; combine them deliberately and rerun the suite before release. Physical/native-device acceptance and release verification remain pending.
+
+Test plan: Run the focused regression, all repository tests (Vitest/Convex test runtime, isolated Python tests, source contracts), both TypeScript checks, ESLint, and a production Next.js build. Review permissions, atomic writes, replay and event ordering as applicable. The automated checks use synthetic isolated records and mocked service/network boundaries; they do not establish physical recognition accuracy or production deployment health.
+
+```sh
+npx vitest run convex/oct02-fresh-biometric-consent.test.ts
+PYTHON=/path/to/isolated/venv/bin/python npm test
+npm run typecheck
+npm run lint
+NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud NEXT_TELEMETRY_DISABLED=1 npm run build
+```
+
+Physical acceptance procedure: In an isolated staging installation with authorized test users and existing configuration, exercise the changed path and its denial/retry cases, check manager views and audit/attendance preservation, then perform release checks before deploying. No production or physical-device acceptance was run in this task.
+
+Evidence: Automated regression failures before the change and passing checks after it are retained in the task evidence. Final PR descriptions identify the exact published head and its executed checks. No deployment, merge, or physical acceptance is implied.
+
+## Integration review revision
+
+The checkbox records a monotonic start time and the enrollment request sends whole elapsed milliseconds as `consentAgeMs`, avoiding operator wall-clock skew. The API requires an age between zero and ten minutes and derives `consentAt` from its own server clock; Convex retains its timestamp freshness validation and stores that validated value unchanged. The UI rejects expiry before capture/submit, the API rechecks after encoding, and structured Convex consent failures return HTTP 400 even if consent expires during photo uploads. Worker metadata-only updates remain allowed. Tests exercise the checkbox lifecycle and resets, browser clock skew, invalid ages, exact timestamp storage and forwarding, expiry, and mutation error mapping.

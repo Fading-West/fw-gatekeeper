@@ -100,7 +100,10 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'JSON object required' }, { status: 400 });
+    }
     const date = optionalString(body.date);
     const action = optionalString(body.action) || 'save';
 
@@ -114,12 +117,23 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'action must be save, complete, or reopen' }, { status: 400 });
     }
 
+    // Empty strings explicitly clear fields; omitted fields preserve saved values.
+    const supervisorName = body.supervisor_name !== undefined ? body.supervisor_name : body.supervisorName;
+    const acknowledgedBlockers = body.acknowledged_blockers !== undefined ? body.acknowledged_blockers : body.acknowledgedBlockers;
+    if ((supervisorName !== undefined && typeof supervisorName !== 'string') ||
+        (body.notes !== undefined && typeof body.notes !== 'string')) {
+      return NextResponse.json({ error: 'supervisor name and notes must be strings' }, { status: 400 });
+    }
+    if (acknowledgedBlockers !== undefined && typeof acknowledgedBlockers !== 'boolean') {
+      return NextResponse.json({ error: 'acknowledged blockers must be a boolean' }, { status: 400 });
+    }
+
     const result = await convex.mutation((api as any).shiftCloseouts.save, {
       date,
       action,
-      supervisorName: optionalString(body.supervisor_name) || optionalString(body.supervisorName),
-      notes: optionalString(body.notes),
-      acknowledgedBlockers: Boolean(body.acknowledged_blockers ?? body.acknowledgedBlockers),
+      supervisorName: supervisorName?.trim(),
+      notes: body.notes?.trim(),
+      acknowledgedBlockers,
       blockerEvidence: optionalString(body.blocker_evidence ?? body.blockerEvidence),
     });
 
