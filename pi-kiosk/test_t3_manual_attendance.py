@@ -94,10 +94,12 @@ class ManualAttendanceTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
             import app
         with mock.patch.object(config, "KIOSK_UI_KEY", "synthetic-ui", create=True), mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "synthetic-pin", create=True):
-            from kiosk_ui_auth import KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token
+            from kiosk_ui_auth import KIOSK_SUPERVISOR_SESSION_COOKIE
             client = app.app.test_client()
-            client.set_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token())
             headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
+            boot_nonce = client.get("/health").get_json().get("supervisor_boot_nonce")
+            unlocked = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "boot_nonce": boot_nonce}, headers=headers)
+            self.assertEqual(unlocked.status_code, 200)
             worker = self.worker()
             args = {"worker_id": worker, "request_id": "route-operation"}
             with mock.patch.object(app, "_manual_action_for_worker", side_effect=ValueError("Invalid kiosk policy")):
