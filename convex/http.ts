@@ -270,6 +270,11 @@ const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'attempts array required' }, 400);
   }
 
+  if (body.attempts.some((attempt: unknown) => !attempt || typeof attempt !== 'object' ||
+      typeof (attempt as { timestamp?: unknown }).timestamp !== 'string')) {
+    return jsonResponse({ error: 'Each recognition attempt requires its captured timestamp', code: 'INVALID_RECOGNITION_TIMESTAMP' }, 400);
+  }
+
   try {
     const result = await ctx.runMutation(internal.recognitionAttempts.bulkIngestFromHttp, {
       attempts: body.attempts,

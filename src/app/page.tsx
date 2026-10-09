@@ -9,6 +9,7 @@ import { buildLiveShiftSentinelItems, buildProactiveActions, getLiveShiftSentine
 import type { LiveShiftSentinelItem, LiveShiftSentinelSnapshot, ProactiveActionFreshness, ProactiveSignalFreshness } from '@/lib/proactive-actions';
 import type { ShiftBriefingResponse, ShiftCloseoutResponse, ShiftException, ShiftExceptionsResponse, ShiftTrustBriefStatus } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { latestAttendanceByWorker } from '@/lib/attendance-presence';
 
 interface WorkerWithStatus {
   id: string;
@@ -35,6 +36,7 @@ interface AttendanceEvent {
   worker_department?: string;
   event_type: 'clock_in' | 'clock_out' | string;
   timestamp: string;
+  timestamp_utc?: string | null;
   kiosk_id?: string | null;
   kiosk_name?: string | null;
 }
@@ -407,14 +409,8 @@ export default function Dashboard() {
         }
       });
 
-      const statusMap = new Map<string, { event_type: string; timestamp: string }>();
       const attendanceForRoster = nextAttendance || attendanceEventsRef.current;
-      for (const e of attendanceForRoster) {
-        const existing = statusMap.get(e.worker_id);
-        if (!existing || e.timestamp > existing.timestamp) {
-          statusMap.set(e.worker_id, { event_type: e.event_type, timestamp: e.timestamp });
-        }
-      }
+      const statusMap = latestAttendanceByWorker(attendanceForRoster);
 
       const workersForRoster = nextWorkers as DashboardWorkerPayload[] | null;
       if (workersForRoster) {

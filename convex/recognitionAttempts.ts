@@ -1,4 +1,5 @@
 import { getFactoryLocalDateKey } from "./localDate";
+import { isValidAttendanceTimestamp } from "./attendanceValidation";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -128,7 +129,12 @@ function normalizeAttempt(attempt: {
       throw new ConvexError({ code: "INVALID_RECOGNITION_METRIC", message: `Invalid recognition metric: ${field}` });
     }
   }
-  const reviewed = attempt.reviewed ?? false;
+
+  const timestamp = attempt.timestamp.trim();
+  if (!isValidAttendanceTimestamp(timestamp) || !createRecognitionTimestampSortKey()(timestamp)) {
+    throw new ConvexError({ code: "INVALID_RECOGNITION_TIMESTAMP", message: "Recognition timestamp must identify a valid factory-local or offset instant" });
+  }
+  const reviewed = false; // Kiosks supply evidence; only portal operators may review it.
   return {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),
     kioskId: normalizeRequiredText(attempt.kioskId, "kioskId"),
@@ -149,9 +155,9 @@ function normalizeAttempt(attempt: {
     brightness: attempt.brightness,
     blur: attempt.blur,
     reviewed,
-    reviewedLabel: normalizeOptionalText(attempt.reviewedLabel),
-    reviewedNote: normalizeOptionalText(attempt.reviewedNote),
-    reviewedAt: reviewed ? normalizeOptionalText(attempt.reviewedAt) : undefined,
+    reviewedLabel: undefined,
+    reviewedNote: undefined,
+    reviewedAt: undefined,
   };
 }
 
@@ -162,7 +168,7 @@ const evidenceFields = [
   "livenessConfirmed", "modelVersion", "imageQuality", "faceQuality", "brightness", "blur",
 ] as const;
 function sameEvidence(
-  existing: Partial<ReturnType<typeof normalizeAttempt>>,
+  existing: Partial<Pick<ReturnType<typeof normalizeAttempt>, typeof evidenceFields[number]>>,
   incoming: ReturnType<typeof normalizeAttempt>,
 ) {
   return evidenceFields.every(field => existing[field] === incoming[field]);
@@ -309,7 +315,7 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
     reviewedAt?: string;
   }>;
 }) {
-    const seenLegacyKeys = new Set<string>();
+    const seenLegacyEvidence = new Map<string, ReturnType<typeof normalizeAttempt>[]>();
     const insertedIds = [];
     let skipped = 0;
     const now = new Date().toISOString();
@@ -354,11 +360,20 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
       } else {
         // Preserve the previous behavior for unkeyed legacy clients.
         const key = `${normalized.kioskId}:${normalized.timestamp}:${normalized.candidateWorkerId || ""}:${normalized.decision}`;
-        if (seenLegacyKeys.has(key)) {
+        if (seenLegacyEvidence.get(key)?.some(row => sameEvidence(row, normalized))) {
           skipped++;
           continue;
         }
-        seenLegacyKeys.add(key);
+        seenLegacyEvidence.set(key, [...seenLegacyEvidence.get(key) ?? [], normalized]);
+        const prior = await ctx.db.query("recognitionAttempts")
+          .withIndex("by_kiosk_timestamp_candidate_decision", q => q.eq("kioskId", normalized.kioskId).eq("timestamp", normalized.timestamp).eq("candidateWorkerId", normalized.candidateWorkerId).eq("decision", normalized.decision))
+          .filter(q => q.and(q.eq(q.field("sourceAttemptId"), undefined),
+            ...evidenceFields.map(field => q.eq(q.field(field), normalized[field]))))
+          .first();
+        if (prior && sameEvidence(prior, normalized)) {
+          skipped++;
+          continue;
+        }
       }
 
       const id = await ctx.db.insert("recognitionAttempts", {

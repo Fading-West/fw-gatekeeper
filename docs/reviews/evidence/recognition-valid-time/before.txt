@@ -1,0 +1,35 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/10-recognition-valid-time
+
+ ❯ convex/oct02-recognition-valid-time.test.ts (1 test | 1 failed) 39ms
+   × rejects invalid time atomically and retains valid offline timestamp formats 38ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  convex/oct02-recognition-valid-time.test.ts > rejects invalid time atomically and retains valid offline timestamp formats
+AssertionError: promise resolved "{ ids: [ …(2) ], ingested: 2, …(1) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "ids": [
++     "0000000010002recognitionAttempts",
++     "0000000010003recognitionAttempts",
++   ],
++   "ingested": 2,
++   "skipped": 0,
+  }
+
+ ❯ convex/oct02-recognition-valid-time.test.ts:20:161
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  01:46:09
+   Duration  366ms (transform 71ms, setup 0ms, import 170ms, tests 39ms, environment 0ms)

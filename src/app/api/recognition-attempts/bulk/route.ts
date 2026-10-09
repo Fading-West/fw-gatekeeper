@@ -50,7 +50,7 @@ function normalizeAttempt(raw: any, kioskId: string) {
       optionalString(raw.id),
     legacySourceAttemptId: optionalString(raw.legacy_source_attempt_id) || optionalString(raw.legacySourceAttemptId),
     kioskId,
-    timestamp: optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt) || new Date().toISOString(),
+    timestamp: (optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt))!,
     faceDetected:
       optionalBoolean(raw.face_detected) ??
       optionalBoolean(raw.faceDetected) ??
@@ -109,6 +109,10 @@ export async function POST(req: NextRequest) {
     for (const attempt of attempts) {
       const invalid = invalidRawMetric(attempt);
       if (invalid) return NextResponse.json({ error: `Invalid recognition metric: ${invalid}`, code: 'INVALID_RECOGNITION_METRIC' }, { status: 400 });
+    }
+
+    if (attempts.some((raw: any) => !(optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt)))) {
+      return NextResponse.json({ error: 'Each recognition attempt requires its captured timestamp for safe retry.', code: 'INVALID_RECOGNITION_TIMESTAMP' }, { status: 400 });
     }
 
     const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, kioskEvidenceId(identity, attempt, body)));
