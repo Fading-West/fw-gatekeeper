@@ -1,5 +1,10 @@
+import {
+  BIOMETRIC_CONSENT_ERROR_CODE,
+  BIOMETRIC_CONSENT_ERROR_MESSAGE,
+  isRecentBiometricConsent,
+} from "../src/lib/biometric-consent";
 import { internalQuery, query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -20,8 +25,8 @@ function isSupportedFaceEncoding(encoding?: number[]) {
 }
 
 function assertBiometricConsent(consentAt?: string) {
-  if (!consentAt || !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:?\d{2})$/i.test(consentAt) || !Number.isFinite(Date.parse(consentAt))) {
-    throw new Error("Biometric consent must be confirmed before saving face data");
+  if (!isRecentBiometricConsent(consentAt)) {
+    throw new ConvexError({ code: BIOMETRIC_CONSENT_ERROR_CODE, message: BIOMETRIC_CONSENT_ERROR_MESSAGE });
   }
 }
 
@@ -209,12 +214,12 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
         enrolledAt: now,
         updatedAt: now,
         active: true,
-        consentAt: now,
+        consentAt: args.consentAt,
         consentRecordedBy: actorUserId,
         // A fresh enrollment supersedes any earlier purge marker.
         biometricsPurgedAt: undefined,
       });
-      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: now }) });
+      await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: args.consentAt }) });
       return { id: existing._id, name, employeeId, department };
     }
 
@@ -227,10 +232,10 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
       enrolledAt: now,
       updatedAt: now,
       active: true,
-      consentAt: now,
+      consentAt: args.consentAt,
       consentRecordedBy: actorUserId,
     });
-    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: now }) });
+    await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: id, details: JSON.stringify({ consentAt: args.consentAt }) });
     await ctx.db.insert("peopleAlertEvents", {
       kind: "worker",
       targetId: id,
@@ -363,7 +368,7 @@ export const update = mutation({
     if (fields.photoStorageIds !== undefined) updates.photoStorageIds = fields.photoStorageIds;
     if (fields.faceEncoding !== undefined) updates.enrolledAt = new Date().toISOString();
     if (writesBiometrics) {
-      updates.consentAt = new Date().toISOString();
+      updates.consentAt = fields.consentAt;
       updates.consentRecordedBy = member.userId;
       // An updated template supersedes its old enrollment photographs too.
       await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, fields.photoStorageIds);
