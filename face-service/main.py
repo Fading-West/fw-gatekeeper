@@ -13,6 +13,7 @@ Enrollment quality gate (POST /encode):
 """
 
 import base64
+from contextlib import asynccontextmanager
 import io
 import os
 import threading
@@ -45,7 +46,16 @@ from face_auth import (
 
 SERVICE_VERSION = "3.1-quality-gate"
 
-app = FastAPI(title="Face Encoding Service")
+@asynccontextmanager
+async def service_lifespan(_app):
+    # Initialize once at startup, outside health requests. A slow or failed
+    # model load leaves the cheap read-only endpoint available and degraded.
+    if get_configured_face_service_key():
+        threading.Thread(target=_warm_recognition_model, name="face-model-warmup", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),
@@ -63,6 +73,8 @@ REC_PATH = MODEL_DIR / "rec_model.onnx"
 # Lazy global
 _rec_session = None
 _rec_lock = threading.Lock()
+_rec_loading = False
+_rec_failed = False
 
 
 class MultipleFacesError(ValueError):
@@ -70,7 +82,9 @@ class MultipleFacesError(ValueError):
 
 
 def _validate_encoding_vector(encoding: list[float]) -> bool:
-    return len(encoding) == 512 and bool(np.isfinite(encoding).all()) and float(np.linalg.norm(encoding)) > 0
+    with np.errstate(over="ignore", invalid="ignore"):
+        norm = float(np.linalg.norm(encoding))
+    return len(encoding) == 512 and bool(np.isfinite(encoding).all()) and np.isfinite(norm) and norm > 0
 
 
 def ensure_models():
@@ -79,13 +93,29 @@ def ensure_models():
 
 
 def get_rec_session():
-    global _rec_session
+    global _rec_session, _rec_loading, _rec_failed
     # FastAPI sync handlers run in multiple threads; load only one native session.
     with _rec_lock:
         if _rec_session is None:
-            ensure_models()
-            _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
+            _rec_loading = True
+            _rec_failed = False
+            try:
+                ensure_models()
+                _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
+            except Exception:
+                _rec_failed = True
+                raise
+            finally:
+                _rec_loading = False
     return _rec_session
+
+
+def _warm_recognition_model():
+    try:
+        get_rec_session()
+    except Exception:
+        # Never emit complete native exception strings or configuration.
+        print("Face recognition model initialization failed; enrollment unavailable")
 
 
 PhotoInput = Annotated[str, Field(min_length=1, max_length=4_000_000)]
@@ -174,7 +204,11 @@ def get_face_crop(img: np.ndarray, reject_competing_faces: bool = False) -> Opti
 
 def embed_face_crop(face: np.ndarray) -> list[float]:
     """Get the L2-normalised 512-dim embedding of a 112x112 BGR face crop."""
-    session = get_rec_session()
+    global _rec_failed
+    try:
+        session = get_rec_session()
+    except Exception:
+        raise HTTPException(503, "Recognition service is unavailable. Please try again.") from None
 
     # Preprocess: BGR -> RGB, normalize to [-1, 1], NCHW
     face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
@@ -183,15 +217,20 @@ def embed_face_crop(face: np.ndarray) -> list[float]:
     face_chw = np.transpose(face_float, (2, 0, 1))
     batch = np.expand_dims(face_chw, axis=0)
 
-    input_name = session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: batch})
-    embedding = outputs[0][0]
-
-    norm = np.linalg.norm(embedding)
-    if norm > 0:
-        embedding = embedding / norm
-
-    return embedding.tolist()
+    try:
+        input_name = session.get_inputs()[0].name
+        outputs = session.run(None, {input_name: batch})
+        embedding = np.asarray(outputs[0][0], dtype=np.float64)
+        if embedding.shape != (512,) or not _validate_encoding_vector(embedding.tolist()):
+            raise ValueError("Invalid model output")
+        result = (embedding / np.linalg.norm(embedding)).tolist()
+        if not _validate_encoding_vector(result):
+            raise ValueError("Invalid normalized model output")
+    except Exception:
+        _rec_failed = True
+        raise HTTPException(503, "Recognition service is unavailable. Please try again.") from None
+    _rec_failed = False
+    return result
 
 
 def get_embedding(img: np.ndarray) -> Optional[list[float]]:
@@ -204,8 +243,18 @@ def get_embedding(img: np.ndarray) -> Optional[list[float]]:
 
 @app.get("/health")
 def health():
+    auth_ready = bool(get_configured_face_service_key())
+    model_ready = _rec_session is not None and not _rec_failed
+    reason = ("authentication_not_configured" if not auth_ready else
+              "model_loading" if _rec_loading else
+              "model_unavailable" if not model_ready else None)
     return {
-        "status": "ok",
+        "status": "ok" if auth_ready and model_ready else "degraded",
+        "auth_ready": auth_ready,
+        "model_ready": model_ready,
+        "model_loading": _rec_loading,
+        "model_failed": _rec_failed,
+        "degraded_reason": reason,
         "version": SERVICE_VERSION,
         "rec_model": str(REC_PATH),
         "rec_exists": REC_PATH.exists(),
@@ -319,6 +368,8 @@ def match(req: MatchRequest):
     try:
         img = decode_image(req.photo)
         emb = get_embedding(img)
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(422, "Could not process photo")
 

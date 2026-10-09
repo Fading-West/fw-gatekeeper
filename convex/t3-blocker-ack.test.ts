@@ -64,6 +64,62 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
     await expect(save(actor, { date, action: 'save', acknowledgedBlockers: true, blockerEvidence: old.blocker_evidence, notes: 'Old evidence' })).rejects.toThrow('blockers changed');
     expect(await t.run(ctx => ctx.db.query('shiftCloseouts').collect())).toEqual([]);
   });
+  it('invalidates acknowledgement when an interior attendance timestamp changes', async () => {
+    const { t, actor } = await setup();
+    const interiorId = await t.run(async ctx => {
+      const workerId = await ctx.db.insert('workers', { name: 'Scheduled worker', department: 'Assembly', active: true, enrolledAt: date });
+      await ctx.db.insert('schedules', { name: 'Day', department: 'Assembly', startTime: '08:00', endTime: '17:00', days: '[0,1,2,3,4,5,6]', active: true, createdAt: date });
+      await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T08:00:00`, synced: true });
+      const id = await ctx.db.insert('attendance', { workerId, eventType: 'clock_out', timestamp: `${date}T12:00:00`, synced: true });
+      await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T13:00:00`, synced: true });
+      return id;
+    });
+    const original = await actor.query(api.shiftCloseouts.get, { date });
+    await acknowledge(actor);
+    await t.run(ctx => ctx.db.patch(interiorId, { timestamp: `${date}T12:30:00` }));
+    const changed = await actor.query(api.shiftCloseouts.get, { date });
+    expect(changed.summary).toEqual(original.summary);
+    expect(changed.blocker_evidence).not.toBe(original.blocker_evidence);
+    expect(changed.closeout?.acknowledged_blockers).toBe(false);
+  });
+  it('binds reviewed unsupported coverage to its current schedule and worker', async () => {
+    const { t, actor } = await setup();
+    const { scheduleId } = await t.run(async ctx => {
+      const workerId = await ctx.db.insert('workers', { name: 'Scheduled worker', department: 'Assembly', active: true, enrolledAt: date });
+      const scheduleId = await ctx.db.insert('schedules', { name: 'Unsupported', department: 'Assembly', startTime: '22:00', endTime: '06:00', days: '[0,1,2,3,4,5,6]', active: true, createdAt: date });
+      await ctx.db.insert('exceptionReviews', { exceptionKey: `${date}:unsupported_schedule:${workerId}`, date, type: 'unsupported_schedule', status: 'reviewed', updatedAt: date });
+      return { workerId, scheduleId };
+    });
+    const original = await actor.query(api.shiftCloseouts.get, { date });
+    await acknowledge(actor);
+    await t.run(ctx => ctx.db.patch(scheduleId, { endTime: '07:00' }));
+    const changed = await actor.query(api.shiftCloseouts.get, { date });
+    expect(changed.summary).toEqual(original.summary);
+    expect(changed.blocker_evidence).not.toBe(original.blocker_evidence);
+    expect(changed.closeout?.acknowledged_blockers).toBe(false);
+    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old schedule' })).rejects.toThrow('blockers changed');
+    expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
+  });
+  it('invalidates recognition acknowledgement when the same source changes decision or risk scores', async () => {
+    const { t, actor } = await setup();
+    const attemptId = await t.run(ctx => ctx.db.insert('recognitionAttempts', { timestamp: `${date}T10:00:00`, kioskId: 'synthetic-gate', faceDetected: true, decision: 'rejected_unknown', bestScore: .3, secondBestScore: .2, scoreMargin: .1, threshold: .45, reviewed: false, createdAt: date }));
+    const original = await actor.query(api.shiftCloseouts.get, { date });
+    await acknowledge(actor);
+    await t.run(ctx => ctx.db.patch(attemptId, { decision: 'rejected_liveness', bestScore: .8, secondBestScore: .7 }));
+    const changed = await actor.query(api.shiftCloseouts.get, { date });
+    expect(changed.summary).toEqual(original.summary);
+    expect(changed.blocker_evidence).not.toBe(original.blocker_evidence);
+    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: true, blockerEvidence: original.blocker_evidence, notes: 'Old recognition' })).rejects.toThrow('blockers changed');
+  });
+  it('returns a recoverable conflict when clear evidence acquires its first blocker', async () => {
+    const { t, actor, kioskId } = await setup();
+    await t.run(ctx => ctx.db.patch(kioskId, { active: false }));
+    const original = await actor.query(api.shiftCloseouts.get, { date });
+    expect(original.can_complete).toBe(true);
+    await t.run(ctx => ctx.db.patch(kioskId, { active: true }));
+    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', acknowledgedBlockers: false, blockerEvidence: original.blocker_evidence, notes: 'Clear draft' })).rejects.toMatchObject({ data: { code: 'CLOSEOUT_BLOCKERS_CHANGED' } });
+    expect(await t.run(ctx => ctx.db.query('shiftCloseouts').collect())).toEqual([]);
+  });
   it('does not inherit unbound legacy acknowledgements and preserves an unchanged bound acknowledgement', async () => {
     const { t, actor } = await setup();
     const id = await t.run(ctx => ctx.db.insert('shiftCloseouts', { date, status: 'open', notes: 'Legacy note', acknowledgedBlockers: true,
