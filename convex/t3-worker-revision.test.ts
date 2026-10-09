@@ -23,3 +23,23 @@ it('rejects a stale identity draft without changing the worker or recording an a
   await admin.mutation(api.workers.update, { id, name: 'Reviewed editor', expectedIdentityRevision: current.identity_revision });
   expect((await admin.query(api.workers.get, { id }))?.name).toBe('Reviewed editor');
 });
+
+it('requires a captured identity revision for direct biometric-only writes', async () => {
+  const t = convexTest(schema, modules);
+  const { userId, id } = await t.run(async ctx => {
+    const userId = await ctx.db.insert('users', { email: 'biometric-revision@example.invalid' });
+    await ctx.db.insert('portalMembers', { userId, role: 'admin', active: true, createdAt: new Date().toISOString() });
+    const id = await ctx.db.insert('workers', { name: 'Before', department: 'Mill', active: true, enrolledAt: new Date().toISOString() });
+    return { userId, id };
+  });
+  const actor = t.withIdentity({ subject: userId });
+  const captured = (await actor.query(api.workers.get, { id }))!.identity_revision;
+  await actor.mutation(api.workers.update, { id, name: 'After', expectedIdentityRevision: captured });
+  const biometrics = { id, faceEncoding: Array(512).fill(.1), consentAt: new Date().toISOString() };
+  await expect(actor.mutation(api.workers.update, biometrics)).rejects.toThrow('Worker identity changed');
+  await expect(actor.mutation(api.workers.update, { ...biometrics, expectedIdentityRevision: captured })).rejects.toThrow('Worker identity changed');
+  expect(await t.run(ctx => ctx.db.get(id))).not.toHaveProperty('faceEncoding');
+  expect(await t.run(ctx => ctx.db.query('auditLog').collect())).toHaveLength(1);
+  await actor.mutation(api.workers.update, { ...biometrics, expectedIdentityRevision: (await actor.query(api.workers.get, { id }))!.identity_revision });
+  expect(await t.run(ctx => ctx.db.get(id))).toHaveProperty('faceEncoding', biometrics.faceEncoding);
+});

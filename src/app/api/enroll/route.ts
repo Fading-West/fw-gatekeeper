@@ -1,3 +1,9 @@
+import {
+  BIOMETRIC_CONSENT_ERROR_CODE,
+  BIOMETRIC_CONSENT_ERROR_MESSAGE,
+  isRecentBiometricConsent,
+  isRecentBiometricConsentAge,
+} from "@/lib/biometric-consent";
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
@@ -18,7 +24,7 @@ export async function POST(req: NextRequest) {
   const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId, consent, expected_identity_revision } = body as {
+    const { name, employeeId, department, photos, workerId, consent, consentAt: legacyConsentAt, consentAgeMs, expected_identity_revision } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
@@ -26,16 +32,28 @@ export async function POST(req: NextRequest) {
       workerId?: string;
       consent?: boolean;
       expected_identity_revision?: string;
+      consentAt?: unknown;
+      consentAgeMs?: unknown;
     };
 
     // Biometric consent must be acknowledged on every enrollment and
     // re-enrollment before any photo is processed. See RETENTION.md.
-    if (consent !== true) {
+    if (consentAgeMs === undefined && (consent !== undefined || legacyConsentAt !== undefined)) {
       return NextResponse.json(
-        { error: 'Biometric consent must be confirmed before enrolling a face.' },
+        { error: 'This enrollment page is out of date. Reload the page and confirm consent again.' },
         { status: 400 },
       );
     }
+    if (consent !== true || !isRecentBiometricConsentAge(consentAgeMs)) {
+      return NextResponse.json(
+        { error: BIOMETRIC_CONSENT_ERROR_MESSAGE },
+        { status: 400 },
+      );
+    }
+
+    // Trust the server clock, not the operator machine's wall-clock time.
+    // Preserve elapsed consent age across encoding and photo uploads.
+    const consentAt = new Date(Date.now() - consentAgeMs).toISOString();
 
     let normalizedName = name?.trim();
     let employeeIdForSave = employeeId?.trim() || undefined;
@@ -159,6 +177,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: getEncodingValidationMessage('Face encoding') }, { status: 422 });
     }
 
+    if (!isRecentBiometricConsent(consentAt)) {
+      return NextResponse.json({ error: 'Consent expired during encoding. Confirm biometric consent again.' }, { status: 400 });
+    }
+
     // Store only frames the quality gate used for the reference encoding.
     // A rejected/outlier frame must not become the worker's dashboard photo.
     for (const photo of acceptedPhotos) {
@@ -175,7 +197,6 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date().toISOString();
-    const consentAt = now;
     const result = workerId
       ? await convex.mutation(api.workers.update, {
           id: workerId as any,
@@ -216,6 +237,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
     }
     console.error('Enrollment error:', error);
+    if (error instanceof ConvexError && error.data?.code === BIOMETRIC_CONSENT_ERROR_CODE) {
+      return NextResponse.json({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : 'Internal server error';
     return NextResponse.json({ error: message }, { status: 500 });
   } finally {

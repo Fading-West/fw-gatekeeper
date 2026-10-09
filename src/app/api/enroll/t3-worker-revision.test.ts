@@ -12,7 +12,7 @@ it('returns a recoverable encoding-time identity conflict and cleans only pendin
   mocks.mutation.mockRejectedValueOnce(new ConvexError({ code: 'WORKER_IDENTITY_CONFLICT', message: 'Worker identity changed' })).mockResolvedValueOnce(null);
   vi.stubEnv('FACE_SERVICE_KEY', 'synthetic');
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ encoding: Array(512).fill(.1), used_photo_indexes: [0, 1] })));
-  const response = await POST(new NextRequest('https://synthetic.invalid/api/enroll', { method: 'POST', body: JSON.stringify({ workerId: 'synthetic-worker', expected_identity_revision: 'revision-before-encoding', name: 'Synthetic', employeeId: 'S-1', department: 'Old', consent: true, photos: Array(3).fill('data:image/jpeg;base64,YQ==') }) }));
+  const response = await POST(new NextRequest('https://synthetic.invalid/api/enroll', { method: 'POST', body: JSON.stringify({ workerId: 'synthetic-worker', expected_identity_revision: 'revision-before-encoding', name: 'Synthetic', employeeId: 'S-1', department: 'Old', consent: true, consentAgeMs: 0, photos: Array(3).fill('data:image/jpeg;base64,YQ==') }) }));
   expect(response.status).toBe(409);
   expect(mocks.mutation.mock.calls[0][1]).toMatchObject({ expectedIdentityRevision: 'revision-before-encoding' });
   expect(mocks.mutation.mock.calls.at(-1)?.[1]).toEqual({ storageIds: ['pending-photo-1', 'pending-photo-2'] });
@@ -22,7 +22,7 @@ it.each([undefined, 'stale-revision'])('rejects missing or stale pre-capture rev
   mocks.query.mockResolvedValue({ name: 'Current', department: 'Mill', identity_revision: 'current-revision' });
   const encode = vi.fn();
   vi.stubGlobal('fetch', encode);
-  const response = await POST(new NextRequest('https://synthetic.invalid/api/enroll', { method: 'POST', body: JSON.stringify({ workerId: 'synthetic-worker', expected_identity_revision: revision, name: 'Stale directory name', consent: true, photos: Array(3).fill('data:image/jpeg;base64,YQ==') }) }));
+  const response = await POST(new NextRequest('https://synthetic.invalid/api/enroll', { method: 'POST', body: JSON.stringify({ workerId: 'synthetic-worker', expected_identity_revision: revision, name: 'Stale directory name', consent: true, consentAgeMs: 0, photos: Array(3).fill('data:image/jpeg;base64,YQ==') }) }));
   expect(response.status).toBe(409);
   expect(encode).not.toHaveBeenCalled();
   expect(mocks.action).not.toHaveBeenCalled();

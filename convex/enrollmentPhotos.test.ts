@@ -6,7 +6,7 @@ import schema from './schema';
 import type { Id } from './_generated/dataModel';
 const modules = import.meta.glob('./**/*.ts');
 const encoding = Array(512).fill(0.1);
-const consentAt = '2026-09-15T12:00:00Z';
+const consentAt = new Date().toISOString();
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -24,7 +24,7 @@ async function setup() {
   const viewer = t.withIdentity({ subject: viewerId });
   const upload = () => owner.action(api.enrollmentPhotos.upload, { photo: new TextEncoder().encode('photo').buffer });
   const create = (photoStorageIds: Awaited<ReturnType<typeof upload>>[]) => owner.mutation(api.workers.create, {
-    name: 'Photo Worker', faceEncoding: encoding, consentAt, photoStorageIds,
+    name: 'Photo Worker', faceEncoding: encoding, consentAt: new Date().toISOString(), photoStorageIds,
   });
   return { t, owner, other, viewer, upload, create };
 }
@@ -37,7 +37,7 @@ describe('pending enrollment photo lifecycle', () => {
     const worker = await create([]);
     await owner.mutation(api.workers.remove, { id: worker.id });
     const storageId = await upload();
-    await expect(owner.mutation(api.workers.update, { id: worker.id, faceEncoding: encoding, consentAt, photoStorageIds: [storageId] })).rejects.toThrow('Active worker not found');
+    await expect(owner.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: worker.id }))?.identity_revision, faceEncoding: encoding, consentAt, photoStorageIds: [storageId] })).rejects.toThrow('Active worker not found');
     await owner.mutation(api.enrollmentPhotos.cleanup, { storageIds: [storageId] });
     expect(await t.run((ctx) => ctx.storage.getUrl(storageId))).toBeNull();
     await expect(owner.mutation(api.workers.create, { name: 'New Worker', faceEncoding: encoding, consentAt, photoStorageIds: [storageId] })).rejects.toThrow('no longer exists');
@@ -58,9 +58,9 @@ describe('pending enrollment photo lifecycle', () => {
     const { t, owner, upload, create } = await setup();
     const worker = await create([]);
     const storageId = await upload();
-    await expect(owner.mutation(api.workers.update, { id: worker.id, faceEncoding: [1], consentAt, photoStorageIds: [storageId] })).rejects.toThrow('512');
+    await expect(owner.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: worker.id }))?.identity_revision, faceEncoding: [1], consentAt, photoStorageIds: [storageId] })).rejects.toThrow('512');
     expect(await t.run((ctx) => ctx.db.query('pendingEnrollmentPhotos').collect())).toHaveLength(1);
-    await owner.mutation(api.workers.update, { id: worker.id, faceEncoding: encoding, consentAt, photoStorageIds: [storageId] });
+    await owner.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: worker.id }))?.identity_revision, faceEncoding: encoding, consentAt, photoStorageIds: [storageId] });
     await owner.mutation(api.enrollmentPhotos.cleanup, { storageIds: [storageId] });
     expect(await t.run((ctx) => ctx.storage.getUrl(storageId))).not.toBeNull();
   });
@@ -70,7 +70,7 @@ describe('pending enrollment photo lifecycle', () => {
     const worker = await create([]);
     const storageId = await upload();
     await expect(other.mutation(api.enrollmentPhotos.cleanup, { storageIds: [storageId] })).rejects.toThrow('another user');
-    await expect(other.mutation(api.workers.update, { id: worker.id, faceEncoding: encoding, consentAt, photoStorageIds: [storageId] })).rejects.toThrow('another user');
+    await expect(other.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await other.query(api.workers.get, { id: worker.id }))?.identity_revision, faceEncoding: encoding, consentAt, photoStorageIds: [storageId] })).rejects.toThrow('another user');
     for (const caller of [t, viewer]) {
       await expect(caller.action(api.enrollmentPhotos.upload, { photo: new ArrayBuffer(1) })).rejects.toThrow();
       await expect(caller.mutation(api.enrollmentPhotos.cleanup, { storageIds: [storageId] })).rejects.toThrow();
@@ -126,8 +126,8 @@ describe('exclusive worker photo attachments', () => {
     const first = await create([storageId]);
     await expect(owner.mutation(api.workers.create, { name: 'Second Worker', faceEncoding: encoding, consentAt, photoStorageIds: [storageId] })).rejects.toThrow('already attached to this worker');
     const second = await owner.mutation(api.workers.create, { name: 'Second Worker', faceEncoding: encoding, consentAt });
-    await expect(owner.mutation(api.workers.update, { id: second.id, photoStorageIds: [storageId], consentAt })).rejects.toThrow('already attached to this worker');
-    await owner.mutation(api.workers.update, { id: first.id, photoStorageIds: [storageId], consentAt });
+    await expect(owner.mutation(api.workers.update, { id: second.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: second.id }))?.identity_revision, photoStorageIds: [storageId], consentAt })).rejects.toThrow('already attached to this worker');
+    await owner.mutation(api.workers.update, { id: first.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: first.id }))?.identity_revision, photoStorageIds: [storageId], consentAt });
     await owner.mutation(api.workers.purgeBiometrics, { id: second.id, reason: 'Delete' });
     expect(await t.run((ctx) => ctx.storage.getUrl(storageId))).not.toBeNull();
   });
@@ -136,7 +136,7 @@ describe('exclusive worker photo attachments', () => {
     const { t, owner } = await setup();
     const photo = await t.run((ctx) => ctx.storage.store(new Blob(['legacy'])));
     const worker = await t.run((ctx) => ctx.db.insert('workers', { name: 'Legacy', employeeId: 'LEGACY', department: '', active: true, enrolledAt: consentAt, photoStorageIds: [photo] }));
-    await owner.mutation(api.workers.update, { id: worker, photoStorageIds: [photo], consentAt });
+    await owner.mutation(api.workers.update, { id: worker, expectedIdentityRevision: (await owner.query(api.workers.get, { id: worker }))?.identity_revision, photoStorageIds: [photo], consentAt });
     await owner.mutation(api.workers.remove, { id: worker });
     const restored = await owner.mutation(api.workers.create, { name: 'Legacy', employeeId: 'LEGACY', faceEncoding: encoding, consentAt, photoStorageIds: [photo] });
     expect(restored.id).toBe(worker);
@@ -160,7 +160,7 @@ describe('exclusive worker photo attachments', () => {
       const second = await ctx.db.insert('workers', { name: 'Second', department: '', active: false, enrolledAt: consentAt, photoStorageIds: [shared] });
       return [first, second, shared, unique] as const;
     });
-    await owner.mutation(api.workers.update, { id: first, photoStorageIds: [], consentAt });
+    await owner.mutation(api.workers.update, { id: first, expectedIdentityRevision: (await owner.query(api.workers.get, { id: first }))?.identity_revision, photoStorageIds: [], consentAt });
     expect(await t.run((ctx) => ctx.storage.getUrl(unique))).toBeNull();
     expect(await t.run((ctx) => ctx.storage.getUrl(shared))).not.toBeNull();
     expect(await owner.mutation(api.workers.purgeBiometrics, { id: second, reason: 'Delete final owner' })).toMatchObject({ photosDeleted: 1 });
@@ -185,10 +185,10 @@ describe('exclusive worker photo attachments', () => {
     });
     await expect(owner.mutation(api.workers.purgeBiometrics, { id: first.id, reason: 'Delete' })).rejects.toThrow('exceeds 1000 workers');
     const replacement = await upload();
-    await expect(owner.mutation(api.workers.update, { id: first.id, photoStorageIds: [replacement], consentAt })).rejects.toThrow('exceeds 1000 workers');
+    await expect(owner.mutation(api.workers.update, { id: first.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: first.id }))?.identity_revision, photoStorageIds: [replacement], consentAt })).rejects.toThrow('exceeds 1000 workers');
     expect(await t.run((ctx) => ctx.db.get(first.id as Id<'workers'>))).toMatchObject({ active: true, photoStorageIds: [photo] });
     expect(await t.run((ctx) => ctx.storage.getUrl(photo))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.query('pendingEnrollmentPhotos').unique())).toMatchObject({ storageId: replacement });
-    await owner.mutation(api.workers.update, { id: first.id, photoStorageIds: [photo], consentAt });
+    await owner.mutation(api.workers.update, { id: first.id, expectedIdentityRevision: (await owner.query(api.workers.get, { id: first.id }))?.identity_revision, photoStorageIds: [photo], consentAt });
   });
 });
