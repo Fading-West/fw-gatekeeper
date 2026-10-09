@@ -65,3 +65,15 @@ it('locks completed notes and exports the signed summary instead of later source
   expect(text).toContain('Signed summary\nExpected: 9');
   expect(text).not.toContain('Expected: 123');
 });
+
+it('requires notes and acknowledgement when schedule coverage is unavailable after exception review', async () => {
+  const blocker = { id: 'schedule_coverage', label: 'Unavailable schedule coverage acknowledged', status: 'blocked', count: 1, href: '/schedules', description: 'Attendance totals exclude 1 worker.', proof: { count: 1, label: 'workers with unsupported schedules', href: '/schedules', exact: false } };
+  const data = { ...payload('2026-09-10', ''), checklist: [blocker], blockers: [blocker], can_complete: false };
+  await act(async () => requests.get('/api/shift-closeout?date=2026-09-10')!(data));
+  expect(button('Complete closeout').props.disabled).toBe(true);
+  const checkbox = tree.root.findAllByType('input').find((node) => node.props.type === 'checkbox')!;
+  await act(async () => checkbox.props.onChange({ target: { checked: true } }));
+  expect(button('Complete closeout').props.disabled).toBe(true);
+  await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Excluded unsupported schedule pending repair' } }));
+  expect(button('Complete closeout').props.disabled).toBe(false);
+});

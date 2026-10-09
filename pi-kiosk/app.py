@@ -225,12 +225,14 @@ def status():
 
 @app.route("/log")
 @kiosk_ui_auth_required
+@supervisor_auth_required
 def today_log():
     return jsonify(database.get_today_logs(limit=100))
 
 
 @app.route("/today")
 @kiosk_ui_auth_required
+@supervisor_auth_required
 def today_log_alias():
     return today_log()
 
