@@ -32,8 +32,9 @@ def _eye_aspect_ratio(eye_points: Iterable[np.ndarray]) -> float:
     vertical_1 = euclidean(p2, p6)
     vertical_2 = euclidean(p3, p5)
     horizontal = euclidean(p1, p4)
-    if horizontal == 0:
-        return 0.0
+    if horizontal <= 0:
+        return math.nan
+    # Zero lid separation is valid closed-eye evidence when eye width exists.
     return (vertical_1 + vertical_2) / (2.0 * horizontal)
 
 
@@ -137,7 +138,7 @@ class LivenessChecker:
         right_ear = _eye_aspect_ratio(right_eye)
         self._current_ear = (left_ear + right_ear) / 2.0
         if (not math.isfinite(left_ear) or not math.isfinite(right_ear)
-                or left_ear <= 0 or right_ear <= 0):
+                or left_ear < 0 or right_ear < 0):
             self.reset()
             return False
 

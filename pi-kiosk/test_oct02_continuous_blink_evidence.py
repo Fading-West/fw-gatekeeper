@@ -21,7 +21,7 @@ class BlinkTests(unittest.TestCase):
    checker.update(np.zeros((20,20,3),dtype=np.uint8),invalid)
    self.assertFalse(self.feed(checker,.3))
  def test_nonfinite_or_degenerate_landmarks_cannot_complete_blink(self):
-  for invalid in [0,float('nan')]:
+  for invalid in [-.1,float('nan'),float('inf')]:
    checker=self.checker(); self.feed(checker,.1); self.feed(checker,invalid)
    self.assertFalse(self.feed(checker,.3))
  def test_consecutive_valid_identity_bound_blink_completes(self):
