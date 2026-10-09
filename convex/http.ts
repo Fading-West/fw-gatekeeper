@@ -91,8 +91,9 @@ function publicKioskStatus(lastSync: string | null, now: number): PublicKioskSta
 }
 
 const publicKioskHealth = httpAction(async (ctx) => {
-  const checkedAtMs = Date.now();
   const kioskPage = await ctx.runQuery(internal.kiosks.internalHealthSnapshot, {});
+  // A sync committed during the read must not appear to be in the future.
+  const checkedAtMs = Date.now();
   const inventoryTruncated = kioskPage.length > 100;
   const kiosks = kioskPage.slice(0, 100);
   const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
