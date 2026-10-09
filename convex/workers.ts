@@ -1,6 +1,10 @@
-import { isRecentBiometricConsent } from "../src/lib/biometric-consent";
+import {
+  BIOMETRIC_CONSENT_ERROR_CODE,
+  BIOMETRIC_CONSENT_ERROR_MESSAGE,
+  isRecentBiometricConsent,
+} from "../src/lib/biometric-consent";
 import { internalQuery, query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -22,7 +26,7 @@ function isSupportedFaceEncoding(encoding?: number[]) {
 
 function assertBiometricConsent(consentAt?: string) {
   if (!isRecentBiometricConsent(consentAt)) {
-    throw new Error("Biometric consent must be confirmed recently before saving face data; confirm again");
+    throw new ConvexError({ code: BIOMETRIC_CONSENT_ERROR_CODE, message: BIOMETRIC_CONSENT_ERROR_MESSAGE });
   }
 }
 

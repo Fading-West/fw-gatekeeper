@@ -1,4 +1,10 @@
-import { isRecentBiometricConsent } from "@/lib/biometric-consent";
+import {
+  BIOMETRIC_CONSENT_ERROR_CODE,
+  BIOMETRIC_CONSENT_ERROR_MESSAGE,
+  isRecentBiometricConsent,
+  isRecentBiometricConsentAge,
+} from "@/lib/biometric-consent";
+import { ConvexError } from 'convex/values';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
@@ -17,24 +23,28 @@ export async function POST(req: NextRequest) {
   const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId, consent, consentAt } = body as {
+    const { name, employeeId, department, photos, workerId, consent, consentAgeMs } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
       consent?: boolean;
-      consentAt?: string;
+      consentAgeMs?: unknown;
     };
 
     // Biometric consent must be acknowledged on every enrollment and
     // re-enrollment before any photo is processed. See RETENTION.md.
-    if (consent !== true || !isRecentBiometricConsent(consentAt)) {
+    if (consent !== true || !isRecentBiometricConsentAge(consentAgeMs)) {
       return NextResponse.json(
-        { error: 'Confirm biometric consent again before enrolling a face; the acknowledgement must be recent.' },
+        { error: BIOMETRIC_CONSENT_ERROR_MESSAGE },
         { status: 400 },
       );
     }
+
+    // Trust the server clock, not the operator machine's wall-clock time.
+    // Preserve elapsed consent age across encoding and photo uploads.
+    const consentAt = new Date(Date.now() - consentAgeMs).toISOString();
 
     let normalizedName = name?.trim();
     let employeeIdForSave = employeeId?.trim() || undefined;
@@ -209,8 +219,11 @@ export async function POST(req: NextRequest) {
     );
   } catch (error) {
     console.error('Enrollment error:', error);
+    if (error instanceof ConvexError && error.data?.code === BIOMETRIC_CONSENT_ERROR_CODE) {
+      return NextResponse.json({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : 'Internal server error';
-    return NextResponse.json({ error: message }, { status: message.includes('Biometric consent') ? 400 : 500 });
+    return NextResponse.json({ error: message }, { status: 500 });
   } finally {
     if (storageIds.length > 0) {
       try {

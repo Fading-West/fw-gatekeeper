@@ -1,6 +1,6 @@
 'use client';
 
-import { isRecentBiometricConsent } from "@/lib/biometric-consent";
+import { isRecentBiometricConsentAge } from "@/lib/biometric-consent";
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -70,7 +70,7 @@ function EnrollPageContent() {
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
-  const [consentAt, setConsentAt] = useState<string | null>(null);
+  const [consentStartedAt, setConsentStartedAt] = useState<number | null>(null);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [photoIssues, setPhotoIssues] = useState<string[]>([]);
@@ -121,7 +121,7 @@ function EnrollPageContent() {
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
     setConsentConfirmed(false);
-    setConsentAt(null);
+    setConsentStartedAt(null);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
     setDepartment(employee.department);
@@ -133,7 +133,7 @@ function EnrollPageContent() {
 
   const handleNameChange = (value: string) => {
     setConsentConfirmed(false);
-    setConsentAt(null);
+    setConsentStartedAt(null);
     if (selectedEmployee && value !== selectedEmployee.name) {
       if (employeeId === selectedEmployee.employeeId) setEmployeeId('');
       if (department === selectedEmployee.department) setDepartment('');
@@ -186,7 +186,7 @@ function EnrollPageContent() {
 
   useEffect(() => {
     setConsentConfirmed(false);
-    setConsentAt(null);
+    setConsentStartedAt(null);
     if (!workerId) return;
     let cancelled = false;
     async function loadWorker() {
@@ -211,7 +211,7 @@ function EnrollPageContent() {
   const startCamera = async () => {
     if (!canEnroll || cameraOpeningRef.current) return;
     setConsentConfirmed(false);
-    setConsentAt(null);
+    setConsentStartedAt(null);
     cameraOpeningRef.current = true;
     setCameraOpening(true);
     setCameraReady(false);
@@ -262,7 +262,8 @@ function EnrollPageContent() {
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
     try {
-      if (!consentConfirmed || !isRecentBiometricConsent(consentAt)) throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
+      const consentAgeMs = consentStartedAt === null ? null : Math.ceil(performance.now() - consentStartedAt);
+      if (!consentConfirmed || !isRecentBiometricConsentAge(consentAgeMs)) throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
       const res = await fetch('/api/enroll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -273,7 +274,7 @@ function EnrollPageContent() {
           workerId: workerIdRef.current,
           photos: capturedPhotos,
           consent: consentConfirmed,
-          consentAt,
+          consentAgeMs,
         }),
       });
 
@@ -307,7 +308,8 @@ function EnrollPageContent() {
 
   const startCapturing = useCallback(() => {
     if (!consentConfirmed) return;
-    if (!isRecentBiometricConsent(consentAt)) {
+    const consentAgeMs = consentStartedAt === null ? null : Math.ceil(performance.now() - consentStartedAt);
+    if (!isRecentBiometricConsentAge(consentAgeMs)) {
       stopCamera();
       setErrorMsg('Consent expired. Confirm biometric consent again before enrolling.');
       setStep('error');
@@ -350,7 +352,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [cameraReady, captureFrame, consentConfirmed, consentAt, stopCamera]);
+  }, [cameraReady, captureFrame, consentConfirmed, consentStartedAt, stopCamera]);
 
   const enrollNext = () => {
     stopCamera();
@@ -367,7 +369,7 @@ function EnrollPageContent() {
     setErrorMsg('');
     setResultMsg('');
     setConsentConfirmed(false);
-    setConsentAt(null);
+    setConsentStartedAt(null);
     setPhotoIssues([]);
     setCompletionSummary(null);
     setStatusFilter('remaining');
@@ -673,7 +675,7 @@ function EnrollPageContent() {
               id="biometric-consent"
               type="checkbox"
               checked={consentConfirmed}
-              onChange={(event) => { setConsentConfirmed(event.target.checked); setConsentAt(event.target.checked ? new Date().toISOString() : null); }}
+              onChange={(event) => { setConsentConfirmed(event.target.checked); setConsentStartedAt(event.target.checked ? performance.now() : null); }}
               className="mt-1 h-4 w-4 shrink-0 accent-gold"
               required
             />

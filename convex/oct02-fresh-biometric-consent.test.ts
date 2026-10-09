@@ -85,7 +85,7 @@ it.each(paths)('rejects stale and future acknowledgements without changing worke
   const before = await fixture.t.run(ctx => ctx.db.query('workers').collect());
   for (const age of [11 * 60_000, -2 * 60_000]) {
     const consentAt = new Date(Date.now() - age).toISOString();
-    await expect(saveBiometrics(fixture, path, consentAt)).rejects.toThrow('Biometric consent');
+    await expect(saveBiometrics(fixture, path, consentAt)).rejects.toMatchObject({ data: { code: 'BIOMETRIC_CONSENT_STALE' } });
     await fixture.t.run(async ctx => {
       expect(await ctx.db.query('workers').collect()).toEqual(before);
       expect(await ctx.db.query('auditLog').collect()).toHaveLength(0);
