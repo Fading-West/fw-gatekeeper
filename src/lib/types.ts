@@ -51,6 +51,7 @@ export interface DashboardStats {
 }
 
 export interface Schedule {
+  revision?: number;
   id: string;
   name: string;
   days: string; // JSON array e.g. '[1,2,3,4,5]'

@@ -259,6 +259,7 @@ export default defineSchema({
     creationRequestId: v.optional(v.string()),
     creationActorId: v.optional(v.id("users")),
     creationIntent: v.optional(v.string()),
+    revision: v.optional(v.number()),
     name: v.string(),
     days: v.string(),
     startTime: v.string(),

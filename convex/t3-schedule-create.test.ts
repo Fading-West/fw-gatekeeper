@@ -13,7 +13,7 @@ it('replays one creation receipt without duplicating or restoring a later remove
   expect(retry).toEqual(first);
   expect(await admin.query(api.schedules.list, {})).toHaveLength(1);
   await expect(admin.mutation(api.schedules.create, { ...input, name: 'Conflicting' })).rejects.toThrow('different schedule');
-  await admin.mutation(api.schedules.remove, { id: first.id });
+  await admin.mutation(api.schedules.remove, { id: first.id, expectedRevision: 0 });
   expect(await admin.mutation(api.schedules.create, input)).toEqual(first);
   expect(await admin.query(api.schedules.list, {})).toHaveLength(0);
   await admin.mutation(api.schedules.create, { ...input, requestId: 'intentional-new-request' });

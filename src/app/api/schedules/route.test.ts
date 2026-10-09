@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { api } from '../../../../convex/_generated/api';
 import schema from '../../../../convex/schema';
 import convex from '@/lib/convex';
-import { POST, PATCH } from './route';
+import { POST, PATCH, DELETE } from './route';
 
 vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn() } }));
 const modules = import.meta.glob('../../../../convex/**/*.ts');
@@ -30,7 +30,7 @@ async function setup(role: 'admin' | 'viewer' | 'enrollment' = 'admin') {
     return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
   });
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/schedules', {
-    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, ...fields }),
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, expected_revision: 0, ...fields }),
   }));
   return { t, actor, id, patch };
 }
@@ -125,4 +125,22 @@ it('rejects a creation receipt owned by a different UI actor before inserting', 
   expect(response.status).toBe(409);
   expect(await response.json()).toMatchObject({ code: 'SCHEDULE_ACTOR_CONFLICT' });
   expect(await actor.query(api.schedules.list, {})).toHaveLength(1);
+});
+
+it('rejects stale HTTP updates and removals while allowing retries of completed writes', async () => {
+  const { t, id, patch } = await setup();
+  expect((await patch({ name: 'Current schedule' })).status).toBe(200);
+  const staleUpdate = await patch({ name: 'Stale draft' });
+  expect(staleUpdate.status).toBe(409);
+  expect(await staleUpdate.json()).toMatchObject({ code: 'SCHEDULE_REVISION_CONFLICT' });
+  const remove = (revision: number) => DELETE(new NextRequest(
+    `https://example.test/api/schedules?id=${id}&expected_revision=${revision}`, { method: 'DELETE' },
+  ));
+  expect((await remove(0)).status).toBe(409);
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ name: 'Current schedule', active: true, revision: 1 });
+  // A lost update response can be retried when every requested field is current.
+  expect((await patch({ name: 'Current schedule' })).status).toBe(200);
+  expect((await remove(1)).status).toBe(200);
+  expect((await remove(1)).status).toBe(200);
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ active: false, revision: 2 });
 });
