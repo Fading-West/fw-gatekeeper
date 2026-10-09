@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { getFactoryLocalDateString } from '@/lib/date';
+import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 import {
@@ -65,12 +66,6 @@ function formatGeneratedAt(value?: string) {
   return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function escapeCsv(value: unknown) {
-  const text = String(value ?? '');
-  if (!/[",\n]/.test(text)) return text;
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 function briefingCsv(
   date: string,
   workers: ShiftBriefingWorker[],
@@ -112,7 +107,7 @@ function briefingCsv(
   const sections = actionRows.length
     ? [workerHeaders, ...workerRows, [], ['Action Items'], actionHeaders, ...actionRows]
     : [workerHeaders, ...workerRows];
-  return sections.map((row) => row.map(escapeCsv).join(',')).join('\n');
+  return sections.map((row) => row.map(csvField).join(',')).join('\n');
 }
 
 function departmentRisk(row: ShiftBriefingDepartment) {

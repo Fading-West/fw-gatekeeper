@@ -1,3 +1,4 @@
+import { isSupportedEncoding } from "../src/lib/encoding";
 import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
@@ -28,7 +29,6 @@ type ShiftTrustRisk = {
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
 const STALE_THRESHOLD_MS = 60 * 60 * 1000;
 // Kiosks match exclusively 512-dim MobileFaceNet embeddings.
-const SUPPORTED_ENCODING_LENGTHS = new Set([512]);
 
 function getDayOfWeek(dateKey: string): number {
   const [year, month, day] = dateKey.split("-").map(Number);
@@ -56,7 +56,7 @@ function normalizeText(value?: string | null) {
 
 function getEncodingStatus(encoding?: number[]) {
   if (!encoding || encoding.length === 0) return "missing";
-  return SUPPORTED_ENCODING_LENGTHS.has(encoding.length) && encoding.every((value) => Number.isFinite(value))
+  return isSupportedEncoding(encoding)
     ? "valid"
     : "invalid";
 }
