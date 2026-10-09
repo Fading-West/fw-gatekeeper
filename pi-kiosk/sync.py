@@ -19,6 +19,7 @@ import requests
 import config
 import database
 from sync_auth import require_kiosk_api_key
+from sync_health import sync_auth_health
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,10 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
     except requests.RequestException:
         logger.exception("Attendance sync request failed; retaining unacknowledged batch")
         return False
+    sync_auth_health.observe("attendance", response.status_code)
     if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
         database.mark_synced(log_ids)
+        sync_auth_health.observe("attendance", response.status_code, validated=True)
         logger.info("Synced %d gatekeeper logs to server", len(log_ids))
         return True
     reason = _rejection_reason(response)
@@ -284,8 +287,10 @@ def sync_recognition_attempts() -> bool:
             headers=_auth_headers(),
             timeout=15,
         )
-        if 200 <= r.status_code < 300:
+        sync_auth_health.observe("recognition", r.status_code)
+        if 200 <= r.status_code < 300 and _recognition_acknowledged(r, len(payload_attempts)):
             database.mark_recognition_attempts_synced(synced_attempt_ids)
+            sync_auth_health.observe("recognition", r.status_code, validated=True)
             logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
             return True
 
@@ -297,6 +302,29 @@ def sync_recognition_attempts() -> bool:
         return False
     except requests.RequestException:
         logger.exception("Recognition attempt sync request failed")
+        return False
+
+
+def _recognition_acknowledged(response, submitted: int) -> bool:
+    # Same complete-ack contract preserved by PR107; health cannot accept less.
+    try:
+        acknowledgement = response.json()
+    except (ValueError, requests.RequestException):
+        return False
+    if not isinstance(acknowledgement, dict):
+        return False
+    ingested, skipped = acknowledgement.get("ingested"), acknowledgement.get("skipped")
+    return (type(ingested) is int and type(skipped) is int and ingested >= 0 and skipped >= 0
+            and ingested + skipped == submitted)
+
+
+def _valid_sync_timestamp(value) -> bool:
+    if not isinstance(value, str) or "T" not in value:
+        return False
+    try:
+        datetime.fromisoformat(value)
+        return True
+    except ValueError:
         return False
 
 
@@ -336,6 +364,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             headers=_auth_headers(),
             timeout=15,
         )
+        sync_auth_health.observe("roster", r.status_code)
         if r.status_code != 200:
             logger.warning("Server returned %d during worker sync", r.status_code)
             return False
@@ -354,6 +383,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         if receipt_protocol and "workers" not in data:
             raise ValueError("Receipt sync response is missing workers")
         full_roster = receipt_protocol and data.get("full_roster") is True
+        fully_applied = True
         if receipt_protocol and not database.get_sync_state("last_roster_applied_at") and not full_roster:
             raise ValueError("Initial receipt sync must include full roster")
 
@@ -391,6 +421,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         except (OSError, ValueError):
             if receipt_protocol:
                 raise
+            fully_applied = False
             logger.warning("Legacy roster sync continuing with thumbnail cleanup pending")
         seen_server_ids: set[str] = set()
 
@@ -434,6 +465,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             if not server_id or not name or encoding_data is None:
                 if receipt_protocol:
                     raise ValueError("Worker sync row has missing required fields")
+                fully_applied = False
                 logger.warning("Skipping worker sync row with missing required fields: %s", w)
                 continue
 
@@ -450,6 +482,8 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     staged_photo, photo_path = photo_download
                 elif receipt_protocol:
                     raise ValueError(f"Worker photo download failed for {server_id}")
+                else:
+                    fully_applied = False
 
             try:
                 retired_photos = database.replaced_worker_photo_paths(
@@ -503,6 +537,16 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             database.delete_sync_state("roster_pending_receipt")
             database.set_sync_state("last_worker_sync", data.get("synced_at") or datetime.now().isoformat())
         logger.info("Worker sync complete: %d workers", len(workers))
+        if not receipt_protocol:
+            # Legacy deactivation keeps its return contract when thumbnail
+            # cleanup fails. Confirm the journal is drained before recovery.
+            try:
+                database.recover_photo_cleanup()
+            except (OSError, ValueError):
+                fully_applied = False
+                logger.warning("Legacy roster sync completed with thumbnail cleanup pending")
+        if fully_applied and "workers" in data and _valid_sync_timestamp(data.get("synced_at")):
+            sync_auth_health.observe("roster", r.status_code, validated=True)
         return True
 
     except requests.RequestException as e:
@@ -525,16 +569,19 @@ def acknowledge_applied_roster() -> bool:
             json={"kiosk_id": config.KIOSK_ID, "roster_receipt": pending["receipt"]},
             headers=_auth_headers(), timeout=15,
         )
+        sync_auth_health.observe("roster_ack", response.status_code)
         if response.status_code != 200:
             logger.warning("Roster acknowledgement failed with status=%d", response.status_code)
             return False
         body = response.json()
-        if body.get("acknowledged") is not True or not isinstance(body.get("applied_at"), str):
+        if (not isinstance(body, dict) or body.get("acknowledged") is not True
+                or not _valid_sync_timestamp(body.get("applied_at"))):
             logger.warning("Roster acknowledgement response was incomplete")
             return False
         database.set_sync_state("last_roster_applied_at", body["applied_at"])
         database.set_sync_state("last_worker_sync", body["applied_at"])
         database.delete_sync_state("roster_pending_receipt")
+        sync_auth_health.observe("roster_ack", response.status_code, validated=True)
         return True
     except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
         logger.warning("Roster acknowledgement unavailable; will reapply and retry: %s", exc)
@@ -595,6 +642,7 @@ class SyncWorker:
         logger.info("Sync worker stopped")
 
     def _report(self, **fields):
+        fields.update(sync_auth_health.snapshot())
         if self._health_reporter:
             try:
                 self._health_reporter(**fields)
@@ -649,6 +697,8 @@ class SyncWorker:
                     logger.debug("Server offline, skipping sync")
             except Exception as e:
                 logger.error("Sync error: %s", e)
+            finally:
+                self._report()
 
             # Sleep in small increments so we can stop quickly
             for _ in range(config.SYNC_INTERVAL):
