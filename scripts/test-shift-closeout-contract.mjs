@@ -31,7 +31,7 @@ assert.match(closeouts, /critical_exceptions/, 'Closeout payload must track crit
 assert.match(closeouts, /missing_clock_outs/, 'Closeout payload must track missing clock-out blockers.');
 assert.match(closeouts, /recognition_reviews/, 'Closeout payload must track recognition review blockers.');
 assert.match(closeouts, /kiosk_warnings/, 'Closeout payload must track kiosk warning blockers.');
-assert.match(closeouts, /Closeout has blockers\. Add an acknowledgement note before completing\./, 'Closeout mutation must enforce acknowledgement notes for blockers.');
+assert.match(closeouts, /Closeout has blockers\. (?:Refresh the evidence and add|Add) an acknowledgement note before completing\./, 'Closeout mutation must enforce acknowledgement notes for blockers.');
 assert.match(closeouts, /function buildSuggestedNote/, 'Closeout payload should include a deterministic suggested supervisor note.');
 assert.match(closeouts, /suggested_note:\s*suggestedNote/, 'Closeout response must expose the suggested supervisor note.');
 assert.match(closeouts, /function buildCloseoutDraft/, 'Closeout payload should build the deterministic Closeout Autopilot draft server-side.');
