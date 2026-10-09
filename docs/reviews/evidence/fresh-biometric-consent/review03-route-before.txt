@@ -1,0 +1,51 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+ ❯ review03-consent-route.test.ts (3 tests | 3 failed) 18ms
+   × passes actual acknowledgement time to mutation rather than minting a newer one 13ms
+   × rejects missing or stale acknowledgement before photo processing (undefined) 3ms
+   × rejects missing or stale acknowledgement before photo processing (2020-01-01T00:00:00Z) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review03-consent-route.test.ts > passes actual acknowledgement time to mutation rather than minting a newer one
+AssertionError: expected '2026-10-02T07:40:38.034Z' to be '2026-10-02T07:40:08.030Z' // Object.is equality
+
+Expected: "2026-10-02T07:40:08.030Z"
+Received: "2026-10-02T07:40:38.034Z"
+
+ ❯ review03-consent-route.test.ts:11:78
+      9| it('passes actual acknowledgement time to mutation rather than minting…
+     10|  const consentAt=new Date(Date.now()-30_000).toISOString();expect((awa…
+     11|  expect(mocks.mutation.mock.calls.find(c=>c[1].faceEncoding)?.[1].cons…
+       |                                                                              ^
+     12| });
+     13| it.each([undefined,'2020-01-01T00:00:00Z'])('rejects missing or stale …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  review03-consent-route.test.ts > rejects missing or stale acknowledgement before photo processing (undefined)
+ FAIL  review03-consent-route.test.ts > rejects missing or stale acknowledgement before photo processing (2020-01-01T00:00:00Z)
+AssertionError: expected 201 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 201
+
+ ❯ review03-consent-route.test.ts:14:46
+     12| });
+     13| it.each([undefined,'2020-01-01T00:00:00Z'])('rejects missing or stale …
+     14|  expect((await POST(req(consentAt))).status).toBe(400);expect(mocks.fe…
+       |                                              ^
+     15| });
+     16|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+   Start at  02:40:37
+   Duration  390ms (transform 52ms, setup 0ms, import 191ms, tests 18ms, environment 0ms)
