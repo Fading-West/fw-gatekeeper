@@ -59,6 +59,7 @@ export const list = query({
 export const create = mutation({
   args: {
     requestId: v.optional(v.string()),
+    expectedActorId: v.optional(v.id("users")),
     name: v.string(),
     days: v.string(),
     startTime: v.string(),
@@ -68,6 +69,9 @@ export const create = mutation({
   returns: v.object({ id: v.id("schedules") }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin"]);
+    if (args.expectedActorId !== undefined && args.expectedActorId !== actor.userId) {
+      throw new ConvexError({ code: "SCHEDULE_ACTOR_CONFLICT", message: "Your account changed. Reload schedules before creating a schedule." });
+    }
 
     validateSchedule(args.name, args.days, args.startTime, args.endTime);
     if (args.requestId !== undefined && (!args.requestId.trim() || args.requestId.length > 200)) {

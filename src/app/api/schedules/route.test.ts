@@ -113,3 +113,16 @@ it('returns 400 for a malformed PATCH schedule ID without writing', async () => 
   expect((await response.json()).error).toBe('Invalid schedule id.');
   expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ name: 'Day' });
 });
+
+it('rejects a creation receipt owned by a different UI actor before inserting', async () => {
+  const { t, actor } = await setup();
+  const previousActorId = await t.run(ctx => ctx.db.insert('users', { email: 'previous-admin@example.test' }));
+  const response = await POST(new NextRequest('https://example.test/api/schedules', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Day', days: [1], start_time: '06:00', end_time: '14:30',
+      request_id: 'previous-actor-receipt', expected_actor_id: previousActorId }),
+  }));
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: 'SCHEDULE_ACTOR_CONFLICT' });
+  expect(await actor.query(api.schedules.list, {})).toHaveLength(1);
+});

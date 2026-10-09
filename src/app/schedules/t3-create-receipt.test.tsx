@@ -52,21 +52,22 @@ async function setup() {
   vi.stubGlobal('sessionStorage', storageAdapter(storage));
   session.actor = String(ids[0]);
   const calls: { actor: string; requestId: string; id: string }[] = [];
+  let transportActor: string | undefined;
   const commit = async (init: RequestInit) => {
     // Capture the HTTP request's actor before any asynchronous work, then run
     // the real receipt mutation rather than implementing deduplication here.
-    const actor = session.actor;
+    const actor = transportActor ?? session.actor;
     if (!actor) throw new Error('Synthetic transport requires a signed-in actor');
     const body = JSON.parse(init.body as string);
     const result = await t.withIdentity({ subject: actor }).mutation(api.schedules.create, {
-      requestId: body.request_id, name: body.name, days: JSON.stringify(body.days),
+      ...(body.expected_actor_id ? { expectedActorId: body.expected_actor_id } : {}), requestId: body.request_id, name: body.name, days: JSON.stringify(body.days),
       startTime: body.start_time, endTime: body.end_time, department: body.department || undefined,
     });
     calls.push({ actor, requestId: body.request_id, id: String(result.id) });
     return result;
   };
   const rows = () => t.run(ctx => ctx.db.query('schedules').collect());
-  return { ids, storage, calls, commit, rows };
+  return { ids, storage, calls, commit, rows, setTransportActor: (actor: string) => { transportActor = actor; } };
 }
 
 it('keeps admin A’s lost receipt through admin B’s identical save and replays A without a third insertion', async () => {
@@ -311,4 +312,31 @@ it.each(['blocked-followup-write', 'silent-followup-write', 'silent-completion-w
   await act(async () => button('Create Schedule').props.onClick());
   expect(calls.at(-1)?.requestId).not.toBe(original.requestId);
   expect(await rows()).toHaveLength(2);
+});
+
+it('rejects a creation when the HTTP session switches before the UI actor refreshes', async () => {
+  const { ids, storage, calls, commit, rows, setTransportActor } = await setup();
+  setTransportActor(String(ids[1]));
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method !== 'POST') return Response.json([]);
+    try { return Response.json(await commit(init)); }
+    catch { return Response.json({ error: 'Your account changed. Reload schedules before creating a schedule.' }, { status: 409 }); }
+  }));
+  await act(async () => { tree = create(<SchedulesPage />); });
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(await rows()).toHaveLength(0);
+  expect(calls).toHaveLength(0);
+  const originalReceipt = pendingReceipts(storage)[0].requestId;
+  expect(tree!.root.findAllByType('input').some(node => node.props.value === 'Synthetic shared schedule')).toBe(true);
+
+  session.actor = String(ids[1]);
+  await act(async () => tree!.update(<SchedulesPage />));
+  await openDraft();
+  await act(async () => button('Create Schedule').props.onClick());
+  expect(calls).toHaveLength(1);
+  expect(calls[0].actor).toBe(String(ids[1]));
+  expect(calls[0].requestId).not.toBe(originalReceipt);
+  expect(await rows()).toHaveLength(1);
+  expect(pendingReceipts(storage).map(receipt => receipt.requestId)).toEqual([originalReceipt]);
 });

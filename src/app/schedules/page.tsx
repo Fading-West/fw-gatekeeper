@@ -143,7 +143,7 @@ export default function SchedulesPage() {
           toast(`Schedule "${name}" was already saved. The original save is confirmed; use New Schedule to intentionally create another.`);
         } else {
           const requestId = receipt.requestId;
-          const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId }) });
+          const res = await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, request_id: requestId, expected_actor_id: actorId }) });
           const responseBody = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(responseBody?.error || 'Failed to create schedule');
           if (typeof responseBody.id !== 'string' || !responseBody.id) throw new Error('Save status is unknown. Retry this unchanged form to confirm the saved schedule.');
