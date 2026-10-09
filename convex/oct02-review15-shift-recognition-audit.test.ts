@@ -10,7 +10,7 @@ async function fixture(){
   const add=async(role:'admin'|'enrollment'|'viewer',active=true)=>{const uid=await ctx.db.insert('users',{email:`synthetic-${role}-${active}@example.test`});await ctx.db.insert('portalMembers',{userId:uid,role,active,createdAt:new Date().toISOString()});return uid;};
   const admin=await add('admin'),viewer=await add('viewer'),inactive=await add('enrollment',false);
   const attempt=await ctx.db.insert('recognitionAttempts',{timestamp:`${date}T08:00:00`,kioskId:'synthetic',faceDetected:true,decision:'near_miss',threshold:.45,reviewed:false,createdAt:new Date().toISOString()});return {admin,viewer,inactive,attempt};
- });return {t,...ids,key:`${date}:recognition_review:${ids.attempt}`};
+ });const source=(await t.withIdentity({subject:ids.admin}).query(api.shiftExceptions.summary,{date})).exceptions.find(row=>row.type==='recognition_review')!;return {t,...ids,sourceFingerprint:source.source_fingerprint,key:`${date}:recognition_review:${ids.attempt}`};
 }
 afterEach(()=>vi.useRealTimers());
 it('denies anonymous/viewer/inactive shift review without changing state or creating audit',async()=>{
@@ -21,8 +21,8 @@ it('denies anonymous/viewer/inactive shift review without changing state or crea
 });
 it('audits actor and effective before/after state across recognition exception close, note edit and reopen',async()=>{
  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date(`${date}T15:00:00Z`));
- const {t,admin:uid,key}=await fixture();const admin=t.withIdentity({subject:uid});
- const input={exceptionKey:key,date,type:'recognition_review',status:'reviewed' as const,note:'Checked evidence'};
+ const {t,admin:uid,key,sourceFingerprint}=await fixture();const admin=t.withIdentity({subject:uid});
+ const input={exceptionKey:key,sourceFingerprint,date,type:'recognition_review',status:'reviewed' as const,note:'Checked evidence'};
  vi.advanceTimersByTime(1000);const first=await admin.mutation(api.shiftExceptions.review,input);
  const repeat=await admin.mutation(api.shiftExceptions.review,input);expect(repeat.id).toBe(first.id);expect(await t.run(ctx=>ctx.db.query('exceptionReviews').collect())).toHaveLength(1);
  vi.advanceTimersByTime(1000);const edited=await admin.mutation(api.shiftExceptions.review,{...input,note:'Corrected review note'});
@@ -38,11 +38,11 @@ it('audits actor and effective before/after state across recognition exception c
 });
 it('does not invent an open prior override when the first shift action reopens a Recognition Lab review',async()=>{
  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date(`${date}T15:00:00Z`));
- const {t,admin:uid,attempt,key}=await fixture();const admin=t.withIdentity({subject:uid});
+ const {t,admin:uid,attempt,key,sourceFingerprint}=await fixture();const admin=t.withIdentity({subject:uid});
  vi.advanceTimersByTime(1000);await admin.mutation(api.recognitionAttempts.updateReview,{id:attempt,reviewed:true,reviewedLabel:'confirmed',reviewedNote:'Lab verified'});
  const before=await admin.query(api.shiftExceptions.summary,{date});expect(before.exceptions.find(row=>row.key===key)).toMatchObject({status:'reviewed'});
  expect(await t.run(ctx=>ctx.db.query('exceptionReviews').collect())).toHaveLength(0);
- vi.advanceTimersByTime(1000);const reopened=await admin.mutation(api.shiftExceptions.review,{exceptionKey:key,date,type:'recognition_review',status:'open',note:'Recheck lab decision'});
+ vi.advanceTimersByTime(1000);const reopened=await admin.mutation(api.shiftExceptions.review,{exceptionKey:key,sourceFingerprint,date,type:'recognition_review',status:'open',note:'Recheck lab decision'});
  const audit=(await t.run(ctx=>ctx.db.query('auditLog').collect())).find(a=>a.targetTable==='exceptionReviews'&&a.targetId===reopened.id)!;
  expect(audit).toBeDefined();const details=JSON.parse(audit.details!);
  // The target record did not exist. Null accurately records creation of an

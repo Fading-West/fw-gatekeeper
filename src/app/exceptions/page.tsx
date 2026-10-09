@@ -258,6 +258,7 @@ function ExceptionsPageContent() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             exception_key: exception.key,
+            source_fingerprint: exception.source_fingerprint,
             date: exception.date,
             type: exception.type,
             status: nextStatus,
@@ -265,6 +266,11 @@ function ExceptionsPageContent() {
           }),
         });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && body.code === 'EXCEPTION_SOURCE_CONFLICT') {
+          await fetchExceptions();
+          toast(body.error, 'error');
+          return;
+        }
         if (!res.ok) throw new Error(body?.error || 'Failed to update exception');
         toast(`Exception marked ${titleCase(nextStatus)}`);
         await fetchExceptions();

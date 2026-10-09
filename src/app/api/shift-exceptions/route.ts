@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
+import { ConvexError } from 'convex/values';
 import convex from '@/lib/convex';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -125,6 +126,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const exceptionKey = optionalString(body.exception_key) || optionalString(body.exceptionKey);
+    const sourceFingerprint = optionalString(body.source_fingerprint) || optionalString(body.sourceFingerprint);
     const date = optionalString(body.date);
     const type = optionalString(body.type);
     const status = optionalString(body.status) || 'reviewed';
@@ -132,7 +134,7 @@ export async function PATCH(req: NextRequest) {
     if (!exceptionKey || !date || !type) {
       return NextResponse.json({ error: 'exception_key, date, and type required' }, { status: 400 });
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isValidLocalDateString(date)) {
       return NextResponse.json({ error: 'date must use YYYY-MM-DD format' }, { status: 400 });
     }
     if (!VALID_STATUSES.has(status)) {
@@ -141,6 +143,7 @@ export async function PATCH(req: NextRequest) {
 
     const result = await convex.mutation((api as any).shiftExceptions.review, {
       exceptionKey,
+      sourceFingerprint,
       date,
       type,
       status,
@@ -149,6 +152,12 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'EXCEPTION_SOURCE_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
+    if (error instanceof ConvexError && error.data?.code === 'INVALID_EXCEPTION_SOURCE') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 400 });
+    }
     console.error('Shift exceptions PATCH error:', error);
     return NextResponse.json({ error: 'Failed to review shift exception' }, { status: 500 });
   }

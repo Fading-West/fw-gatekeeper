@@ -34,17 +34,24 @@ it("records review ordering and effective retained or cleared metadata", async (
 
 it("records old exception attribution before replacing it with the submitted date/type", async () => {
   const t = convexTest(schema, modules);
-  const userId = await t.run(async ctx => {
+  const { userId, exceptionKey } = await t.run(async ctx => {
     const userId = await ctx.db.insert("users", { email: "exception-attribution@example.test" });
     await ctx.db.insert("portalMembers", { userId, role: "admin", active: true, createdAt: "2026-10-01" });
+    const attemptId = await ctx.db.insert("recognitionAttempts", {
+      kioskId: "synthetic", timestamp: "2026-10-01T08:00:00", faceDetected: true,
+      decision: "near_miss", threshold: 0.45, reviewed: false, createdAt: "2026-10-01T08:00:00Z",
+    });
+    const exceptionKey = `2026-10-01:recognition_review:${attemptId}`;
     await ctx.db.insert("exceptionReviews", {
-      exceptionKey: "2026-10-01:recognition_review:synthetic", date: "2026-09-30", type: "legacy",
+      exceptionKey, date: "2026-09-30", type: "legacy",
       status: "open", updatedAt: "2026-10-01T09:00:00Z",
     });
-    return userId;
+    return { userId, exceptionKey };
   });
-  await t.withIdentity({ subject: userId }).mutation(api.shiftExceptions.review, {
-    exceptionKey: "2026-10-01:recognition_review:synthetic", date: "2026-10-01", type: "recognition_review", status: "reviewed",
+  const actor = t.withIdentity({ subject: userId });
+  const source = (await actor.query(api.shiftExceptions.summary, { date: "2026-10-01" })).exceptions.find(row => row.key === exceptionKey)!;
+  await actor.mutation(api.shiftExceptions.review, {
+    exceptionKey, sourceFingerprint: source.source_fingerprint, date: "2026-10-01", type: "recognition_review", status: "reviewed",
   });
   const audits = await t.run(ctx => ctx.db.query("auditLog").collect());
   expect(JSON.parse(audits[0].details!)).toMatchObject({

@@ -1,13 +1,15 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { getFactoryLocalDateKey, getFactoryLocalTimestamp, isValidFactoryLocalDateKey } from "./localDate";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+
+import { buildExceptionSourceFingerprint } from "./exceptionSourceFingerprint";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -36,6 +38,7 @@ type SuggestedResolution = {
 };
 type ShiftException = {
   key: string;
+  source_fingerprint: string;
   date: string;
   type: string;
   severity: ExceptionSeverity;
@@ -319,6 +322,8 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
 }
 
 function withReview(exception: ShiftException, review: any): ShiftException {
+  // Stable keys and timestamps cannot attribute legacy reviews to this evidence.
+  if (review?.sourceFingerprint !== exception.source_fingerprint) review = null;
   return {
     ...exception,
     status: getReviewStatus(review),
@@ -327,9 +332,10 @@ function withReview(exception: ShiftException, review: any): ShiftException {
   };
 }
 
-function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution">): ShiftException {
+function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution" | "source_fingerprint">): ShiftException {
   const exception: Omit<ShiftException, "suggested_resolution"> = {
     ...input,
+    source_fingerprint: "", // Hydrated from effective source evidence below.
     status: "open",
     review_note: null,
     reviewed_at: null,
@@ -385,6 +391,8 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   ]);
 
   const reviewsByKey = new Map(reviews.map((review: any) => [review.exceptionKey, review]));
+  const schedulesByWorker = new Map<string, any>();
+  const recognitionFingerprints = new Map<string, string>();
   const eventsByWorker = new Map<string, any[]>();
   const exceptions: ShiftException[] = [];
 
@@ -397,6 +405,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   for (const worker of workers) {
     let schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
     const workerId = String(worker._id);
+    schedulesByWorker.set(workerId, schedule);
     const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const clockOuts = workerEvents.filter((event) => event.eventType === "clock_out");
@@ -597,11 +606,25 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       decision.startsWith("rejected");
     const attemptId = String(attempt.id || attempt._id);
     const key = `${date}:recognition_review:${attemptId}`;
+    const sourceFingerprint = buildExceptionSourceFingerprint({
+      date, type: "recognition_review", workerId: candidateWorkerId,
+      recognitionAttempt: {
+        id: attemptId, timestamp: attempt.timestamp, decision, kioskId, candidateWorkerId, scoreMargin,
+        bestScore: recognitionNumber(attempt, "best_score", "bestScore"),
+        secondBestScore: recognitionNumber(attempt, "second_best_score", "secondBestScore"),
+        threshold: recognitionNumber(attempt, "threshold", "threshold"),
+        modelVersion: recognitionText(attempt, "model_version", "modelVersion"),
+        livenessConfirmed: attempt.liveness_confirmed === 1 ? true : attempt.liveness_confirmed === 0 ? false
+          : typeof attempt.livenessConfirmed === "boolean" ? attempt.livenessConfirmed : null,
+      },
+    });
+    recognitionFingerprints.set(key, sourceFingerprint);
     const label = recognitionText(attempt, "reviewed_label", "reviewedLabel") || "confirmed";
     const completed = reviewed && ["confirmed", "corrected", "ignored"].includes(label);
     const attemptReviewedAt = recognitionText(attempt, "reviewed_at", "reviewedAt");
     const attemptUpdatedAt = recognitionText(attempt, "updated_at", "updatedAt") || attemptReviewedAt;
-    const explicitReview = reviewsByKey.get(key) as { updatedAt: string } | undefined;
+    const storedReview = reviewsByKey.get(key) as { updatedAt: string; sourceFingerprint?: string } | undefined;
+    const explicitReview = storedReview?.sourceFingerprint === sourceFingerprint ? storedReview : undefined;
     // Both screens can review or reopen an exception. The latest action wins;
     // an old exception disposition must not undo a newer Recognition Lab review.
     const explicitIsNewer = explicitReview && (
@@ -609,6 +632,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     );
     if (!explicitIsNewer) {
       reviewsByKey.set(key, {
+        sourceFingerprint, // Recognition Lab is already bound to this exact attempt.
         status: completed ? (label === "ignored" ? "ignored" : "reviewed") : "open",
         note: recognitionText(attempt, "reviewed_note", "reviewedNote"),
         reviewedAt: completed ? attemptReviewedAt : null,
@@ -648,7 +672,25 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }));
   }
 
-  const hydrated = exceptions.map((exception) => withReview(exception, reviewsByKey.get(exception.key)));
+  const attendanceFingerprints = new Map<string, string>();
+  const hydrated = exceptions.map((exception) => {
+    let source_fingerprint = recognitionFingerprints.get(exception.key);
+    if (!source_fingerprint) {
+      // All exceptions of the same type for a worker bind to the same complete
+      // day. Compute that identity once even when many scans need review.
+      const sourceKey = JSON.stringify([exception.type, exception.worker_id]);
+      source_fingerprint = attendanceFingerprints.get(sourceKey);
+      if (!source_fingerprint) {
+        source_fingerprint = buildExceptionSourceFingerprint({
+          date: exception.date, type: exception.type, workerId: exception.worker_id,
+          attendanceEvents: eventsByWorker.get(exception.worker_id || "") ?? [],
+          schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
+        });
+        attendanceFingerprints.set(sourceKey, source_fingerprint);
+      }
+    }
+    return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
+  });
   hydrated.sort((a, b) => {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     const statusOrder = { open: 0, reviewed: 1, resolved: 2, ignored: 3 };
@@ -681,26 +723,35 @@ export const summary = query({
 export const review = mutation({
   args: {
     exceptionKey: v.string(),
+    sourceFingerprint: v.optional(v.string()),
     date: v.string(),
     type: v.string(),
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
     note: v.optional(v.string()),
   },
   returns: v.object({
-    id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), date: v.string(), type: v.string(),
+    id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), sourceFingerprint: v.string(), date: v.string(), type: v.string(),
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
     note: v.optional(v.string()), reviewedAt: v.optional(v.string()), updatedAt: v.string(),
   }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
+    if (!isValidFactoryLocalDateKey(args.date)) {
+      throw new ConvexError({ code: "INVALID_EXCEPTION_SOURCE", message: "date must be a valid YYYY-MM-DD date." });
+    }
+    const source = (await buildShiftExceptions(ctx, args.date)).find(exception => exception.key === args.exceptionKey);
+    if (!source || source.date !== args.date || source.type !== args.type || source.source_fingerprint !== args.sourceFingerprint) {
+      throw new ConvexError({ code: "EXCEPTION_SOURCE_CONFLICT", message: "This exception no longer matches current evidence. Refresh the queue and review its current source." });
+    }
     const now = new Date().toISOString();
     const existing = await ctx.db
       .query("exceptionReviews")
       .withIndex("by_key", (q) => q.eq("exceptionKey", args.exceptionKey))
       .first();
     const patch = {
-      date: args.date,
-      type: args.type,
+      sourceFingerprint: source.source_fingerprint,
+      date: source.date,
+      type: source.type,
       status: args.status,
       note: normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,
@@ -716,9 +767,9 @@ export const review = mutation({
       actorUserId: actor.userId, action: "exception.review",
       targetTable: "exceptionReviews", targetId: id,
       details: JSON.stringify({ exceptionKey: args.exceptionKey, date: args.date, type: args.type,
-        before: existing ? { date: existing.date, type: existing.type, status: existing.status, note: existing.note ?? null,
+        before: existing ? { date: existing.date, type: existing.type, sourceFingerprint: existing.sourceFingerprint ?? null, status: existing.status, note: existing.note ?? null,
           reviewedAt: existing.reviewedAt ?? null, updatedAt: existing.updatedAt } : null,
-        after: { date: patch.date, type: patch.type, status: patch.status, note: patch.note ?? null,
+        after: { date: patch.date, type: patch.type, sourceFingerprint: patch.sourceFingerprint, status: patch.status, note: patch.note ?? null,
           reviewedAt: patch.reviewedAt ?? null, updatedAt: patch.updatedAt } }),
     });
     return existing ? { id, ...patch } : { id, exceptionKey: args.exceptionKey, ...patch };
