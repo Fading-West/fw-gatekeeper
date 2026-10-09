@@ -718,9 +718,11 @@ export const review = mutation({
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
     note: v.optional(v.string()),
   },
-  returns: v.object({ id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), sourceFingerprint: v.string(), date: v.string(), type: v.string(),
+  returns: v.object({
+    id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), sourceFingerprint: v.string(), date: v.string(), type: v.string(),
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
-    note: v.optional(v.string()), reviewedAt: v.optional(v.string()), updatedAt: v.string() }),
+    note: v.optional(v.string()), reviewedAt: v.optional(v.string()), updatedAt: v.string(),
+  }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     if (!isValidFactoryLocalDateKey(args.date)) {
@@ -754,9 +756,9 @@ export const review = mutation({
       actorUserId: actor.userId, action: "exception.review",
       targetTable: "exceptionReviews", targetId: id,
       details: JSON.stringify({ exceptionKey: args.exceptionKey, date: args.date, type: args.type,
-        before: existing ? { sourceFingerprint: existing.sourceFingerprint ?? null, status: existing.status, note: existing.note ?? null,
+        before: existing ? { date: existing.date, type: existing.type, sourceFingerprint: existing.sourceFingerprint ?? null, status: existing.status, note: existing.note ?? null,
           reviewedAt: existing.reviewedAt ?? null, updatedAt: existing.updatedAt } : null,
-        after: { sourceFingerprint: patch.sourceFingerprint, status: patch.status, note: patch.note ?? null,
+        after: { date: patch.date, type: patch.type, sourceFingerprint: patch.sourceFingerprint, status: patch.status, note: patch.note ?? null,
           reviewedAt: patch.reviewedAt ?? null, updatedAt: patch.updatedAt } }),
     });
     return existing ? { id, ...patch } : { id, exceptionKey: args.exceptionKey, ...patch };

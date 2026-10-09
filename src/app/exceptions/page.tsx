@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/Toast';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 import { createLocalIsoTimestamp, getFactoryLocalDateString } from '@/lib/date';
+import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 import {
@@ -66,12 +67,6 @@ function formatDateTime(value: string | null) {
     hour: 'numeric',
     minute: '2-digit',
   });
-}
-
-function escapeCsv(value: unknown) {
-  const text = String(value ?? '');
-  if (!/[",\n]/.test(text)) return text;
-  return `"${text.replace(/"/g, '""')}"`;
 }
 
 function isAttendanceCorrectionAction(action: ShiftException['suggested_resolution']['action']): action is AttendanceCorrectionAction {
@@ -152,7 +147,7 @@ function csvFor(exceptions: ShiftException[]) {
     exception.description,
     exception.review_note || '',
   ]);
-  return [headers, ...rows].map((row) => row.map(escapeCsv).join(',')).join('\n');
+  return [headers, ...rows].map((row) => row.map(csvField).join(',')).join('\n');
 }
 
 function validDateParam(value: string | null) {

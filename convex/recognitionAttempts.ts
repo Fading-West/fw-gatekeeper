@@ -7,6 +7,7 @@ import {
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
+import { writeAuditLog } from "./audit";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
 
 const attemptInput = v.object({
@@ -118,7 +119,7 @@ function normalizeAttempt(attempt: {
   reviewedNote?: string;
   reviewedAt?: string;
 }) {
-  const reviewed = attempt.reviewed ?? false;
+  const reviewed = false; // Kiosks supply evidence; only portal operators may review it.
   return {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),
     kioskId: normalizeRequiredText(attempt.kioskId, "kioskId"),
@@ -139,9 +140,9 @@ function normalizeAttempt(attempt: {
     brightness: attempt.brightness,
     blur: attempt.blur,
     reviewed,
-    reviewedLabel: normalizeOptionalText(attempt.reviewedLabel),
-    reviewedNote: normalizeOptionalText(attempt.reviewedNote),
-    reviewedAt: reviewed ? normalizeOptionalText(attempt.reviewedAt) : undefined,
+    reviewedLabel: undefined,
+    reviewedNote: undefined,
+    reviewedAt: undefined,
   };
 }
 
@@ -152,7 +153,7 @@ const evidenceFields = [
   "livenessConfirmed", "modelVersion", "imageQuality", "faceQuality", "brightness", "blur",
 ] as const;
 function sameEvidence(
-  existing: Partial<ReturnType<typeof normalizeAttempt>>,
+  existing: Partial<Pick<ReturnType<typeof normalizeAttempt>, typeof evidenceFields[number]>>,
   incoming: ReturnType<typeof normalizeAttempt>,
 ) {
   return evidenceFields.every(field => existing[field] === incoming[field]);
@@ -299,7 +300,7 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
     reviewedAt?: string;
   }>;
 }) {
-    const seenLegacyKeys = new Set<string>();
+    const seenLegacyEvidence = new Map<string, ReturnType<typeof normalizeAttempt>[]>();
     const insertedIds = [];
     let skipped = 0;
     const now = new Date().toISOString();
@@ -344,11 +345,20 @@ async function ingestAttemptBatch(ctx: MutationCtx, args: {
       } else {
         // Preserve the previous behavior for unkeyed legacy clients.
         const key = `${normalized.kioskId}:${normalized.timestamp}:${normalized.candidateWorkerId || ""}:${normalized.decision}`;
-        if (seenLegacyKeys.has(key)) {
+        if (seenLegacyEvidence.get(key)?.some(row => sameEvidence(row, normalized))) {
           skipped++;
           continue;
         }
-        seenLegacyKeys.add(key);
+        seenLegacyEvidence.set(key, [...seenLegacyEvidence.get(key) ?? [], normalized]);
+        const prior = await ctx.db.query("recognitionAttempts")
+          .withIndex("by_kiosk_timestamp_candidate_decision", q => q.eq("kioskId", normalized.kioskId).eq("timestamp", normalized.timestamp).eq("candidateWorkerId", normalized.candidateWorkerId).eq("decision", normalized.decision))
+          .filter(q => q.and(q.eq(q.field("sourceAttemptId"), undefined),
+            ...evidenceFields.map(field => q.eq(q.field(field), normalized[field]))))
+          .first();
+        if (prior && sameEvidence(prior, normalized)) {
+          skipped++;
+          continue;
+        }
       }
 
       const id = await ctx.db.insert("recognitionAttempts", {
@@ -450,6 +460,19 @@ export const updateReview = mutation({
     reviewedNote: v.optional(v.string()),
     reviewedAt: v.optional(v.string()),
   },
+  returns: v.union(v.null(), v.object({
+    id: v.id("recognitionAttempts"), timestamp: v.string(), kiosk_id: v.string(),
+    source_attempt_id: v.union(v.string(), v.null()), face_detected: v.number(),
+    candidate_worker_id: v.union(v.string(), v.null()), candidate_worker_name: v.union(v.string(), v.null()),
+    best_score: v.union(v.number(), v.null()), second_best_score: v.union(v.number(), v.null()),
+    score_margin: v.union(v.number(), v.null()), decision: v.string(), threshold: v.number(),
+    liveness_confirmed: v.union(v.number(), v.null()), model_version: v.union(v.string(), v.null()),
+    image_quality: v.union(v.number(), v.null()), face_quality: v.union(v.number(), v.null()),
+    brightness: v.union(v.number(), v.null()), blur: v.union(v.number(), v.null()),
+    reviewed: v.number(), reviewed_label: v.union(v.string(), v.null()),
+    reviewed_note: v.union(v.string(), v.null()), reviewed_at: v.union(v.string(), v.null()),
+    created_at: v.string(), updated_at: v.union(v.string(), v.null()),
+  })),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const existing = await ctx.db.get(args.id);
@@ -472,11 +495,11 @@ export const updateReview = mutation({
     updates.reviewedAt = reviewed ? normalizeOptionalText(args.reviewedAt) || existing.reviewedAt || now : undefined;
 
     await ctx.db.patch(args.id, updates);
-    await ctx.db.insert("auditLog", {
+    await writeAuditLog(ctx, {
       actorUserId: actor.userId, action: "recognition.review", targetTable: "recognitionAttempts",
-      targetId: args.id, createdAt: now,
-      details: JSON.stringify({ before: { reviewedAt: existing.reviewedAt ?? null, reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
-        after: { reviewedAt: updates.reviewedAt ?? null, reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
+      targetId: args.id,
+      details: JSON.stringify({ before: { updatedAt: existing.updatedAt ?? null, reviewedAt: existing.reviewedAt ?? null, reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
+        after: { updatedAt: now, reviewedAt: updates.reviewedAt ?? null, reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
           note: args.reviewedNote === undefined ? existing.reviewedNote ?? null : updates.reviewedNote ?? null } }),
     });
 
