@@ -601,6 +601,26 @@ class SyncWorker:
             except Exception as e:
                 logger.debug("Health reporter failed: %s", e)
 
+    def _phase(self, name, callback):
+        """One failed subsystem must not block independent durable queues."""
+        try:
+            return callback()
+        except Exception:
+            logger.exception("%s sync phase failed; independent phases will continue", name)
+            return False
+
+    def _sync_roster(self, health):
+        try:
+            workers_synced = sync_workers(health=health)
+        finally:
+            # Even an incomplete response can have committed deactivations.
+            # Reload must fail closed, and never authorize its receipt on error.
+            if self._recognizer:
+                self._recognizer.reload_faces()
+        if workers_synced and database.get_sync_state("roster_pending_receipt"):
+            workers_synced = bool(self._recognizer) and acknowledge_applied_roster()
+        return workers_synced
+
     def _run(self):
         """Main sync loop."""
         while self._running:
@@ -625,20 +645,11 @@ class SyncWorker:
                             }
                         except Exception as e:
                             logger.debug("Health provider failed: %s", e)
-                    try:
-                        workers_synced = sync_workers(health=health)
-                    finally:
-                        # A failed response can still have committed earlier roster
-                        # changes, including deactivations. Publish those changes
-                        # even when the sync watermark must remain unchanged.
-                        if self._recognizer:
-                            self._recognizer.reload_faces()
-                    if workers_synced and database.get_sync_state("roster_pending_receipt"):
-                        workers_synced = bool(self._recognizer) and acknowledge_applied_roster()
+                    workers_synced = self._phase("worker roster", lambda: self._sync_roster(health))
                     if workers_synced:
                         self._report(last_sync_at=datetime.now().isoformat(timespec="seconds"))
-                    sync_attendance()
-                    sync_recognition_attempts()
+                    self._phase("attendance", sync_attendance)
+                    self._phase("recognition telemetry", sync_recognition_attempts)
                     self._report(
                         queued_logs=database.count_unsynced_logs(),
                         retryable_logs=database.count_retryable_logs(),
