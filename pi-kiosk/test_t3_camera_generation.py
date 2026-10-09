@@ -4,7 +4,7 @@ Only native/model/database/server dependencies are replaced. A real detector
 thread holds an old embedding across the actual disconnect/recovery handler.
 """
 import ast
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 import threading
@@ -170,7 +170,7 @@ class CameraGenerationTests(unittest.TestCase):
         database = types.SimpleNamespace(init_db=lambda: None,
             get_worker_by_id=lambda worker: {'id': worker, 'employee_id': str(worker), 'server_id': 'old-server' if worker == 1 else 'new-server'},
             was_recently_clocked=lambda *args: False, get_last_action=lambda *args: None,
-            log_attendance=lambda **fields: writes.append(fields))
+            log_recognized_attendance=lambda **fields: writes.append(fields))
         web = types.SimpleNamespace(start_server=lambda: None, get_health_snapshot=lambda: dict(health),
             update_health=lambda **fields: health.update(fields), update_status=lambda **fields: statuses.append(fields), set_frame=lambda frame: None)
 
@@ -185,7 +185,7 @@ class CameraGenerationTests(unittest.TestCase):
             'threading': types.SimpleNamespace(Lock=threading.Lock, Thread=DetectorThread),
             'cv2': types.SimpleNamespace(resize=lambda frame, *args, **kwargs: frame),
             'fr': types.SimpleNamespace(face_locations=locations), 'embed_face': embedding,
-            'FreshFaceMatcher': FreshFaceMatcher, 'np': np, 'datetime': datetime, 'timedelta': timedelta,
+            'FreshFaceMatcher': FreshFaceMatcher, 'np': np, 'datetime': datetime, 'timedelta': timedelta, 'timezone': timezone,
             'GOLD': 'gold', 'GREEN': 'green', 'RED': 'red', 'draw_box': lambda frame, *args: frame,
             'format_worker_display_id': lambda worker, worker_id: str(worker_id),
             'cosine_sim': lambda left, right: float(np.dot(left, right)), '_now_iso': lambda: 'synthetic-time',
