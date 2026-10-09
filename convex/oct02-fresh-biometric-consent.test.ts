@@ -43,7 +43,7 @@ async function saveBiometrics(fixture: Awaited<ReturnType<typeof setup>>, path: 
   const { admin, workerId } = fixture;
   if (path === 'template update' || path === 'photo update') {
     await admin.mutation(api.workers.update, {
-      id: workerId!,
+      id: workerId!, expectedIdentityRevision: (await admin.query(api.workers.get, { id: workerId! }))?.identity_revision,
       ...(path === 'template update' ? { faceEncoding } : { photoStorageIds: [] }),
       consentAt,
     });
@@ -95,7 +95,7 @@ it.each(paths)('rejects stale and future acknowledgements without changing worke
 
 it('preserves the acknowledgement when changing metadata without new biometrics', async () => {
   const { t, admin, workerId } = await setup('template update');
-  await expect(admin.mutation(api.workers.update, { id: workerId!, department: 'New department' }))
+  await expect(admin.mutation(api.workers.update, { id: workerId!, expectedIdentityRevision: (await admin.query(api.workers.get, { id: workerId! }))?.identity_revision, department: 'New department' }))
     .resolves.toEqual({ ok: true });
   expect(await t.run(ctx => ctx.db.get(workerId!))).toMatchObject({ consentAt: previousEnrollmentAt });
 });

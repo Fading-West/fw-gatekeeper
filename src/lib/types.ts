@@ -2,6 +2,7 @@ export interface Worker {
   id: string;
   name: string;
   employee_id?: string;
+  identity_revision?: string;
   department: string;
   photo_url: string | null;
   has_face_encoding?: boolean;

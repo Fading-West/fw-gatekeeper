@@ -17,6 +17,6 @@ for(const magnitude of [0,1e308,1e-300]) {
   const admin=t.withIdentity({subject:uid});const consentAt=new Date().toISOString();
   await expect(admin.mutation(api.workers.create,{name:'Synthetic rejected',faceEncoding:vector,consentAt})).rejects.toThrow(normReason);
   const good=await admin.mutation(api.workers.create,{name:'Synthetic valid',faceEncoding:Array(512).fill(.1),consentAt});
-  await expect(admin.mutation(api.workers.update,{id:good.id,faceEncoding:vector,consentAt})).rejects.toThrow(normReason);
+  await expect(admin.mutation(api.workers.update,{id:good.id,expectedIdentityRevision:(await admin.query(api.workers.get,{id:good.id}))?.identity_revision,faceEncoding:vector,consentAt})).rejects.toThrow(normReason);
  });
 }
