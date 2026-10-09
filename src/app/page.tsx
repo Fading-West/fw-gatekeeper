@@ -10,6 +10,7 @@ import type { LiveShiftSentinelItem, LiveShiftSentinelSnapshot, ProactiveActionF
 import type { ShiftBriefingResponse, ShiftCloseoutResponse, ShiftException, ShiftExceptionsResponse, ShiftTrustBriefStatus } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { boundedRead } from '@/lib/bounded-read';
+import { latestAttendanceByWorker } from '@/lib/attendance-presence';
 
 interface WorkerWithStatus {
   id: string;
@@ -36,6 +37,7 @@ interface AttendanceEvent {
   worker_department?: string;
   event_type: 'clock_in' | 'clock_out' | string;
   timestamp: string;
+  timestamp_utc?: string | null;
   kiosk_id?: string | null;
   kiosk_name?: string | null;
 }
@@ -330,6 +332,7 @@ export default function Dashboard() {
   // Read by fetchData without being a dependency, so the polling interval
   // isn't torn down and re-armed on every successful refresh.
   const attendanceEventsRef = useRef<AttendanceEvent[]>([]);
+  const workersRef = useRef<DashboardWorkerPayload[]>([]);
   const requestSequence = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
   const mounted = useRef(true);
@@ -346,6 +349,7 @@ export default function Dashboard() {
     if (dataDate.current !== today) {
       dataDate.current = today;
       attendanceEventsRef.current = [];
+      workersRef.current = [];
       setActionDate(today);
       setLoading(true);
       setStats({ totalWorkers: 0, clockedIn: 0, clockedOut: 0, notArrived: 0, avgArrival: null });
@@ -375,9 +379,14 @@ export default function Dashboard() {
 
       const results = await Promise.allSettled(signals.map((signal) => boundedRead(async (readSignal) => {
         const res = await signal.request(readSignal);
-        const json = await res.json().catch(() => null);
+        const json = await res.json();
         if (!res.ok) {
           throw new Error(json?.error || `${res.status} ${res.statusText}`);
+        }
+        if (signal.key === 'workers' || signal.key === 'attendance') {
+          if (!Array.isArray(json)) throw new Error('Live data returned an unexpected response. Try refreshing again.');
+        } else if (!json || typeof json !== 'object' || Array.isArray(json)) {
+          throw new Error('Live data returned an unexpected response. Try refreshing again.');
         }
         return { signal, json };
       }, controller.signal)));
@@ -406,7 +415,8 @@ export default function Dashboard() {
           setStats(json);
         } else if (signal.key === 'workers') {
           successfulKeys.add(signal.key);
-          nextWorkers = Array.isArray(json) ? json : [];
+          nextWorkers = json;
+          workersRef.current = json;
         } else if (signal.key === 'attendance') {
           successfulKeys.add(signal.key);
           nextAttendance = Array.isArray(json) ? json : [];
@@ -436,17 +446,11 @@ export default function Dashboard() {
         }
       });
 
-      const statusMap = new Map<string, { event_type: string; timestamp: string }>();
       const attendanceForRoster = nextAttendance || attendanceEventsRef.current;
-      for (const e of attendanceForRoster) {
-        const existing = statusMap.get(e.worker_id);
-        if (!existing || e.timestamp > existing.timestamp) {
-          statusMap.set(e.worker_id, { event_type: e.event_type, timestamp: e.timestamp });
-        }
-      }
+      const statusMap = latestAttendanceByWorker(attendanceForRoster);
 
-      const workersForRoster = nextWorkers as DashboardWorkerPayload[] | null;
-      if (workersForRoster) {
+      const workersForRoster = nextWorkers ?? workersRef.current;
+      if (nextWorkers || nextAttendance) {
         const enriched: WorkerWithStatus[] = workersForRoster.map((w) => {
           const latest = statusMap.get(w.id);
           let status: 'in' | 'out' | 'absent' = 'absent';

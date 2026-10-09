@@ -94,3 +94,39 @@ it('aborts a pending read on unmount without cancelling already completed reads'
   expect(pending.signal.aborted).toBe(true);
   expect(reads.filter(read => read !== pending).every(read => !read.signal.aborted)).toBe(true);
 });
+
+it('bounds a stalled JSON body and publishes the other signals', async () => {
+  vi.useFakeTimers(); setupDocument();
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.includes('/api/attendance')
+    ? Promise.resolve({ ok: true, json: () => new Promise(() => {}) })
+    : Promise.resolve(Response.json(payload(url, 'Available worker')))));
+  await act(async () => { tree = create(<Dashboard />); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  expect(tree!.root.findByProps({ 'data-worker': 'Available worker' }).props['data-stale']).toBe(true);
+  expect(JSON.stringify(tree!.toJSON())).toContain('timed out');
+});
+
+it('updates attendance status on the retained roster when its refresh fails', async () => {
+  const visible = setupDocument(); let refreshing = false;
+  const attendance = [{ id: 'new', worker_id: 'synthetic', event_type: 'clock_in', timestamp: `${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' })}T08:00:00` }];
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => refreshing && url.includes('/api/workers')
+    ? Response.json({ error: 'Roster outage' }, { status: 503 })
+    : Response.json(payload(url, 'Retained worker', refreshing ? attendance : []))));
+  await act(async () => { tree = create(<Dashboard />); });
+  expect(tree!.root.findByProps({ 'data-worker': 'Retained worker' }).props['data-status']).toBe('absent');
+  refreshing = true;
+  await act(async () => visible());
+  expect(tree!.root.findByProps({ 'data-worker': 'Retained worker' }).props).toMatchObject({ 'data-status': 'in', 'data-stale': true });
+});
+
+it.each(['invalid JSON', 'unexpected payload'])('retains good data and reports a failed signal for %s', async failure => {
+  const visible = setupDocument(); let refreshing = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => refreshing && (url.includes('/api/stats') || url.includes('/api/workers'))
+    ? failure === 'invalid JSON' ? new Response('broken JSON', { status: 200 }) : Response.json(null)
+    : Response.json(payload(url, 'Retained worker'))));
+  await act(async () => { tree = create(<Dashboard />); });
+  refreshing = true;
+  await act(async () => visible());
+  expect(tree!.root.findByProps({ 'data-worker': 'Retained worker' }).props['data-stale']).toBe(true);
+  expect(JSON.stringify(tree!.toJSON())).toContain('could not refresh');
+});
