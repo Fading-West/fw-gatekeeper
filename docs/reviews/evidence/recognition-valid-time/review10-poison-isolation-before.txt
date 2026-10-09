@@ -1,0 +1,22 @@
+test_auth_conflict_and_server_errors_keep_all_rows_retryable (__main__.RecognitionPoisonQA.test_auth_conflict_and_server_errors_keep_all_rows_retryable) ... Recognition attempt sync failed with status=401 body=synthetic
+Recognition attempt sync failed with status=409 body=synthetic
+Recognition attempt sync failed with status=500 body=synthetic
+Recognition attempt sync failed with status=400 body=synthetic
+ok
+test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain (__main__.RecognitionPoisonQA.test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain) ... Recognition attempt sync failed with status=400 body=synthetic validation
+Recognition attempt sync failed with status=400 body=synthetic validation
+Recognition attempt sync failed with status=400 body=synthetic validation
+FAIL
+
+======================================================================
+FAIL: test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain (__main__.RecognitionPoisonQA.test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/qa-notes/test_recognition_poison_isolation.py", line 29, in test_invalid_oldest_record_is_preserved_while_later_valid_rows_drain
+    self.assertEqual(good,120,'invalid oldest record cannot starve valid later rows')
+AssertionError: 0 != 120 : invalid oldest record cannot starve valid later rows
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.046s
+
+FAILED (failures=1)
