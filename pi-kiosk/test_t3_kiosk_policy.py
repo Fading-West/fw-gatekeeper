@@ -1,6 +1,6 @@
 """Synthetic policy domains and fail-closed workflow regressions; no models."""
 import ast
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import types
@@ -8,10 +8,15 @@ import unittest
 from unittest import mock
 
 import config
+import database
+import test_sync_mapping as mapping
 from kiosk_policy import require_kiosk_action_type, validate_kiosk_policy
 
 
 class KioskPolicyTests(unittest.TestCase):
+    setUp = mapping.AttendanceServerIdMappingTests.setUp
+    _close_db = staticmethod(mapping.AttendanceServerIdMappingTests._close_db)
+
     def settings(self, **overrides):
         values = {name: getattr(config, name) for name in (
             "KIOSK_TYPE", "LIVENESS_REQUIRED", "RECOGNITION_MATCH_THRESHOLD",
@@ -114,13 +119,11 @@ class KioskPolicyTests(unittest.TestCase):
             import app
         client = app.app.test_client()
         headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
-        worker = {"id": 1, "name": "Synthetic Worker", "employee_id": "S1", "server_id": None}
+        worker_id = database.add_worker("Synthetic Worker", mapping.ENCODING)
         with mock.patch.object(config, "KIOSK_UI_KEY", "synthetic-ui", create=True), \
              mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "synthetic-pin", create=True), \
              mock.patch.object(config, "KIOSK_TYPE", "entry"), \
-             mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 5e11), \
-             mock.patch.object(app.database, "get_worker_by_id", return_value=worker), \
-             mock.patch.object(app.database, "log_attendance", return_value=42) as record:
+             mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 5e11):
             boot_nonce = client.get("/health").get_json().get("supervisor_boot_nonce")
             unlocked = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "boot_nonce": boot_nonce}, headers=headers)
             self.assertEqual(unlocked.status_code, 200)
@@ -128,32 +131,30 @@ class KioskPolicyTests(unittest.TestCase):
             self.assertFalse(health["policy_ok"])
             self.assertEqual(health["policy_errors"], ["CLOCK_DEBOUNCE_MINUTES"])
             self.assertEqual(health["degraded_reason"], "kiosk_policy_error")
-            self.assertEqual(client.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 200)
-            record.assert_called_once()
+            self.assertEqual(client.post("/manual-clock", json={"worker_id": worker_id}, headers=headers).status_code, 200)
+            self.assertEqual(database.count_unsynced_logs(), 1)
 
     def test_recognition_fault_allows_supervised_manual_but_invalid_mode_does_not_infer(self):
         with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
             import app
         client = app.app.test_client()
         headers = {"X-Kiosk-UI-Key": "synthetic-ui"}
-        worker = {"id": 1, "name": "Synthetic Worker", "employee_id": "S1", "server_id": None}
+        worker_id = database.add_worker("Synthetic Worker", mapping.ENCODING)
         with mock.patch.object(config, "KIOSK_UI_KEY", "synthetic-ui", create=True), \
              mock.patch.object(config, "KIOSK_SUPERVISOR_PIN", "synthetic-pin", create=True), \
              mock.patch.object(config, "KIOSK_TYPE", "entry"), \
              mock.patch.object(config, "RECOGNITION_MATCH_THRESHOLD", float("nan")), \
              mock.patch.object(config, "RECOGNITION_EMBEDDING_WINDOW", 10**1000), \
-             mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 1e20), \
-             mock.patch.object(app.database, "get_worker_by_id", return_value=worker), \
-             mock.patch.object(app.database, "log_attendance", return_value=42) as record:
+             mock.patch.object(config, "CLOCK_DEBOUNCE_MINUTES", 1e20):
             boot_nonce = client.get("/health").get_json().get("supervisor_boot_nonce")
             unlocked = client.post("/supervisor/unlock", json={"pin": "synthetic-pin", "boot_nonce": boot_nonce}, headers=headers)
             self.assertEqual(unlocked.status_code, 200)
-            self.assertEqual(client.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 200)
+            self.assertEqual(client.post("/manual-clock", json={"worker_id": worker_id}, headers=headers).status_code, 200)
             with mock.patch.object(config, "KIOSK_TYPE", "entyr"):
-                self.assertEqual(client.post("/manual-clock", json={"worker_id": 1}, headers=headers).status_code, 503)
-                self.assertEqual(client.post("/manual-clock", json={"worker_id": 1, "action": "clock_out"}, headers=headers).status_code, 200)
-            self.assertEqual(client.post("/manual-clock", json={"worker_id": 1, "action": "toggle"}, headers=headers).status_code, 400)
-            self.assertEqual(record.call_count, 2)
+                self.assertEqual(client.post("/manual-clock", json={"worker_id": worker_id}, headers=headers).status_code, 503)
+                self.assertEqual(client.post("/manual-clock", json={"worker_id": worker_id, "action": "clock_out"}, headers=headers).status_code, 200)
+            self.assertEqual(client.post("/manual-clock", json={"worker_id": worker_id, "action": "toggle"}, headers=headers).status_code, 400)
+            self.assertEqual(database.count_unsynced_logs(), 2)
             health = client.get("/health").get_json()
             self.assertFalse(health["policy_ok"])
             self.assertIn("RECOGNITION_MATCH_THRESHOLD", health["policy_errors"])
