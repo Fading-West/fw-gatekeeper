@@ -31,7 +31,11 @@ assert.match(closeouts, /critical_exceptions/, 'Closeout payload must track crit
 assert.match(closeouts, /missing_clock_outs/, 'Closeout payload must track missing clock-out blockers.');
 assert.match(closeouts, /recognition_reviews/, 'Closeout payload must track recognition review blockers.');
 assert.match(closeouts, /kiosk_warnings/, 'Closeout payload must track kiosk warning blockers.');
-assert.match(closeouts, /Closeout has blockers\. (?:Refresh the evidence and add|Add) an acknowledgement note before completing\./, 'Closeout mutation must enforce acknowledgement notes for blockers.');
+const completionGuard = closeouts.match(/if \(args\.action === "complete" && hasSourceBlockers && \(!acknowledgedBlockers \|\| !nextNotes\)\) \{([\s\S]*?)\n    \}/)?.[1];
+assert.ok(completionGuard, 'Closeout completion must reject unresolved blockers without acknowledgement and notes.');
+assert.match(completionGuard, /throw new ConvexError\(\{ code: args\.blockerEvidence !== current\.blocker_evidence \? "CLOSEOUT_BLOCKERS_CHANGED" : "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED"/, 'A definite blocker rejection must expose a typed recoverable conflict.');
+assert.match(completionGuard, /Closeout has blockers\. Refresh the evidence and add an acknowledgement note before completing\./, 'Closeout mutation must explain both evidence refresh and acknowledgement notes.');
+assert.match(apiRoute, /if \(error instanceof ConvexError && \[[^\]]*'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED'[^\]]*\]\.includes\(error\.data\?\.code\)\) \{\s*return NextResponse\.json\(\{ error: error\.data\.message, code: error\.data\.code \}, \{ status: 409 \}\);/, 'A definite acknowledgement rejection must reach the page as HTTP 409, allowing explicit reconciliation instead of an uncertain 500 retry.');
 assert.match(closeouts, /function buildSuggestedNote/, 'Closeout payload should include a deterministic suggested supervisor note.');
 assert.match(closeouts, /suggested_note:\s*suggestedNote/, 'Closeout response must expose the suggested supervisor note.');
 assert.match(closeouts, /function buildCloseoutDraft/, 'Closeout payload should build the deterministic Closeout Autopilot draft server-side.');

@@ -9,6 +9,7 @@ export const closeoutFields = {
     notes: v.optional(v.string()),
     acknowledgedBlockers: v.boolean(),
     acknowledgedBlockerEvidence: v.optional(v.string()),
+    revision: v.optional(v.number()),
     expected: v.float64(),
     present: v.float64(),
     late: v.float64(),
@@ -202,6 +203,15 @@ export default defineSchema({
     before: v.optional(v.object(closeoutFields)),
     after: v.object(closeoutFields),
   }).index("by_closeout", ["closeoutId"]),
+
+  shiftCloseoutActionReceipts: defineTable({
+    actorUserId: v.id("users"),
+    requestId: v.string(),
+    evidence: v.string(),
+    closeoutId: v.id("shiftCloseouts"),
+    status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")),
+    revision: v.number(),
+  }).index("by_actor_and_request", ["actorUserId", "requestId"]),
 
   kiosks: defineTable({
     name: v.string(),
