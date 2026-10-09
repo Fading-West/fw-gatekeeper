@@ -1,0 +1,55 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+ ❯ review06-encoding-diagnostics-baseline.test.ts (6 tests | 6 failed) 62ms
+   × explains why a 512-element finite vector of magnitude 0 is unusable 5ms
+   × explains the same rejection at authenticated Convex create/update boundaries (0) 52ms
+   × explains why a 512-element finite vector of magnitude 1e+308 is unusable 0ms
+   × explains the same rejection at authenticated Convex create/update boundaries (1e+308) 2ms
+   × explains why a 512-element finite vector of magnitude 1e-300 is unusable 0ms
+   × explains the same rejection at authenticated Convex create/update boundaries (1e-300) 1ms
+
+ Test Files  1 failed (1)
+      Tests  6 failed (6)
+   Start at  03:28:32
+   Duration  541ms (transform 106ms, setup 0ms, import 288ms, tests 62ms, environment 0ms)
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review06-encoding-diagnostics-baseline.test.ts > explains why a 512-element finite vector of magnitude 0 is unusable
+ FAIL  review06-encoding-diagnostics-baseline.test.ts > explains why a 512-element finite vector of magnitude 1e+308 is unusable
+ FAIL  review06-encoding-diagnostics-baseline.test.ts > explains why a 512-element finite vector of magnitude 1e-300 is unusable
+AssertionError: expected 'Face encoding must be an array of 512…' to match /non[- ]?zero|norm|magnitude/i
+
+- Expected:
+/non[- ]?zero|norm|magnitude/i
+
++ Received:
+"Face encoding must be an array of 512 finite numbers"
+
+ ❯ review06-encoding-diagnostics-baseline.test.ts:14:57
+     12|  it(`explains why a 512-element finite vector of magnitude ${magnitude…
+     13|   expect(vector.every(Number.isFinite)).toBe(true);expect(isSupportedE…
+     14|   expect(getEncodingValidationMessage('Face encoding')).toMatch(normRe…
+       |                                                         ^
+     15|  });
+     16|  it(`explains the same rejection at authenticated Convex create/update…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  review06-encoding-diagnostics-baseline.test.ts > explains the same rejection at authenticated Convex create/update boundaries (0)
+ FAIL  review06-encoding-diagnostics-baseline.test.ts > explains the same rejection at authenticated Convex create/update boundaries (1e+308)
+ FAIL  review06-encoding-diagnostics-baseline.test.ts > explains the same rejection at authenticated Convex create/update boundaries (1e-300)
+AssertionError: expected [Function] to throw error matching /non[- ]?zero|norm|magnitude/i but got 'faceEncoding must contain 512 finite …'
+
+- Expected:
+/non[- ]?zero|norm|magnitude/i
+
++ Received:
+"faceEncoding must contain 512 finite values"
+
+ ❯ review06-encoding-diagnostics-baseline.test.ts:19:109
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
