@@ -192,7 +192,11 @@ export async function POST(req: NextRequest) {
         });
         storageIds.push(storageId);
       } catch (uploadErr) {
-        console.error('Failed to upload photo:', uploadErr);
+        console.error('Enrollment photo storage is unavailable');
+        return NextResponse.json(
+          { error: 'Unable to store all accepted enrollment photos. Worker was not changed. Retry enrollment.', code: 'ENROLLMENT_PHOTO_STORAGE_UNAVAILABLE' },
+          { status: 503 },
+        );
       }
     }
 
@@ -203,7 +207,7 @@ export async function POST(req: NextRequest) {
           expectedIdentityRevision,
           ...(isAdminSession ? { name: normalizedName, employeeId: employeeIdForSave, department: departmentForSave } : {}),
           faceEncoding,
-          photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+          photoStorageIds: storageIds as any,
           enrolledAt: now,
           consentAt,
         })
@@ -213,13 +217,13 @@ export async function POST(req: NextRequest) {
             employeeId: employeeIdForSave,
             department: departmentForSave,
             faceEncoding,
-            photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+            photoStorageIds: storageIds as any,
             consentAt,
           })
         : await convex.mutation(api.workers.createFromRoster, {
             employeeId: employeeIdForSave!,
             faceEncoding,
-            photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
+            photoStorageIds: storageIds as any,
             consentAt,
           });
 
