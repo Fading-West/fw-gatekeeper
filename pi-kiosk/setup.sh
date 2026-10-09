@@ -143,17 +143,9 @@ mkdir -p data/faces
 
 # ─── 5. Write Kiosk Config ─────────────────────────────────────
 echo "[5/8] Writing kiosk configuration..."
-cat > config_local.py << CONFEOF
-"""Local kiosk configuration — overrides config.py defaults."""
-SERVER_URL = "$SERVER_URL"
-KIOSK_ID = "$KIOSK_ID"
-KIOSK_TYPE = "$KIOSK_TYPE"
-KIOSK_NAME = "$KIOSK_NAME"
-KIOSK_API_KEY = "$KIOSK_API_KEY"
-KIOSK_UI_KEY = "$KIOSK_UI_KEY"
-KIOSK_SUPERVISOR_PIN = "$KIOSK_SUPERVISOR_PIN"
-CONFEOF
-chmod 600 config_local.py
+SERVER_URL="$SERVER_URL" KIOSK_ID="$KIOSK_ID" KIOSK_TYPE="$KIOSK_TYPE" \
+KIOSK_NAME="$KIOSK_NAME" KIOSK_API_KEY="$KIOSK_API_KEY" KIOSK_UI_KEY="$KIOSK_UI_KEY" \
+KIOSK_SUPERVISOR_PIN="$KIOSK_SUPERVISOR_PIN" ./venv/bin/python tools/update_local_config.py
 # Note: config.py imports config_local itself — never mutate tracked files
 # here, or `git pull` upgrades fail on a dirty tree.
 
