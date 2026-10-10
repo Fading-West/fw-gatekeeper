@@ -501,7 +501,7 @@
     <main class="main">
         <section class="stage">
             <div class="camera-box">
-                <img src="/feed" alt="Live camera feed">
+                <img id="cameraFeed" alt="Live camera feed">
             </div>
             <div class="status-card">
                 <div id="statusGlyph" class="status-glyph" aria-hidden="true"></div>
@@ -554,6 +554,7 @@
     </footer>
 
     <script src="{{ url_for('static', filename='rendering.js') }}"></script>
+    <script src="{{ url_for('static', filename='connection.js') }}"></script>
     <script>
         const statusText = document.getElementById("statusText");
         const statusGlyph = document.getElementById("statusGlyph");
@@ -580,6 +581,50 @@
         const syncChip = document.getElementById("syncChip");
         let adminVisible = false;
         let supervisorStateVersion = 0;
+        let statusInFlight = false;
+        const STATUS_TIMEOUT_MS = 4000;
+        const RECONNECTING_MESSAGE = "Kiosk reconnecting…";
+        const RECONNECTING_SETUP_MESSAGE = "Kiosk reconnecting… Setup incomplete (UI key missing) - ask a supervisor";
+
+        function sessionStorageOrNull() {
+            try { return window.sessionStorage; } catch (error) { return null; }
+        }
+
+        // Reload only when the server is reachable: reloading into Firefox's
+        // "Unable to connect" page would leave the kiosk stuck with no script.
+        // A reload always comes back with supervisor controls locked.
+        // A hung request must not block the reload indefinitely.
+        async function fetchWithTimeout(url, init) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
+            try {
+                return await fetch(url, { ...init, signal: controller.signal });
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
+        async function reloadKioskPage() {
+            if (adminVisible) {
+                try { await fetchWithTimeout("/supervisor/lock", { method: "POST" }); } catch (error) { /* best effort */ }
+            }
+            try {
+                const probe = await fetchWithTimeout("/health", { cache: "no-store" });
+                if (!probe.ok) return;
+            } catch (error) {
+                return;
+            }
+            location.reload();
+        }
+
+        const connection = KioskConnection.createMonitor({
+            reload: reloadKioskPage,
+            storage: sessionStorageOrNull(),
+        });
+        const cameraFeed = KioskConnection.createFeed({
+            img: document.getElementById("cameraFeed"),
+            url: "/feed",
+        });
 
         function tickClock() {
             const now = new Date();
@@ -627,6 +672,10 @@
                 glyph = "✗";
             } else if (normalizedState === "WAITING_FOR_BLINK") {
                 glyph = "👁";
+            } else if (normalizedState === "RECONNECTING") {
+                borderColor = "#e0a343";
+                textColor = "#e0a343";
+                glyph = "⟳";
             }
 
             statusCard.style.borderLeftColor = borderColor;
@@ -679,11 +728,38 @@
             fetchLog();
         }
 
+        // Never let a failing kiosk look like the idle prompt or keep showing
+        // a frozen (possibly previous worker's) camera frame.
+        function showReconnecting(httpStatus) {
+            // 503 means KIOSK_UI_KEY is missing: reloading cannot fix it, so
+            // tell staff on screen instead of only in the service log.
+            statusText.textContent = httpStatus === 503 ? RECONNECTING_SETUP_MESSAGE : RECONNECTING_MESSAGE;
+            applyStatusState("RECONNECTING");
+            stateValue.textContent = "State: RECONNECTING";
+            workerIdValue.textContent = "ID: --";
+            cameraFeed.disconnect();
+        }
+
         async function fetchStatus() {
+            if (statusInFlight) return;
+            statusInFlight = true;
             const requestSupervisorStateVersion = supervisorStateVersion;
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
             try {
-                const response = await fetch("/status", { cache: "no-store" });
+                const response = await fetch("/status", { cache: "no-store", signal: controller.signal });
+                if (!response.ok) {
+                    connection.statusFailed(response.status);
+                    showReconnecting(response.status);
+                    return;
+                }
                 const data = await response.json();
+                const link = connection.statusOk(data);
+                if (link.reloading) {
+                    showReconnecting();
+                    return;
+                }
+                if (link.reconnectFeed || !cameraFeed.isConnected()) cameraFeed.connect();
                 const msg = statusMessageFromState(
                     data.state,
                     data.message,
@@ -739,8 +815,11 @@
                     renderAdmin(data.admin);
                 }
             } catch (error) {
-                statusText.textContent = "Status unavailable";
-                applyStatusState("NOT_RECOGNIZED");
+                connection.statusFailed(null);
+                showReconnecting();
+            } finally {
+                clearTimeout(timeout);
+                statusInFlight = false;
             }
         }
 
@@ -833,6 +912,7 @@
 
         tickClock();
         setInterval(tickClock, 1000);
+        cameraFeed.connect();
         fetchStatus();
         fetchLog();
         setInterval(fetchStatus, 500);
