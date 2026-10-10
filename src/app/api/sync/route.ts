@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, type KioskHealthReport } from '@/lib/convex-ingest';
-import { hasValidPortalSession } from '@/lib/portal-auth';
 
 function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefined {
   const bool = (key: string) => {
@@ -33,17 +32,15 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
 
 export async function GET(req: NextRequest) {
   const requestedId = req.nextUrl.searchParams.get('kiosk_id');
-  const admin = await hasValidPortalSession(req, ['admin']);
-  const identity = admin ? null : await authenticateKiosk(req, [requestedId]);
-  if (!admin && !identity) return unauthorizedApiResponse();
+  // Portal sessions cannot authorize device heartbeats or biometric downloads.
+  const identity = await authenticateKiosk(req, [requestedId]);
+  if (!identity) return unauthorizedApiResponse();
 
   // The credential lookup already resolved the exact row. A configured alias
   // may collide with another legacy kiosk and must not be resolved again.
-  const kioskId = identity?.documentId || requestedId;
+  const kioskId = identity.documentId;
   const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
-  const receiptProtocol = Boolean(identity) && hasDeviceKeyFormat(req) && req.nextUrl.searchParams.get('roster_receipt') === '1';
-
-  if (!kioskId) return NextResponse.json({ error: 'kiosk_id required' }, { status: 400 });
+  const receiptProtocol = hasDeviceKeyFormat(req) && req.nextUrl.searchParams.get('roster_receipt') === '1';
 
   const lastSync = new Date().toISOString();
   try {
