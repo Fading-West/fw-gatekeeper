@@ -6,7 +6,7 @@ import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 
-import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { isSupportedScheduleTimeRange, scheduleTimeHasPassed, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -85,13 +85,6 @@ function getMinutesFromTimestamp(timestamp?: string | null): number | null {
   const match = timestamp.match(/T(\d{2}):(\d{2})/);
   if (!match) return null;
   return Number(match[1]) * 60 + Number(match[2]);
-}
-
-// Compare both the day and scheduled deadline with the factory clock. A
-// worker's last scan cannot tell us whether the shift has finished yet.
-function scheduleTimeHasPassed(date: string, time: string, now: string) {
-  if (getMinutesFromTime(time) === null) return false;
-  return now > `${date}T${time}:00`;
 }
 
 function formatTime(value?: string | null) {

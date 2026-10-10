@@ -62,6 +62,7 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     `Present: ${summary.present}`,
     `Late: ${summary.late}`,
     `Missing: ${summary.missing}`,
+    ...(payload.closeout?.status !== 'completed' && payload.summary.not_yet_due ? [`Not yet due: ${payload.summary.not_yet_due}`] : []),
     `Open exceptions: ${summary.open_exceptions}`,
     `Critical exceptions: ${summary.critical_exceptions}`,
     `Kiosk warnings: ${summary.kiosk_warnings}`,
@@ -199,7 +200,8 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.missing_clock_outs || 0) +
     Number(payload?.summary.recognition_reviews || 0) +
     Number(payload?.summary.kiosk_warnings || 0) +
-    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0);
+    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0) +
+    Number(payload?.checklist.find((item) => item.id === 'not_yet_due')?.count || 0);
   const canComplete = Boolean(payload && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
@@ -234,6 +236,7 @@ function ShiftCloseoutPageContent() {
       ['Present', summary?.present ?? 0, 'text-emerald-300'],
       ['Late', summary?.late ?? 0, 'text-amber-300'],
       ['Missing', summary?.missing ?? 0, 'text-red-300'],
+      ...(summary?.not_yet_due ? [['Not Yet Due', summary.not_yet_due, 'text-sky-300']] : []),
       ['Open Exceptions', summary?.open_exceptions ?? 0, 'text-gold'],
       ['Clock-out Blockers', summary?.missing_clock_outs ?? 0, 'text-amber-300'],
       ['Recognition Reviews', summary?.recognition_reviews ?? 0, 'text-blue-300'],

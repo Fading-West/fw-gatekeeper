@@ -6,6 +6,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf
 
 const briefing = read('convex/shiftBriefing.ts');
 const exceptions = read('convex/shiftExceptions.ts');
+const scheduleTimes = read('convex/scheduleTimes.ts');
 const apiRoute = read('src/app/api/shift-briefing/route.ts');
 const page = read('src/app/briefing/page.tsx');
 const sidebar = read('src/components/Sidebar.tsx');
@@ -58,12 +59,22 @@ assert.match(briefing, /exception_key:\s*exception\.key/, 'Briefing exception ac
 assert.match(briefing, /intent:\s*getExceptionIntent\(exception\)/, 'Briefing correctable exception actions should carry correction intent.');
 assert.match(briefing, /encodeURIComponent/, 'Shift briefing action links must encode filter query params.');
 assert.match(briefing, /recognition_reviews:\s*recognitionReviews\.length/, 'Briefing summary should expose recognition review counts.');
+assert.match(scheduleTimes, /export function scheduleTimeHasPassed/, 'Schedule deadline gate must be shared from convex/scheduleTimes.ts.');
+assert.doesNotMatch(exceptions, /function scheduleTimeHasPassed/, 'Shift exceptions must reuse the shared schedule deadline gate instead of a private copy.');
+assert.match(exceptions, /scheduleTimeHasPassed\(date, schedule\.startTime, factoryNow\)/, 'Missing-arrival exceptions must stay gated on the scheduled start.');
+assert.match(briefing, /import \{[^}]*scheduleTimeHasPassed[^}]*\} from "\.\/scheduleTimes"/, 'Shift briefing must reuse the same schedule deadline gate as shift exceptions.');
+assert.match(briefing, /const factoryNow = getFactoryLocalTimestamp\(new Date\(\)\.toISOString\(\)\)!/, 'Shift briefing must evaluate worker status against the factory-local clock.');
+assert.match(briefing, /scheduleTimeHasPassed\(input\.date, input\.schedule\?\.startTime, input\.factoryNow\)[\s\S]*\? "missing"[\s\S]*: "not_yet_due"/, 'Unscanned workers must be not_yet_due, not missing, before their scheduled start.');
+assert.match(briefing, /if \(status === "not_yet_due"\) notYetDue \+= 1/, 'Briefing summary must count not-yet-due workers separately from missing.');
+assert.match(briefing, /row\.status !== "covered" && row\.status !== "not_yet_due"/, 'Departments whose shift has not started must not raise coverage actions.');
+assert.match(briefing, /daily_attendance: \{[^}]*missing,[^}]*not_yet_due: notYetDue/, 'Daily attendance must apply the same not-yet-due gate to missing.');
 
 assert.match(apiRoute, /shiftBriefing\.summary/, 'GET /api/shift-briefing must call the Convex briefing query.');
 assert.match(apiRoute, /hasValidPortalSession\(req,\s*\['admin',\s*'enrollment',\s*'viewer'\]\)/, 'Briefing reads must allow viewer portal members.');
 assert.match(apiRoute, /FunctionPathNotFound/, 'Briefing route should degrade gracefully while Convex functions deploy.');
 assert.match(apiRoute, /date must use YYYY-MM-DD format/, 'Briefing route must validate date format.');
 assert.match(apiRoute, /recognition_reviews:\s*0/, 'Briefing fallback summary should include recognition review counts.');
+assert.match(apiRoute, /not_yet_due:\s*0/, 'Briefing fallback should include zeroed not-yet-due counts.');
 assert.match(apiRoute, /shift_trust_brief:\s*\{/, 'Briefing fallback response should include the shift trust brief contract.');
 assert.match(apiRoute, /summary_sentence:\s*`Morning readiness needs attention:/, 'Briefing fallback shift trust brief should keep deterministic readiness copy.');
 assert.match(apiRoute, /source_counts:\s*\{[\s\S]*corrections:\s*0,[\s\S]*kiosk_warnings:\s*0/, 'Briefing fallback shift trust brief should include zeroed source counts.');
@@ -129,6 +140,10 @@ assert.match(page, /Export CSV/, 'Briefing page must support CSV export.');
 assert.match(page, /window\.print\(\)/, 'Briefing page must support print output.');
 assert.match(page, /All departments/, 'Briefing page must provide department filtering.');
 assert.match(page, /Worker Status/, 'Briefing page must provide worker status filtering.');
+assert.match(page, /not_yet_due: 'bg-sky-400\/10[^']*'/, 'Briefing page must style the not-yet-due worker and department status.');
+assert.match(page, /value === 'not_yet_due'/, 'Briefing status deep links must accept not_yet_due.');
+assert.match(page, /<option value="not_yet_due">Not yet due<\/option>/, 'Briefing worker status filter must offer Not yet due.');
+assert.match(page, /\['Not Yet Due', sourceCounts\?\.not_yet_due \?\? summary\?\.not_yet_due \?\? 0/, 'Briefing readiness counts must show not-yet-due workers separately from missing.');
 
 assert.match(sidebar, /href:\s*'\/briefing'[\s\S]*label:\s*'Briefing'/, 'Sidebar must link to the briefing page.');
 assert.match(middleware, /pathname === '\/api\/shift-briefing' && method === 'GET'[\s\S]*\['admin', 'enrollment', 'viewer'\]/, 'Middleware should permit briefing reads for portal viewers.');
@@ -137,6 +152,7 @@ assert.match(types, /interface ShiftBriefingResponse/, 'Shared types must define
 assert.match(types, /interface ShiftBriefingDepartment/, 'Shared types must define ShiftBriefingDepartment.');
 assert.match(types, /interface ShiftBriefingActionItem/, 'Shared types must define ShiftBriefingActionItem.');
 assert.match(types, /recognition_reviews:\s*number/, 'Shared briefing summary types must include recognition review counts.');
+assert.match(types, /export type WorkerCoverageStatus = [^;]*'not_yet_due'/, 'Shared worker coverage status must include not_yet_due.');
 assert.match(types, /export type ShiftTrustBriefStatus = 'ready' \| 'attention' \| 'blocked'/, 'Shared types must define deterministic shift trust statuses.');
 assert.match(types, /interface ShiftTrustBriefSourceCounts[\s\S]*missing_clock_outs: number;[\s\S]*corrections: number;[\s\S]*kiosk_warnings: number;/, 'Shared types must define shift trust source counts.');
 assert.match(types, /interface ShiftTrustBrief[\s\S]*readiness_status: ShiftTrustBriefStatus;[\s\S]*primary_action: ShiftTrustBriefPrimaryAction \| null;[\s\S]*readiness_blockers: ShiftTrustBriefRisk\[\];[\s\S]*closeout_risks: ShiftTrustBriefRisk\[\];/, 'Shared types must define the shift trust brief contract.');
