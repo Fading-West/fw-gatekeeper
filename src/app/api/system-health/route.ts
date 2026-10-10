@@ -149,7 +149,7 @@ export async function GET(req: NextRequest) {
   if (cached) {
     return NextResponse.json(cached);
   }
-  const cacheGeneration = systemHealthCache.generation;
+  const cacheRead = systemHealthCache.beginRead();
 
   try {
     const faceHealthUrl = asHealthUrl(process.env.FACE_ENCODE_URL || process.env.FACE_SERVICE_URL || FACE_SERVICE_FALLBACK);
@@ -234,7 +234,7 @@ export async function GET(req: NextRequest) {
       warnings,
     };
 
-    systemHealthCache.set(date, payload, cacheGeneration);
+    systemHealthCache.set(date, payload, cacheRead.generation, cacheRead.requestId);
     return NextResponse.json(payload);
   } catch (error) {
     console.error('System health error:', error);

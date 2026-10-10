@@ -1,3 +1,5 @@
+import { systemHealthCache } from './system-health-cache';
+
 export class SecuredIngestError extends Error {
   constructor(readonly status: number, readonly code?: string, readonly detail?: string) {
     super(`Secured Convex ingest failed with status ${status}.`);
@@ -55,11 +57,14 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
   }
 }
 
-export function ingestAttendanceBatch(events: unknown[], checkpoint = false) {
-  return postSecuredIngest<{ synced: number; acknowledged: number }>('/api/ingest/attendance/bulk', { events, ...(checkpoint ? { checkpoint: true } : {}) });
+export async function ingestAttendanceBatch(events: unknown[], checkpoint = false) {
+  const result = await postSecuredIngest<{ synced: number; acknowledged: number }>('/api/ingest/attendance/bulk', { events, ...(checkpoint ? { checkpoint: true } : {}) });
+  // Invalidate each committed chunk even if a later backlog chunk fails.
+  if (result.synced > 0) systemHealthCache.invalidate();
+  return result;
 }
 
-export function ingestAttendanceEvent(event: {
+export async function ingestAttendanceEvent(event: {
   workerId: string;
   eventType: string;
   kioskId?: string;
@@ -67,7 +72,9 @@ export function ingestAttendanceEvent(event: {
   idempotencyKey?: string;
   note?: string;
 }) {
-  return postSecuredIngest<{ id: string }>('/api/ingest/attendance', event);
+  const result = await postSecuredIngest<{ id: string }>('/api/ingest/attendance', event);
+  systemHealthCache.invalidate();
+  return result;
 }
 
 export function ingestRecognitionAttemptBatch(attempts: unknown[]) {
@@ -88,12 +95,14 @@ export type KioskHealthReport = {
   lastScanAt?: string;
 };
 
-export function updateKioskLastSync(kioskId: string, lastSync: string, health?: KioskHealthReport) {
-  return postSecuredIngest<{ updated: boolean }>('/api/ingest/kiosks/last-sync', {
+export async function updateKioskLastSync(kioskId: string, lastSync: string, health?: KioskHealthReport) {
+  const result = await postSecuredIngest<{ updated: boolean }>('/api/ingest/kiosks/last-sync', {
     kioskId,
     lastSync,
     ...(health ? { health } : {}),
   });
+  if (result.updated) systemHealthCache.invalidate();
+  return result;
 }
 
 export function lookupKioskCredential(input: { mode: 'device'; credentialHash: string } | { mode: 'legacy'; identifier: string }) {
@@ -123,8 +132,10 @@ export function issueRosterReceipt(documentId: string) {
   return postSecuredIngest<{ receipt: string; issuedAt: string; since: string | null }>('/api/ingest/kiosks/roster-receipt/issue', { documentId });
 }
 
-export function acknowledgeRosterReceipt(documentId: string, receipt: string) {
-  return postSecuredIngest<{ acknowledged: boolean; appliedAt: string | null }>('/api/ingest/kiosks/roster-receipt/ack', { documentId, receipt });
+export async function acknowledgeRosterReceipt(documentId: string, receipt: string) {
+  const result = await postSecuredIngest<{ acknowledged: boolean; appliedAt: string | null }>('/api/ingest/kiosks/roster-receipt/ack', { documentId, receipt });
+  if (result.acknowledged) systemHealthCache.invalidate();
+  return result;
 }
 
 export function getAttendanceReceiptStatus(digests: string[]) {

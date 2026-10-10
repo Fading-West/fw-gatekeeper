@@ -97,3 +97,30 @@ it('keeps cached data after a failed mutation', async () => {
     expect(convex.query).not.toHaveBeenCalled();
   } finally { log.mockRestore(); }
 });
+
+it('keeps the newer cache result when concurrent misses finish out of order', async () => {
+  let finishOlder!: (value: never[]) => void;
+  vi.mocked(convex.query).mockImplementationOnce(() => new Promise(resolve => { finishOlder = resolve; }));
+  const older = health();
+  await vi.waitFor(() => expect(convex.query).toHaveBeenCalledTimes(3));
+  rows.push({ id: 'entry-2', name: 'Entry-2', type: 'entry' });
+  expect((await (await health()).json()).kiosks.rows).toMatchObject([{ name: 'Entry-2' }]);
+  finishOlder([]);
+  await older;
+  expect((await (await health()).json()).kiosks.rows).toMatchObject([{ name: 'Entry-2' }]);
+});
+
+it.each(['mutation', 'fresh refresh'] as const)('discards cache writes started before a %s', async (invalidate) => {
+  let finishOlder!: (value: never[]) => void;
+  vi.mocked(convex.query).mockImplementationOnce(() => new Promise(resolve => { finishOlder = resolve; }));
+  const older = health();
+  await vi.waitFor(() => expect(convex.query).toHaveBeenCalledTimes(3));
+  rows.push({ id: 'entry-2', name: 'Entry-2', type: 'entry' });
+  if (invalidate === 'mutation') {
+    expect((await register(request('kiosks', 'POST', { name: 'Entry-2', type: 'entry' }))).status).toBe(201);
+  }
+  await health('2026-10-09', invalidate === 'fresh refresh');
+  finishOlder([]);
+  await older;
+  expect((await (await health()).json()).kiosks.rows).toMatchObject([{ name: 'Entry-2' }]);
+});
