@@ -65,6 +65,7 @@ function normalizeAttempt(row: any): RecognitionAttempt {
     threshold: optionalNumber(row.threshold),
     liveness_passed: asBooleanOrNull(row.liveness_confirmed ?? row.livenessConfirmed ?? row.liveness_passed ?? row.livenessPassed),
     timestamp: row.timestamp || row.created_at || row.createdAt || new Date().toISOString(),
+    timestamp_utc: row.timestamp_utc ?? null,
     reviewed_at: row.reviewed_at ?? row.reviewedAt ?? null,
     review_note: row.reviewed_note ?? row.reviewedNote ?? row.review_note ?? row.reviewNote ?? null,
     model_version: row.model_version ?? row.modelVersion ?? null,

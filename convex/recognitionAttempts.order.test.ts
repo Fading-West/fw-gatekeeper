@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { expect, it } from "vitest";
 import schema from "./schema";
 import { listRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
-import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 const modules = import.meta.glob("./**/*.ts");
 
 it("sorts mixed UTC, offset, and factory-local evidence before limiting", async () => {
@@ -23,9 +23,11 @@ it("sorts mixed UTC, offset, and factory-local evidence before limiting", async 
     });
   });
   const rows = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15" }));
-  expect(rows.map(row => row.timestamp)).toEqual([...timestamps].reverse());
+  expect(rows.map(row => row.timestamp)).toEqual([...timestamps].reverse().map(timestamp => getRecognitionDisplayTimestamp(timestamp)));
+  const key = createRecognitionTimestampSortKey();
+  expect(rows.map(row => row.timestamp_utc)).toEqual([...timestamps].reverse().map(timestamp => `${key(timestamp)}Z`.replace(".Z", "Z")));
   const limited = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15", limit: 1 }));
-  expect(limited[0].timestamp).toBe(timestamps.at(-1));
+  expect(limited[0].timestamp).toBe(getRecognitionDisplayTimestamp(timestamps.at(-1)));
 });
 
 it("retains true instant order during fall-back and chooses the earlier legacy occurrence", () => {

@@ -7,7 +7,7 @@ import {
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
-import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
 const attemptInput = v.object({
   timestamp: v.string(),
@@ -91,6 +91,15 @@ function serializeAttempt(attempt: any) {
     reviewed_at: attempt.reviewedAt || null,
     created_at: attempt.createdAt,
     updated_at: attempt.updatedAt || null,
+  };
+}
+
+function withFactoryLocalDisplayTimestamp(attempt: any, timestampKey = createRecognitionTimestampSortKey()) {
+  const key = timestampKey(attempt.timestamp);
+  return {
+    ...attempt,
+    timestamp: getRecognitionDisplayTimestamp(attempt.timestamp) || attempt.timestamp,
+    timestamp_utc: key ? `${key}Z`.replace(".Z", "Z") : null,
   };
 }
 
@@ -235,7 +244,9 @@ export async function listRecognitionAttemptsByFactoryDate(
     const reviewMatches = !args.reviewStatus || args.reviewStatus === "all" || reviewStatus === args.reviewStatus;
     return decisionMatches && confidenceMatches && reviewMatches;
   });
-  return matches.slice(0, limit);
+  // Normalize only after filtering and sorting the original evidence instants.
+  const timestampKey = createRecognitionTimestampSortKey();
+  return matches.slice(0, limit).map(row => withFactoryLocalDisplayTimestamp(row, timestampKey));
 }
 
 export async function listAllRecognitionAttemptsByFactoryDate(
@@ -397,6 +408,7 @@ export const listByDate = query({
   returns: v.array(v.object({
     id: v.id("recognitionAttempts"),
     timestamp: v.string(),
+    timestamp_utc: v.union(v.string(), v.null()),
     kiosk_id: v.string(),
     source_attempt_id: v.union(v.string(), v.null()),
     face_detected: v.number(),
@@ -447,7 +459,7 @@ export const getById = query({
     if (args.date && !timestampBelongsToFactoryLocalDate(attempt.timestamp, args.date)) {
       return null;
     }
-    return serializeAttempt(attempt);
+    return withFactoryLocalDisplayTimestamp(serializeAttempt(attempt));
   },
 });
 

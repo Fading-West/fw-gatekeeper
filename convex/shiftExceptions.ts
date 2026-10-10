@@ -5,6 +5,7 @@ import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
@@ -48,6 +49,8 @@ type ShiftException = {
   kiosk_name: string | null;
   first_seen: string | null;
   last_seen: string | null;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
   schedule_name: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
@@ -648,18 +651,36 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   const hydrated = exceptions.map((exception) => withReview(exception, reviewsByKey.get(exception.key)));
+  const timestampKey = createRecognitionTimestampSortKey();
+  const chronologicalKeys = new Map(hydrated.map(exception =>
+    [exception.key, timestampKey(exception.first_seen || "")],
+  ));
   hydrated.sort((a, b) => {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     const statusOrder = { open: 0, reviewed: 1, resolved: 2, ignored: 3 };
     return (
       statusOrder[a.status] - statusOrder[b.status] ||
       severityOrder[a.severity] - severityOrder[b.severity] ||
-      (a.first_seen || "").localeCompare(b.first_seen || "") ||
+      chronologicalKeys.get(a.key)!.localeCompare(chronologicalKeys.get(b.key)!) ||
       a.title.localeCompare(b.title)
     );
   });
 
-  return hydrated;
+  // Order by evidence instants, then expose factory wall time for all
+  // display/export consumers. Relative-time consumers still need the instant.
+  return hydrated.map(exception => {
+    if (exception.type !== "recognition_review") return exception;
+    const key = timestampKey(exception.first_seen || "");
+    const timestampUtc = key ? `${key}Z`.replace(".Z", "Z") : null;
+    const timestamp = getRecognitionDisplayTimestamp(exception.first_seen);
+    return {
+      ...exception,
+      first_seen: timestamp,
+      last_seen: timestamp,
+      first_seen_utc: timestampUtc,
+      last_seen_utc: timestampUtc,
+    };
+  });
 }
 
 export const summary = query({
