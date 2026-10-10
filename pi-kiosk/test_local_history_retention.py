@@ -360,16 +360,36 @@ class LocalHistoryTests(unittest.TestCase):
                 VALUES (?, 'Alex', 'clock_in', ?, ?, 1)''',
                 [(worker, OLD, database._attendance_epoch(OLD)) for worker in range(5000)])
             conn.commit()
-            steps = []
-            def limit_work():
-                steps.append(None)
-                return len(steps) > 30
-            conn.set_progress_handler(limit_work, 1000)
-            try:
-                self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
-            finally:
-                conn.set_progress_handler(None, 0)
+            for after in (None, [database._attendance_epoch(OLD), 4000]):
+                with self.subTest(after=after):
+                    if after is not None:
+                        database.set_sync_state('attendance_prune_after', json.dumps(after))
+                    steps = []
+                    def limit_work():
+                        steps.append(None)
+                        return len(steps) > 30
+                    conn.set_progress_handler(limit_work, 1000)
+                    try:
+                        self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+                    finally:
+                        conn.set_progress_handler(None, 0)
             self.assertEqual(len(self.ids('attendance_log')), 5000)
+
+    def test_cursor_batch_crosses_timestamp_groups_without_skipping_or_overfilling(self):
+        with local_clock('America/Denver', NOW), mock.patch.object(database, '_HISTORY_PRUNE_BATCH_SIZE', 3):
+            older = (NOW - timedelta(days=40)).isoformat()
+            early = [self.attendance(older, synced=True) for _ in range(4)]
+            later = [self.attendance(OLD, synced=True) for _ in range(4)]
+            latest = self.attendance(RECENT, synced=True)
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 3)
+            self.assertEqual(self.ids('attendance_log'), early[3:] + later + [latest])
+            # One remaining tied ID and two later-epoch rows fill the next batch.
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 3)
+            self.assertEqual(self.ids('attendance_log'), later[2:] + [latest])
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 2)
+            self.assertEqual(self.ids('attendance_log'), [latest])
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+            self.assertIsNone(database.get_sync_state('attendance_prune_after'))
 
     def test_cleanup_advances_past_protected_prefix_and_wraps_after_restart(self):
         with local_clock('America/Denver', NOW), mock.patch.object(database, '_HISTORY_PRUNE_BATCH_SIZE', 3):

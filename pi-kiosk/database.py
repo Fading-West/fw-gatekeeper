@@ -1122,16 +1122,28 @@ def prune_synced_history() -> dict[str, int]:
     key = "attendance_prune_after"
     progress = get_sync_state(key)
     after = json.loads(progress) if progress else None
-    sql = """SELECT id, timestamp_epoch FROM attendance_log
-        INDEXED BY idx_attendance_log_retention
-        WHERE synced = 1 AND timestamp_epoch < ?"""
-    args = [attendance_cutoff]
+    candidates = []
     if after is not None:
-        sql += " AND (timestamp_epoch, id) > (?, ?)"
-        args.extend(after)
-    sql += " ORDER BY timestamp_epoch, id LIMIT ?"
-    args.append(_HISTORY_PRUNE_BATCH_SIZE)
-    candidates = conn.execute(sql, args).fetchall()
+        # SQLite seeks only the epoch for a tuple range when id aliases rowid,
+        # then rescans earlier ids at that epoch. Separate equality/id and
+        # later-epoch ranges so even a large tied prefix has bounded scan work.
+        candidates = conn.execute("""SELECT id, timestamp_epoch FROM attendance_log
+            INDEXED BY idx_attendance_log_retention
+            WHERE synced = 1 AND timestamp_epoch = ? AND id > ? AND timestamp_epoch < ?
+            ORDER BY timestamp_epoch, id LIMIT ?""",
+            [*after, attendance_cutoff, _HISTORY_PRUNE_BATCH_SIZE]).fetchall()
+    remaining = _HISTORY_PRUNE_BATCH_SIZE - len(candidates)
+    if remaining:
+        sql = """SELECT id, timestamp_epoch FROM attendance_log
+            INDEXED BY idx_attendance_log_retention
+            WHERE synced = 1 AND timestamp_epoch < ?"""
+        args = [attendance_cutoff]
+        if after is not None:
+            sql += " AND timestamp_epoch > ?"
+            args.append(after[0])
+        sql += " ORDER BY timestamp_epoch, id LIMIT ?"
+        args.append(remaining)
+        candidates.extend(conn.execute(sql, args).fetchall())
     with conn:
         if candidates:
             placeholders = ",".join("?" for _ in candidates)
