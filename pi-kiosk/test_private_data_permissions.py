@@ -1,8 +1,11 @@
 """Private kiosk storage and sync logging; no camera or live server required."""
 import argparse
 import ast
+from datetime import datetime, timezone
+import logging
 import os
 from pathlib import Path
+import pwd
 import sqlite3
 import stat
 import subprocess
@@ -46,6 +49,16 @@ class PrivateDataPermissionsTests(unittest.TestCase):
 
     def assert_mode(self, path, mode):
         self.assertEqual(stat.S_IMODE(Path(path).stat().st_mode), mode, str(path))
+
+    @staticmethod
+    def setup_permission_command():
+        source = Path(__file__).with_name("setup.sh").read_text()
+        resolver = source.split("resolve_data_root() {", 1)[1].split("\n# ─── 1.", 1)[0]
+        command = source.split('# Tighten pre-upgrade databases, sidecars, photos and directories too.\n', 1)[1].split('\n# Disable console', 1)[0]
+        return "set -e\nresolve_data_root() {" + resolver + command
+
+    def setup_env(self, install):
+        return os.environ | {"INSTALL_DIR": str(install), "KIOSK_USER": pwd.getpwuid(os.getuid()).pw_name}
 
     def assert_database_modes(self):
         self.assert_mode(self.data, 0o700)
@@ -195,9 +208,7 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         service = unit.split("[Service]\n", 1)[1].split("[Install]", 1)[0]
         self.assertIn("\nUMask=0077\n", "\n" + service)
         self.assertIn("User=$KIOSK_USER", service)
-        command = source.split('# Tighten pre-upgrade databases, sidecars, photos and directories too.\n', 1)[1].split('\n# Disable console', 1)[0]
-        self.assertIn(command, source)
-        self.assertLess(source.index('chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"'), source.index(command))
+        command = self.setup_permission_command()
         directory = self.root / "pi-kiosk/data/faces"
         directory.mkdir(parents=True)
         photo = directory / "existing.jpg"
@@ -206,16 +217,15 @@ class PrivateDataPermissionsTests(unittest.TestCase):
             path.chmod(0o755)
         photo.chmod(0o644)
         # Run only the actual permission command against a synthetic install.
-        subprocess.run(["bash", "-c", command], env=os.environ | {"INSTALL_DIR": str(self.root)}, check=True)
+        subprocess.run(["bash", "-c", command], env=self.setup_env(self.root), check=True)
         self.assert_mode(directory.parent, 0o700)
         self.assert_mode(directory, 0o700)
         self.assert_mode(photo, 0o600)
-        subprocess.run(["bash", "-c", command], env=os.environ | {"INSTALL_DIR": str(self.root)}, check=True)
+        subprocess.run(["bash", "-c", command], env=self.setup_env(self.root), check=True)
         self.assert_mode(photo, 0o600)
 
-    def test_setup_refuses_symlinked_data_root_and_skips_nested_symlinks(self):
-        source = Path(__file__).with_name('setup.sh').read_text()
-        command = source.split('# Tighten pre-upgrade databases, sidecars, photos and directories too.\n', 1)[1].split('\n# Disable console', 1)[0]
+    def test_setup_accepts_owned_symlinked_data_root_and_skips_nested_symlinks(self):
+        command = self.setup_permission_command()
         outside = self.root / 'outside'
         outside.mkdir(mode=0o755)
         photo = outside / 'photo.jpg'
@@ -225,20 +235,159 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         (install / 'pi-kiosk').mkdir(parents=True)
         data = install / 'pi-kiosk/data'
         data.symlink_to(outside, target_is_directory=True)
-        result = subprocess.run(['bash', '-c', command], env=os.environ | {'INSTALL_DIR': str(install)},
+        subprocess.run(['bash', '-c', command], env=self.setup_env(install), check=True)
+        self.assertTrue(data.is_symlink())
+        self.assert_mode(outside, 0o700)
+        self.assert_mode(photo, 0o600)
+        # Re-running setup keeps the relocated store usable.
+        subprocess.run(['bash', '-c', command], env=self.setup_env(install), check=True)
+        outside.chmod(0o755)
+        photo.chmod(0o644)
+        nested_target = self.root / 'unrelated'
+        nested_target.mkdir(mode=0o755)
+        nested_file = nested_target / 'private.jpg'
+        nested_file.write_bytes(b'unrelated')
+        nested_file.chmod(0o644)
+        (outside / 'linked-directory').symlink_to(nested_target, target_is_directory=True)
+        (outside / 'linked-file').symlink_to(nested_file)
+        subprocess.run(['bash', '-c', command], env=self.setup_env(install), check=True)
+        self.assert_mode(nested_target, 0o755)
+        self.assert_mode(nested_file, 0o644)
+        outside.chmod(0o755)
+        photo.chmod(0o644)
+        # Point to an owned directory using a different configured kiosk user:
+        # validation must not change the target's permissions or ownership.
+        other_user = 'nobody' if os.getuid() == 0 else 'root'
+        result = subprocess.run(['bash', '-c', command], env=self.setup_env(install) | {'KIOSK_USER': other_user},
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('symlinked data directory', result.stdout)
+        self.assertIn('dedicated directory owned by', result.stdout)
         self.assert_mode(outside, 0o755)
         self.assert_mode(photo, 0o644)
         data.unlink()
         data.mkdir(mode=0o755)
         (data / 'linked-directory').symlink_to(outside, target_is_directory=True)
         (data / 'linked-file').symlink_to(photo)
-        subprocess.run(['bash', '-c', command], env=os.environ | {'INSTALL_DIR': str(install)}, check=True)
+        subprocess.run(['bash', '-c', command], env=self.setup_env(install), check=True)
         self.assert_mode(data, 0o700)
         self.assert_mode(outside, 0o755)
         self.assert_mode(photo, 0o644)
+
+    def test_unavailable_data_symlink_exits_before_installer_side_effects(self):
+        install = self.root / 'install'
+        (install / 'pi-kiosk').mkdir(parents=True)
+        (install / 'pi-kiosk/data').symlink_to(self.root / 'unmounted-drive')
+        source = Path(__file__).with_name('setup.sh').read_text().replace(
+            'INSTALL_DIR="/opt/fw-gatekeeper"', f'INSTALL_DIR="{install}"')
+        script = self.root / 'setup.sh'
+        script.write_text(source)
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        for name, body in {
+            'id': '#!/bin/sh\nprintf "0\\n"\n',
+            'python3': '#!/bin/sh\nexit 0\n',
+            'apt-get': '#!/bin/sh\ntouch "$TEST_APT_LOG"\nexit 72\n',
+        }.items():
+            path = bin_dir / name
+            path.write_text(body)
+            path.chmod(0o755)
+        apt_log = self.root / 'apt.log'
+        result = subprocess.run(['bash', str(script)], capture_output=True, text=True,
+                                env=self.setup_env(install) | {
+                                    'PATH': f'{bin_dir}:{os.environ["PATH"]}',
+                                    'KIOSK_API_KEY': 'synthetic', 'KIOSK_UI_KEY': 'synthetic',
+                                    'KIOSK_SUPERVISOR_PIN': 'synthetic', 'TEST_APT_LOG': str(apt_log),
+                                })
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Mount its drive or repair the link', result.stdout)
+        self.assertFalse(apt_log.exists())
+        self.assertEqual(list((install / 'pi-kiosk').iterdir()), [install / 'pi-kiosk/data'])
+
+    def test_failed_worker_update_identifies_local_row_without_private_values(self):
+        database.init_db()
+        private = 'private-name-url-token-encoding'
+        local_id = database.add_worker(private, [0.5] * 512, server_id=private, employee_id='E1')
+        row = {'id': private, 'name': private, 'active': True, 'face_encoding': [0.5] * 512}
+        response = mock.Mock(status_code=200, json=lambda: {'workers': [row]})
+        with mock.patch.object(sync.requests, 'get', return_value=response), \
+             mock.patch.object(database, 'add_worker', side_effect=sqlite3.OperationalError(private)), \
+             self.assertLogs('sync') as logs:
+            self.assertFalse(sync.sync_workers())
+        output = '\n'.join(logs.output)
+        self.assertIn(f'row=0 local_id={local_id}', output)
+        self.assertIn('error=OperationalError', output)
+        self.assertNotIn(private, output)
+        self.assertIsNone(database.get_sync_state('last_worker_sync'))
+
+    def test_attendance_and_recognition_sync_errors_never_log_private_values(self):
+        database.init_db()
+        private = 'private-name-url-token-encoding'
+        local_id = database.add_worker(private, [0.5] * 512, server_id='k' * 32)
+        with self.assertLogs('database', level='INFO') as logs:
+            log_id = database.log_attendance(local_id, private, 'clock_in')
+            database.log_recognition_attempt(candidate_worker_id=local_id, candidate_worker_name=private, decision='accepted')
+        self.assertNotIn(private, '\n'.join(logs.output))
+        self.assertIn(f'local_id={local_id}', '\n'.join(logs.output))
+        for operation in (sync.sync_attendance, sync.sync_recognition_attempts):
+            with self.subTest(operation=operation.__name__), \
+                 mock.patch.object(sync.requests, 'post', side_effect=sync.requests.RequestException(private)), \
+                 self.assertLogs('sync') as logs:
+                self.assertFalse(operation())
+            self.assertNotIn(private, '\n'.join(logs.output))
+            self.assertTrue(all(record.exc_info is None for record in logs.records))
+        rejection = mock.Mock(status_code=400, json=lambda: {'code': 'INVALID_ATTENDANCE', 'error': private})
+        with mock.patch.object(sync.requests, 'post', return_value=rejection), self.assertLogs('sync') as logs:
+            self.assertFalse(sync.sync_attendance())  # Rejected evidence stays in the queue.
+        self.assertEqual(database.count_retryable_logs(), 0)
+        self.assertNotIn(private, '\n'.join(logs.output))
+        self.assertIn(str(log_id), '\n'.join(logs.output))
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=500, text=private)), \
+             self.assertLogs('sync') as logs:
+            self.assertFalse(sync.sync_recognition_attempts())
+        self.assertNotIn(private, '\n'.join(logs.output))
+
+    def test_roster_ack_and_background_errors_never_log_exception_messages(self):
+        database.init_db()
+        private = 'https://photo.invalid/private-token?face_encoding=private'
+        database.set_sync_state('roster_pending_receipt', '{"receipt":"synthetic"}')
+        with mock.patch.object(sync.requests, 'post', side_effect=sync.requests.RequestException(private)), \
+             self.assertLogs('sync') as logs:
+            self.assertFalse(sync.acknowledge_applied_roster())
+        self.assertNotIn(private, '\n'.join(logs.output))
+        worker = sync.SyncWorker()
+        worker._running = True
+        def stop(_seconds):
+            worker._running = False
+        with mock.patch.object(sync, 'check_server', side_effect=ValueError(private)), \
+             mock.patch.object(sync.time, 'sleep', side_effect=stop), \
+             mock.patch.object(config, 'SYNC_INTERVAL', 1), self.assertLogs('sync') as logs:
+            worker._run()
+        self.assertIn('error=ValueError', '\n'.join(logs.output))
+        self.assertNotIn(private, '\n'.join(logs.output))
+
+    def test_main_attendance_logs_local_identity_and_redacts_errors(self):
+        # Exercise the real closure with camera/UI dependencies replaced.
+        source = ast.parse(Path(__file__).with_name('main.py').read_text())
+        run = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+        record = next(node for node in run.body if isinstance(node, ast.FunctionDef) and node.name == 'record_clock')
+        recognizer = mock.Mock(known_count=1)
+        namespace = {'config': config, 'database': database, 'recognizer': recognizer,
+                     'logger': logging.getLogger('main'), 'web_app': mock.Mock(),
+                     'datetime': datetime, 'timezone': timezone, 'last_clocks': {},
+                     '_log_recognition_attempt': mock.Mock(), '_now_iso': mock.Mock(),
+                     'base_degraded_reason': mock.Mock()}
+        exec(compile(ast.Module(body=[record], type_ignores=[]), 'main.py', 'exec'), namespace)
+        private = 'private-name-url-token-encoding'
+        with self.assertLogs('main', level='INFO') as logs:
+            self.assertTrue(namespace['record_clock']({}, 7, private, private, 0.9, False))
+        self.assertIn('local_id=7', '\n'.join(logs.output))
+        self.assertNotIn(private, '\n'.join(logs.output))
+        recognizer.liveness_policy.record.side_effect = OSError(private)
+        with self.assertLogs('main') as logs:
+            self.assertFalse(namespace['record_clock']({}, 7, private, private, 0.9, False))
+        self.assertIn('local_id=7 error=OSError', '\n'.join(logs.output))
+        self.assertNotIn(private, '\n'.join(logs.output))
+        self.assertTrue(all(record.exc_info is None for record in logs.records))
 
     def test_legacy_string_id_formats_keep_their_identity(self):
         database.init_db()

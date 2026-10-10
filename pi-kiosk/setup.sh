@@ -71,6 +71,27 @@ if platform.machine() != "aarch64" or sys.version_info[:2] != (3, 11):
     raise SystemExit("Use Raspberry Pi OS Bookworm (64-bit), Python 3.11, for this dependency lock.")
 PYTHON_TARGET
 
+# Validate relocated data before package, config or service changes. Operators
+# may keep a dedicated data directory on a USB drive via a symlink.
+resolve_data_root() {
+  DATA_ROOT="$INSTALL_DIR/pi-kiosk/data"
+  if [ -L "$DATA_ROOT" ]; then
+    local target owner kiosk_uid
+    if ! target=$(realpath -e -- "$DATA_ROOT") || [ ! -d "$target" ]; then
+      echo "❌ Data symlink target is unavailable. Mount its drive or repair the link, then rerun setup."
+      return 1
+    fi
+    owner=$(stat -c %u -- "$target")
+    kiosk_uid=$(id -u "$KIOSK_USER")
+    if [ "$owner" != "$kiosk_uid" ] || [ "$target" = / ]; then
+      echo "❌ Data symlink must point to a dedicated directory owned by $KIOSK_USER. Review the target, set its owner, then rerun setup."
+      return 1
+    fi
+    DATA_ROOT="$target"
+  fi
+}
+resolve_data_root
+
 # ─── 1. System Update ──────────────────────────────────────────
 echo "[1/7] Updating system packages..."
 apt-get update -qq
@@ -276,12 +297,9 @@ fi
 echo "[8/8] Setting permissions..."
 chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
 # Tighten pre-upgrade databases, sidecars, photos and directories too.
-if [ -L "$INSTALL_DIR/pi-kiosk/data" ]; then
-  echo "❌ Refusing to change permissions through a symlinked data directory. Review its target and replace the symlink before rerunning setup."
-  exit 1
-fi
+resolve_data_root
 # Do not follow symlinks within the tree or a replaced command-line root.
-find -P "$INSTALL_DIR/pi-kiosk/data" \( -type d -o -type f \) -exec chmod go-rwx {} +
+find -P "$DATA_ROOT" \( -type d -o -type f \) -exec chown --no-dereference "$KIOSK_USER:$KIOSK_USER" {} + -exec chmod go-rwx {} +
 
 # Disable console screen blanking so the kiosk display never goes dark
 CMDLINE="$BOOT_DIR/cmdline.txt"

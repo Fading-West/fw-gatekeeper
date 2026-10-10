@@ -109,7 +109,7 @@ def _migrate_sync_state(conn: sqlite3.Connection):
             "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_worker_sync', ?)",
             (old_value,),
         )
-    logger.info("Migrated sync_state to keyed schema (last_worker_sync=%s)", old_value)
+    logger.info("Migrated sync_state to keyed schema")
 
 
 def _migrate_worker_identity(conn: sqlite3.Connection):
@@ -316,7 +316,7 @@ def init_db():
         logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
 
     conn.commit()
-    logger.info("Database initialized at %s", config.DB_PATH)
+    logger.info("Database initialized")
 
 
 def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
@@ -470,6 +470,12 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
             raise
         logger.warning("Worker deactivated; thumbnail cleanup remains pending (error=%s)", type(exc).__name__)
     return cursor.rowcount > 0
+
+
+def get_worker_id_by_server_id(server_id: str) -> Optional[int]:
+    """Resolve a server identity to an operator-safe local row number."""
+    row = _get_conn().execute("SELECT id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
+    return int(row["id"]) if row else None
 
 
 def get_synced_server_ids() -> set[str]:
@@ -746,8 +752,8 @@ def log_attendance(
     conn.commit()
     log_id = int(cursor.lastrowid)
     logger.info(
-        "Gatekeeper logged: worker=%s action=%s confidence=%.3f live=%s",
-        worker_name,
+        "Gatekeeper logged: local_id=%d action=%s confidence=%.3f live=%s",
+        int(worker_id),
         normalized_action,
         confidence,
         liveness_confirmed,
@@ -993,9 +999,9 @@ def log_recognition_attempt(
     conn.commit()
     attempt_id = int(cursor.lastrowid)
     logger.info(
-        "Recognition attempt logged: decision=%s candidate=%s score=%s threshold=%s",
+        "Recognition attempt logged: decision=%s local_id=%s score=%s threshold=%s",
         decision,
-        candidate_worker_name or "unknown",
+        int(candidate_worker_id) if candidate_worker_id is not None else "unknown",
         f"{best_score:.3f}" if best_score is not None else "n/a",
         f"{threshold:.3f}" if threshold is not None else "n/a",
     )
