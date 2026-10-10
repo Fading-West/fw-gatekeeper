@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { convexTest } from 'convex-test';
+import { Scrypt } from 'lucia';
 import { describe, expect, it, vi } from 'vitest';
 
 import { api, internal } from './_generated/api';
@@ -10,15 +11,52 @@ import * as audit from './audit';
 
 const modules = import.meta.glob('./**/*.ts');
 
+// Password tests are the slowest in the suite: @convex-dev/auth hashes and
+// verifies with Lucia's pure-JS Scrypt (N=16384, r=16), roughly 250-370 ms per
+// call on a loaded host, and sign-in also signs a JWT. Give them generous
+// explicit timeouts so CPU contention cannot trip vitest's 5 s default.
+const PASSWORD_TEST_TIMEOUT_MS = 30_000;
+
+// Generating a 2048-bit RSA key is slow and nondeterministic in duration, so
+// generate it once per file. Each withLocalAuthKeys call still stubs and
+// restores the env vars, so no test sees another test's auth environment.
+let localAuthPrivateKey: string | undefined;
+function getLocalAuthPrivateKey() {
+  localAuthPrivateKey ??= generateKeyPairSync('rsa', { modulusLength: 2048 })
+    .privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+  return localAuthPrivateKey;
+}
+
 async function withLocalAuthKeys(run: () => Promise<void>) {
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  vi.stubEnv('JWT_PRIVATE_KEY', privateKey.export({ format: 'pem', type: 'pkcs8' }).toString());
+  vi.stubEnv('JWT_PRIVATE_KEY', getLocalAuthPrivateKey());
   vi.stubEnv('CONVEX_SITE_URL', 'https://example.convex.site');
   try {
     await run();
   } finally {
     vi.unstubAllEnvs();
   }
+}
+
+// Replaces the Password provider's Scrypt with a fast deterministic hash for
+// the current test only. Use it ONLY in tests that write a credential but never
+// sign in or otherwise verify one. Tests that sign in keep real Scrypt so they
+// exercise the provider's real hash and verify end to end. The fake still
+// preserves the semantics those tests rely on: the stored secret is never the
+// plaintext, distinct passwords produce distinct secrets, and verify rejects a
+// wrong password. 'lucia' resolves to the same copy that @convex-dev/auth
+// imports, so the prototype spy intercepts the provider's calls; each caller
+// asserts that the fake hash ran.
+function useFastPasswordHashing(onTestFinished: (cleanup: () => void) => void) {
+  const fakeHash = (password: string) =>
+    `test-sha256:${createHash('sha256').update(password.normalize('NFKC')).digest('hex')}`;
+  const hash = vi.spyOn(Scrypt.prototype, 'hash').mockImplementation(async (password: string) => fakeHash(password));
+  const verify = vi.spyOn(Scrypt.prototype, 'verify')
+    .mockImplementation(async (stored: string, password: string) => stored === fakeHash(password));
+  onTestFinished(() => {
+    hash.mockRestore();
+    verify.mockRestore();
+  });
+  return { hash, verify };
 }
 
 async function setup() {
@@ -38,7 +76,7 @@ async function setup() {
   return { t, ...rows };
 }
 
-describe('portal member lifecycle', () => {
+describe('portal member lifecycle', { timeout: PASSWORD_TEST_TIMEOUT_MS }, () => {
   it('allows only admins to change roles or status and audits changes', async () => {
     const { t, admin, viewer, viewerMember } = await setup();
     const actor = t.withIdentity({ subject: admin });
@@ -163,7 +201,8 @@ it('revokes sessions created earlier in the same millisecond', async () => {
   }
 });
 
-it('rolls back the password write if the audit step fails in the same mutation', async () => {
+it('rolls back the password write if the audit step fails in the same mutation', { timeout: PASSWORD_TEST_TIMEOUT_MS }, async ({ onTestFinished }) => {
+  const fastHashing = useFastPasswordHashing(onTestFinished); // Writes a credential but never verifies it.
   const { t, admin, viewer } = await setup();
   await t.run(ctx => ctx.db.insert('authAccounts', {
     userId: viewer, provider: 'password', providerAccountId: 'viewer@example.com', secret: 'old',
@@ -179,12 +218,14 @@ it('rolls back the password write if the audit step fails in the same mutation',
     }));
     expect(state.account?.secret).toBe('old');
     expect(state.member?.sessionRevokedAt).toBeUndefined();
+    expect(fastHashing.hash).toHaveBeenCalledOnce();
   } finally {
     spy.mockRestore();
   }
 });
 
-it('resets a password with an audit and immediate session cutoff, while rejecting a nonadmin', async () => {
+it('resets a password with an audit and immediate session cutoff, while rejecting a nonadmin', { timeout: PASSWORD_TEST_TIMEOUT_MS }, async ({ onTestFinished }) => {
+  const fastHashing = useFastPasswordHashing(onTestFinished); // Writes a credential but never verifies it.
   const { t, admin, viewer, viewerMember, viewerSession } = await setup();
   await t.run(ctx => ctx.db.insert('authAccounts', {
     userId: viewer, provider: 'password', providerAccountId: 'viewer@example.com', secret: 'old',
@@ -200,13 +241,14 @@ it('resets a password with an audit and immediate session cutoff, while rejectin
     audit: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', viewerMember)).collect(),
   }));
   expect(state.account?.secret).not.toBe('old');
+  expect(fastHashing.hash).toHaveBeenCalledOnce();
   expect(state.member?.sessionRevokedAt).toBeGreaterThanOrEqual(startedAt);
   expect(state.audit).toMatchObject([{ actorUserId: admin, action: 'portalMembers.resetPassword' }]);
   expect(await t.run(ctx => ctx.db.get(viewerSession))).toBeNull();
   expect(await t.withIdentity({ subject: `${viewer}|${viewerSession}` }).query(api.portalMembers.current, {})).toBeNull();
 });
 
-it('creates the password account, member, and audit in one mutation', async () => {
+it('creates the password account, member, and audit in one mutation', { timeout: PASSWORD_TEST_TIMEOUT_MS }, async () => {
   const { t, admin } = await setup();
   const result = await t.withIdentity({ subject: admin }).action(api.portalMembers.createPortalAccount, {
     email: '  New.Member@Example.com  ', password: 'InitialPass123!', role: 'enrollment',
@@ -232,7 +274,7 @@ it('creates the password account, member, and audit in one mutation', async () =
   });
 });
 
-it('signs in with a reset password and rejects the previous password', async () => {
+it('signs in with a reset password and rejects the previous password', { timeout: PASSWORD_TEST_TIMEOUT_MS }, async () => {
   const { t, admin } = await setup();
   const actor = t.withIdentity({ subject: admin });
   await actor.action(api.portalMembers.createPortalAccount, {
@@ -263,7 +305,8 @@ it('rejects creation if the admin loses access before the account mutation', asy
     .withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'stranded@example.com')).unique())).toBeNull();
 });
 
-it('rolls back account and user creation if the member audit fails', async () => {
+it('rolls back account and user creation if the member audit fails', { timeout: PASSWORD_TEST_TIMEOUT_MS }, async ({ onTestFinished }) => {
+  const fastHashing = useFastPasswordHashing(onTestFinished); // Writes a credential but never verifies it.
   const { t, admin } = await setup();
   const spy = vi.spyOn(audit, 'writeAuditLog').mockRejectedValueOnce(new Error('audit failed'));
   try {
@@ -278,6 +321,7 @@ it('rolls back account and user creation if the member audit fails', async () =>
     expect(state.account).toBeNull();
     expect(state.user).toBeNull();
     expect(state.members).toHaveLength(3);
+    expect(fastHashing.hash).toHaveBeenCalledOnce();
   } finally {
     spy.mockRestore();
   }
