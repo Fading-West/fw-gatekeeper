@@ -7,6 +7,8 @@ import { internalQuery, query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
+import type { WithoutSystemFields } from "convex/server";
+import { writeRosterWorker, parseRosterCursor } from "./rosterSequence";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
@@ -174,7 +176,7 @@ const createWorkerResult = v.object({
   department: v.string(),
 });
 
-async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
+async function createWorker(ctx: MutationCtx, args: { name: string; employeeId?: string; department?: string; faceEncoding: number[]; photoStorageIds?: Id<"_storage">[]; consentAt?: string }, actorUserId: Id<"users">) {
     const name = normalizeName(args.name);
     if (!name) {
       throw new Error("Worker name is required");
@@ -205,7 +207,7 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
 
     if (existing && !existing.active) {
       await deleteReplacedPhotos(ctx, existing._id, existing.photoStorageIds, args.photoStorageIds);
-      await ctx.db.patch(existing._id, {
+      await writeRosterWorker(ctx, {
         name,
         employeeId,
         department,
@@ -218,12 +220,12 @@ async function createWorker(ctx: any, args: any, actorUserId: Id<"users">) {
         consentRecordedBy: actorUserId,
         // A fresh enrollment supersedes any earlier purge marker.
         biometricsPurgedAt: undefined,
-      });
+      }, existing._id);
       await writeAuditLog(ctx, { actorUserId, action: "workers.enroll", targetTable: "workers", targetId: existing._id, details: JSON.stringify({ consentAt: args.consentAt }) });
       return { id: existing._id, name, employeeId, department };
     }
 
-    const id = await ctx.db.insert("workers", {
+    const id = await writeRosterWorker(ctx, {
       name,
       employeeId,
       department,
@@ -338,7 +340,7 @@ export const update = mutation({
     if (writesBiometrics) assertBiometricConsent(fields.consentAt);
     assertPhotoLimit(fields.photoStorageIds);
     await consumeEnrollmentPhotos(ctx, fields.photoStorageIds, member.userId, worker.photoStorageIds);
-    const updates: Record<string, unknown> = {};
+    const updates: Partial<WithoutSystemFields<Doc<"workers">>> = {};
     if (!isSupportedFaceEncoding(fields.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
     }
@@ -379,7 +381,7 @@ export const update = mutation({
       updates.biometricsPurgedAt = undefined;
     }
     updates.updatedAt = new Date().toISOString();
-    await ctx.db.patch(id, updates);
+    await writeRosterWorker(ctx, updates, id);
     if (fields.name !== undefined || fields.employeeId !== undefined || fields.department !== undefined) {
       await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.updateIdentity", targetTable: "workers", targetId: id,
         details: JSON.stringify({ before: { name: worker.name, employeeId: worker.employeeId, department: worker.department }, after: { name: updates.name ?? worker.name, employeeId: fields.employeeId === undefined ? worker.employeeId : updates.employeeId, department: updates.department ?? worker.department } }) });
@@ -391,11 +393,12 @@ export const update = mutation({
 
 export const remove = mutation({
   args: { id: v.id("workers") },
+  returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
     const member = await assertPortalRole(ctx, ["admin"]);
     const worker = await ctx.db.get(args.id);
     if (!worker) throw new Error("Worker not found");
-    await ctx.db.patch(args.id, { active: false, updatedAt: new Date().toISOString() });
+    await writeRosterWorker(ctx, { active: false, updatedAt: new Date().toISOString() }, args.id);
     await writeAuditLog(ctx, {
       actorUserId: member.userId,
       action: "workers.remove",
@@ -429,13 +432,13 @@ export const purgeBiometrics = mutation({
     const photosDeleted = await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, undefined);
 
     const now = new Date().toISOString();
-    await ctx.db.patch(args.id, {
+    await writeRosterWorker(ctx, {
       faceEncoding: undefined,
       photoStorageIds: undefined,
       active: false,
       updatedAt: now,
       biometricsPurgedAt: now,
-    });
+    }, args.id, true);
 
     await writeAuditLog(ctx, {
       actorUserId: member.userId,
@@ -468,21 +471,19 @@ const workerSyncResult = v.array(v.object({
   active: v.number(),
 }));
 
-async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: boolean; cursor?: string }) {
-  const since = args.since;
-  // Updated rows and older rows without updatedAt occupy separate index ranges.
-  // The phase prefix keeps their pagination cursors separate across HTTP calls.
-  const phase = since && args.cursor?.startsWith("l:") ? "legacy" : "updated";
-  if (since && args.cursor && !/^[ul]:/.test(args.cursor)) throw new Error("Invalid incremental roster cursor");
-  const cursor = since ? args.cursor?.slice(2) || null : args.cursor ?? null;
-  const query = !since ? ctx.db.query("workers") : phase === "updated"
-    ? ctx.db.query("workers").withIndex("by_updated_at_and_enrolled_at", (q: any) => args.inclusive
-      ? q.gte("updatedAt", since) : q.gt("updatedAt", since))
-    : ctx.db.query("workers").withIndex("by_updated_at_and_enrolled_at", (q: any) => args.inclusive
-      ? q.eq("updatedAt", undefined).gte("enrolledAt", since)
-      : q.eq("updatedAt", undefined).gt("enrolledAt", since));
+async function listWorkersForSync(ctx: QueryCtx, args: { since?: string; inclusive?: boolean; cursor?: string }) {
+  const sequence = parseRosterCursor(args.since);
+  // Legacy timestamps require a full resync, including inactive workers. A
+  // sequence delta has two disjoint indexed phases: changes, then every row
+  // without a sequence. Re-sending legacy rows avoids any need for a backfill.
+  const phase = sequence !== null && args.cursor?.startsWith("l:") ? "legacy" : "updated";
+  if (sequence !== null && args.cursor && !/^[ul]:/.test(args.cursor)) throw new Error("Invalid incremental roster cursor");
+  const cursor = sequence !== null ? args.cursor?.slice(2) || null : args.cursor ?? null;
+  const query = sequence === null ? ctx.db.query("workers") : phase === "updated"
+    ? ctx.db.query("workers").withIndex("by_roster_sequence", q => q.gt("rosterSequence", sequence))
+    : ctx.db.query("workers").withIndex("by_roster_sequence", q => q.eq("rosterSequence", undefined));
   const page = await query.paginate({ cursor, numItems: 200 });
-  const result = await Promise.all(page.page.map(async (w: any) => {
+  const result = await Promise.all(page.page.map(async (w) => {
     let photoUrl: string | null = null;
     if (w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
@@ -505,7 +506,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
       active: w.active ? 1 : 0,
     };
   }));
-  if (!since) return { workers: result, isDone: page.isDone, continueCursor: page.continueCursor };
+  if (sequence === null) return { workers: result, isDone: page.isDone, continueCursor: page.continueCursor };
   if (phase === "updated") return { workers: result, isDone: false,
     continueCursor: page.isDone ? "l:" : `u:${page.continueCursor}` };
   return { workers: result, isDone: page.isDone, continueCursor: `l:${page.continueCursor}` };

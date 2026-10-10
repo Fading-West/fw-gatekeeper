@@ -52,7 +52,7 @@ assert.match(backlog, /getAttendanceReceiptStatus\(/, 'Backlog gateway must resu
 assert.match(attendanceSingleRoute, /ingestAttendanceEvent\(/, 'Single attendance route must call secured HTTP ingest.');
 assert.match(recognitionRoute, /ingestRecognitionAttemptBatch\(mapped\)/, 'Recognition route must call secured HTTP ingest.');
 assert.match(syncRoute, /updateKioskLastSync\(kioskId, lastSync, parseKioskHealth\(/, 'Sync route must update lastSync and kiosk health through secured HTTP ingest.');
-assert.match(syncRoute, /fetchWorkersForSync\(since\)/, 'Sync route must fetch workers through secured HTTP ingest.');
+assert.match(syncRoute, /fetchWorkersForSync\(''\)/, 'Legacy sync must fetch the full roster through secured HTTP ingest without trusting a timestamp cursor.');
 assert.doesNotMatch(attendanceRoute, /convex\.mutation/, 'Attendance route must not call a public Convex mutation.');
 assert.doesNotMatch(attendanceSingleRoute, /attendance\.create/, 'Single attendance route must not call the public attendance mutation.');
 assert.doesNotMatch(recognitionRoute, /convex\.mutation/, 'Recognition route must not call a public Convex mutation.');

@@ -1,3 +1,4 @@
+import { writeRosterWorker } from "./rosterSequence";
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
@@ -26,7 +27,7 @@ export const run = internalMutation({
     ];
 
     for (const w of workers) {
-      const id = await ctx.db.insert("workers", {
+      const id = await writeRosterWorker(ctx, {
         name: w.name,
         department: w.department,
         enrolledAt: now.toISOString(),

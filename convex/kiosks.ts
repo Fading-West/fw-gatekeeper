@@ -3,6 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
 import type { Doc } from "./_generated/dataModel";
+import { readRosterSequence } from "./rosterSequence";
 
 function normalizeOptionalText(value?: string) {
   const trimmed = value?.trim();
@@ -24,7 +25,7 @@ function serializeHealth(health: any) {
   };
 }
 
-function serializeKiosk(k: any, lastPurgeAt: string | null = null) {
+function serializeKiosk(k: Doc<"kiosks">, lastPurgeSequence: number | null = null) {
   return {
     id: k._id,
     name: k.name,
@@ -33,7 +34,8 @@ function serializeKiosk(k: any, lastPurgeAt: string | null = null) {
     location: k.location,
     last_sync: k.lastSync || null,
     roster_applied_at: k.rosterAppliedAt || null,
-    purge_pending: Boolean(lastPurgeAt && (!k.rosterAppliedAt || k.rosterAppliedAt <= lastPurgeAt)),
+    purge_pending: lastPurgeSequence !== null &&
+      (k.rosterAppliedSequence === undefined || k.rosterAppliedSequence < lastPurgeSequence),
     health: serializeHealth(k.health),
     credential_status: (k.credentialHash ? "device" : k.legacyDisabledAt ? "revoked" : "legacy") as "device" | "revoked" | "legacy",
     active: 1,
@@ -86,11 +88,15 @@ export const list = query({
       .query("kiosks")
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
-    const latestPurge = await ctx.db.query("auditLog")
+    const counter = await readRosterSequence(ctx);
+    // Pre-migration purges have no sequence. A full, sequence-bearing sync
+    // (even sequence zero) is required to certify their removal.
+    const legacyPurge = await ctx.db.query("auditLog")
       .withIndex("by_target_table_and_action_and_created_at", q =>
         q.eq("targetTable", "workers").eq("action", "workers.purgeBiometrics"))
       .order("desc").first();
-    return kiosks.map(k => serializeKiosk(k, latestPurge?.createdAt ?? null));
+    const lastPurgeSequence = counter?.lastPurgeSequence ?? (legacyPurge ? 0 : null);
+    return kiosks.map(k => serializeKiosk(k, lastPurgeSequence));
   },
 });
 
@@ -245,10 +251,16 @@ export const issueRosterReceiptFromHttp = internalMutation({
     if (!kiosk?.active || !kiosk.credentialHash) return null;
     const pending = await ctx.db.query("kioskRosterReceipts")
       .withIndex("by_kiosk", q => q.eq("kioskId", kiosk._id)).first();
-    if (pending) return { receipt: pending._id, issuedAt: pending.issuedAt, since: kiosk.rosterAppliedAt ?? null };
+    // Never use the old applied timestamp as a delta cursor. An outstanding
+    // pre-migration receipt may have downloaded an incomplete timestamp delta;
+    // retry it with a full roster and keep its ack untrusted for confirmation.
+    const since = kiosk.rosterAppliedSequence === undefined || (pending !== null && pending.rosterSequence === undefined)
+      ? null : `seq:${kiosk.rosterAppliedSequence}`;
+    if (pending) return { receipt: pending._id, issuedAt: pending.issuedAt, since };
+    const counter = await readRosterSequence(ctx);
     const issuedAt = new Date().toISOString();
-    const receipt = await ctx.db.insert("kioskRosterReceipts", { kioskId: kiosk._id, issuedAt });
-    return { receipt, issuedAt, since: kiosk.rosterAppliedAt ?? null };
+    const receipt = await ctx.db.insert("kioskRosterReceipts", { kioskId: kiosk._id, issuedAt, rosterSequence: counter?.value ?? 0 });
+    return { receipt, issuedAt, since };
   },
 });
 
@@ -262,12 +274,16 @@ export const acknowledgeRosterReceiptFromHttp = internalMutation({
       return { acknowledged: true, appliedAt: kiosk.rosterAppliedAt ?? null };
     }
     const pending = await ctx.db.get(args.receipt);
-    if (!pending || pending.kioskId !== kiosk._id || pending.issuedAt > new Date().toISOString()) {
+    if (!pending || pending.kioskId !== kiosk._id || (pending.rosterSequence === undefined && pending.issuedAt > new Date().toISOString())) {
       return { acknowledged: false, appliedAt: null };
     }
     const appliedAt = !kiosk.rosterAppliedAt || pending.issuedAt > kiosk.rosterAppliedAt
       ? pending.issuedAt : kiosk.rosterAppliedAt;
-    await ctx.db.patch(kiosk._id, { rosterAppliedAt: appliedAt, lastRosterReceiptId: pending._id });
+    await ctx.db.patch(kiosk._id, { rosterAppliedAt: appliedAt, lastRosterReceiptId: pending._id,
+      ...(pending.rosterSequence === undefined ? {} : {
+        rosterAppliedSequence: Math.max(kiosk.rosterAppliedSequence ?? 0, pending.rosterSequence),
+      }),
+    });
     await ctx.db.delete(pending._id);
     return { acknowledged: true, appliedAt };
   },

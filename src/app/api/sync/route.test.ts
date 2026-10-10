@@ -40,10 +40,10 @@ it('uses the server-owned cursor for receipts and requires a full initial roster
   expect(issueRosterReceipt).toHaveBeenCalledWith('kiosk-document');
   expect(fetchWorkersForSync).toHaveBeenLastCalledWith('', true);
 
-  vi.mocked(issueRosterReceipt).mockResolvedValueOnce({ receipt: 'token-2', issuedAt: '2026-09-25T12:01:00Z', since: '2026-09-25T12:00:00Z' });
+  vi.mocked(issueRosterReceipt).mockResolvedValueOnce({ receipt: 'token-2', issuedAt: '2026-09-25T12:01:00Z', since: 'seq:7' });
   const next = await GET(request('roster_receipt=1&since=2999-01-01T00:00:00Z'));
   expect(await next.json()).toMatchObject({ roster_receipt: 'token-2', full_roster: false });
-  expect(fetchWorkersForSync).toHaveBeenLastCalledWith('2026-09-25T12:00:00Z', true);
+  expect(fetchWorkersForSync).toHaveBeenLastCalledWith('seq:7', true);
 });
 
 it('does not return a receipt-bearing roster when a later worker page fails', async () => {
@@ -61,7 +61,7 @@ it('keeps the legacy response and caller since parameter compatible without issu
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ workers: [] });
   expect(issueRosterReceipt).not.toHaveBeenCalled();
-  expect(fetchWorkersForSync).toHaveBeenCalledWith('2026-09-01T00:00:00Z');
+  expect(fetchWorkersForSync).toHaveBeenCalledWith('');
 });
 
 it('requires kiosk authentication and a matching pending acknowledgement', async () => {

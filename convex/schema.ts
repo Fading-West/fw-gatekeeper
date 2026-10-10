@@ -50,6 +50,8 @@ export default defineSchema({
     faceEncoding: v.optional(v.array(v.float64())),
     enrolledAt: v.string(),
     updatedAt: v.optional(v.string()),
+    // Commit-ordered cursor; legacy rows without it are always re-sent.
+    rosterSequence: v.optional(v.number()),
     active: v.boolean(),
     // ISO timestamp of the most recent biometric consent acknowledgement
     // captured at enrollment (refreshed on re-enrollment).
@@ -60,7 +62,17 @@ export default defineSchema({
   })
     .index("by_active", ["active"])
     .index("by_employee_id_and_active", ["employeeId", "active"])
-    .index("by_updated_at_and_enrolled_at", ["updatedAt", "enrolledAt"]),
+    .index("by_updated_at_and_enrolled_at", ["updatedAt", "enrolledAt"])
+    .index("by_roster_sequence", ["rosterSequence"]),
+
+  // Lazily initialized singleton. Worker writes increment it transactionally;
+  // receipt reads serialize with those writes through Convex OCC.
+  rosterSequence: defineTable({
+    key: v.optional(v.literal("roster")),
+    value: v.optional(v.number()),
+    // Retained even when a purged worker is later re-enrolled.
+    lastPurgeSequence: v.optional(v.number()),
+  }).index("by_key", ["key"]),
 
   // Append-only trail of privileged or privacy-relevant actions
   // (worker deactivation, biometric purge). Never edited or deleted.
@@ -209,6 +221,7 @@ export default defineSchema({
     location: v.string(),
     lastSync: v.optional(v.string()),
     rosterAppliedAt: v.optional(v.string()),
+    rosterAppliedSequence: v.optional(v.number()),
     lastRosterReceiptId: v.optional(v.id("kioskRosterReceipts")),
     // Self-reported device health, sent alongside each worker sync. A kiosk
     // whose network is up but whose camera/model is broken must not look
@@ -235,11 +248,14 @@ export default defineSchema({
     .index("by_kiosk_id", ["kioskId"])
     .index("by_credential_hash", ["credentialHash"]),
 
-  // At most one outstanding roster receipt per registered kiosk. Its issue
-  // time precedes the full roster read, so an ack cannot cover later purges.
+  // At most one outstanding receipt per kiosk. Its counter read precedes the
+  // roster read and serializes with worker writes: an ack cannot cover later
+  // purges, regardless of mutation start time. Legacy receipts without a
+  // sequence cannot advance the applied sequence or certify a purge.
   kioskRosterReceipts: defineTable({
     kioskId: v.id("kiosks"),
     issuedAt: v.string(),
+    rosterSequence: v.optional(v.number()),
   }).index("by_kiosk", ["kioskId"]),
 
   // One row per (kiosk, condition) episode, written by the alerting cron in
