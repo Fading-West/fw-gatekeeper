@@ -8,7 +8,9 @@ WORKDIR /build
 COPY requirements-build.lock requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements-build.lock \
     && pip wheel --no-cache-dir --no-build-isolation --require-hashes \
-       --only-binary=:all: --no-binary=dlib --wheel-dir /wheels -r requirements.lock
+       --only-binary=:all: --no-binary=dlib --wheel-dir /wheels -r requirements.lock \
+    && python -m venv /opt/runtime \
+    && /opt/runtime/bin/pip install --no-cache-dir --no-index --no-deps /wheels/*.whl
 
 FROM python:3.11-slim
 
@@ -20,9 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY --from=wheels /wheels /wheels
-RUN pip install --no-cache-dir --no-index --no-deps /wheels/*.whl \
-    && rm -rf /wheels
+# Copy installed packages, not wheel archives (deleting copied archives in a
+# later layer would still retain their bytes in the published image).
+COPY --from=wheels /opt/runtime /opt/runtime
+ENV PATH="/opt/runtime/bin:$PATH"
 
 # Download the InsightFace buffalo_s recognition model during build (~13MB).
 # Pinned to HuggingFace commit 0ff1751885575e62e084dff70549ce24a11fa5dc with
