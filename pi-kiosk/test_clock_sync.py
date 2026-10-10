@@ -120,9 +120,13 @@ class ClockHealthTests(unittest.TestCase):
                 self.assertNotIn("degraded_reason", sync._health_params(self.app.get_health_snapshot()))
 
     def test_clock_recovery_restores_underlying_degradation(self):
+        import sync
         self.app.update_health(degraded_reason="no_workers_synced")
         with mock.patch.object(self.app, "get_clock_synchronized", side_effect=[False, True]):
-            self.assertEqual(self.app.get_health_snapshot()["degraded_reason"], "clock_unsynchronized")
+            snapshot = self.app.get_health_snapshot()
+            self.assertEqual(snapshot["degraded_reason"], "no_workers_synced,clock_unsynchronized")
+            self.assertEqual(sync._health_params(snapshot)["degraded_reason"],
+                             "no_workers_synced,clock_unsynchronized")
             self.assertEqual(self.app.get_health_snapshot()["degraded_reason"], "no_workers_synced")
 
     def test_unsynchronized_clock_keeps_supervisor_attendance_available(self):

@@ -168,9 +168,11 @@ returns unrecognized output, the current-boot timesyncd marker
 its absence is unknown, since another NTP service may be used. Non-systemd
 hosts and probe errors remain unknown and do not cause degradation.
 
-A known unsynchronized clock takes priority in the snapshot's existing
-`degraded_reason` as `clock_unsynchronized`; underlying device faults remain
-stored and reappear when clock synchronization recovers. Camera/model flags
+A known unsynchronized clock adds `clock_unsynchronized` to the snapshot's
+existing `degraded_reason` string. Simultaneous faults use comma-separated
+reason codes, so roster failures remain visible in portal warnings, alerting,
+and shift readiness. When synchronization recovers, only the clock reason
+clears; underlying device faults remain unchanged. Camera/model flags
 continue to report their own state. The local `/health`, local UI warning,
 and the existing roster-sync heartbeat share this snapshot. The portal shows
 the warning through its existing system-health reason labels. The local-only

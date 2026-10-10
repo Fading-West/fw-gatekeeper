@@ -95,10 +95,14 @@ def get_health_snapshot() -> dict:
         snapshot = dict(_health)
     # Read at the shared boundary used by /health, /status and the heartbeat,
     # even if recognition is idle or the camera is unavailable. Preserve the
-    # underlying fault so it reappears automatically once the clock recovers.
+    # underlying fault in the existing string field so simultaneous roster
+    # failures remain visible to portal and scan-blocking alert consumers.
     snapshot["clock_synchronized"] = get_clock_synchronized()
     if snapshot["clock_synchronized"] is False:
-        snapshot["degraded_reason"] = "clock_unsynchronized"
+        reasons = [reason for reason in (snapshot.get("degraded_reason") or "").split(",") if reason]
+        if "clock_unsynchronized" not in reasons:
+            reasons.append("clock_unsynchronized")
+        snapshot["degraded_reason"] = ",".join(reasons)
     return snapshot
 
 

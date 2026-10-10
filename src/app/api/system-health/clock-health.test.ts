@@ -7,6 +7,10 @@ vi.mock('@/lib/convex', () => ({ default: { query: vi.fn()
     id: 'synthetic-kiosk', name: 'Synthetic entry', type: 'entry',
     last_sync: new Date().toISOString(),
     health: { camera_ok: true, model_ok: true, degraded_reason: 'clock_unsynchronized' },
+  }, {
+    id: 'synthetic-empty-kiosk', name: 'Synthetic empty entry', type: 'entry',
+    last_sync: new Date().toISOString(),
+    health: { camera_ok: true, model_ok: true, degraded_reason: 'no_workers_synced,clock_unsynchronized' },
   }])
   .mockResolvedValue([]),
 } }));
@@ -26,4 +30,8 @@ it('exposes clock uncertainty as a readable device issue even for a recently syn
   expect(payload.warnings).toContain(
     'Kiosk Synthetic entry: system clock is not synchronized — attendance times may be wrong; contact a supervisor',
   );
+  expect(payload.kiosks.rows[1].device_issues).toEqual([
+    'no workers synced — every scan is rejected',
+    'system clock is not synchronized — attendance times may be wrong; contact a supervisor',
+  ]);
 });
