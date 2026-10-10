@@ -13,6 +13,7 @@ from flask import Flask, Response, jsonify, make_response, render_template, requ
 
 import config
 import database
+from clock_sync import get_clock_synchronized
 from kiosk_ui_auth import (
     KIOSK_UI_KEY_HEADER,
     KIOSK_UI_SESSION_COOKIE,
@@ -91,7 +92,14 @@ def update_health(**kwargs):
 
 def get_health_snapshot() -> dict:
     with _health_lock:
-        return dict(_health)
+        snapshot = dict(_health)
+    # Read at the shared boundary used by /health, /status and the heartbeat,
+    # even if recognition is idle or the camera is unavailable. Preserve the
+    # underlying fault so it reappears automatically once the clock recovers.
+    snapshot["clock_synchronized"] = get_clock_synchronized()
+    if snapshot["clock_synchronized"] is False:
+        snapshot["degraded_reason"] = "clock_unsynchronized"
+    return snapshot
 
 
 def get_status_snapshot() -> dict:
@@ -205,7 +213,7 @@ def video_feed_alias():
 
 @app.route("/health")
 def health():
-    """Truthful kiosk health: degraded whenever a scan-blocking subsystem is down."""
+    """Report device faults and known clock uncertainty, even during offline use."""
     snapshot = get_health_snapshot()
     degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
     return jsonify({"status": "degraded" if degraded else "ok", **snapshot})

@@ -136,6 +136,56 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 
 ## Troubleshooting
 
+### Clock synchronization and offline attendance
+
+Pi 3B/4 devices have no RTC. A restored saved clock after a power cut can be
+days behind, and those past attendance times can still pass server validation.
+Attendance continues while the clock is unsynchronized: this release detects
+and exposes the risk; it does not repair timestamps, block scans, or quarantine
+uploads. Supervisors should verify the time against an independent source and
+review affected attendance before using it for payroll.
+
+Setup orders the kiosk after `time-sync.target` and wants that target. Ordering
+alone does not wait for NTP: with systemd-timesyncd, an enabled
+`systemd-time-wait-sync.service` delays the target. That waiter's upstream
+[`TimeoutStartSec=infinity`](https://github.com/systemd/systemd/blob/v252/units/systemd-time-wait-sync.service.in)
+could otherwise stop an offline kiosk from starting. Setup installs
+`/etc/systemd/system/systemd-time-wait-sync.service.d/fw-gatekeeper-timeout.conf`
+with `TimeoutStartSec=30s`, reloads systemd, and enables the waiter if available.
+After its timeout/failure, ordering completes and the kiosk starts: `Wants`
+does not require successful synchronization. Existing network-online ordering
+still applies. A missing waiter means there is no added NTP boot wait.
+See the upstream [target semantics](https://github.com/systemd/systemd/blob/v252/man/systemd.special.xml).
+Sites using a different NTP boot waiter must also configure a finite timeout
+for it. Rerun setup and reboot to apply the service changes to existing Pis;
+updating Python files alone does not rewrite installed units.
+
+At runtime `clock_sync.py` reads `timedatectl show -p NTPSynchronized --value`
+with a 0.5-second timeout. Probes are serialized and cached for 30 seconds
+using monotonic time, including failures. If timedatectl is unavailable or
+returns unrecognized output, the current-boot timesyncd marker
+`/run/systemd/timesync/synchronized` is positive evidence of synchronization;
+its absence is unknown, since another NTP service may be used. Non-systemd
+hosts and probe errors remain unknown and do not cause degradation.
+
+A known unsynchronized clock takes priority in the snapshot's existing
+`degraded_reason` as `clock_unsynchronized`; underlying device faults remain
+stored and reappear when clock synchronization recovers. Camera/model flags
+continue to report their own state. The local `/health`, local UI warning,
+and the existing roster-sync heartbeat share this snapshot. The portal shows
+the warning through its existing system-health reason labels. The local-only
+`clock_synchronized` value is true/false/null; no new server fields are needed.
+While the network is down, the local warning remains available and the portal
+receives the current reason when heartbeats can resume. This is current health,
+not a historical record of which attendance rows used an uncertain clock.
+
+Physical Pi acceptance is still needed: power-cycle with NTP unreachable and
+verify the scanner/UI start after the bounded wait; inspect `systemctl cat
+systemd-time-wait-sync.service` and `/health`; verify the warning is visible
+while attendance still queues; restore NTP and confirm warning/heartbeat
+recovery within the probe interval and next sync cycle. Test permanent network
+loss as well as blocked UDP 123, and verify payroll review of the outage window.
+
 | Issue | Fix |
 |-------|-----|
 | "No camera available" | Check `ls /dev/video*` (USB) or `libcamera-hello` (Pi camera) |
