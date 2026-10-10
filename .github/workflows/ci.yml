@@ -43,3 +43,36 @@ jobs:
         run: docker build --tag gatekeeper-face-service:ci ./face-service
       - name: Load recognition model in the built image
         run: docker run --rm gatekeeper-face-service:ci python -c "import main; main.get_rec_session(); print('Recognition model loaded')"
+      - name: Start face service with deployment OTEL environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_name="face-service-startup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            result=$?
+            if [ "$result" -ne 0 ]; then
+              docker logs "$container_name" || true
+            fi
+            docker rm --force "$container_name" >/dev/null || true
+            exit "$result"
+          }
+          trap cleanup EXIT
+          docker run --detach --name "$container_name" --publish 127.0.0.1:5557:5557 \
+            --env FACE_SERVICE_KEY=ci-startup-key \
+            --env OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 \
+            gatekeeper-face-service:ci uvicorn main:app --host 0.0.0.0 --port 5557 >/dev/null
+          deadline=$((SECONDS + 90))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --connect-timeout 1 --max-time 2 http://127.0.0.1:5557/health || true)" = "200" ]; then
+              echo "Face service started and /health returned 200"
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != "true" ]; then
+              echo "Face service exited before becoming healthy"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Timed out waiting for face service /health"
+          exit 1
