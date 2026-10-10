@@ -142,6 +142,7 @@ it('requires confirmation naming the kiosk before issuing or rotating, and cance
 it.each([
   ['the network drops the response', () => Promise.reject(new TypeError('Failed to fetch'))],
   ['a proxy times out with an unreadable body', async () => ({ ok: false, status: 504, json: async () => { throw new SyntaxError('Unexpected token <'); } })],
+  ['the route returns a JSON 500 after the Convex call throws', async () => ({ ok: false, status: 500, json: async () => ({ error: 'Failed to issue kiosk credential' }) })],
 ])('reports an unknown outcome and refreshes credential status when %s', async (_case, issueResponse) => {
   vi.stubGlobal('confirm', vi.fn(() => true));
   let statusReads = 0;
@@ -184,7 +185,7 @@ it('shows credential status as unavailable with a retry instead of checking fore
       if (!statusOk) throw new TypeError('Failed to fetch');
       return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: revokeOk ? 'revoked' : 'legacy' }]) };
     }
-    if (!revokeOk) return { ok: false, status: 500, json: async () => ({ error: 'Failed to revoke kiosk credential' }) };
+    if (!revokeOk) return { ok: false, status: 404, json: async () => ({ error: 'Active kiosk not found' }) };
     return { ok: true, json: async () => ({ ok: true }) };
   }));
   let tree!: ReturnType<typeof create>;
@@ -198,10 +199,10 @@ it('shows credential status as unavailable with a retry instead of checking fore
     expect(badgeShows(tree, 'Shared key migration')).toBe(true);
     expect(findButton(tree, 'Retry')).toBeUndefined();
 
-    // A failed revoke still refreshes the badge.
+    // A rejected revoke still refreshes the badge.
     const readsBeforeFailedRevoke = statusReads;
     await act(async () => findButton(tree, 'Revoke access')!.props.onClick());
-    expect(toast).toHaveBeenCalledWith('Failed to revoke kiosk credential', 'error');
+    expect(toast).toHaveBeenCalledWith('Active kiosk not found', 'error');
     expect(statusReads).toBe(readsBeforeFailedRevoke + 1);
 
     // A successful revoke whose refresh fails must not leave the old badge in place.
@@ -213,6 +214,51 @@ it('shows credential status as unavailable with a retry instead of checking fore
 
     statusOk = true;
     await act(async () => findButton(tree, 'Retry')!.props.onClick());
+    expect(badgeShows(tree, 'Credential revoked')).toBe(true);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
+it('shows a definite rejection from a 4xx issue response as an error, not an unknown outcome', async () => {
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/kiosks') return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: 'legacy' }]) };
+    return { ok: false, status: 404, json: async () => ({ error: 'Active kiosk not found' }) };
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<KiosksPage />); });
+  try {
+    await act(async () => findButton(tree, 'Issue / rotate credential')!.props.onClick());
+    expect(toast).toHaveBeenCalledWith('Active kiosk not found', 'error');
+    expect(tree.root.findAll(node => node.type === 'div' && node.props.role === 'alert')).toHaveLength(0);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
+it.each([
+  ['the network drops the response', () => Promise.reject(new TypeError('Failed to fetch'))],
+  ['the route returns a JSON 500', async () => ({ ok: false, status: 500, json: async () => ({ error: 'Failed to revoke kiosk credential' }) })],
+])('does not claim a revoke failed when %s, and shows the refreshed status', async (_case, revokeResponse) => {
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  let statusReads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/kiosks') {
+      statusReads += 1;
+      return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: statusReads === 1 ? 'legacy' : 'revoked' }]) };
+    }
+    return revokeResponse();
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<KiosksPage />); });
+  try {
+    await act(async () => findButton(tree, 'Revoke access')!.props.onClick());
+    expect(toast).toHaveBeenCalledWith('Could not confirm whether access for Front Gate was revoked. Check its credential status.', 'error');
+    expect(toast).not.toHaveBeenCalledWith(expect.stringMatching(/failed/i), 'error');
+    expect(statusReads).toBe(2);
     expect(badgeShows(tree, 'Credential revoked')).toBe(true);
   } finally {
     await act(async () => tree.unmount());

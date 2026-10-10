@@ -106,20 +106,25 @@ export default function KiosksPage() {
       } catch {
         // Network failure: the request may still have reached the server.
       }
+      // Only a 4xx with a JSON error is a definite rejection. A lost or unreadable
+      // response, or a server error, can follow a committed Convex write.
+      const rejection = response && response.status >= 400 && response.status < 500 && body?.error ? body.error : null;
       if (method === 'POST') {
         if (response?.ok && typeof body?.credential === 'string') {
           setIssuedCredential({ kioskId: body.kiosk_id || label, value: body.credential });
-        } else if (response && response.status >= 400 && response.status < 500 && body?.error) {
-          toast(body.error, 'error');
+        } else if (rejection) {
+          toast(rejection, 'error');
         } else {
-          // Lost or unreadable response, or a server error after the write may
-          // have committed: the old secret may already be dead. Never claim failure.
+          // The old secret may already be dead. Never claim failure.
           setUnknownCredentialOutcome(label);
         }
       } else if (response?.ok) {
         toast('Kiosk credential revoked');
+      } else if (rejection) {
+        toast(rejection, 'error');
       } else {
-        toast(body?.error || 'Credential change failed', 'error');
+        // The refetch below shows whether the revoke took effect.
+        toast(`Could not confirm whether access for ${label} was revoked. Check its credential status.`, 'error');
       }
     } finally {
       credentialBusyRef.current = false;
@@ -202,7 +207,7 @@ export default function KiosksPage() {
       {unknownCredentialOutcome && (
         <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
           <p className="text-amber-200 font-semibold">Credential change for {unknownCredentialOutcome}: outcome unknown.</p>
-          <p className="text-xs text-slate-400">The portal did not receive a readable response, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. Check this kiosk&apos;s credential status; if it is not syncing, issue a new credential and install it on its device.</p>
+          <p className="text-xs text-slate-400">The portal could not confirm the result, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. Check this kiosk&apos;s credential status; if it is not syncing, issue a new credential and install it on its device.</p>
           <button type="button" className="btn-secondary" onClick={() => setUnknownCredentialOutcome(null)}>Dismiss</button>
         </div>
       )}
