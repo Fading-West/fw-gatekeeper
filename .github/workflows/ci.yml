@@ -41,7 +41,8 @@ jobs:
           git diff --exit-code -- face-service/requirements.lock
       - run: npm ci
       - name: Install the production face-service runtime
-        run: python -m pip install --require-hashes --only-binary=:all: -r face-service/requirements.lock
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r face-service/requirements.lock
       - name: Add Python test dependencies without changing locked runtime versions
         # uv applies version constraints without enabling pip's implicit hash mode.
         # Keep this separate from the hash-verified production install above.
