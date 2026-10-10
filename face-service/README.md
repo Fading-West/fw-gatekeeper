@@ -94,6 +94,21 @@ CI installs uv 0.12.13 from the SHA-256-verified wheel pinned in
 `scripts/lock-python-dependencies.sh` and rejects any diff. Dependency-update PRs
 must commit the regenerated lock alongside `requirements.txt`.
 
+To update the uv compiler pin:
+
+1. Read `https://pypi.org/pypi/uv/<version>/json` for the chosen version and select
+   the `urls` entry for its Python 3, Linux x86_64 manylinux wheel. The current
+   artifact is `uv-0.12.13-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`.
+   Download that entry's `url`, run `sha256sum` on the wheel, and confirm it matches
+   the entry's `digests.sha256` before copying the hash.
+2. Update the version, hash, and artifact comment in `scripts/requirements-uv.txt`,
+   the version guard in `scripts/lock-python-dependencies.sh`, and the compiler
+   version references in this README and `pi-kiosk/README.md` together.
+3. Install the new compiler with CI's
+   `python -m pip install --require-hashes --only-binary=:all: -r scripts/requirements-uv.txt`,
+   run `bash scripts/lock-python-dependencies.sh`, and review all generated lock
+   diffs. Require both CI jobs to pass before merging the compiler update.
+
 The shared Python test environment installs the production lock with hash
 verification, then adds `scripts/requirements-ci.txt` using uv with the lock as
 version constraints. These additions provide `httpx2` for FastAPI's TestClient
