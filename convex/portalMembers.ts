@@ -1,5 +1,6 @@
 import { getAuthUserId, retrieveAccount, modifyAccountCredentials, invalidateSessions } from '@convex-dev/auth/server';
 import { ConvexError, v } from 'convex/values';
+import { Scrypt } from 'lucia';
 
 import { action, internalMutation, internalQuery, mutation, query } from './_generated/server';
 import { internal } from './_generated/api';
@@ -366,12 +367,6 @@ export const changeOwnPassword = internalMutation({
   handler: async (ctx, args) => {
     const member = await assertPortalMember(ctx);
     assertValidPassword(args.newPassword);
-    // Convex Auth 0.0.95's Password provider uses Lucia Scrypt, which applies
-    // NFKC normalization before hashing. Equivalent Unicode spellings must
-    // also count as reuse, or the temporary credential would remain valid.
-    if (args.currentPassword.normalize('NFKC') === args.newPassword.normalize('NFKC')) {
-      throw new ConvexError('Choose a password different from your current password');
-    }
     const account = await ctx.db.query('authAccounts')
       .withIndex('userIdAndProvider', q => q.eq('userId', member.userId).eq('provider', 'password')).unique();
     if (!account) throw new ConvexError('Password account not found');
@@ -387,6 +382,12 @@ export const changeOwnPassword = internalMutation({
       if (error instanceof Error && error.message === 'InvalidSecret') return 'INVALID_CURRENT_PASSWORD' as const;
       if (error instanceof Error && error.message === 'TooManyFailedAttempts') return 'TOO_MANY_ATTEMPTS' as const;
       throw error;
+    }
+    // Use the same verifier as Convex Auth's default Password provider against
+    // the stored hash. This includes NFKC normalization and UTF-8 encoding
+    // equivalences, without retaining a plaintext temporary password.
+    if (await new Scrypt().verify(account.secret ?? '', args.newPassword)) {
+      throw new ConvexError('Choose a password different from your current password');
     }
     await modifyAccountCredentials(authCtx, {
       provider: 'password', account: { id: account.providerAccountId, secret: args.newPassword },

@@ -331,10 +331,10 @@ it('caps refresh token cleanup per transaction and continues until complete', as
   }
 });
 
-async function temporaryMember(role: 'admin' | 'enrollment' | 'viewer' = 'admin') {
+async function temporaryMember(role: 'admin' | 'enrollment' | 'viewer' = 'admin', password = 'TemporaryPass123!') {
   const { t, admin } = await setup();
   await t.withIdentity({ subject: admin }).action(api.portalMembers.createPortalAccount, {
-    email: 'temporary@example.com', password: 'TemporaryPass123!', role,
+    email: 'temporary@example.com', password, role,
   });
   const state = await t.run(async ctx => {
     const account = await ctx.db.query('authAccounts').withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'temporary@example.com')).unique();
@@ -438,6 +438,35 @@ describe('required password rotation', { timeout: 20_000 }, () => {
     expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
     expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
     expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+  });
+
+  it.each([
+    ['TemporaryCafé123!', 'TemporaryCafe\u0301123!'],
+    ['TemporaryPass123! ', 'TemporaryPass123!\u00a0'],
+    ['TemporaryPass123!\ud800', 'TemporaryPass123!\ufffd'],
+    ['TemporaryPass123!\ufffd', 'TemporaryPass123!\udfff'],
+  ])('rejects reuse of the stored credential across Unicode encodings (%s → %s)', async (currentPassword, newPassword) => {
+    const { actor, t, memberId, accountId, sessionId } = await temporaryMember('viewer', currentPassword);
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword, newPassword }))
+      .rejects.toThrow('Choose a password different from your current password');
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
+    expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+  });
+
+  it.each([
+    ['TemporaryPass123!', 'TemporaryPass123! '],
+    ['TemporaryPass123!', 'temporaryPass123!'],
+    ['TemporaryCafé123!', 'TemporaryCafe123!'],
+  ])('accepts distinct passwords without trimming, case folding, or removing accents (%s → %s)', async (currentPassword, newPassword) => {
+    const { actor, t, memberId } = await temporaryMember('viewer', currentPassword);
+    await actor.action(api.portalMembers.changePassword, { currentPassword, newPassword });
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: false });
+    await withLocalAuthKeys(async () => {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: currentPassword, flow: 'signIn' } })).rejects.toThrow();
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: newPassword, flow: 'signIn' } })).resolves.toBeTruthy();
+    });
   });
 
   it('rolls back credentials, flag, and session revocation when auditing fails', async () => {
