@@ -64,7 +64,7 @@ with `photos` and `disagreeing_pairs`, and the enrollment page lists them under 
 | --- | --- | --- |
 | `MIN_PAIRWISE_SIMILARITY` | `0.6` | Minimum cosine similarity between every pair of used enrollment embeddings |
 | `MIN_GOOD_PHOTOS` | `2` | Minimum consistent photos: `2` or `3`. The portal captures three photos, so other values fail at startup. |
-| `FACE_MODEL_DIR` | `/app/models` | Where the recognition model is stored/downloaded |
+| `FACE_MODEL_DIR` | `/app/models` | Model directory; the Docker image includes a read-only, verified model here |
 
 Both thresholds are read at startup, so they can be tuned on the deployment without a
 rebuild. `GET /health` echoes the active values.
@@ -76,6 +76,17 @@ all 26 runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is th
 editable direct-dependency input. The image and OS packages remain separately
 maintained. On another OS, use the development inputs below instead of this
 platform-specific production lock.
+
+The Python base image is pinned to a multi-architecture digest; Dependabot checks
+for Docker updates weekly. Apt packages still resolve from Debian's live package
+repositories, so this does not make the entire build byte-for-byte reproducible.
+
+The container runs as UID/GID 10001. `/app` and its baked model are root-owned and
+read-only to that user. Normal inference only reads the verified model and processes
+images in memory. A missing or corrupt baked model makes recognition unavailable;
+rebuild the image to restore it. Python bytecode writes are disabled. Runtime caches
+can use the writable `/home/face-service` home (`XDG_CACHE_HOME` points to its `.cache`
+directory), and temporary files can use `/tmp`.
 
 Regenerate both server and Pi locks with uv 0.12.13, from the repository root:
 

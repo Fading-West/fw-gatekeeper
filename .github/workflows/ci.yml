@@ -41,5 +41,17 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build face service with pinned models and native dependencies
         run: docker build --tag gatekeeper-face-service:ci ./face-service
+      - name: Verify non-root user and read-only app and model
+        run: |
+          docker run --rm gatekeeper-face-service:ci sh -ec '
+            test "$(id -u)" = 10001
+            test "$(id -g)" = 10001
+            test ! -w /app
+            test ! -w /app/main.py
+            test ! -w /app/models
+            test ! -w /app/models/rec_model.onnx
+            test -w "$HOME"
+            test -w /tmp
+          '
       - name: Load recognition model in the built image
         run: docker run --rm gatekeeper-face-service:ci python -c "import main; main.get_rec_session(); print('Recognition model loaded')"
