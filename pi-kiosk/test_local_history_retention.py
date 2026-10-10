@@ -2,8 +2,12 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
+import runpy
+import sys
 import tempfile
 import sqlite3
+from types import ModuleType
 import unittest
 from unittest import mock
 
@@ -147,18 +151,95 @@ class LocalHistoryTests(unittest.TestCase):
 
     def test_interrupted_epoch_migration_can_be_retried(self):
         conn = self.legacy_tables()
-        conn.execute("INSERT INTO recognition_attempts (timestamp) VALUES (?)", (OLD,))
+        strings = ['invalid', OLD, RECENT, BOUNDARY, OLD]
+        conn.executemany("INSERT INTO recognition_attempts (timestamp) VALUES (?)", [(s,) for s in strings])
         conn.commit()
-        def fail(_):
-            raise ValueError('interrupted backfill')
-        conn.create_function('attendance_epoch', 1, fail)
-        with self.assertRaises(sqlite3.OperationalError):
-            database._migrate_event_epoch(conn, 'recognition_attempts')
-        self.assertNotIn('timestamp_epoch', [r['name'] for r in conn.execute('PRAGMA table_info(recognition_attempts)')])
-        conn.create_function('attendance_epoch', 1, database._attendance_epoch)
+        original_epoch = database._attendance_epoch
+        calls = []
+        def interrupted(timestamp):
+            calls.append(timestamp)
+            if len(calls) == 4:
+                raise RuntimeError('interrupted backfill')
+            return original_epoch(timestamp)
+        with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2), \
+             mock.patch.object(database, '_attendance_epoch', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted backfill'):
+                database._migrate_event_epoch(conn, 'recognition_attempts')
+        self.assertFalse(conn.in_transaction)
+        self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:recognition_attempts')), [2, 5])
+        self.assertEqual([r[0] for r in conn.execute('SELECT timestamp_epoch FROM recognition_attempts ORDER BY id')],
+                         [None, original_epoch(OLD), None, None, None])
+        self.close_database()  # The committed schema and progress survive process restart.
+        with mock.patch.object(database, '_attendance_epoch', wraps=original_epoch) as parse:
+            database.init_db()
+        self.assertEqual([call.args[0] for call in parse.call_args_list], strings[2:])
+        self.assertIsNone(database.get_sync_state('epoch_backfill:recognition_attempts'))
+        conn = database._get_conn()
+        self.assertEqual([r[0] for r in conn.execute('SELECT timestamp_epoch FROM recognition_attempts ORDER BY id')],
+                         [original_epoch(s) for s in strings])
         database.init_db()
-        self.assertEqual(conn.execute('SELECT timestamp_epoch FROM recognition_attempts').fetchone()[0],
-                         database._attendance_epoch(OLD))
+
+    def test_epoch_column_and_resume_marker_are_atomic(self):
+        conn = self.legacy_tables()
+        def fail_marker(sql, *_):
+            return sqlite3.SQLITE_DENY if sql == sqlite3.SQLITE_INSERT else sqlite3.SQLITE_OK
+        conn.set_authorizer(fail_marker)
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                database._migrate_event_epoch(conn, 'recognition_attempts')
+        finally:
+            conn.set_authorizer(None)
+        self.assertNotIn('timestamp_epoch', [r['name'] for r in conn.execute('PRAGMA table_info(recognition_attempts)')])
+        self.assertIsNone(database.get_sync_state('epoch_backfill:recognition_attempts'))
+        database.init_db()
+
+    def test_backfill_releases_write_lock_between_batches_and_before_parsing(self):
+        conn = self.legacy_tables()
+        conn.executemany('INSERT INTO recognition_attempts (timestamp) VALUES (?)', [(OLD,)] * 5)
+        conn.commit()
+        competitor = sqlite3.connect(config.DB_PATH, timeout=0)
+        self.addCleanup(competitor.close)
+        original_epoch = database._attendance_epoch
+        seen_progress = []
+        def parse_without_lock(timestamp):
+            # A second writer can acquire the database during every conversion.
+            competitor.execute('BEGIN IMMEDIATE')
+            progress = competitor.execute("SELECT value FROM sync_state WHERE key = 'epoch_backfill:recognition_attempts'").fetchone()
+            seen_progress.append(json.loads(progress[0])[0])
+            competitor.rollback()
+            return original_epoch(timestamp)
+        conn.create_function('attendance_epoch', 1, parse_without_lock)
+        try:
+            with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2, create=True), \
+                 mock.patch.object(database, '_attendance_epoch', side_effect=parse_without_lock):
+                database._migrate_event_epoch(conn, 'recognition_attempts')
+        finally:
+            conn.create_function('attendance_epoch', 1, original_epoch)
+        self.assertEqual(seen_progress, [0, 0, 2, 2, 4])
+        self.assertFalse(conn.in_transaction)
+
+    def test_failed_write_batch_rolls_back_its_progress_and_can_resume(self):
+        conn = self.legacy_tables()
+        conn.executemany('INSERT INTO recognition_attempts (timestamp) VALUES (?)', [(OLD,)] * 5)
+        conn.commit()
+        database._ensure_column(conn, 'recognition_attempts', 'timestamp_epoch', 'timestamp_epoch REAL')
+        conn.execute("INSERT INTO sync_state VALUES ('epoch_backfill:recognition_attempts', '[0, 5]')")
+        conn.executescript('''CREATE TRIGGER fail_epoch_update BEFORE UPDATE OF timestamp_epoch
+            ON recognition_attempts WHEN NEW.id = 4 BEGIN SELECT RAISE(ABORT, 'interrupted batch'); END;''')
+        with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2):
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'interrupted batch'):
+                database._migrate_event_epoch(conn, 'recognition_attempts')
+        self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:recognition_attempts')), [2, 5])
+        self.assertEqual([r[0] for r in conn.execute('SELECT id FROM recognition_attempts WHERE timestamp_epoch IS NOT NULL')], [1, 2])
+        conn.execute('DROP TRIGGER fail_epoch_update')
+        database.init_db()
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM recognition_attempts WHERE timestamp_epoch IS NOT NULL').fetchone()[0], 5)
+
+    def test_recognition_insert_populates_epoch(self):
+        row_id = self.attempt('2026-11-01T01:30:00.123456-07:00')
+        row = database._get_conn().execute('SELECT timestamp, timestamp_epoch FROM recognition_attempts WHERE id = ?',
+                                          (row_id,)).fetchone()
+        self.assertEqual(row['timestamp_epoch'], database._attendance_epoch(row['timestamp']))
 
     def test_retention_keeps_unsynced_recent_boundary_invalid_and_latest_rows(self):
         with local_clock('America/Denver', NOW):
@@ -263,18 +344,70 @@ class LocalHistoryTests(unittest.TestCase):
                 database.prune_synced_history()
             finally:
                 conn.set_trace_callback(None)
-            deletes = [s for s in statements if s.startswith('DELETE FROM')]
-            self.assertEqual(len(deletes), 2)
-            for table, sql in zip(('attendance_log', 'recognition_attempts'), deletes):
+            age_queries = [next(s for s in statements if s.startswith('SELECT id, timestamp_epoch FROM attendance_log')),
+                           next(s for s in statements if s.startswith('DELETE FROM recognition_attempts'))]
+            for table, sql in zip(('attendance_log', 'recognition_attempts'), age_queries):
                 plan = ' '.join(row['detail'] for row in conn.execute('EXPLAIN QUERY PLAN ' + sql))
                 self.assertIn(f'idx_{table}_retention (timestamp_epoch<?)', plan)
                 self.assertNotIn('TEMP B-TREE', plan)
+
+    def test_protected_backlog_has_bounded_scan_work(self):
+        with local_clock('America/Denver', NOW):
+            conn = database._get_conn()
+            # Every row is a different worker's latest action: none is deletable.
+            conn.executemany('''INSERT INTO attendance_log
+                (worker_id, worker_name, action, timestamp, timestamp_epoch, synced)
+                VALUES (?, 'Alex', 'clock_in', ?, ?, 1)''',
+                [(worker, OLD, database._attendance_epoch(OLD)) for worker in range(5000)])
+            conn.commit()
+            steps = []
+            def limit_work():
+                steps.append(None)
+                return len(steps) > 30
+            conn.set_progress_handler(limit_work, 1000)
+            try:
+                self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+            finally:
+                conn.set_progress_handler(None, 0)
+            self.assertEqual(len(self.ids('attendance_log')), 5000)
+
+    def test_cleanup_advances_past_protected_prefix_and_wraps_after_restart(self):
+        with local_clock('America/Denver', NOW), mock.patch.object(database, '_HISTORY_PRUNE_BATCH_SIZE', 3):
+            protected = [self.attendance(worker=worker, synced=True) for worker in range(7)]
+            deletable = self.attendance(worker=99, synced=True)
+            latest = self.attendance(worker=99, synced=True)
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+            self.close_database()
+            database.init_db()
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 1)
+            self.assertEqual(self.ids('attendance_log'), protected + [latest])
+            self.assertNotIn(deletable, self.ids('attendance_log'))
+            # An older row acknowledged behind the cursor is found after wrap.
+            behind = self.attendance((NOW - timedelta(days=40)).isoformat(), worker=99)
+            database.mark_synced([behind])
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+            self.assertIsNone(database.get_sync_state('attendance_prune_after'))
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 1)
+            self.assertNotIn(behind, self.ids('attendance_log'))
 
     def test_invalid_retention_fails_before_any_delete(self):
         for value in (0, -1, True, 1.5, '30', None):
             with self.subTest(value=value), mock.patch.object(config, 'LOCAL_HISTORY_RETENTION_DAYS', value):
                 with self.assertRaisesRegex(ValueError, 'positive integer'):
                     database.prune_synced_history()
+
+    def test_retention_validation_applies_after_local_config_override(self):
+        for value in (1, 60, 0, -1, True, 1.5, '30', None):
+            local = ModuleType('config_local')
+            local.LOCAL_HISTORY_RETENTION_DAYS = value
+            with self.subTest(value=value), mock.patch.dict(sys.modules, {'config_local': local}):
+                if type(value) is int and value > 0:
+                    result = runpy.run_path(str(Path(__file__).with_name('config.py')))
+                    self.assertEqual(result['LOCAL_HISTORY_RETENTION_DAYS'], value)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'LOCAL_HISTORY_RETENTION_DAYS'):
+                        runpy.run_path(str(Path(__file__).with_name('config.py')))
 
     def test_sync_cadence_prunes_after_uploads_and_also_when_offline(self):
         for online in (True, False):
