@@ -1,16 +1,33 @@
 import type { AttendanceWithWorker } from './types';
 import { createAttendanceClock } from './attendance-time';
+import { getFactoryLocalDateString } from './date';
+
+// Payroll policy: longer intervals cannot safely be inferred from punches.
+export const MAX_PLAUSIBLE_SHIFT_HOURS = 16;
 
 export interface HoursExportRow {
   name: string; department: string; firstIn: string; lastOut: string;
   hours: string; note: string; ambiguous: boolean;
 }
 
-export function buildHoursExportRows(events: AttendanceWithWorker[], boundaryEvents: AttendanceWithWorker[], date: string): HoursExportRow[] {
+export function buildHoursExportRows(
+  events: AttendanceWithWorker[],
+  boundaryEvents: AttendanceWithWorker[],
+  date: string,
+  previousEvents: AttendanceWithWorker[] = [],
+): HoursExportRow[] {
   const clock = createAttendanceClock();
-  const startsOnSelectedDate = (timestamp: string) => timestamp.startsWith(date);
+  const localDays = new Map<AttendanceWithWorker, string>();
+  const localDay = (event: AttendanceWithWorker) => {
+    const cached = localDays.get(event);
+    if (cached) return cached;
+    const instant = clock.instantMs(event);
+    const day = Number.isFinite(instant) ? getFactoryLocalDateString(new Date(instant)) : event.timestamp.slice(0, 10);
+    localDays.set(event, day);
+    return day;
+  };
   const byWorker = new Map<string, { name: string; department: string; events: AttendanceWithWorker[] }>();
-  for (const event of [...events, ...boundaryEvents].sort(clock.compare)) {
+  for (const event of [...previousEvents, ...events, ...boundaryEvents].sort(clock.compare)) {
     const entry = byWorker.get(event.worker_id) || {
       name: event.worker_name || event.worker_id,
       department: event.worker_department || '',
@@ -22,41 +39,72 @@ export function buildHoursExportRows(events: AttendanceWithWorker[], boundaryEve
 
   const rows: HoursExportRow[] = [];
   for (const entry of byWorker.values()) {
+    // Every worker punching on this day gets a row, including overnight exits.
+    // Workers appearing only in the surrounding days do not belong here.
+    if (!entry.events.some((event) => localDay(event) === date)) continue;
     let totalMs = 0;
-    let ambiguous = false;
+    const reviewReasons = new Set<string>();
+    const notes = new Set<string>();
     let firstIn: string | null = null;
     let lastOut: string | null = null;
     let openIn: AttendanceWithWorker | null = null;
+    const openReasons = new Set<string>();
     for (const event of entry.events) {
+      const day = localDay(event);
+      const startsOnSelectedDate = openIn && localDay(openIn) === date;
+      // Next-day evidence only closes (or invalidates) this day's open shift.
+      if (day > date && !startsOnSelectedDate) break;
       if (event.event_type === 'clock_in') {
-        if (openIn && !startsOnSelectedDate(event.timestamp)) {
-          ambiguous = true;
+        if (day > date) {
+          reviewReasons.add('next-day clock-in before clock-out');
           openIn = null;
+          break;
         }
-        // A next-day reentry cannot safely close the previous day's shift.
-        // Only shifts STARTING on the selected date belong to this export
-        // (next-day clock-ins are that day's shifts), and keep the FIRST
-        // unmatched clock-in: entry kiosks can emit repeat clock_ins, and
-        // replacing the open interval's start would undercount hours.
-        if (!openIn && startsOnSelectedDate(event.timestamp)) {
+        if (day === date && !firstIn) firstIn = event.timestamp;
+        if (openIn) {
+          openReasons.add('repeated clock-in before clock-out');
+          if (day === date) {
+            openReasons.forEach((reason) => reviewReasons.add(reason));
+            // A new day cannot safely continue yesterday's unclosed shift.
+            if (!startsOnSelectedDate) openIn = event;
+          }
+        } else {
           openIn = event;
-          if (!firstIn) firstIn = event.timestamp;
+          openReasons.clear();
         }
-      } else if (event.event_type === 'clock_out' && openIn) {
-        // A clock_out closes the open interval even after midnight.
-        totalMs += clock.instantMs(event) - clock.instantMs(openIn);
-        lastOut = event.timestamp;
+      } else if (event.event_type === 'clock_out') {
+        // Preserve the actual last exit even when it cannot be paired.
+        if (day === date || startsOnSelectedDate) lastOut = event.timestamp;
+        if (!openIn) {
+          if (day === date) reviewReasons.add('clock-out without clock-in');
+          continue;
+        }
+        const durationMs = clock.instantMs(event) - clock.instantMs(openIn);
+        if (day === date || startsOnSelectedDate) {
+          openReasons.forEach((reason) => reviewReasons.add(reason));
+          if (!Number.isFinite(durationMs) || durationMs < 0) {
+            reviewReasons.add('invalid interval timestamps');
+          } else if (durationMs > MAX_PLAUSIBLE_SHIFT_HOURS * 3_600_000) {
+            reviewReasons.add(`interval exceeds ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour maximum shift`);
+          }
+          // Completed shifts are paid on their start date, never twice.
+          if (startsOnSelectedDate) totalMs += durationMs;
+          else notes.add(`overnight shift hours counted on ${localDay(openIn)}`);
+        }
         openIn = null;
+        openReasons.clear();
       }
     }
-    // Workers with no shift starting on this date (e.g. only an overnight
-    // clock_out counted on the previous day's export) are omitted.
-    if (!firstIn && !openIn && totalMs === 0) continue;
+    if (openIn && localDay(openIn) === date) {
+      reviewReasons.add('clock-in without clock-out (still clocked in)');
+    }
+    const ambiguous = reviewReasons.size > 0;
     const hours = totalMs > 0 ? (totalMs / 3_600_000).toFixed(2) : '0.00';
     rows.push({
       name: entry.name, department: entry.department, firstIn: firstIn || '',
       lastOut: lastOut || '', hours: ambiguous ? '' : hours, ambiguous,
-      note: ambiguous ? 'needs review: next-day clock-in before clock-out; hours withheld' : openIn ? 'still clocked in' : '',
+      // Withhold the entire row, including otherwise valid partial intervals.
+      note: ambiguous ? `needs review: ${[...reviewReasons].join('; ')}; hours withheld` : [...notes].join('; '),
     });
   }
 
