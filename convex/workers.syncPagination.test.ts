@@ -13,7 +13,7 @@ it('pages past 1,000 workers and includes a later deactivation in incremental sy
       await ctx.db.insert('workers', {
         name: `Worker ${index}`, department: 'Operations',
         enrolledAt: index === 1003 ? '2026-09-25T00:00:00Z' : '2026-09-01T00:00:00Z',
-        ...(index === 1003 ? {} : { updatedAt: index === 1004 ? '2026-09-26T00:00:00Z' : '2026-09-01T00:00:00Z' }),
+        ...(index === 1003 ? {} : { rosterSequence: index === 1004 ? 2 : 1, updatedAt: index === 1004 ? '2026-09-26T00:00:00Z' : '2026-09-01T00:00:00Z' }),
         active: index !== 1004,
       });
     }
@@ -36,7 +36,7 @@ it('pages past 1,000 workers and includes a later deactivation in incremental sy
   const full = await collect();
   expect(full.workers).toHaveLength(1005);
   expect(full.pages).toBeGreaterThan(5);
-  const incremental = await collect('2026-09-20T00:00:00Z');
+  const incremental = await collect('seq:1');
   expect(incremental.workers).toHaveLength(2);
   expect(incremental.workers).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: 'Worker 1003', updated_at: '2026-09-25T00:00:00Z' }),
@@ -50,7 +50,7 @@ it('continues across multiple indexed change pages before legacy rows', async ()
   await t.run(async ctx => {
     for (let index = 0; index < 405; index++) {
       await ctx.db.insert('workers', { name: `Changed ${index}`, department: '', active: true,
-        enrolledAt: '2026-09-01T00:00:00Z', updatedAt: index < 205 ? '2026-09-26T00:00:00Z' : '2026-09-01T00:00:00Z' });
+        enrolledAt: '2026-09-01T00:00:00Z', rosterSequence: index < 205 ? 2 : 1, updatedAt: index < 205 ? '2026-09-26T00:00:00Z' : '2026-09-01T00:00:00Z' });
     }
     await ctx.db.insert('workers', { name: 'Legacy recent', department: '', active: true,
       enrolledAt: '2026-09-26T00:00:00Z' });
@@ -59,7 +59,7 @@ it('continues across multiple indexed change pages before legacy rows', async ()
   let cursor: string | undefined;
   for (let pageNumber = 0; pageNumber < 5; pageNumber++) {
     const page = await t.query(internal.workers.listForSyncFromHttp, {
-      since: '2026-09-20T00:00:00Z', inclusive: true, cursor,
+      since: 'seq:1', inclusive: true, cursor,
     });
     names.push(...page.workers.map(worker => worker.name));
     if (page.isDone) break;

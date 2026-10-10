@@ -119,6 +119,12 @@ export async function fetchWorkersForSync(since: string, inclusive = false) {
   }
 }
 
+export function issueLegacyRosterCursor(documentId: string, since?: string) {
+  return postSecuredIngest<{ issuedAt: string; since: string | null }>(
+    '/api/ingest/kiosks/legacy-roster-cursor/issue', { documentId, since },
+  );
+}
+
 export function issueRosterReceipt(documentId: string) {
   return postSecuredIngest<{ receipt: string; issuedAt: string; since: string | null }>('/api/ingest/kiosks/roster-receipt/issue', { documentId });
 }

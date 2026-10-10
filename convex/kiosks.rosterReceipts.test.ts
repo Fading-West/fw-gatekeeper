@@ -78,6 +78,6 @@ it('shows a purge pending until a later receipt is acknowledged, even with a rec
   await t.mutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, { documentId: first, receipt: issued!.receipt });
   const row = (await admin.query(api.kiosks.list, {})).find(k => k.id === first);
   expect(row?.roster_applied_at).toBeTruthy();
-  // Equal millisecond timestamps stay pending, avoiding false certification.
-  expect(row?.purge_pending).toBe(row!.roster_applied_at! <= purgeAt);
+  // A sequence-zero full sync covers all pre-migration purges.
+  expect(row?.purge_pending).toBe(false);
 });
