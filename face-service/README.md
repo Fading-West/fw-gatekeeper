@@ -2,13 +2,16 @@
 
 FastAPI service for face encoding and matching, used by fw-gatekeeper.
 
-Detection uses the OpenCV Haar cascade bundled with `opencv-python-headless`;
+Detection uses dlib 20.0.1 HOG, at half resolution with one upsample, exactly as
+the kiosk live loop and local enroller do (including endpoint clamping and ×2
+scaling). Only the HOG API is imported; no extra dlib recognition/landmark models
+are loaded. Cropping keeps 25% padding and no landmark alignment;
 recognition uses the InsightFace buffalo_s MobileFaceNet ONNX model (~13MB, downloaded
 at image build time).
 
 ## Endpoints
 
-- `GET /health` — `{ status, version, rec_model, rec_exists, min_pairwise_similarity, min_good_photos }`
+- `GET /health` — `{ status, version, rec_model, rec_exists, detector_version, min_pairwise_similarity, min_good_photos }`
 - `POST /encode` — `{ photos: string[] }` → `{ encoding: number[], photos: PhotoResult[], used_photo_indexes: number[] }`
 - `POST /match` — `{ photo: string, encodings: [{ worker_id, encoding }] }` → `{ match: { worker_id, confidence } | null }`
 
@@ -72,9 +75,11 @@ rebuild. `GET /health` echoes the active values.
 ## Reproducible production install
 
 The Docker image installs `requirements.lock` with SHA-256 verification. It locks
-all 26 runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
-editable direct-dependency input. The image and OS packages remain separately
-maintained. On another OS, use the development inputs below instead of this
+all runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
+editable direct-dependency input. dlib is built from its hash-verified source using the separately locked
+`requirements-build.lock` tools in a Docker builder stage. Compilers, cmake,
+and build tools are excluded from the final image. `CMAKE_BUILD_PARALLEL_LEVEL=2`
+bounds build memory. The image and OS packages remain separately maintained. On another OS, use the development inputs below instead of this
 platform-specific production lock.
 
 Regenerate both server and Pi locks with uv 0.12.13, from the repository root:
@@ -85,15 +90,20 @@ bash scripts/lock-python-dependencies.sh
 # transitive versions, remove the corresponding .lock file before regenerating.
 ```
 
-Review the generated diff, install into a fresh Python 3.11 environment with
-`pip install --require-hashes --only-binary=:all: -r requirements.lock`, run the
-face-service tests, and load the pinned ONNX model before rollout.
+Review the generated diff, install into a fresh Python 3.11 environment with a
+C++ compiler and make available, then run the tests and load the pinned model:
+
+```bash
+pip install --require-hashes --only-binary=:all: -r requirements-build.lock
+CMAKE_BUILD_PARALLEL_LEVEL=2 pip install --require-hashes --no-build-isolation \
+  --only-binary=:all: --no-binary=dlib -r requirements.lock
+```
 
 ## Development run
 
 ```bash
 export FACE_SERVICE_KEY="replace-with-a-long-random-secret"
-py -m pip install -r requirements.txt
+py -m pip install -r requirements.txt  # dlib needs C++ and cmake
 py main.py
 # or: start.bat
 ```
@@ -123,3 +133,22 @@ stored by the dashboard. Concurrent cold starts share one recognition session.
 Rollout: deploy the face service with this quality gate before the corresponding
 portal code. The portal rejects encoders that omit accepted-photo metadata, so an
 old encoder cannot silently bypass the new gate.
+
+## Crop parity and rollout
+
+See [the investigation and migration plan](../docs/reviews/face-crop-parity.md).
+`npm run test:python` covers native detector, crop pixels and preprocessing tensors
+against the kiosk embedding implementation. The image CI job repeats these tests
+with the real, digest-verified ONNX model under a 512 MiB container memory limit.
+To run that part locally, set `FACE_PARITY_MODEL` to the verified model file.
+
+ONNX uses one inference thread. Enrollment and match image work is serialized
+so concurrent requests do not hold multiple HOG pyramids/decoded arrays at once.
+The public health endpoint identifies this detector as
+`dlib-20.0.1-hog-half-upsample1-pad25-v1`; this is diagnostic metadata, not stored
+template versioning. No schema or kiosk pipeline changes are included.
+
+**OWNER DECISION REQUIRED before merge:** approve repair/re-enrollment of existing
+portal templates and the consent procedure. Old Haar embeddings cannot be fixed
+by deploying the new encoder alone. No migration or deployment is performed by
+this change. Template version enforcement is a separate follow-up.

@@ -1,3 +1,15 @@
+# Compile dlib once with hash-locked source/build tools. Keep compilers and
+# cmake out of the runtime image; the recognition model and kiosk stay unchanged.
+FROM python:3.11-slim AS wheels
+ENV CMAKE_BUILD_PARALLEL_LEVEL=2
+RUN apt-get update && apt-get install -y --no-install-recommends g++ make \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY requirements-build.lock requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements-build.lock \
+    && pip wheel --no-cache-dir --no-build-isolation --require-hashes \
+       --only-binary=:all: --no-binary=dlib --wheel-dir /wheels -r requirements.lock
+
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,8 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock
+COPY --from=wheels /wheels /wheels
+RUN pip install --no-cache-dir --no-index --no-deps /wheels/*.whl \
+    && rm -rf /wheels
 
 # Download the InsightFace buffalo_s recognition model during build (~13MB).
 # Pinned to HuggingFace commit 0ff1751885575e62e084dff70549ce24a11fa5dc with
@@ -26,6 +39,7 @@ RUN mkdir -p /app/models && \
 
 COPY model_pinning.py ./
 COPY main.py face_auth.py enrollment_quality.py ./
+COPY face_detection.py ./
 
 EXPOSE 5557
 
