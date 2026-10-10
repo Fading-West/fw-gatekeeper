@@ -264,3 +264,37 @@ it.each([
     await act(async () => tree.unmount());
   }
 });
+
+it.each([
+  ['an old status', () => ({ ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: 'legacy' }]) })],
+  ['a failure', () => { throw new TypeError('Failed to fetch'); }],
+])('ignores a slow earlier credential status read that returns %s after a newer one', async (_case, staleResponse) => {
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  let releaseFirstRead!: () => void;
+  const firstRead = new Promise<void>((resolve) => { releaseFirstRead = resolve; });
+  let statusReads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/kiosks') {
+      statusReads += 1;
+      if (statusReads === 1) {
+        await firstRead;
+        return staleResponse();
+      }
+      return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: 'device' }]) };
+    }
+    return { ok: true, json: async () => ({ kiosk_id: 'a', credential: 'secret-a' }) };
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<KiosksPage />); });
+  try {
+    await act(async () => findButton(tree, 'Issue / rotate credential')!.props.onClick());
+    expect(statusReads).toBe(2);
+    expect(badgeShows(tree, 'Device credential active')).toBe(true);
+    await act(async () => releaseFirstRead());
+    expect(badgeShows(tree, 'Device credential active')).toBe(true);
+    expect(badgeShows(tree, 'Credential status unavailable')).toBe(false);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});

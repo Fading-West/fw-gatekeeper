@@ -74,14 +74,21 @@ export default function KiosksPage() {
   const [credentialStatusError, setCredentialStatusError] = useState(false);
   const [unknownCredentialOutcome, setUnknownCredentialOutcome] = useState<string | null>(null);
 
+  const credentialStatusRequestRef = useRef(0);
+
   const fetchCredentialStatus = useCallback(async () => {
+    // Only the latest request may apply, so a slow earlier read cannot
+    // overwrite the status fetched after a credential change.
+    const request = ++credentialStatusRequestRef.current;
     try {
       const response = await fetch('/api/kiosks', { cache: 'no-store' });
       const rows = response.ok ? await response.json() : null;
       if (!Array.isArray(rows)) throw new Error('Credential status unavailable');
+      if (request !== credentialStatusRequestRef.current) return;
       setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
       setCredentialStatusError(false);
     } catch {
+      if (request !== credentialStatusRequestRef.current) return;
       // Readiness remains available; cards show an explicit unavailable state with a retry.
       setCredentialStatusError(true);
     }
