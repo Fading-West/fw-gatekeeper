@@ -71,37 +71,60 @@ export default function KiosksPage() {
   const [credentialBusy, setCredentialBusy] = useState<string | null>(null);
   const credentialBusyRef = useRef(false);
   const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
+  const [credentialStatusError, setCredentialStatusError] = useState(false);
+  const [unknownCredentialOutcome, setUnknownCredentialOutcome] = useState<string | null>(null);
 
   const fetchCredentialStatus = useCallback(async () => {
     try {
       const response = await fetch('/api/kiosks', { cache: 'no-store' });
-      if (!response.ok) return;
-      const rows = await response.json();
-      if (Array.isArray(rows)) setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
+      const rows = response.ok ? await response.json() : null;
+      if (!Array.isArray(rows)) throw new Error('Credential status unavailable');
+      setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
+      setCredentialStatusError(false);
     } catch {
-      // Readiness remains available if the credential status request fails.
+      // Readiness remains available; cards show an explicit unavailable state with a retry.
+      setCredentialStatusError(true);
     }
   }, []);
 
   const manageCredential = async (id: string, method: 'POST' | 'DELETE', kioskName?: string) => {
     if (credentialBusyRef.current || issuedCredential) return;
-    if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${kioskName || id}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
+    const label = kioskName || id;
+    if (method === 'POST' && !globalThis.confirm(`Issue a new credential for ${label}? Any credential or shared migration key it uses now stops working immediately. ${label} will stop syncing until the new credential is installed on its device.`)) return;
+    if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${label}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
     credentialBusyRef.current = true;
     setCredentialBusy(id);
+    setUnknownCredentialOutcome(null);
+    let response: Response | null = null;
+    let body: { error?: string; kiosk_id?: string; credential?: string } | null = null;
     try {
-      const response = await fetch('/api/kiosks/credentials', {
-        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...(method === 'DELETE' ? { confirmStopSync: true } : {}) }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || 'Credential change failed');
-      if (method === 'POST') setIssuedCredential({ kioskId: body.kiosk_id, value: body.credential });
-      else toast('Kiosk credential revoked');
-      fetchCredentialStatus();
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Credential change failed', 'error');
+      try {
+        response = await fetch('/api/kiosks/credentials', {
+          method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...(method === 'DELETE' ? { confirmStopSync: true } : {}) }),
+        });
+        body = await response.json().catch(() => null);
+      } catch {
+        // Network failure: the request may still have reached the server.
+      }
+      if (method === 'POST') {
+        if (response?.ok && typeof body?.credential === 'string') {
+          setIssuedCredential({ kioskId: body.kiosk_id || label, value: body.credential });
+        } else if (response && response.status >= 400 && response.status < 500 && body?.error) {
+          toast(body.error, 'error');
+        } else {
+          // Lost or unreadable response, or a server error after the write may
+          // have committed: the old secret may already be dead. Never claim failure.
+          setUnknownCredentialOutcome(label);
+        }
+      } else if (response?.ok) {
+        toast('Kiosk credential revoked');
+      } else {
+        toast(body?.error || 'Credential change failed', 'error');
+      }
     } finally {
       credentialBusyRef.current = false;
       setCredentialBusy(null);
+      fetchCredentialStatus();
     }
   };
 
@@ -176,6 +199,13 @@ export default function KiosksPage() {
 
   return (
     <div className="animate-fade-in space-y-6 pb-24 md:pb-8">
+      {unknownCredentialOutcome && (
+        <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
+          <p className="text-amber-200 font-semibold">Credential change for {unknownCredentialOutcome}: outcome unknown.</p>
+          <p className="text-xs text-slate-400">The portal did not receive a readable response, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. Check this kiosk&apos;s credential status; if it is not syncing, issue a new credential and install it on its device.</p>
+          <button type="button" className="btn-secondary" onClick={() => setUnknownCredentialOutcome(null)}>Dismiss</button>
+        </div>
+      )}
       {issuedCredential && (
         <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
           <p className="text-amber-200 font-semibold">Save this credential for {issuedCredential.kioskId}. It will only be shown once.</p>
@@ -292,9 +322,12 @@ export default function KiosksPage() {
                     <span className={`badge border ${statusStyles[kiosk.status]}`}>{statusLabels[kiosk.status]}</span>
                   </div>
                   <div className="flex gap-2">
-                    <span className="badge border border-slate-500/30 text-slate-300">{credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
+                    <span className="badge border border-slate-500/30 text-slate-300">{credentialStatusError ? 'Credential status unavailable' : credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
+                    {credentialStatusError && (
+                      <button type="button" className="btn-secondary text-xs" onClick={fetchCredentialStatus}>Retry</button>
+                    )}
                     <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
-                      onClick={() => manageCredential(kiosk.id, 'POST')}>Issue / rotate credential</button>
+                      onClick={() => manageCredential(kiosk.id, 'POST', kiosk.name)}>Issue / rotate credential</button>
                     <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
                       onClick={() => manageCredential(kiosk.id, 'DELETE', kiosk.name)}>Revoke access</button>
                   </div>
