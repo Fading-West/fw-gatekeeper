@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import numpy as np
@@ -22,6 +23,21 @@ def execute_branch(condition, namespace):
     loop = ast.For(target=ast.Name(id='_', ctx=ast.Store()),
                    iter=ast.List(elts=[ast.Constant(None)], ctx=ast.Load()),
                    body=[branch], orelse=[])
+    module = ast.fix_missing_locations(ast.Module(body=[loop], type_ignores=[]))
+    exec(compile(module, 'main.py', 'exec'), namespace)
+
+
+def execute_display_cycle(namespace):
+    """Run the production hold, pending-clock, and result branches in order."""
+    main_loop = next(node for node in ast.walk(TREE)
+                     if isinstance(node, ast.While) and any(
+                         isinstance(child, ast.If) and ast.unparse(child.test) == 'now < display_until[0]'
+                         for child in node.body))
+    start = next(i for i, node in enumerate(main_loop.body)
+                 if isinstance(node, ast.If) and ast.unparse(node.test) == 'now < display_until[0]')
+    loop = ast.For(target=ast.Name(id='_', ctx=ast.Store()),
+                   iter=ast.List(elts=[ast.Constant(None)], ctx=ast.Load()),
+                   body=main_loop.body[start:], orelse=[])
     module = ast.fix_missing_locations(ast.Module(body=[loop], type_ignores=[]))
     exec(compile(module, 'main.py', 'exec'), namespace)
 
@@ -109,6 +125,63 @@ class RecognitionMarginFlowTests(unittest.TestCase):
                 self.assertEqual(status['state'], 'IDLE')
                 self.assertIsNone(status['worker_name'])
                 self.assertEqual(namespace['display_until'][0], 0.)
+
+                # The next worker starts a new blink verification with their
+                # own identity, then completes it using a fresh post-blink scan.
+                blair = {'name': 'Blair', 'decision': 'accepted', 'frame_ts': namespace['now'],
+                         'face_loc': (5, 50, 50, 5), 'confidence': .9,
+                         'candidate_worker_id': 22, 'server_worker_id': 'server-b',
+                         'candidate_encoding': np.array([0., 1., 0.])}
+                namespace.update(current_result=[blair], roster_fault=None, model_healthy=True, GREEN='green',
+                                 database=mock.Mock(), last_clocks={}, datetime=datetime,
+                                 timezone=timezone, timedelta=timedelta,
+                                 format_worker_display_id=mock.Mock(return_value='B22'))
+                namespace['recognizer'].usable_count = 2
+                namespace['database'].get_worker_by_id.return_value = {'server_id': 'server-b'}
+                namespace['database'].was_recently_clocked.return_value = False
+                namespace['liveness'].get_ear.return_value = .22
+                execute_display_cycle(namespace)
+                self.assertEqual(status['state'], 'WAITING_FOR_BLINK')
+                self.assertEqual(status['worker_name'], 'Blair')
+                self.assertEqual(status['worker_id'], 'B22')
+                self.assertEqual(namespace['pending_clock'][0]['worker_id'], 22)
+                self.assertEqual(namespace['pending_clock'][0]['server_worker_id'], 'server-b')
+
+                namespace['pending_clock'][0].update(blink_confirmed=True,
+                                                     blink_confirmed_at=namespace['now'])
+                namespace['now'] += .1
+                namespace['current_result'][0] = dict(blair, frame_ts=namespace['now'])
+                namespace['record_clock'].return_value = True
+                execute_display_cycle(namespace)
+                namespace['record_clock'].assert_called_once_with(
+                    blair, 22, 'Blair', 'B22', .9, liveness_confirmed=True, server_worker_id='server-b')
+                self.assertIsNone(namespace['pending_clock'][0])
+                self.assertEqual(namespace['display_until'][0],
+                                 namespace['now'] + config.DISPLAY_TIME_SUCCESS_SEC)
+
+    def test_idle_return_respects_success_error_and_retry_display_holds(self):
+        for state, duration in [('CLOCKED_IN', config.DISPLAY_TIME_SUCCESS_SEC),
+                                ('ERROR', 2), ('NOT_RECOGNIZED', config.DISPLAY_TIME_SEC),
+                                ('SERVICE_DEGRADED', config.DISPLAY_TIME_SEC)]:
+            with self.subTest(state=state):
+                status = {'state': state, 'message': 'held message', 'worker_name': 'Alex'}
+                with mock.patch.object(web_app, '_status', status):
+                    recognizer = mock.Mock(known_count=2, usable_count=2)
+                    namespace = {'now': 10. + duration - .01, 'display_until': [10. + duration],
+                                 'current_result': [{'name': 'Blair'}], 'pending_clock': [None],
+                                 'box_loc': None, 'recognizer': recognizer, 'roster_fault': None,
+                                 'web_app': web_app, 'time': mock.Mock()}
+                    execute_display_cycle(namespace)
+                    self.assertEqual(status['state'], state)
+                    self.assertEqual(status['message'], 'held message')
+                    self.assertEqual(namespace['display_until'][0], 10. + duration)
+                    self.assertIsNone(namespace['current_result'][0])
+
+                    namespace['now'] = namespace['display_until'][0]
+                    execute_display_cycle(namespace)
+                    self.assertEqual(status['state'], 'IDLE')
+                    self.assertIsNone(status['worker_name'])
+                    self.assertEqual(namespace['display_until'][0], 0.)
 
     def test_clear_post_blink_identity_still_records_only_after_blink_frame(self):
         for frame_ts, expected in [(.5, False), (2., True)]:

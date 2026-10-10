@@ -3,6 +3,7 @@ import unittest
 import math
 import runpy
 import types
+import warnings
 from pathlib import Path
 from unittest import mock
 import numpy as np
@@ -67,7 +68,7 @@ class FreshFaceMatchingTests(unittest.TestCase):
         self.assertTrue(accepted)
 
     def test_exact_margin_and_just_below_are_rejected_but_above_is_accepted(self):
-        for top_score, expected in [(.58, False), (.579999, False), (.580001, True)]:
+        for top_score, expected in [(.58, False), (.579999, False), (.5800000001, True), (.580001, True)]:
             with self.subTest(top_score=top_score):
                 self.matcher.clear()
                 self.roster = [
@@ -80,7 +81,8 @@ class FreshFaceMatchingTests(unittest.TestCase):
     def test_margin_boundary_has_no_roundoff_acceptance_allowance(self):
         margin = config.RECOGNITION_MIN_MARGIN
         for gap, expected in [(math.nextafter(margin, 0.), False),
-                              (margin, False), (math.nextafter(margin, math.inf), True)]:
+                              (margin, False), (math.nextafter(margin, math.inf), True),
+                              (.0800000001, True)]:
             with self.subTest(gap=gap):
                 self.assertEqual(has_minimum_margin([(gap, 0), (0., 1)], margin), expected)
 
@@ -145,8 +147,18 @@ class RecognitionMarginConfigTests(unittest.TestCase):
             return runpy.run_path(str(Path(__file__).with_name('config.py')))
 
     def test_valid_operator_overrides(self):
-        for margin in [.01, .08, 1, 2]:
-            self.assertEqual(self.load_config(margin)['RECOGNITION_MIN_MARGIN'], margin)
+        for margin in [.08, 1, 2]:
+            with self.subTest(margin=margin), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                self.assertEqual(self.load_config(margin)['RECOGNITION_MIN_MARGIN'], margin)
+                self.assertEqual(caught, [])
+
+    def test_below_server_threshold_override_warns_but_remains_allowed(self):
+        for margin in [.01, math.nextafter(.08, 0.)]:
+            with self.subTest(margin=margin), self.assertWarnsRegex(
+                RuntimeWarning, 'below server LOW_MARGIN_THRESHOLD=0.08.*flagged for review',
+            ):
+                self.assertEqual(self.load_config(margin)['RECOGNITION_MIN_MARGIN'], margin)
 
     def test_invalid_operator_overrides_fail_closed(self):
         for margin in [0, -.01, 2.01, float('nan'), float('inf'), True, '.08', None]:
