@@ -7,6 +7,7 @@ import runpy
 import sys
 import tempfile
 import sqlite3
+import threading
 from types import ModuleType
 import unittest
 from unittest import mock
@@ -36,6 +37,7 @@ class LocalHistoryTests(unittest.TestCase):
         database._local.conn = None
         self.addCleanup(self.close_database)
         database.init_db()
+        database._migrate_history()
 
     @staticmethod
     def close_database():
@@ -119,7 +121,9 @@ class LocalHistoryTests(unittest.TestCase):
                 conn.commit()
                 expected = {limit: self.old_today(conn, limit) for limit in (2, 50, -1)}
                 database.init_db()
+                database._migrate_history()
                 database.init_db()  # Restart is idempotent; source evidence remains intact.
+                database._migrate_history()
                 self.assertEqual([r[0] for r in conn.execute('SELECT timestamp FROM attendance_log ORDER BY id')], strings)
                 for table in ('attendance_log', 'recognition_attempts'):
                     epochs = [r[0] for r in conn.execute(f'SELECT timestamp_epoch FROM {table} ORDER BY id')]
@@ -149,6 +153,150 @@ class LocalHistoryTests(unittest.TestCase):
             self.assertIn('SEARCH attendance_log USING INDEX idx_attendance_epoch', plan)
             self.assertNotIn('TEMP B-TREE', plan)
 
+    def test_startup_only_prepares_schema_without_backfill_or_epoch_indexes(self):
+        conn = self.legacy_tables()
+        conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
+                         "VALUES (1, 'Alex', 'clock_in', ?)", [(OLD,)] * 205)
+        conn.commit()
+        with mock.patch.object(database, '_attendance_epoch', side_effect=AssertionError('startup parsed history')):
+            database.init_db()
+        self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:attendance_log')), [0, 205])
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM attendance_log WHERE timestamp_epoch IS NULL').fetchone()[0], 205)
+        self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name = 'idx_attendance_epoch'").fetchone())
+
+    def test_partial_backfill_today_matches_old_query_at_every_batch_on_dst_days(self):
+        for day, hours in [('2026-03-08', 23), ('2026-11-01', 25)]:
+            with self.subTest(day=day), local_clock('America/Denver', datetime.fromisoformat(day + 'T12:00:00+00:00')):
+                conn = self.legacy_tables()
+                start = database.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
+                end = start + timedelta(days=1)
+                self.assertEqual(end.timestamp() - start.timestamp(), hours * 3600)
+                strings = ['invalid', OLD,
+                           datetime.fromtimestamp(start.timestamp() - 1, timezone.utc).isoformat(),
+                           datetime.fromtimestamp(start.timestamp(), timezone.utc).isoformat(),
+                           day + ' 01:30:00', day + 'T01:30:00.123456',
+                           day + 'T01:30:00-06:00', day + 'T01:30:00-07:00',
+                           day + 'T09:30:00Z', day + 'T09:30:00+00:00',
+                           datetime.fromtimestamp(end.timestamp() - .000001, timezone.utc).isoformat(),
+                           datetime.fromtimestamp(end.timestamp(), timezone.utc).isoformat(),
+                           '2026-02-30T08:00:00']
+                conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
+                                 "VALUES (1, 'Alex', 'clock_in', ?)", [(s,) for s in strings])
+                conn.commit()
+                database.init_db()
+                # Inserts beyond the high-water ID must appear during backfill.
+                live = self.attendance(day + 'T10:15:00Z')
+                attempt = self.attempt(day + 'T10:15:00Z')
+                self.assertIsNotNone(conn.execute('SELECT timestamp_epoch FROM recognition_attempts WHERE id = ?',
+                                                 (attempt,)).fetchone()[0])
+                expected = {limit: self.old_today(conn, limit) for limit in (0, 2, 50, -1)}
+                def verify():
+                    for limit, rows in expected.items():
+                        self.assertEqual(database.get_today_logs(limit), rows)
+                    self.assertIn(live, [row['id'] for row in database.get_today_logs(-1)])
+                verify()
+                with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2):
+                    database._migrate_event_epoch(conn, 'attendance_log', pause=verify)
+                verify()  # Fast path after the final committed cursor deletion.
+
+    def test_today_query_survives_backfill_finishing_after_cursor_read(self):
+        with local_clock('America/Denver', NOW):
+            row_id = self.attendance(NOW.isoformat())
+            conn = database._get_conn()
+            conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL WHERE id = ?', (row_id,))
+            database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, row_id]))
+            expected = self.old_today(conn, 50)
+            read_state = database.get_sync_state
+            def finish_after_read(key):
+                progress = read_state(key)
+                database._migrate_event_epoch(conn, 'attendance_log')
+                return progress
+            with mock.patch.object(database, 'get_sync_state', side_effect=finish_after_read):
+                self.assertEqual(database.get_today_logs(), expected)
+
+    def test_partial_backfill_preserves_latest_action_debounce_and_defers_retention(self):
+        with local_clock('America/Denver', NOW):
+            cached = self.attendance(OLD, synced=True)
+            latest = self.attendance(NOW.isoformat(), synced=True, action='clock_out')
+            conn = database._get_conn()
+            conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL WHERE id = ?', (latest,))
+            database.set_sync_state('epoch_backfill:attendance_log', json.dumps([cached, latest]))
+            self.attempt(synced=True)
+            self.assertEqual(database.get_last_action(1), 'clock_out')
+            self.assertTrue(database.was_recently_clocked(1, 5))
+            self.assertFalse(database.was_recently_clocked(2, 5))
+            before = {table: self.ids(table) for table in ('attendance_log', 'recognition_attempts')}
+            self.assertEqual(database.prune_synced_history(), {'attendance_log': 0, 'recognition_attempts': 0})
+            self.assertEqual({table: self.ids(table) for table in before}, before)
+            database._migrate_history()
+            self.assertEqual(database.get_last_action(1), 'clock_out')
+            self.assertTrue(database.was_recently_clocked(1, 5))
+            self.assertEqual(database.prune_synced_history(), {'attendance_log': 1, 'recognition_attempts': 1})
+            self.assertEqual(self.ids('attendance_log'), [latest])
+
+    def test_background_worker_allows_reads_and_manual_writes_and_starts_only_once(self):
+        with local_clock('America/Denver', NOW):
+            conn = self.legacy_tables()
+            conn.execute("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
+                         "VALUES (1, 'Alex', 'clock_in', ?)", (NOW.isoformat(),))
+            conn.commit()
+            database.init_db()
+            parsing = threading.Event()
+            release = threading.Event()
+            original_epoch = database._attendance_epoch
+            def blocked_parse(timestamp):
+                if threading.current_thread().name == 'history-migration':
+                    parsing.set()
+                    if not release.wait(5):
+                        raise RuntimeError('test did not release parser')
+                return original_epoch(timestamp)
+            with mock.patch.object(database, '_attendance_epoch', side_effect=blocked_parse):
+                worker = database.start_history_migration()
+                try:
+                    self.assertTrue(parsing.wait(5))
+                    self.assertIs(database.start_history_migration(), worker)
+                    self.assertEqual([row['id'] for row in database.get_today_logs()], [1])
+                    # Write through the public API while the worker is between locks.
+                    live = self.attendance(NOW.isoformat(), action='clock_out')
+                    self.assertEqual(database.get_last_action(1), 'clock_out')
+                finally:
+                    release.set()
+                    worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
+            self.assertEqual([row['id'] for row in database.get_today_logs()], [live, 1])
+
+    def test_background_worker_retries_failure_and_closes_its_own_connection(self):
+        row_id = self.attendance(NOW.isoformat())
+        conn = database._get_conn()
+        conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL WHERE id = ?', (row_id,))
+        database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, row_id]))
+        migrate = database._migrate_history
+        worker_connections = []
+        def fail_once(pause=None):
+            worker_connections.append(database._get_conn())
+            if len(worker_connections) == 1:
+                raise sqlite3.OperationalError('transient database lock')
+            migrate(pause=pause)
+        def check_retry_delay(seconds):
+            if seconds == 30:
+                self.assertIsNotNone(database.get_sync_state('epoch_backfill:attendance_log'))
+        with mock.patch.object(database, '_migrate_history', side_effect=fail_once), \
+             mock.patch.object(database.time, 'sleep', side_effect=check_retry_delay) as sleep, \
+             mock.patch.object(database.logger, 'exception') as log:
+            worker = database.start_history_migration()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(worker_connections), 2)
+        self.assertIs(worker_connections[0], worker_connections[1])
+        with self.assertRaises(sqlite3.ProgrammingError):
+            worker_connections[0].execute('SELECT 1')
+        sleep.assert_any_call(30)
+        log.assert_called_once()
+        self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
+        self.assertEqual(conn.execute('SELECT timestamp_epoch FROM attendance_log WHERE id = ?',
+                                     (row_id,)).fetchone()[0], database._attendance_epoch(NOW.isoformat()))
+
     def test_interrupted_epoch_migration_can_be_retried(self):
         conn = self.legacy_tables()
         strings = ['invalid', OLD, RECENT, BOUNDARY, OLD]
@@ -172,12 +320,14 @@ class LocalHistoryTests(unittest.TestCase):
         self.close_database()  # The committed schema and progress survive process restart.
         with mock.patch.object(database, '_attendance_epoch', wraps=original_epoch) as parse:
             database.init_db()
+            database._migrate_history()
         self.assertEqual([call.args[0] for call in parse.call_args_list], strings[2:])
         self.assertIsNone(database.get_sync_state('epoch_backfill:recognition_attempts'))
         conn = database._get_conn()
         self.assertEqual([r[0] for r in conn.execute('SELECT timestamp_epoch FROM recognition_attempts ORDER BY id')],
                          [original_epoch(s) for s in strings])
         database.init_db()
+        database._migrate_history()
 
     def test_epoch_column_and_resume_marker_are_atomic(self):
         conn = self.legacy_tables()
@@ -192,6 +342,7 @@ class LocalHistoryTests(unittest.TestCase):
         self.assertNotIn('timestamp_epoch', [r['name'] for r in conn.execute('PRAGMA table_info(recognition_attempts)')])
         self.assertIsNone(database.get_sync_state('epoch_backfill:recognition_attempts'))
         database.init_db()
+        database._migrate_history()
 
     def test_backfill_releases_write_lock_between_batches_and_before_parsing(self):
         conn = self.legacy_tables()
@@ -233,6 +384,7 @@ class LocalHistoryTests(unittest.TestCase):
         self.assertEqual([r[0] for r in conn.execute('SELECT id FROM recognition_attempts WHERE timestamp_epoch IS NOT NULL')], [1, 2])
         conn.execute('DROP TRIGGER fail_epoch_update')
         database.init_db()
+        database._migrate_history()
         self.assertEqual(conn.execute('SELECT COUNT(*) FROM recognition_attempts WHERE timestamp_epoch IS NOT NULL').fetchone()[0], 5)
 
     def test_recognition_insert_populates_epoch(self):
@@ -240,6 +392,16 @@ class LocalHistoryTests(unittest.TestCase):
         row = database._get_conn().execute('SELECT timestamp, timestamp_epoch FROM recognition_attempts WHERE id = ?',
                                           (row_id,)).fetchone()
         self.assertEqual(row['timestamp_epoch'], database._attendance_epoch(row['timestamp']))
+
+    def test_latest_action_with_only_invalid_evidence_before_and_after_backfill(self):
+        self.attendance('invalid', action='clock_in')
+        last = self.attendance('also-invalid', action='clock_out')
+        database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, last]))
+        self.assertEqual(database.get_last_action(1), 'clock_out')
+        self.assertIsNone(database.get_last_action(2))
+        database._migrate_history()
+        self.assertEqual(database.get_last_action(1), 'clock_out')
+        self.assertIsNone(database.get_last_action(2))
 
     def test_retention_keeps_unsynced_recent_boundary_invalid_and_latest_rows(self):
         with local_clock('America/Denver', NOW):
@@ -399,6 +561,7 @@ class LocalHistoryTests(unittest.TestCase):
             self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
             self.close_database()
             database.init_db()
+            database._migrate_history()
             self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
             self.assertEqual(database.prune_synced_history()['attendance_log'], 1)
             self.assertEqual(self.ids('attendance_log'), protected + [latest])

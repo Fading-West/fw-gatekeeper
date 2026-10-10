@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ _local = threading.local()
 _IDENTITY_NOT_CAPTURED = object()
 _HISTORY_PRUNE_BATCH_SIZE = 100
 _EPOCH_BACKFILL_BATCH_SIZE = 100
+_history_thread = None
+_history_lock = threading.Lock()
 
 
 def _attendance_epoch(value: str) -> Optional[float]:
@@ -57,11 +60,10 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
         logger.info("Added column %s.%s", table, column)
 
 
-def _migrate_event_epoch(conn: sqlite3.Connection, table: str):
-    """Resume small committed backfill batches, parsing outside the write lock.
+def _prepare_event_epoch(conn: sqlite3.Connection, table: str):
+    """Add the column and durable cursor without visiting historical rows.
 
-    Column creation and its progress marker are atomic. Each subsequent batch
-    commits its cursor with the epochs, including NULL for malformed evidence.
+    Column creation and its progress marker are atomic.
     The initial high-water id excludes new inserts, which already cache epochs.
     Call only after committing the other startup schema migrations.
     """
@@ -81,6 +83,12 @@ def _migrate_event_epoch(conn: sqlite3.Connection, table: str):
             conn.execute("ROLLBACK TO SAVEPOINT migrate_event_epoch")
             conn.execute("RELEASE SAVEPOINT migrate_event_epoch")
             raise
+
+
+def _migrate_event_epoch(conn: sqlite3.Connection, table: str, pause=None):
+    """Resume committed 100-row batches, parsing and yielding outside write locks."""
+    _prepare_event_epoch(conn, table)
+    key = f"epoch_backfill:{table}"
     progress = conn.execute("SELECT value FROM sync_state WHERE key = ?", (key,)).fetchone()
     if progress is None:
         # Includes devices that completed the original atomic backfill.
@@ -101,6 +109,50 @@ def _migrate_event_epoch(conn: sqlite3.Connection, table: str):
                              "WHERE id = ? AND timestamp_epoch IS NULL", epochs)
             conn.execute("UPDATE sync_state SET value = ? WHERE key = ?",
                          (json.dumps([after_id, high_water]), key))
+        if pause is not None:
+            pause()
+
+
+def _migrate_history(pause=None):
+    """Build indexes before filling epochs; run off the kiosk startup path."""
+    conn = _get_conn()
+    # Exclude NULLs so a first upgrade scans the tables but does not sort/write
+    # hundreds of thousands of empty index entries. Existing indexes are valid.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    for table in ("attendance_log", "recognition_attempts"):
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
+                     f"ON {table}(timestamp_epoch, id) WHERE synced = 1 AND timestamp_epoch IS NOT NULL")
+    for table in ("attendance_log", "recognition_attempts"):
+        _migrate_event_epoch(conn, table, pause=pause)
+    logger.info("Local history epoch migration complete")
+
+
+def start_history_migration():
+    """Start one resumable worker after the UI and detection have started."""
+    global _history_thread
+    def run():
+        try:
+            while True:
+                try:
+                    _migrate_history(pause=lambda: time.sleep(0.01))
+                    return
+                except Exception:
+                    logger.exception("Local history migration paused; retrying in 30 seconds")
+                    time.sleep(30)
+        finally:
+            conn = getattr(_local, "conn", None)
+            if conn is not None:
+                conn.close()
+                _local.conn = None
+
+    with _history_lock:
+        if _history_thread is None or not _history_thread.is_alive():
+            _history_thread = threading.Thread(target=run, daemon=True, name="history-migration")
+            _history_thread.start()
+        return _history_thread
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -348,15 +400,10 @@ def init_db():
         logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
 
     conn.commit()
-    # Do not let an earlier startup UPDATE wrap all backfill batches in one
-    # outer transaction. Index creation is a one-time startup schema operation.
-    _migrate_event_epoch(conn, "attendance_log")
-    _migrate_event_epoch(conn, "recognition_attempts")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id)")
+    # Only install columns/cursors here. Historical reads use a fallback until
+    # the worker finishes; neither backfill nor index creation blocks startup.
     for table in ("attendance_log", "recognition_attempts"):
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
-                     f"ON {table}(timestamp_epoch, id) WHERE synced = 1")
+        _prepare_event_epoch(conn, table)
     logger.info("Database initialized at %s", config.DB_PATH)
 
 
@@ -817,6 +864,11 @@ def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
+    if get_sync_state("epoch_backfill:attendance_log") is not None:
+        row = conn.execute("""SELECT id FROM attendance_log WHERE worker_id = ?
+            AND (timestamp_epoch >= ? OR (timestamp_epoch IS NULL AND attendance_epoch(timestamp) >= ?))
+            LIMIT 1""", (worker_id, threshold, threshold)).fetchone()
+        return row is not None
     row = conn.execute(
         """
         SELECT id FROM attendance_log
@@ -831,11 +883,21 @@ def was_recently_clocked(worker_id: int, minutes: int) -> bool:
 def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
     conn = _get_conn()
+    if get_sync_state("epoch_backfill:attendance_log") is not None:
+        row = conn.execute("""SELECT action FROM attendance_log WHERE worker_id = ?
+            ORDER BY COALESCE(timestamp_epoch, attendance_epoch(timestamp)) DESC, id DESC LIMIT 1""",
+            (worker_id,)).fetchone()
+        return row["action"] if row else None
     row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
+        """SELECT action FROM attendance_log WHERE worker_id = ? AND timestamp_epoch IS NOT NULL
         ORDER BY timestamp_epoch DESC, id DESC LIMIT 1""",
         (worker_id,),
     ).fetchone()
+    if row is None:
+        # Keep the legacy behavior when a worker has only malformed evidence.
+        row = conn.execute("""SELECT action FROM attendance_log
+            WHERE worker_id = ? AND timestamp_epoch IS NULL ORDER BY id DESC LIMIT 1""",
+            (worker_id,)).fetchone()
     return row["action"] if row else None
 
 
@@ -845,16 +907,36 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     # Convert each local midnight separately: DST days can be 23 or 25 hours.
     start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
     end = start + timedelta(days=1)
-    rows = conn.execute(
-        """
+    sql = """
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, note
         FROM attendance_log
         WHERE timestamp_epoch >= ? AND timestamp_epoch < ?
         ORDER BY timestamp_epoch DESC, id DESC
         LIMIT ?
-        """,
-        (start.timestamp(), end.timestamp(), limit),
-    ).fetchall()
+        """
+    args = (start.timestamp(), end.timestamp(), limit)
+    progress = get_sync_state("epoch_backfill:attendance_log")
+    if progress is not None:
+        after_id, high_water = json.loads(progress)
+        # One SQLite statement/snapshot: a concurrently migrated row is in
+        # exactly one branch, so it cannot disappear or be returned twice.
+        # The fallback scans only the remaining high-water ID range, excludes
+        # cached rows and ignores already-processed malformed timestamps.
+        sql = """SELECT id, worker_id, worker_name, action, timestamp,
+            liveness_confirmed, confidence, note FROM (
+                SELECT id, worker_id, worker_name, action, timestamp,
+                    liveness_confirmed, confidence, note, timestamp_epoch AS epoch
+                FROM attendance_log WHERE timestamp_epoch >= ? AND timestamp_epoch < ?
+                UNION ALL
+                SELECT id, worker_id, worker_name, action, timestamp,
+                    liveness_confirmed, confidence, note, attendance_epoch(timestamp) AS epoch
+                FROM attendance_log
+                WHERE id > ? AND id <= ? AND timestamp_epoch IS NULL
+                  AND attendance_epoch(timestamp) >= ? AND attendance_epoch(timestamp) < ?
+            ) ORDER BY epoch DESC, id DESC LIMIT ?"""
+        args = (start.timestamp(), end.timestamp(), after_id, high_water,
+                start.timestamp(), end.timestamp(), limit)
+    rows = conn.execute(sql, args).fetchall()
     logs: list[dict] = []
     for row in rows:
         item = dict(row)
@@ -1114,6 +1196,15 @@ def prune_synced_history() -> dict[str, int]:
     # An operator can configure debounce longer than the retention period.
     attendance_cutoff = min(cutoff, (now - timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES)).timestamp())
     conn = _get_conn()
+    # Incomplete epochs cannot establish the latest action safely, and the
+    # background worker may not have installed the forced age indexes yet.
+    if any(get_sync_state(f"epoch_backfill:{table}") is not None
+           for table in ("attendance_log", "recognition_attempts")):
+        return {"attendance_log": 0, "recognition_attempts": 0}
+    if conn.execute("""SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+        AND name IN ('idx_attendance_log_retention', 'idx_recognition_attempts_retention',
+                     'idx_attendance_worker_epoch')""").fetchone()[0] != 3:
+        return {"attendance_log": 0, "recognition_attempts": 0}
     deleted = {}
     # Bound candidates BEFORE checking protected evidence. A LIMIT on deletable
     # rows could scan every old latest/rejected row while holding a write lock.
@@ -1152,7 +1243,7 @@ def prune_synced_history() -> dict[str, int]:
                 WHERE l.id IN ({placeholders})
                   AND l.synced = 1 AND l.timestamp_epoch < ?
                   AND l.id != (SELECT latest.id FROM attendance_log latest
-                      WHERE latest.worker_id = l.worker_id
+                      WHERE latest.worker_id = l.worker_id AND latest.timestamp_epoch IS NOT NULL
                       ORDER BY latest.timestamp_epoch DESC, latest.id DESC LIMIT 1)
                   AND NOT EXISTS (SELECT 1 FROM attendance_rejections r
                       WHERE r.log_id = l.id AND r.released_at IS NULL)

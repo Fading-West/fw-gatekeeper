@@ -126,6 +126,39 @@ python3 main.py --server URL --kiosk-id ID --camera [auto|pi|usb]
 The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 `config_local.py`.
 
+## Upgrade notes: local history
+
+The first upgrade adds numeric timestamp columns and saved migration cursors
+during startup. Historical backfill and index creation run in a background
+thread after the UI and detection have started. Manual attendance, scanning,
+and sync remain available. New events receive their numeric timestamps at
+insert; today's log, debounce, and last-action selection still include legacy
+rows while the backfill is incomplete. The temporary log fallback parses only
+NULL epochs in the remaining migration ID range, so the supervisor log can be
+slower until attendance backfill finishes.
+
+The worker creates indexes before populating epochs, excludes NULLs from new
+indexes, commits at most 100 rows per batch, and yields between transactions.
+Index creation still briefly holds SQLite's writer lock. Progress survives
+restart, and failures are logged and retried every 30 seconds. Look for
+`Local history epoch migration complete` in the service journal. Retention
+waits until both tables are migrated and the required indexes exist; sync
+continues during that wait.
+
+Afterward, only synced history older than `LOCAL_HISTORY_RETENTION_DAYS`
+(default **30**, positive integer override in `config_local.py`) is eligible
+for bounded cleanup. Unsynced events, active rejection evidence, debounce
+history, and each worker's latest action remain. SQLite reuses freed pages;
+the database file does not immediately shrink because no full vacuum runs.
+
+For scale, a synthetic 185 MiB WAL database with 200,000 attendance rows and
+600,000 recognition attempts took 3.65 seconds to migrate synchronously on an
+x86 host, with 8,003 commits (an earlier run during dependency installation
+took 13.07 seconds). A conservative sizing assumption of 20 times these host
+durations plus 10–50 ms per SD-card commit flush gives roughly **2.5–11 minutes**;
+this is an estimate, not a measured Pi 3B duration. This historical work no
+longer gates startup.
+
 ## Tools
 
 - `enroll.py` — local enrollment CLI (add/list/remove workers) with a
