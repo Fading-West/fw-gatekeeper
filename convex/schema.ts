@@ -223,6 +223,12 @@ export default defineSchema({
     lastSync: v.optional(v.string()),
     rosterAppliedAt: v.optional(v.string()),
     rosterAppliedSequence: v.optional(v.number()),
+    // Two recent timestamp responses mapped to commit-ordered boundaries.
+    // Delivery cursors only: these never certify roster application or purges.
+    legacyRosterCursors: v.optional(v.array(v.object({
+      issuedAt: v.string(),
+      rosterSequence: v.number(),
+    }))),
     lastRosterReceiptId: v.optional(v.id("kioskRosterReceipts")),
     // Self-reported device health, sent alongside each worker sync. A kiosk
     // whose network is up but whose camera/model is broken must not look

@@ -243,6 +243,34 @@ export const revokeCredential = mutation({
   },
 });
 
+// Keep the timestamp wire format for clients that echo synced_at as since.
+// Read the counter BEFORE roster pages, just like receipt issuance. Returning
+// a timestamp is not an acknowledgement; only device receipts confirm purges.
+export const issueLegacyRosterCursorFromHttp = internalMutation({
+  args: { documentId: v.id("kiosks"), since: v.optional(v.string()) },
+  returns: v.union(v.object({ issuedAt: v.string(), since: v.union(v.string(), v.null()) }), v.null()),
+  handler: async (ctx, args) => {
+    const kiosk = await ctx.db.get(args.documentId);
+    if (!kiosk?.active) return null;
+    const history = kiosk.legacyRosterCursors ?? [];
+    const previous = history.find(cursor => cursor.issuedAt === args.since);
+    const counter = await readRosterSequence(ctx);
+    // Unique, monotonic tokens even for simultaneous requests/backwards clocks.
+    const issuedMs = Math.max(Date.now(),
+      ...history.map(cursor => Date.parse(cursor.issuedAt) + 1));
+    const candidate = new Date(issuedMs).toISOString();
+    // A pre-upgrade cursor must not accidentally become recognized when a
+    // failed first response happens to be issued at that exact timestamp.
+    const issuedAt = candidate === args.since ? new Date(issuedMs + 1).toISOString() : candidate;
+    await ctx.db.patch(kiosk._id, {
+      legacyRosterCursors: [{ issuedAt, rosterSequence: counter?.value ?? 0 }, ...history].slice(0, 2),
+    });
+    // Unrecognized/evicted timestamps require a full sync. Never infer a
+    // sequence from wall time or accept a caller's untrusted seq: string.
+    return { issuedAt, since: previous ? `seq:${previous.rosterSequence}` : null };
+  },
+});
+
 export const issueRosterReceiptFromHttp = internalMutation({
   args: { documentId: v.id("kiosks") },
   returns: v.union(v.object({ receipt: v.id("kioskRosterReceipts"), issuedAt: v.string(), since: v.union(v.string(), v.null()) }), v.null()),

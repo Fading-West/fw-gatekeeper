@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
-import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, type KioskHealthReport } from '@/lib/convex-ingest';
+import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, issueLegacyRosterCursor, type KioskHealthReport } from '@/lib/convex-ingest';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 
 function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefined {
@@ -71,9 +71,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Roster sync unavailable' }, { status: 503 });
     }
   }
-  // Timestamp-only clients cannot prove a commit-ordered watermark. Ignore
-  // their clock and resend the full roster on every cycle (including inactive
-  // rows). Convex also does this for an older portal forwarding timestamps.
+  if (identity) {
+    try {
+      const issued = await issueLegacyRosterCursor(identity.documentId,
+        req.nextUrl.searchParams.get('since') || undefined);
+      const { workers } = await fetchWorkersForSync(issued.since ?? '');
+      return NextResponse.json({ workers, synced_at: issued.issuedAt });
+    } catch (error) {
+      console.error('Legacy roster sync failed:', error);
+      return NextResponse.json({ error: 'Roster sync unavailable' }, { status: 503 });
+    }
+  }
+  // Admin reads have no device delivery cursor.
   const { workers } = await fetchWorkersForSync('');
   return NextResponse.json({ workers, synced_at: lastSync });
 }

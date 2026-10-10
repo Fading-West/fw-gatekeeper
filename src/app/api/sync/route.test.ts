@@ -5,13 +5,13 @@ import { POST } from './ack/route';
 import { hasDeviceKeyFormat } from '@/lib/auth';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
-import { fetchWorkersForSync, issueRosterReceipt, updateKioskLastSync, acknowledgeRosterReceipt } from '@/lib/convex-ingest';
+import { fetchWorkersForSync, issueRosterReceipt, issueLegacyRosterCursor, updateKioskLastSync, acknowledgeRosterReceipt } from '@/lib/convex-ingest';
 
 vi.mock('@/lib/auth', () => ({ hasDeviceKeyFormat: vi.fn(() => true), unauthorizedApiResponse: () => Response.json({ error: 'Unauthorized' }, { status: 401 }) }));
 vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn() }));
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn(async () => false) }));
 vi.mock('@/lib/convex-ingest', () => ({
-  fetchWorkersForSync: vi.fn(), issueRosterReceipt: vi.fn(),
+  fetchWorkersForSync: vi.fn(), issueRosterReceipt: vi.fn(), issueLegacyRosterCursor: vi.fn(),
   updateKioskLastSync: vi.fn(), acknowledgeRosterReceipt: vi.fn(),
 }));
 
@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.mocked(authenticateKiosk).mockResolvedValue({ documentId: 'kiosk-document', kioskId: 'entry', aliases: ['entry'] });
   vi.mocked(updateKioskLastSync).mockResolvedValue({ updated: true });
   vi.mocked(fetchWorkersForSync).mockResolvedValue({ workers: [] });
+  vi.mocked(issueLegacyRosterCursor).mockResolvedValue({ issuedAt: '2026-10-09T12:00:00.000Z', since: null });
 });
 
 it('does not issue an applied-roster receipt for an admin roster read', async () => {
@@ -29,6 +30,8 @@ it('does not issue an applied-roster receipt for an admin roster read', async ()
   expect((await GET(request('roster_receipt=1'))).status).toBe(200);
   expect(issueRosterReceipt).not.toHaveBeenCalled();
   expect(authenticateKiosk).not.toHaveBeenCalled();
+  expect(issueLegacyRosterCursor).not.toHaveBeenCalled();
+  expect(fetchWorkersForSync).toHaveBeenCalledWith('');
 });
 
 const request = (query: string) => new NextRequest(`http://localhost/api/sync?kiosk_id=entry&${query}`);
@@ -55,13 +58,27 @@ it('does not return a receipt-bearing roster when a later worker page fails', as
   expect(acknowledgeRosterReceipt).not.toHaveBeenCalled();
 });
 
-it('keeps the legacy response and caller since parameter compatible without issuing a receipt', async () => {
+it('maps a legacy timestamp to a safe sequence delta without issuing a receipt', async () => {
   vi.mocked(hasDeviceKeyFormat).mockReturnValue(false);
-  const response = await GET(request('since=2026-09-01T00:00:00Z'));
+  vi.mocked(issueLegacyRosterCursor).mockResolvedValue({ issuedAt: '2026-10-09T12:00:00.000Z', since: 'seq:7' });
+  // Current shared-key Pi clients send these flags every cycle; they must not
+  // force recurring full downloads on the non-receipt path.
+  const response = await GET(request('since=2026-09-01T00:00:00Z&roster_receipt=1&full_roster=1'));
   expect(response.status).toBe(200);
-  expect(await response.json()).toMatchObject({ workers: [] });
+  expect(await response.json()).toEqual({ workers: [], synced_at: '2026-10-09T12:00:00.000Z' });
   expect(issueRosterReceipt).not.toHaveBeenCalled();
+  expect(issueLegacyRosterCursor).toHaveBeenCalledWith('kiosk-document', '2026-09-01T00:00:00Z');
+  expect(fetchWorkersForSync).toHaveBeenCalledWith('seq:7');
+});
+
+it('fully resyncs unrecognized legacy timestamps and fails closed on an incomplete download', async () => {
+  vi.mocked(hasDeviceKeyFormat).mockReturnValue(false);
+  expect((await GET(request('since=2099-01-01T00:00:00Z'))).status).toBe(200);
   expect(fetchWorkersForSync).toHaveBeenCalledWith('');
+  vi.mocked(fetchWorkersForSync).mockRejectedValue(new Error('Later page unavailable'));
+  const response = await GET(request('since=2099-01-01T00:00:00Z'));
+  expect(response.status).toBe(503);
+  expect(await response.json()).not.toHaveProperty('synced_at');
 });
 
 it('requires kiosk authentication and a matching pending acknowledgement', async () => {

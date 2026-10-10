@@ -330,6 +330,23 @@ const workerSyncRead = httpAction(async (ctx, request) => {
   return jsonResponse(page);
 });
 
+const legacyRosterCursorIssue = httpAction(async (ctx, request) => {
+  if (!hasValidIngestCredential(request)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const body = await readJsonBody(request);
+  if (!body || typeof body.documentId !== 'string' || !body.documentId.trim()) {
+    return jsonResponse({ error: 'Document ID required' }, 400);
+  }
+  try {
+    const issued = await ctx.runMutation(internal.kiosks.issueLegacyRosterCursorFromHttp, {
+      documentId: body.documentId as any,
+      since: typeof body.since === 'string' ? body.since : undefined,
+    });
+    return issued ? jsonResponse(issued) : jsonResponse({ error: 'Active kiosk required' }, 404);
+  } catch {
+    return jsonResponse({ error: 'Invalid kiosk document ID' }, 400);
+  }
+});
+
 const rosterReceiptIssue = httpAction(async (ctx, request) => {
   // This bearer key belongs only to the Next server. Public kiosk keys are
   // authenticated at /api/sync before Next calls this privileged endpoint.
@@ -368,6 +385,7 @@ http.route({ path: '/api/ingest/attendance/bulk', method: 'POST', handler: atten
 http.route({ path: '/api/ingest/recognition-attempts/bulk', method: 'POST', handler: recognitionAttemptsBulkIngest });
 http.route({ path: '/api/ingest/kiosks/last-sync', method: 'POST', handler: kioskLastSyncIngest });
 http.route({ path: '/api/ingest/kiosks/authenticate', method: 'POST', handler: kioskAuthenticate });
+http.route({ path: '/api/ingest/kiosks/legacy-roster-cursor/issue', method: 'POST', handler: legacyRosterCursorIssue });
 http.route({ path: '/api/ingest/workers/sync', method: 'POST', handler: workerSyncRead });
 http.route({ path: '/api/ingest/kiosks/roster-receipt/issue', method: 'POST', handler: rosterReceiptIssue });
 http.route({ path: '/api/ingest/kiosks/roster-receipt/ack', method: 'POST', handler: rosterReceiptAck });

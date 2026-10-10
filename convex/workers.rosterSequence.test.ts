@@ -228,6 +228,40 @@ it('keeps a purge after backfill pending when an earlier receipt is acknowledged
   expect(await t.run(ctx => ctx.db.query('rosterSequence').unique())).toEqual(counter);
 });
 
+it('retries rows moved out of the legacy phase by a backfill after the change phase ended', async () => {
+  const { t, workerId, issue, ack, sync } = await setup();
+  const initial = await issue();
+  await sync(initial.since);
+  await ack(initial.receipt);
+  const current = await issue();
+  expect(current.since).toBe('seq:0');
+  const changes = await t.query(internal.workers.listForSyncFromHttp, { since: current.since! });
+  expect(changes).toMatchObject({ workers: [], isDone: false, continueCursor: 'l:' });
+  await t.mutation(internal.workers.backfillRosterSequences, {});
+  const legacy = await t.query(internal.workers.listForSyncFromHttp, {
+    since: current.since!, cursor: changes.continueCursor,
+  });
+  expect(legacy).toMatchObject({ workers: [], isDone: true });
+  await ack(current.receipt);
+  const next = await issue();
+  expect(await sync(next.since)).toMatchObject([{ id: workerId }]);
+  await ack(next.receipt);
+  expect(await sync((await issue()).since)).toEqual([]);
+});
+
+it('covers assignments committed before receipt issuance even when they follow the prior ack', async () => {
+  const { t, workerId, issue, ack, sync } = await setup();
+  const initial = await issue();
+  await sync(initial.since);
+  await ack(initial.receipt);
+  await t.mutation(internal.workers.backfillRosterSequences, {});
+  const current = await issue();
+  expect(current.since).toBe('seq:0');
+  expect(await sync(current.since)).toMatchObject([{ id: workerId }]);
+  await ack(current.receipt);
+  expect(await sync((await issue()).since)).toEqual([]);
+});
+
 it('requires a newly registered kiosk to acknowledge the purge and lets its first full sync confirm it', async () => {
   const { t, admin, workerId, pending } = await setup();
   await admin.mutation(api.workers.purgeBiometrics, { id: workerId, reason: 'Before registration' });
