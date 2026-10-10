@@ -1,6 +1,5 @@
 """Temporal face matching whose accepted identity must match the current frame."""
 from collections import deque
-import math
 import numpy as np
 import config
 
@@ -10,11 +9,9 @@ def has_minimum_margin(scores, min_margin):
     if len(scores) < 2:
         return True
     gap = scores[0][0] - scores[1][0]
-    # Normalization and subtraction can put an exact boundary a few floating
-    # point steps below the margin. Only allow that machine-precision error.
-    return gap >= min_margin or math.isclose(
-        gap, min_margin, rel_tol=0., abs_tol=4 * math.ulp(1.),
-    )
+    # The server flags accepted margins <= LOW_MARGIN_THRESHOLD as suspect.
+    # Compare the actual logged gap strictly, without a roundoff allowance.
+    return gap > min_margin
 
 
 def cosine_similarity(a, b):

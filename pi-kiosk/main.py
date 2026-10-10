@@ -621,7 +621,9 @@ def run(args):
                     box_color = GOLD
                     web_app.update_status(state="NOT_RECOGNIZED" if ambiguous else "IDLE",
                                           message="Please try again or ask your supervisor" if ambiguous else "Hold steady...",
-                                          worker_id=None, face_detected=True,
+                                          worker_id=None, worker_name=None, action=None,
+                                          confidence=0.0, liveness_confirmed=False, ear=0.0,
+                                          face_detected=True,
                                           known_workers=recognizer.known_count)
                     if ambiguous:
                         display_until[0] = now + config.DISPLAY_TIME_SEC
@@ -729,12 +731,15 @@ def run(args):
                 web_app.update_health(degraded_reason=expected_roster_fault or base_degraded_reason())
 
             if result is None:
-                if box_loc is not None:
+                if box_loc is not None or display_until[0] > 0:
                     unknown_streak = 0
                     box_loc = None
                     box_label = None
+                    display_until[0] = 0.0
                     web_app.update_status(state="IDLE", message="Step toward camera",
-                                          worker_id=None, face_detected=False, known_workers=recognizer.known_count)
+                                          worker_id=None, worker_name=None, action=None,
+                                          confidence=0.0, liveness_confirmed=False, ear=0.0,
+                                          face_detected=False, known_workers=recognizer.known_count)
                 time.sleep(0.05)
                 continue
 

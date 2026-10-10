@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 import numpy as np
 import config
-from matching import FreshFaceMatcher
+from matching import FreshFaceMatcher, has_minimum_margin
 
 
 class FreshFaceMatchingTests(unittest.TestCase):
@@ -66,8 +66,8 @@ class FreshFaceMatchingTests(unittest.TestCase):
         _, accepted = self.match(np.array([.9, .2, math.sqrt(.15)]), 1.)
         self.assertTrue(accepted)
 
-    def test_exact_margin_is_accepted_but_just_below_is_rejected(self):
-        for top_score, expected in [(.58, True), (.579999, False)]:
+    def test_exact_margin_and_just_below_are_rejected_but_above_is_accepted(self):
+        for top_score, expected in [(.58, False), (.579999, False), (.580001, True)]:
             with self.subTest(top_score=top_score):
                 self.matcher.clear()
                 self.roster = [
@@ -76,6 +76,13 @@ class FreshFaceMatchingTests(unittest.TestCase):
                 ]
                 _, accepted = self.match(self.alex, 1.)
                 self.assertEqual(accepted, expected)
+
+    def test_margin_boundary_has_no_roundoff_acceptance_allowance(self):
+        margin = config.RECOGNITION_MIN_MARGIN
+        for gap, expected in [(math.nextafter(margin, 0.), False),
+                              (margin, False), (math.nextafter(margin, math.inf), True)]:
+            with self.subTest(gap=gap):
+                self.assertEqual(has_minimum_margin([(gap, 0), (0., 1)], margin), expected)
 
     def test_single_worker_needs_threshold_but_no_margin(self):
         self.roster = [(0, self.alex)]

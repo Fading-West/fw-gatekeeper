@@ -34,7 +34,7 @@ LIVENESS_WAIT_SEC = 8  # How long the kiosk waits for a blink after a face match
 # look-alikes. Tune per site with the Recognition Lab, via config_local.py.
 RECOGNITION_MATCH_THRESHOLD = 0.45
 RECOGNITION_NEAR_MISS_MARGIN = 0.08
-# Minimum separation between different workers, independent of near-miss labelling.
+# Required separation must exceed this value, independent of near-miss labelling.
 # Keep the default equal to LOW_MARGIN_THRESHOLD in convex/shiftExceptions.ts.
 RECOGNITION_MIN_MARGIN = 0.08
 RECOGNITION_EMBEDDING_WINDOW = 3
