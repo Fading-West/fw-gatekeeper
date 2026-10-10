@@ -6,11 +6,11 @@ import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
 const STALE_THRESHOLD_MS = 60 * 60 * 1000;
-const CACHE_TTL_MS = 30 * 1000;
 
 type KioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 type KioskDeviceHealth = {
@@ -60,8 +60,6 @@ type SystemHealthPayload = {
   sync: { ready_worker_count: number; last_attendance_upload: string | null };
   warnings: string[];
 };
-
-const cache = new Map<string, { expiresAt: number; payload: SystemHealthPayload }>();
 
 function asHealthUrl(rawUrl: string) {
   try {
@@ -131,7 +129,11 @@ function getDate(req: NextRequest, now: Date) {
 }
 
 export async function GET(req: NextRequest) {
+  const fresh = req.nextUrl.searchParams.get('fresh') === '1';
   if (!(await hasValidPortalSession(req, ['admin', 'enrollment', 'viewer']))) {
+    return unauthorizedApiResponse();
+  }
+  if (fresh && !(await hasValidPortalSession(req, ['admin']))) {
     return unauthorizedApiResponse();
   }
 
@@ -142,10 +144,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'date must use YYYY-MM-DD format' }, { status: 400 });
   }
 
-  const cached = cache.get(date);
-  if (cached && cached.expiresAt > Date.now()) {
-    return NextResponse.json(cached.payload);
+  if (fresh) systemHealthCache.invalidate();
+  const cached = systemHealthCache.get(date);
+  if (cached) {
+    return NextResponse.json(cached);
   }
+  const cacheGeneration = systemHealthCache.generation;
 
   try {
     const faceHealthUrl = asHealthUrl(process.env.FACE_ENCODE_URL || process.env.FACE_SERVICE_URL || FACE_SERVICE_FALLBACK);
@@ -230,7 +234,7 @@ export async function GET(req: NextRequest) {
       warnings,
     };
 
-    cache.set(date, { expiresAt: Date.now() + CACHE_TTL_MS, payload });
+    systemHealthCache.set(date, payload, cacheGeneration);
     return NextResponse.json(payload);
   } catch (error) {
     console.error('System health error:', error);

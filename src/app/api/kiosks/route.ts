@@ -5,6 +5,7 @@ import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 async function requireAdmin(req: NextRequest) {
   return (await hasValidPortalSession(req, ['admin'])) ? null : unauthorizedApiResponse();
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
       type,
       location: location || undefined,
     });
+    systemHealthCache.invalidate();
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof ConvexError) {

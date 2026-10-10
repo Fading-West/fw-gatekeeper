@@ -4,6 +4,7 @@ import convex from '@/lib/convex';
 import { api } from '../../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 // Admin-only: permanently deletes a worker's face template and enrollment
 // photos, deactivates the worker so kiosks drop the cached template on their
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await convex.mutation(api.workers.purgeBiometrics, { id: id as any, reason: trimmedReason });
+    systemHealthCache.invalidate();
     return NextResponse.json(result);
   } catch (error) {
     console.error('Biometric purge failed:', error);
