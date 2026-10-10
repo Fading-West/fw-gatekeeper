@@ -37,12 +37,13 @@ vm.runInContext(connectionSource, unitContext);
 const { KioskConnection } = unitContext;
 const backoff = KioskConnection.RELOAD_BACKOFF_MS;
 assert.ok(backoff >= 30000 && backoff <= 60000, 'automatic reloads are limited to one per 30-60 s');
+const oldPage = () => backoff;
 
 {
     let clock = 1_000_000;
     const reloads = [];
     const storage = memoryStorage();
-    const monitor = KioskConnection.createMonitor({ now: () => clock, storage, reload: reason => reloads.push(reason) });
+    const monitor = KioskConnection.createMonitor({ now: () => clock, pageAge: oldPage, storage, reload: reason => reloads.push(reason) });
     for (const code of [401, 403, 503]) {
         clock += backoff;
         assert.equal(monitor.statusFailed(code).reloading, true, `${code} reloads for a fresh UI cookie`);
@@ -56,7 +57,7 @@ assert.ok(backoff >= 30000 && backoff <= 60000, 'automatic reloads are limited t
     clock = lastReload + backoff - 1;
 
     // The backoff survives the reload itself (new page, same tab storage).
-    const afterReload = KioskConnection.createMonitor({ now: () => clock, storage, reload: reason => reloads.push(reason) });
+    const afterReload = KioskConnection.createMonitor({ now: () => clock, pageAge: oldPage, storage, reload: reason => reloads.push(reason) });
     assert.equal(afterReload.statusFailed(503).reloading, false, 'a reloaded page still honours the backoff');
     clock = lastReload + backoff;
     assert.equal(afterReload.statusFailed(503).reloading, true, 'reload is retried once the backoff expires');
@@ -64,15 +65,49 @@ assert.ok(backoff >= 30000 && backoff <= 60000, 'automatic reloads are limited t
 
     // Without storage the in-memory timestamp still bounds reloads.
     let bare = 0;
-    const noStorage = KioskConnection.createMonitor({ now: () => clock, reload: () => { bare += 1; } });
+    const noStorage = KioskConnection.createMonitor({ now: () => clock, pageAge: oldPage, reload: () => { bare += 1; } });
     noStorage.statusFailed(401);
     noStorage.statusFailed(401);
     assert.equal(bare, 1);
 }
 
 {
+    // Storage blocked or cleared: every reload starts a page with no memory of
+    // the last one. Page age (monotonic) still bounds reloads to one per window.
+    let elapsed = 0;
     let reloads = 0;
-    const monitor = KioskConnection.createMonitor({ now: () => 5_000_000, storage: memoryStorage(), reload: () => { reloads += 1; } });
+    let page = null;
+    const openPage = () => {
+        const loadedAt = elapsed;
+        page = KioskConnection.createMonitor({
+            now: () => 7_000_000 - elapsed, // wall clock jumping backwards
+            pageAge: () => elapsed - loadedAt,
+            storage: null,
+            reload: () => { reloads += 1; openPage(); },
+        });
+    };
+    openPage();
+    for (; elapsed < 10 * backoff; elapsed += 500) page.statusFailed(503);
+    assert.ok(reloads <= 10, `without storage the page reloaded ${reloads} times in ${10 * backoff / 1000} s`);
+    assert.ok(reloads >= 9, 'reloads are still retried once per window');
+}
+
+{
+    // A restart reload waits until a scan result has been shown.
+    let reloads = 0;
+    const monitor = KioskConnection.createMonitor({ now: () => 3_000_000, pageAge: oldPage, storage: memoryStorage(), reload: () => { reloads += 1; } });
+    monitor.statusOk({ boot_id: 'old', state: 'IDLE' });
+    for (const state of ['CLOCKED_IN', 'ALREADY_CLOCKED', 'NOT_RECOGNIZED', 'WAITING_FOR_BLINK']) {
+        assert.equal(monitor.statusOk({ boot_id: 'new', state }).reloading, false, `restart reload never hides ${state}`);
+    }
+    assert.equal(reloads, 0);
+    assert.equal(monitor.statusOk({ boot_id: 'new', state: 'IDLE' }).reloading, true, 'restart reload happens once idle');
+    assert.equal(reloads, 1);
+}
+
+{
+    let reloads = 0;
+    const monitor = KioskConnection.createMonitor({ now: () => 5_000_000, pageAge: oldPage, storage: memoryStorage(), reload: () => { reloads += 1; } });
     for (const failure of [null, 500, 502, 404]) {
         const result = monitor.statusFailed(failure);
         assert.equal(result.failing, true, `${failure} is treated as a failing status`);
@@ -93,7 +128,7 @@ assert.ok(backoff >= 30000 && backoff <= 60000, 'automatic reloads are limited t
     let reloads = 0;
     const storage = memoryStorage();
     storage.setItem('fw-kiosk-last-auto-reload-at', String(clock - 1000));
-    const monitor = KioskConnection.createMonitor({ now: () => clock, storage, reload: () => { reloads += 1; } });
+    const monitor = KioskConnection.createMonitor({ now: () => clock, pageAge: oldPage, storage, reload: () => { reloads += 1; } });
     monitor.statusOk({ boot_id: 'old' });
     const deferred = monitor.statusOk({ boot_id: 'new' });
     assert.equal(deferred.reloading, false, 'restart reload honours the backoff');
@@ -155,7 +190,7 @@ assert.ok(backoff >= 30000 && backoff <= 60000, 'automatic reloads are limited t
 }
 
 // ---- Integration: real inline script from index.html ---------------------
-function kioskPage({ storage = memoryStorage(), reply = () => ({ ok: true, status: 200, body: {} }) } = {}) {
+function kioskPage({ storage = memoryStorage(), pageAgeMs = backoff, reply = () => ({ ok: true, status: 200, body: {} }) } = {}) {
     const elements = new Map();
     const requests = [];
     const reloads = [];
@@ -163,6 +198,7 @@ function kioskPage({ storage = memoryStorage(), reply = () => ({ ok: true, statu
     const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
     const context = vm.createContext({
         console, AbortController, Option: function Option() {},
+        performance: { now: () => pageAgeMs },
         HTMLElement: function HTMLElement() {},
         setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; },
         clearTimeout, setInterval: () => 0,
@@ -184,7 +220,9 @@ function kioskPage({ storage = memoryStorage(), reply = () => ({ ok: true, statu
             return { ok: true, status: 200, json: async () => ({ success: true }) };
         },
     });
-    context.window = { sessionStorage: storage };
+    context.window = storage === 'blocked'
+        ? { get sessionStorage() { throw new Error('SecurityError: storage is disabled'); } }
+        : { sessionStorage: storage };
     vm.runInContext(connectionSource, context);
     vm.runInContext(inlineScripts[0], context);
     return {
@@ -213,7 +251,19 @@ const healthy = bootId => () => ({ ok: true, status: 200, body: { state: 'IDLE',
     page.reply(() => ({ ok: false, status: 503, body: { error: 'Kiosk UI authentication is not configured' } }));
     await page.poll();
     assert.equal(page.reloads.length, 1, 'repeated auth failures do not reload in a tight loop');
-    assert.equal(page.el('statusText').textContent, 'Kiosk reconnecting…');
+    assert.match(page.el('statusText').textContent, /^Kiosk reconnecting… Setup incomplete \(UI key missing\)/,
+        'a missing UI key is shown to staff, not only logged');
+}
+
+{
+    // Storage blocked and KIOSK_UI_KEY missing: a freshly (re)loaded page must
+    // not reload again straight away, or the kiosk loops at page-load speed.
+    const missingKey = () => ({ ok: false, status: 503, body: { error: 'Kiosk UI authentication is not configured' } });
+    const page = kioskPage({ storage: 'blocked', pageAgeMs: 500, reply: missingKey });
+    await page.flush();
+    await page.poll();
+    assert.equal(page.reloads.length, 0, 'a just-loaded page never reloads itself again within the backoff');
+    assert.match(page.el('statusText').textContent, /UI key missing/);
 }
 
 {

@@ -9,9 +9,12 @@ import importlib
 import re
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import numpy as np
 
 KIOSK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(KIOSK_DIR))
@@ -116,6 +119,33 @@ class StatusAuthFailureTests(KioskStatusFixture):
         self.assertNotIn(KIOSK_UI_SESSION_COOKIE, page.headers.get("Set-Cookie", ""))
         self.assertTrue(any("KIOSK_UI_KEY is not configured" in line for line in logs.output))
         self.assertFalse(any(UI_KEY in line for line in logs.output))
+
+
+class FeedStreamCleanupTests(unittest.TestCase):
+    """The page reconnects /feed repeatedly; stale streams must not pile up."""
+
+    def setUp(self):
+        self.addCleanup(app.set_frame, None)
+
+    def drain_in_thread(self, stream):
+        parts = []
+        worker = threading.Thread(target=lambda: parts.extend(stream), daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        return worker, parts
+
+    def test_stream_without_frames_ends_instead_of_looping_forever(self):
+        app.set_frame(None)
+        worker, parts = self.drain_in_thread(app._mjpeg_stream(idle_timeout=0.2))
+        self.assertFalse(worker.is_alive(), "a frameless /feed stream must end so its thread is freed")
+        self.assertEqual(parts, [])
+
+    def test_stream_with_frames_keeps_streaming(self):
+        app.set_frame(np.zeros((8, 8, 3), dtype=np.uint8))
+        stream = app._mjpeg_stream(idle_timeout=0.2)
+        for _ in range(3):
+            self.assertTrue(next(stream).startswith(b"--frame\r\nContent-Type: image/jpeg"))
+        stream.close()
 
 
 class TemplateRecoveryContractTests(unittest.TestCase):

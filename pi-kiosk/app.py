@@ -120,7 +120,15 @@ def get_status_snapshot() -> dict:
     return data
 
 
-def _mjpeg_stream():
+# End a /feed stream that has sent nothing for this long. The server only
+# notices a disconnected client when a write fails, so a stream with no frames
+# (camera not up yet) would otherwise keep its thread looping forever, and the
+# kiosk page reconnects the feed repeatedly while no frame arrives.
+FEED_IDLE_TIMEOUT_SECONDS = 5.0
+
+
+def _mjpeg_stream(idle_timeout: float = FEED_IDLE_TIMEOUT_SECONDS):
+    last_sent = time.monotonic()
     while True:
         with _frame_lock:
             frame = _current_frame
@@ -131,6 +139,9 @@ def _mjpeg_stream():
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
                 )
+                last_sent = time.monotonic()
+        if time.monotonic() - last_sent >= idle_timeout:
+            return
         time.sleep(0.05)
 
 

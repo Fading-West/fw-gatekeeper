@@ -584,6 +584,7 @@
         let statusInFlight = false;
         const STATUS_TIMEOUT_MS = 4000;
         const RECONNECTING_MESSAGE = "Kiosk reconnecting…";
+        const RECONNECTING_SETUP_MESSAGE = "Kiosk reconnecting… Setup incomplete (UI key missing) - ask a supervisor";
 
         function sessionStorageOrNull() {
             try { return window.sessionStorage; } catch (error) { return null; }
@@ -592,12 +593,23 @@
         // Reload only when the server is reachable: reloading into Firefox's
         // "Unable to connect" page would leave the kiosk stuck with no script.
         // A reload always comes back with supervisor controls locked.
+        // A hung request must not block the reload indefinitely.
+        async function fetchWithTimeout(url, init) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
+            try {
+                return await fetch(url, { ...init, signal: controller.signal });
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
         async function reloadKioskPage() {
             if (adminVisible) {
-                try { await fetch("/supervisor/lock", { method: "POST" }); } catch (error) { /* best effort */ }
+                try { await fetchWithTimeout("/supervisor/lock", { method: "POST" }); } catch (error) { /* best effort */ }
             }
             try {
-                const probe = await fetch("/health", { cache: "no-store" });
+                const probe = await fetchWithTimeout("/health", { cache: "no-store" });
                 if (!probe.ok) return;
             } catch (error) {
                 return;
@@ -718,8 +730,10 @@
 
         // Never let a failing kiosk look like the idle prompt or keep showing
         // a frozen (possibly previous worker's) camera frame.
-        function showReconnecting() {
-            statusText.textContent = RECONNECTING_MESSAGE;
+        function showReconnecting(httpStatus) {
+            // 503 means KIOSK_UI_KEY is missing: reloading cannot fix it, so
+            // tell staff on screen instead of only in the service log.
+            statusText.textContent = httpStatus === 503 ? RECONNECTING_SETUP_MESSAGE : RECONNECTING_MESSAGE;
             applyStatusState("RECONNECTING");
             stateValue.textContent = "State: RECONNECTING";
             workerIdValue.textContent = "ID: --";
@@ -736,7 +750,7 @@
                 const response = await fetch("/status", { cache: "no-store", signal: controller.signal });
                 if (!response.ok) {
                     connection.statusFailed(response.status);
-                    showReconnecting();
+                    showReconnecting(response.status);
                     return;
                 }
                 const data = await response.json();

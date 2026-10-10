@@ -10,6 +10,9 @@
     // /status answers these when the UI auth cookie is missing, stale or cannot
     // be issued. Reloading "/" is the only way to pick up a fresh cookie.
     const AUTH_RELOAD_STATUSES = [401, 403, 503];
+    // A scan result (e.g. "Welcome, <name>") is only held for a few seconds;
+    // a restart reload must not blank it out mid-display.
+    const SCAN_RESULT_STATES = ["CLOCKED_IN", "ALREADY_CLOCKED", "NOT_RECOGNIZED", "WAITING_FOR_BLINK"];
     const FEED_RETRY_BASE_MS = 1000;
     const FEED_RETRY_MAX_MS = 30000;
     const FEED_FIRST_FRAME_TIMEOUT_MS = 10000;
@@ -19,6 +22,10 @@
         const reload = options.reload;
         const storage = options.storage || null;
         const reloadBackoffMs = options.reloadBackoffMs ?? RELOAD_BACKOFF_MS;
+        // Monotonic time since this page loaded (performance.now()). It does
+        // not depend on storage or the wall clock, so a page never reloads
+        // itself again within the backoff even when sessionStorage is blocked.
+        const pageAge = options.pageAge || (() => root.performance.now());
         let memoryLastReloadAt = null;
         let bootId = null;
         let pendingBootId = null;
@@ -41,6 +48,7 @@
 
         // Returns true when a reload was started, false when backoff deferred it.
         function requestReload(reason) {
+            if (pageAge() < reloadBackoffMs) return false;
             const at = now();
             const last = lastReloadAt();
             // A clock that moved backwards must not block recovery forever.
@@ -67,7 +75,8 @@
                 // The kiosk service restarted: reload to drop stale state and
                 // pick up new UI code. If backoff defers it, keep retrying on
                 // later polls and reconnect the feed once in the meantime.
-                if (requestReload("restart")) return { failing: false, reloading: true, reconnectFeed: false };
+                const showingResult = SCAN_RESULT_STATES.includes(data.state);
+                if (!showingResult && requestReload("restart")) return { failing: false, reloading: true, reconnectFeed: false };
                 const firstSeen = pendingBootId !== reportedBootId;
                 pendingBootId = reportedBootId;
                 return { failing: false, reloading: false, reconnectFeed: recovered || firstSeen };
