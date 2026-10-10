@@ -1,6 +1,8 @@
 """Configuration for FW Gatekeeper Pi kiosk."""
 
 import os
+import math
+import warnings
 from pathlib import Path
 
 # Server (optional if running fully offline)
@@ -33,6 +35,10 @@ LIVENESS_WAIT_SEC = 8  # How long the kiosk waits for a blink after a face match
 # look-alikes. Tune per site with the Recognition Lab, via config_local.py.
 RECOGNITION_MATCH_THRESHOLD = 0.45
 RECOGNITION_NEAR_MISS_MARGIN = 0.08
+# Required separation must exceed this value, independent of near-miss labelling.
+# Keep the default equal to LOW_MARGIN_THRESHOLD in convex/shiftExceptions.ts.
+RECOGNITION_MIN_MARGIN = 0.08
+_SERVER_LOW_MARGIN_THRESHOLD = RECOGNITION_MIN_MARGIN
 RECOGNITION_EMBEDDING_WINDOW = 3
 RECOGNITION_UNKNOWN_STREAK = 3
 RECOGNITION_MODEL_VERSION = "mobilefacenet-buffalo_s-onnx"
@@ -66,3 +72,23 @@ try:
     from config_local import *  # noqa: F401, F403
 except ImportError:
     pass
+
+# Validate after config_local.py so an invalid override cannot disable the guard.
+# Cosine scores range from -1 to 1, so a positive margin can be at most 2.
+if (
+    isinstance(RECOGNITION_MIN_MARGIN, bool)
+    or not isinstance(RECOGNITION_MIN_MARGIN, (int, float))
+    or not math.isfinite(RECOGNITION_MIN_MARGIN)
+    or not 0 < RECOGNITION_MIN_MARGIN <= 2
+):
+    raise ValueError("RECOGNITION_MIN_MARGIN must be a finite number greater than 0 and at most 2")
+
+# Allow intentional site tuning, but make the server review mismatch visible.
+if RECOGNITION_MIN_MARGIN < _SERVER_LOW_MARGIN_THRESHOLD:
+    warnings.warn(
+        f"RECOGNITION_MIN_MARGIN={RECOGNITION_MIN_MARGIN} is below server "
+        f"LOW_MARGIN_THRESHOLD={_SERVER_LOW_MARGIN_THRESHOLD}; accepted scans at or "
+        "below the server threshold may be flagged for review.",
+        RuntimeWarning,
+        stacklevel=2,
+    )

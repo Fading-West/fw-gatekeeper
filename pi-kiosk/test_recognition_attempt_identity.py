@@ -71,7 +71,7 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
         self.assertNotIn('legacySourceAttemptId', first)
         self.assertEqual(database.count_unsynced_recognition_attempts(), 1)
 
-    def _write_result(self, result):
+    def _write_result(self, result, decision="accepted"):
         # Execute the production writer without importing camera/model hardware.
         tree = ast.parse(Path(__file__).with_name("main.py").read_text())
         writer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
@@ -79,7 +79,31 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
         namespace = {"database": database, "config": config,
                      "_now_iso": lambda: "2026-09-01T08:00:00"}
         exec(compile(ast.Module(body=[writer], type_ignores=[]), "main.py", "exec"), namespace)
-        namespace["_write_recognition_attempt"](result, "accepted")
+        namespace["_write_recognition_attempt"](result, decision)
+
+    def test_ambiguous_evidence_survives_a_400_then_uploads_without_changing_scores(self):
+        worker = database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
+        result = {"face_loc": (10, 100, 100, 10), "candidate_worker_id": worker,
+                  "candidate_worker_name": "Alex", "server_worker_id": SERVER_ID,
+                  "best_score": .7078, "second_best_score": .7064,
+                  "score_margin": .7078 - .7064, "threshold": config.RECOGNITION_MATCH_THRESHOLD,
+                  "liveness_confirmed": False, "model_version": config.RECOGNITION_MODEL_VERSION}
+        self._write_result(result, "rejected_ambiguous")
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=400, text='bad request')) as post:
+            self.assertFalse(sync.sync_recognition_attempts())
+            first = post.call_args.kwargs['json']['attempts'][0]
+        self.assertEqual(database.count_unsynced_recognition_attempts(), 1)
+        self.assertEqual(first['decision'], 'rejected_ambiguous')
+        self.assertEqual(first['candidateWorkerId'], SERVER_ID)
+        self.assertEqual(first['candidateWorkerName'], 'Alex')
+        self.assertEqual(first['bestScore'], result['best_score'])
+        self.assertEqual(first['secondBestScore'], result['second_best_score'])
+        self.assertEqual(first['scoreMargin'], result['score_margin'])
+        self.assertTrue(first['faceDetected'])
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=201)) as post:
+            self.assertTrue(sync.sync_recognition_attempts())
+            self.assertEqual(post.call_args.kwargs['json']['attempts'][0], first)
+        self.assertEqual(database.count_unsynced_recognition_attempts(), 0)
 
     def test_captured_identity_survives_deletion_before_write_and_upload_retry(self):
         worker = database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
