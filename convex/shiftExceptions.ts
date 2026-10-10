@@ -4,7 +4,8 @@ import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { getFactoryLocalDateKey, getFactoryLocalTimestamp, getPreviousFactoryLocalDateKey, getNextFactoryLocalDateKey } from "./localDate";
+import { createShiftClock, MAX_PLAUSIBLE_SHIFT_HOURS, pairShiftEvents } from "./attendanceShifts";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
@@ -326,17 +327,25 @@ function withReview(exception: ShiftException, review: any): ShiftException {
   };
 }
 
-function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution">): ShiftException {
+function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution">, reviewOnlyReason?: string): ShiftException {
   const exception: Omit<ShiftException, "suggested_resolution"> = {
     ...input,
     status: "open",
     review_note: null,
     reviewed_at: null,
   };
-  return {
+  const result: ShiftException = {
     ...exception,
     suggested_resolution: buildSuggestedResolution(exception),
   };
+  if (reviewOnlyReason) {
+    result.suggested_resolution = {
+      ...suggestedResolutionBase(exception),
+      action: "review_only", label: "Review shift evidence", cta: "Review source",
+      reason: reviewReason(exception, reviewOnlyReason), disabled_reason: reviewOnlyReason,
+    };
+  }
+  return result;
 }
 
 function summarize(exceptions: ShiftException[]) {
@@ -365,8 +374,9 @@ function summarize(exceptions: ShiftException[]) {
 
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
-  const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
-  const [workers, attendance, schedules, reviews, recognitionAttempts] = await Promise.all([
+  const now = new Date().toISOString();
+  const factoryNow = getFactoryLocalTimestamp(now)!;
+  const [workers, attendance, schedules, reviews, recognitionAttempts, previousAttendance, nextAttendance] = await Promise.all([
     ctx.db
       .query("workers")
       .withIndex("by_active", (q: any) => q.eq("active", true))
@@ -381,16 +391,27 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       .withIndex("by_date", (q: any) => q.eq("date", date))
       .collect(),
     listAllRecognitionAttemptsByFactoryDate(ctx, { date }),
+    // Existing helpers bound indexed reads and apply corrections, factory-local
+    // membership and chronological DST keys. Never infer pairs from raw scans.
+    listEffectiveAttendanceByTimestampRange(ctx, getPreviousFactoryLocalDateKey(date)),
+    listEffectiveAttendanceByTimestampRange(ctx, getNextFactoryLocalDateKey(date)),
   ]);
 
   const reviewsByKey = new Map(reviews.map((review: any) => [review.exceptionKey, review]));
   const eventsByWorker = new Map<string, any[]>();
+  const pairingEventsByWorker = new Map<string, any[]>();
   const exceptions: ShiftException[] = [];
+  const shiftClock = createShiftClock();
 
   for (const event of attendance) {
     const events = eventsByWorker.get(event.workerId) || [];
     events.push(event);
     eventsByWorker.set(event.workerId, events);
+  }
+  for (const event of [...previousAttendance, ...attendance, ...nextAttendance]) {
+    const events = pairingEventsByWorker.get(event.workerId) || [];
+    events.push(event);
+    pairingEventsByWorker.set(event.workerId, events);
   }
 
   for (const worker of workers) {
@@ -398,10 +419,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     const workerId = String(worker._id);
     const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
-    const clockOuts = workerEvents.filter((event) => event.eventType === "clock_out");
     const firstIn = clockIns[0] || null;
     const lastEvent = workerEvents[workerEvents.length - 1] || null;
-    const lastOut = clockOuts[clockOuts.length - 1] || null;
+    const { pairedClockIns, pairedClockOuts, overlongClockOuts, clock } = pairShiftEvents(pairingEventsByWorker.get(workerId) || [], shiftClock);
     const workerName = worker.name || "Unknown worker";
     const department = worker.department || null;
     const baseLinks = {
@@ -483,9 +503,11 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       }
     }
 
-    if (schedule && lastEvent?.eventType === "clock_in") {
+    const unfinishedShift = lastEvent?.eventType === "clock_in" && !pairedClockIns.has(lastEvent);
+    if (schedule && unfinishedShift) {
       const shouldFlagMissingClockOut = scheduleTimeHasPassed(date, schedule.endTime, factoryNow);
       if (shouldFlagMissingClockOut) {
+        const inProgress = clock.isPlausibleShift(lastEvent, { timestamp: now });
         const key = `${date}:missing_clock_out:${workerId}`;
         exceptions.push(createException({
           key,
@@ -493,7 +515,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           type: "missing_clock_out",
           severity: "warning",
           title: `${workerName} is still clocked in`,
-          description: `${workerName} last scanned in at ${lastEvent.timestamp.slice(11, 16)} and has no clock-out after the ${formatTime(schedule.endTime)} scheduled end.`,
+          description: inProgress
+            ? `${workerName} has no clock-out yet after the ${formatTime(schedule.endTime)} scheduled end. The shift may still be in progress across midnight within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window. Confirm its status and acknowledge it in closeout notes; do not invent an exit punch.`
+            : `${workerName} last scanned in at ${lastEvent.timestamp.slice(11, 16)} and has no clock-out after the ${formatTime(schedule.endTime)} scheduled end.`,
           worker_id: workerId,
           worker_name: workerName,
           department,
@@ -510,7 +534,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
             ...baseLinks,
             activity_log: getActivityLogHref(date, workerId, String(lastEvent._id).startsWith("correction:") ? null : String(lastEvent._id)),
           },
-        }));
+        }, inProgress ? "The shift may still be in progress; confirm its status before adding a clock-out." : undefined));
       }
     }
 
@@ -518,8 +542,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       const event = workerEvents[index];
       const previous = workerEvents[index - 1];
       const repeated = previous && previous.eventType === event.eventType;
-      const firstEventIsOut = index === 0 && event.eventType === "clock_out";
-      if (!repeated && !firstEventIsOut) continue;
+      const firstEventIsOut = index === 0 && event.eventType === "clock_out" && !pairedClockOuts.has(event);
+      const overlong = overlongClockOuts.has(event);
+      if (!repeated && !firstEventIsOut && !overlong) continue;
 
       // Use the source ID, including synthetic correction IDs: independent scans
       // can share a timestamp and type. Timestamp-only legacy reviews cannot be
@@ -529,11 +554,13 @@ export async function buildShiftExceptions(ctx: any, date: string) {
         key,
         date,
         type: "scan_sequence",
-        severity: firstEventIsOut ? "critical" : "warning",
+        severity: firstEventIsOut || overlong ? "critical" : "warning",
         title: `${workerName} has a scan sequence issue`,
-        description: firstEventIsOut
-          ? `${workerName} clocked out without a prior clock-in scan today.`
-          : `${workerName} has repeated ${event.eventType.replace("_", " ")} scans without the opposite event between them.`,
+        description: overlong
+          ? `${workerName}'s clock-out exceeds the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour maximum shift. Review both punches; the exit is not automatically a mistaken scan.`
+          : firstEventIsOut
+            ? `${workerName} clocked out without a plausible prior clock-in within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window.`
+            : `${workerName} has repeated ${event.eventType.replace("_", " ")} scans without the opposite event between them.`,
         worker_id: workerId,
         worker_name: workerName,
         department,
@@ -550,7 +577,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           ...baseLinks,
           activity_log: getActivityLogHref(date, workerId, String(event._id).startsWith("correction:") ? null : String(event._id)),
         },
-      }));
+      }, overlong ? "The interval exceeds the maximum shift; review both punches before correcting attendance." : undefined));
     }
   }
 

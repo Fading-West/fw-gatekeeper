@@ -298,6 +298,21 @@ Flash → SSH → Connect hardware → Run setup script (with unique KIOSK_ID) �
 - **Workers** page to manage/deactivate employees
 - **Kiosks** page to monitor kiosk health
 
+Shift exceptions and closeout pair effective punches on the selected factory
+date (America/Chicago) and its two neighboring dates. Completed overnight shifts
+belong to the clock-in date: a next-day exit closes that shift and is not an orphan
+exit on the following date. The maximum inferred shift is 16 elapsed hours
+(`MAX_PLAUSIBLE_SHIFT_HOURS` in `convex/attendanceShifts.ts`), including DST nights.
+Longer intervals remain review items and do not automatically suggest voiding the
+exit. Existing overnight schedule validation is unchanged.
+
+Before the exit happens, an open shift after its scheduled end remains a warning
+and a closeout acknowledgement blocker, matching existing closeout behavior.
+Within the 16-hour window it explicitly says the shift may still be in progress,
+offers review only, and requires supervisors to confirm its status and record an
+acknowledgement note before completing closeout. It never assumes a future exit
+or suggests inventing one to clear an in-progress shift.
+
 ### Monitor Display
 
 Each kiosk runs a local web UI (Flask on port 5555) displayed fullscreen via Firefox ESR in kiosk mode. The display shows:
