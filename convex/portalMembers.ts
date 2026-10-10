@@ -1,4 +1,4 @@
-import { getAuthUserId, retrieveAccount, modifyAccountCredentials, invalidateSessions } from '@convex-dev/auth/server';
+import { getAuthUserId } from '@convex-dev/auth/server';
 import { ConvexError, v } from 'convex/values';
 import { Scrypt } from 'lucia';
 
@@ -7,7 +7,7 @@ import { internal } from './_generated/api';
 import { assertPortalRole, assertPortalMember, assertPasswordChanged, hasCurrentPortalSession } from './access';
 import { writeAuditLog } from './audit';
 import type { Doc } from './_generated/dataModel';
-import type { ActionCtx, MutationCtx } from './_generated/server';
+import type { ActionCtx, MutationCtx, QueryCtx } from './_generated/server';
 
 const portalMemberRole = v.union(v.literal('admin'), v.literal('enrollment'), v.literal('viewer'));
 const currentMemberValidator = v.object({
@@ -357,50 +357,119 @@ export const resetPortalAccountPassword = action({
   },
 });
 
-// The 0.0.95 auth helpers only need runMutation. A narrow adapter lets them
-// call auth:store as nested mutations, preserving one transaction for current
-// password verification, replacement, revocation, flag clearing, and audit.
-// Keeping this atomic prevents an intervening admin reset from being overwritten.
-export const changeOwnPassword = internalMutation({
-  args: { currentPassword: v.string(), newPassword: v.string() },
-  returns: v.union(v.null(), v.literal('INVALID_CURRENT_PASSWORD'), v.literal('TOO_MANY_ATTEMPTS')),
+// Self-service password change.
+//
+// In @convex-dev/auth 0.0.95, signIn is an action whose Password provider calls
+// retrieveAccount/modifyAccountCredentials. Those helpers are thin action-side
+// wrappers around the auth:store mutation, and the scrypt verify or hash runs
+// inside that mutation: one scrypt operation per transaction. A password change
+// needs two verifies and one hash, which can exceed Convex's 1 s mutation limit
+// on a slow host. Members with mustChangePassword would then be locked out.
+//
+// This flow therefore runs all scrypt work in the public action. The internal
+// mutations below only read, compare and write rows. They never receive a
+// plaintext password. The final mutation is the single atomic write, and it
+// aborts if the credential or flag changed after the action read them.
+
+// The @convex-dev/auth default; convex/auth.ts does not override
+// signIn.maxFailedAttempsPerHour. The bucket row and refill formula are the
+// library's, so sign-in and password change share one failed-attempt budget.
+const MAX_FAILED_PASSWORD_ATTEMPTS_PER_HOUR = 10;
+
+const ownPasswordAccountValidator = v.object({
+  accountId: v.id('authAccounts'),
+  storedHash: v.string(),
+  mustChangePassword: v.boolean(),
+});
+type OwnPasswordAccount = typeof ownPasswordAccountValidator.type;
+
+async function readOwnPasswordAccount(ctx: QueryCtx | MutationCtx) {
+  const member = await assertPortalMember(ctx);
+  const account = await ctx.db.query('authAccounts')
+    .withIndex('userIdAndProvider', q => q.eq('userId', member.userId).eq('provider', 'password')).unique();
+  if (!account?.secret) throw new ConvexError('Password account not found');
+  return { member, account, secret: account.secret };
+}
+
+// Optimistic concurrency check. The action verified passwords against
+// `expected.storedHash`. If an admin reset, another password change, or a flag
+// change committed since then, that verification is stale. Abort and let the
+// member retry from a fresh read.
+async function assertOwnPasswordAccountUnchanged(ctx: MutationCtx, expected: OwnPasswordAccount) {
+  const { member, account, secret } = await readOwnPasswordAccount(ctx);
+  if (account._id !== expected.accountId || secret !== expected.storedHash
+    || (member.mustChangePassword === true) !== expected.mustChangePassword) {
+    throw new ConvexError('PASSWORD_CHANGE_CONFLICT');
+  }
+  return { member, account };
+}
+
+export const getOwnPasswordAccount = internalQuery({
+  args: {},
+  returns: ownPasswordAccountValidator,
+  handler: async (ctx): Promise<OwnPasswordAccount> => {
+    const { member, account, secret } = await readOwnPasswordAccount(ctx);
+    return { accountId: account._id, storedHash: secret, mustChangePassword: member.mustChangePassword === true };
+  },
+});
+
+// Consume one failed-attempt token before the action verifies the current
+// password. The library records the failure after its in-mutation verify. With
+// the verify now in the action, recording afterwards would let concurrent
+// guesses all pass the limit check before any failure is recorded. Reserving
+// first lets Convex OCC serialize concurrent reservations on the bucket row (or
+// on its empty index range). At most the remaining budget of verifies can be
+// in flight. A wrong guess or a crashed action keeps the token consumed. Only a
+// verified current password resets the bucket, as the library does.
+export const reserveCurrentPasswordAttempt = internalMutation({
+  args: ownPasswordAccountValidator,
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const member = await assertPortalMember(ctx);
-    assertValidPassword(args.newPassword);
-    const account = await ctx.db.query('authAccounts')
-      .withIndex('userIdAndProvider', q => q.eq('userId', member.userId).eq('provider', 'password')).unique();
-    if (!account) throw new ConvexError('Password account not found');
-    const authCtx = { runMutation: ctx.runMutation } as unknown as ActionCtx;
-    try {
-      const verified = await retrieveAccount(authCtx, {
-        provider: 'password', account: { id: account.providerAccountId, secret: args.currentPassword },
-      });
-      if (verified.user._id !== member.userId) throw new ConvexError('Unauthorized');
-    } catch (error) {
-      // Return instead of throwing here so Convex commits the auth library's
-      // failed-attempt counter. The public action reports the error afterward.
-      if (error instanceof Error && error.message === 'InvalidSecret') return 'INVALID_CURRENT_PASSWORD' as const;
-      if (error instanceof Error && error.message === 'TooManyFailedAttempts') return 'TOO_MANY_ATTEMPTS' as const;
-      throw error;
-    }
-    // Use the same verifier as Convex Auth's default Password provider against
-    // the stored hash. This includes NFKC normalization and UTF-8 encoding
-    // equivalences, without retaining a plaintext temporary password.
-    if (await new Scrypt().verify(account.secret ?? '', args.newPassword)) {
-      throw new ConvexError('Choose a password different from your current password');
-    }
-    await modifyAccountCredentials(authCtx, {
-      provider: 'password', account: { id: account.providerAccountId, secret: args.newPassword },
-    });
+    const { account } = await assertOwnPasswordAccountUnchanged(ctx, args);
+    const limit = await ctx.db.query('authRateLimits')
+      .withIndex('identifier', q => q.eq('identifier', account._id)).unique();
+    const now = Date.now();
+    const attemptsLeft = limit
+      ? Math.min(MAX_FAILED_PASSWORD_ATTEMPTS_PER_HOUR, limit.attemptsLeft
+        + (now - limit.lastAttemptTime) * MAX_FAILED_PASSWORD_ATTEMPTS_PER_HOUR / 3_600_000)
+      : MAX_FAILED_PASSWORD_ATTEMPTS_PER_HOUR;
+    if (attemptsLeft < 1) throw new ConvexError('TOO_MANY_ATTEMPTS');
+    if (limit) await ctx.db.patch(limit._id, { attemptsLeft: attemptsLeft - 1, lastAttemptTime: now });
+    else await ctx.db.insert('authRateLimits', { identifier: account._id, attemptsLeft: attemptsLeft - 1, lastAttemptTime: now });
+    return null;
+  },
+});
+
+export const recordCurrentPasswordVerified = internalMutation({
+  args: ownPasswordAccountValidator,
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    // The hash must still match. Otherwise a password known only before an
+    // intervening reset could clear the failed-attempt budget.
+    const { account } = await assertOwnPasswordAccountUnchanged(ctx, args);
+    const limit = await ctx.db.query('authRateLimits')
+      .withIndex('identifier', q => q.eq('identifier', account._id)).unique();
+    if (limit) await ctx.db.delete(limit._id);
+    return null;
+  },
+});
+
+export const completePasswordChange = internalMutation({
+  args: { ...ownPasswordAccountValidator.fields, newHash: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { newHash, ...expected }) => {
+    const { member, account } = await assertOwnPasswordAccountUnchanged(ctx, expected);
+    await ctx.db.patch(account._id, { secret: newHash });
     const latestSession = await ctx.db.query('authSessions')
       .withIndex('userId', q => q.eq('userId', member.userId)).order('desc').first();
     const cutoff = Math.max(Date.now(), latestSession?._creationTime ?? 0, member.sessionRevokedAt ?? 0);
-    await invalidateSessions(authCtx, { userId: member.userId });
     // Session deletion alone cannot revoke already-issued JWTs. The cutoff
-    // denies every old JWT immediately; the user signs in with the new password.
+    // denies every old JWT immediately, including the caller's, and the bounded
+    // batch (with scheduled continuation) deletes the session rows.
     await ctx.db.patch(member._id, {
       mustChangePassword: false, sessionRevokedAt: cutoff, updatedAt: new Date().toISOString(),
     });
+    await revokeSessionBatch(ctx, member.userId, cutoff);
     await writeAuditLog(ctx, {
       actorUserId: member.userId, action: 'portalMembers.changePassword',
       targetTable: 'portalMembers', targetId: member._id,
@@ -413,8 +482,23 @@ export const changePassword = action({
   args: { currentPassword: v.string(), newPassword: v.string() },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
-    const error = await ctx.runMutation(internal.portalMembers.changeOwnPassword, args);
-    if (error) throw new ConvexError(error);
+    const snapshot: OwnPasswordAccount = await ctx.runQuery(internal.portalMembers.getOwnPasswordAccount, {});
+    assertValidPassword(args.newPassword);
+    await ctx.runMutation(internal.portalMembers.reserveCurrentPasswordAttempt, snapshot);
+    // The same helpers as the configured Password provider's default crypto
+    // (Lucia Scrypt), so NFKC normalization and UTF-8 handling match sign-in.
+    const scrypt = new Scrypt();
+    if (!(await scrypt.verify(snapshot.storedHash, args.currentPassword))) {
+      throw new ConvexError('INVALID_CURRENT_PASSWORD');
+    }
+    await ctx.runMutation(internal.portalMembers.recordCurrentPasswordVerified, snapshot);
+    // Reuse is checked against the stored hash, so no plaintext temporary
+    // password is ever retained.
+    if (await scrypt.verify(snapshot.storedHash, args.newPassword)) {
+      throw new ConvexError('Choose a password different from your current password');
+    }
+    const newHash = await scrypt.hash(args.newPassword);
+    await ctx.runMutation(internal.portalMembers.completePasswordChange, { ...snapshot, newHash });
     return null;
   },
 });

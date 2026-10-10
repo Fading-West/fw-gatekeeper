@@ -45,6 +45,7 @@ it('preserves password whitespace, clears browser auth, and returns to sign-in a
 it.each([
   ['INVALID_CURRENT_PASSWORD', 'Current password is incorrect.'],
   ['TOO_MANY_ATTEMPTS', 'Too many attempts. Try again later.'],
+  ['PASSWORD_CHANGE_CONFLICT', 'Your account changed while the password was being updated. Try again.'],
 ])('shows an actionable %s error without signing out', async (code, message) => {
   changePassword.mockRejectedValue(new ConvexError(code));
   const tree = await form();

@@ -31,6 +31,7 @@ export default function ChangePasswordPage() {
       const code = caught instanceof ConvexError ? caught.data : null;
       setError(code === 'INVALID_CURRENT_PASSWORD' ? 'Current password is incorrect.'
         : code === 'TOO_MANY_ATTEMPTS' ? 'Too many attempts. Try again later.'
+        : code === 'PASSWORD_CHANGE_CONFLICT' ? 'Your account changed while the password was being updated. Try again.'
         : caught instanceof Error ? caught.message : 'Unable to change password.');
       setLoading(false);
       return;

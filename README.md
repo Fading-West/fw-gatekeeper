@@ -538,7 +538,11 @@ least 8 characters, uppercase and lowercase letters, and a number or symbol.
 Members can also visit `/change-password` to change their own password anytime.
 A successful change records `portalMembers.changePassword` in the audit log,
 revokes all existing sessions (including the current one), and requires a fresh
-sign-in. Wrong-current-password attempts use Convex Auth's rate limiting.
+sign-in. Wrong-current-password attempts share Convex Auth's sign-in
+failed-attempt budget (10 per hour per account). Password hashing and
+verification run in a Convex action; the final mutation only writes the new
+hash and aborts with `PASSWORD_CHANGE_CONFLICT` (retry) if the credential or
+flag changed meanwhile.
 
 Deploy the Convex schema/functions together with the portal update. The schema
 adds optional `portalMembers.mustChangePassword`; existing records without the
