@@ -136,7 +136,7 @@ class PrivateDataPermissionsTests(unittest.TestCase):
             self.assertIsNone(sync._download_photo("synthetic-id", "https://photo.invalid"))
         self.assertEqual(list(Path(config.PHOTO_DIR).iterdir()), [])
 
-    def test_skipped_sync_row_logs_only_its_identifier(self):
+    def test_skipped_sync_row_logs_only_its_position(self):
         database.init_db()
         row = {"id": "synthetic-id", "active": True,
                "face_encoding": [0.123456789] * 512,
@@ -145,7 +145,7 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         with mock.patch.object(sync.requests, "get", return_value=response), self.assertLogs("sync") as logs:
             self.assertTrue(sync.sync_workers())
         output = "\n".join(logs.output)
-        self.assertIn("server_id=synthetic-id", output)
+        self.assertIn("row=0", output)
         for sensitive in ("0.123456789", "face_encoding", row["photo_url"], "photo_url"):
             self.assertNotIn(sensitive, output)
 
@@ -161,18 +161,20 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         with mock.patch.object(sync.requests, "get", side_effect=sync.requests.RequestException(url)), \
              self.assertLogs("sync") as logs:
             self.assertIsNone(sync._download_photo("synthetic-id", url))
-        self.assertIn("server_id=synthetic-id", "\n".join(logs.output))
+        self.assertIn("error=RequestException", "\n".join(logs.output))
         self.assertNotIn(url, "\n".join(logs.output))
 
     def test_malformed_worker_identifier_cannot_log_nested_sensitive_fields(self):
         database.init_db()
         # Legacy responses also need type validation before an identifier can
         # be interpolated into a log or converted to a stored server id.
-        identifier = {"face_encoding": ["private-encoding-sentinel"],
-                      "photo_url": "https://photo.invalid/private-token",
-                      "token": "private-auth-sentinel"}
-        for name in (None, "Synthetic worker"):
-            with self.subTest(name=name):
+        private = {"face_encoding": ["private-encoding-sentinel"],
+                   "photo_url": "https://photo.invalid/private-token",
+                   "token": "private-auth-sentinel"}
+        for identifier, name in ((identifier, name)
+                                 for identifier in (private, [private], 42, 1.5, True)
+                                 for name in (None, "Synthetic worker")):
+            with self.subTest(identifier=identifier, name=name):
                 row = {"id": identifier, "name": name, "active": True,
                        "face_encoding": [0.5] * 512}
                 response = mock.Mock(status_code=200, json=lambda: {"workers": [row]})
@@ -180,9 +182,9 @@ class PrivateDataPermissionsTests(unittest.TestCase):
                      self.assertLogs("sync") as logs:
                     self.assertFalse(sync.sync_workers())
                 output = "\n".join(logs.output)
-                self.assertIn("Worker sync row id must be a string", output)
+                self.assertIn("error=ValueError", output)
                 for sensitive in ("face_encoding", "photo_url", "private-encoding-sentinel",
-                                  identifier["photo_url"], identifier["token"]):
+                                  private["photo_url"], private["token"]):
                     self.assertNotIn(sensitive, output)
                 self.assertEqual(database.get_all_workers(), [])
                 self.assertIsNone(database.get_sync_state("last_worker_sync"))
@@ -193,7 +195,7 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         service = unit.split("[Service]\n", 1)[1].split("[Install]", 1)[0]
         self.assertIn("\nUMask=0077\n", "\n" + service)
         self.assertIn("User=$KIOSK_USER", service)
-        command = 'chmod -R go-rwx "$INSTALL_DIR/pi-kiosk/data"'
+        command = source.split('# Tighten pre-upgrade databases, sidecars, photos and directories too.\n', 1)[1].split('\n# Disable console', 1)[0]
         self.assertIn(command, source)
         self.assertLess(source.index('chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"'), source.index(command))
         directory = self.root / "pi-kiosk/data/faces"
@@ -208,6 +210,69 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         self.assert_mode(directory.parent, 0o700)
         self.assert_mode(directory, 0o700)
         self.assert_mode(photo, 0o600)
+        subprocess.run(["bash", "-c", command], env=os.environ | {"INSTALL_DIR": str(self.root)}, check=True)
+        self.assert_mode(photo, 0o600)
+
+    def test_setup_refuses_symlinked_data_root_and_skips_nested_symlinks(self):
+        source = Path(__file__).with_name('setup.sh').read_text()
+        command = source.split('# Tighten pre-upgrade databases, sidecars, photos and directories too.\n', 1)[1].split('\n# Disable console', 1)[0]
+        outside = self.root / 'outside'
+        outside.mkdir(mode=0o755)
+        photo = outside / 'photo.jpg'
+        photo.write_bytes(b'outside-photo')
+        photo.chmod(0o644)
+        install = self.root / 'install'
+        (install / 'pi-kiosk').mkdir(parents=True)
+        data = install / 'pi-kiosk/data'
+        data.symlink_to(outside, target_is_directory=True)
+        result = subprocess.run(['bash', '-c', command], env=os.environ | {'INSTALL_DIR': str(install)},
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('symlinked data directory', result.stdout)
+        self.assert_mode(outside, 0o755)
+        self.assert_mode(photo, 0o644)
+        data.unlink()
+        data.mkdir(mode=0o755)
+        (data / 'linked-directory').symlink_to(outside, target_is_directory=True)
+        (data / 'linked-file').symlink_to(photo)
+        subprocess.run(['bash', '-c', command], env=os.environ | {'INSTALL_DIR': str(install)}, check=True)
+        self.assert_mode(data, 0o700)
+        self.assert_mode(outside, 0o755)
+        self.assert_mode(photo, 0o644)
+
+    def test_legacy_string_id_formats_keep_their_identity(self):
+        database.init_db()
+        for identifier in ('k57a1b2c3d4e5f6g7h8j9k0m1n2p3q4r',
+                           '104fa9e8-4a1e-4f1d-9cbc-3d933cb47422',
+                           '104FA9E8-4A1E-4F1D-9CBC-3D933CB47422', '42', 'legacy-id'):
+            with self.subTest(identifier=identifier):
+                row = {'id': identifier, 'name': 'Synthetic worker', 'active': True,
+                       'face_encoding': [0.5] * 128, 'photo_url': None}
+                response = mock.Mock(status_code=200, json=lambda: {'workers': [row]})
+                with mock.patch.object(sync.requests, 'get', return_value=response):
+                    self.assertTrue(sync.sync_workers())
+                self.assertIn(identifier, database.get_synced_server_ids())
+                # Legacy explicit deactivations must use the exact same ID.
+                row['active'] = False
+                with mock.patch.object(sync.requests, 'get', return_value=response):
+                    self.assertTrue(sync.sync_workers())
+                self.assertNotIn(identifier, database.get_synced_server_ids())
+
+    def test_string_identifiers_cannot_expose_private_data_in_logs(self):
+        database.init_db()
+        private = 'https://photo.invalid/private-token?face_encoding=private-encoding'
+        for identifier, name in ((private, None), (private, 'Synthetic worker'),
+                                 ('synthetic-id', private), ('../' + private, 'Synthetic worker')):
+            with self.subTest(identifier=identifier, name=name):
+                row = {'id': identifier, 'name': name, 'active': True,
+                       'face_encoding': [0.5] * 512, 'photo_url': None}
+                response = mock.Mock(status_code=200, json=lambda: {'workers': [row]})
+                with mock.patch.object(sync.requests, 'get', return_value=response), \
+                     self.assertLogs(level='INFO') as logs:
+                    sync.sync_workers()
+                output = '\n'.join(logs.output)
+                for sensitive in ('photo.invalid', 'private-token', 'private-encoding', 'face_encoding'):
+                    self.assertNotIn(sensitive, output)
 
 
 if __name__ == "__main__":

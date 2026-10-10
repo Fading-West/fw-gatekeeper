@@ -364,7 +364,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         # cleanup failure must not prevent subsequent revocations either.
         revocation_error = None
         revoked_server_ids: set[str] = set()
-        for w in workers:
+        for row_index, w in enumerate(workers):
             if (not isinstance(w, dict) or not isinstance(w.get("id"), str) or not w["id"] or
                 type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
                 continue
@@ -377,10 +377,10 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             revoked_server_ids.add(w["id"])
             try:
                 if database.remove_worker_by_server_id(w["id"], strict_cleanup=receipt_protocol):
-                    logger.info("Removed revoked worker template (server_id=%s)", w["id"])
+                    logger.info("Removed revoked worker template (row=%d)", row_index)
             except Exception as exc:
                 revocation_error = revocation_error or exc
-                logger.warning("Worker revocation incomplete (server_id=%s): %s", w["id"], exc)
+                logger.warning("Worker revocation incomplete (row=%d, error=%s)", row_index, type(exc).__name__)
         if revocation_error:
             raise revocation_error
 
@@ -406,7 +406,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     raise ValueError("Receipt sync contains duplicate worker ids")
                 response_ids.add(w["id"])
 
-        for w in workers:
+        for row_index, w in enumerate(workers):
             if not isinstance(w, dict):
                 raise ValueError("Worker sync row must be an object")
             server_id = w.get("id")
@@ -432,13 +432,13 @@ def sync_workers(health: Optional[dict] = None) -> bool:
 
             if server_id and not is_active:
                 if database.remove_worker_by_server_id(str(server_id), strict_cleanup=receipt_protocol):
-                    logger.info("Removed deactivated worker (server_id=%s)", server_id)
+                    logger.info("Removed deactivated worker (row=%d)", row_index)
                 continue
 
             if not server_id or not name or encoding_data is None:
                 if receipt_protocol:
                     raise ValueError("Worker sync row has missing required fields")
-                logger.warning("Skipping worker sync row with missing required fields (server_id=%s)", server_id)
+                logger.warning("Skipping worker sync row with missing required fields (row=%d)", row_index)
                 continue
 
             try:
@@ -457,7 +457,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                 if photo_download:
                     staged_photo, photo_path = photo_download
                 elif receipt_protocol:
-                    raise ValueError(f"Worker photo download failed for {server_id}")
+                    raise ValueError("Worker photo download failed")
 
             try:
                 retired_photos = database.replaced_worker_photo_paths(
@@ -486,7 +486,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             finally:
                 if staged_photo and os.path.exists(staged_photo):
                     os.unlink(staged_photo)
-            logger.info("Synced worker (server_id=%s)", server_id)
+            logger.info("Synced worker (row=%d)", row_index)
 
         if full_roster:
             for stale_id in database.get_synced_server_ids() - seen_server_ids:
@@ -514,10 +514,11 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         return True
 
     except requests.RequestException as e:
-        logger.warning("Worker sync failed: %s", e)
+        logger.warning("Worker sync failed (error=%s)", type(e).__name__)
         return False
     except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
-        logger.error("Invalid sync response: %s", e)
+        # Exceptions can include paths derived from arbitrary legacy IDs.
+        logger.error("Invalid sync response (error=%s)", type(e).__name__)
         return False
 
 
@@ -573,8 +574,8 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
             try:
                 os.unlink(staged)
             except OSError:
-                logger.warning("Could not remove incomplete staged photo: %s", staged)
-        logger.warning("Failed to download photo (server_id=%s, error=%s)", name, type(e).__name__)
+                logger.warning("Could not remove incomplete staged photo")
+        logger.warning("Failed to download photo (error=%s)", type(e).__name__)
     return None
 
 

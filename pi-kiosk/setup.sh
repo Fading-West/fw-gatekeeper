@@ -276,7 +276,12 @@ fi
 echo "[8/8] Setting permissions..."
 chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
 # Tighten pre-upgrade databases, sidecars, photos and directories too.
-chmod -R go-rwx "$INSTALL_DIR/pi-kiosk/data"
+if [ -L "$INSTALL_DIR/pi-kiosk/data" ]; then
+  echo "❌ Refusing to change permissions through a symlinked data directory. Review its target and replace the symlink before rerunning setup."
+  exit 1
+fi
+# Do not follow symlinks within the tree or a replaced command-line root.
+find -P "$INSTALL_DIR/pi-kiosk/data" \( -type d -o -type f \) -exec chmod go-rwx {} +
 
 # Disable console screen blanking so the kiosk display never goes dark
 CMDLINE="$BOOT_DIR/cmdline.txt"

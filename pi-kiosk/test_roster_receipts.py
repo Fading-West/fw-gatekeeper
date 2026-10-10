@@ -60,6 +60,24 @@ class RosterReceiptTests(unittest.TestCase):
         self.assertIsNotNone(database.get_worker_by_name('Alex'))
         self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
 
+    def test_malformed_id_never_certifies_a_roster_or_removes_omitted_workers(self):
+        database.add_worker('Cached worker', ENCODING, server_id=SERVER_ID, employee_id='E1')
+        watermark = '2026-09-01T00:00:00Z'
+        database.set_sync_state('last_worker_sync', watermark)
+        for identifier in ({'photo_url': 'https://photo.invalid/private'}, ['private'],
+                           42, 1.5, True, None, ''):
+            with self.subTest(identifier=identifier):
+                malformed = {'id': identifier, 'name': 'Missing worker', 'active': True,
+                             'face_encoding': ENCODING.tolist(), 'photo_url': None}
+                posted, recognizer = self.cycle(roster([malformed]))
+                posted.assert_not_called()
+                recognizer.reload_faces.assert_called_once()
+                self.assertIsNotNone(database.get_worker_by_name('Cached worker'))
+                self.assertIsNone(database.get_worker_by_name('Missing worker'))
+                self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+                self.assertIsNone(database.get_sync_state('last_roster_applied_at'))
+                self.assertEqual(database.get_sync_state('last_worker_sync'), watermark)
+
     def test_reload_failure_then_retry_after_restart(self):
         database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
         failing = mock.Mock()

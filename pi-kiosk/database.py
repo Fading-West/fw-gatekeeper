@@ -424,7 +424,8 @@ def add_worker(
         worker_id = int(cursor.lastrowid)
 
     conn.commit()
-    logger.info("Saved worker: %s (id=%d, server_id=%s)", normalized_name, worker_id, stored_server_id)
+    # Sync values may contain private data even when their JSON type is valid.
+    logger.info("Saved worker (local_id=%d)", worker_id)
     return worker_id
 
 
@@ -467,7 +468,7 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     except (OSError, ValueError) as exc:
         if strict_cleanup:
             raise
-        logger.warning("Worker deactivated; thumbnail cleanup remains pending: %s", exc)
+        logger.warning("Worker deactivated; thumbnail cleanup remains pending (error=%s)", type(exc).__name__)
     return cursor.rowcount > 0
 
 
