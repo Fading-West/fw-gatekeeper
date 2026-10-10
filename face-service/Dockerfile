@@ -1,4 +1,8 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/home/face-service \
+    XDG_CACHE_HOME=/home/face-service/.cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
@@ -26,6 +30,17 @@ RUN mkdir -p /app/models && \
 
 COPY model_pinning.py ./
 COPY main.py face_auth.py enrollment_quality.py ./
+
+# The baked model is verified at runtime, never replaced by the service user.
+# Keep code/model files root-owned; only HOME (caches) and /tmp are writable.
+RUN groupadd --gid 10001 face-service && \
+    useradd --uid 10001 --gid 10001 --create-home \
+      --home-dir /home/face-service --shell /usr/sbin/nologin face-service && \
+    chown -R root:root /app && \
+    find /app -type d -exec chmod 0555 {} + && \
+    find /app -type f -exec chmod 0444 {} +
+
+USER 10001:10001
 
 EXPOSE 5557
 
