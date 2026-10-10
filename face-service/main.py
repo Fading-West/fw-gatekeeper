@@ -1,7 +1,6 @@
 """Face encoding/matching service for fw-gatekeeper.
 Recognition: InsightFace buffalo_s MobileFaceNet (~13MB) via ONNX Runtime.
-Detection: OpenCV Haar cascade (bundled with opencv-python-headless).
-Runs comfortably on Render free tier (512MB RAM).
+Detection: dlib HOG at half resolution, identical to both kiosk callers.
 
 Enrollment quality gate (POST /encode):
 - a photo is only used when exactly one clearly detected face is present
@@ -30,6 +29,9 @@ import onnxruntime as ort
 
 from model_pinning import REC_MODEL_URL, REC_MODEL_SHA256, ensure_pinned_model
 
+from face_detection import DETECTOR_VERSION, detect_faces_hog
+from image_admission import ImageAdmissionMiddleware
+
 from enrollment_quality import (
     MIN_GOOD_PHOTOS,
     MIN_PAIRWISE_SIMILARITY,
@@ -44,7 +46,7 @@ from face_auth import (
     is_valid_face_service_key,
 )
 
-SERVICE_VERSION = "3.1-quality-gate"
+SERVICE_VERSION = "3.2-hog-crop-parity"
 
 @asynccontextmanager
 async def service_lifespan(_app):
@@ -56,6 +58,8 @@ async def service_lifespan(_app):
 
 
 app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
+# Inner to CORS: bound bodies of concurrent image requests before they are parsed.
+app.add_middleware(ImageAdmissionMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),
@@ -73,6 +77,7 @@ REC_PATH = MODEL_DIR / "rec_model.onnx"
 # Lazy global
 _rec_session = None
 _rec_lock = threading.Lock()
+_image_lock = threading.Lock()
 _rec_loading = False
 _rec_failed = False
 
@@ -101,7 +106,10 @@ def get_rec_session():
             _rec_failed = False
             try:
                 ensure_models()
-                _rec_session = ort.InferenceSession(str(REC_PATH), providers=["CPUExecutionProvider"])
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = 1
+                options.inter_op_num_threads = 1
+                _rec_session = ort.InferenceSession(str(REC_PATH), sess_options=options, providers=["CPUExecutionProvider"])
             except Exception:
                 _rec_failed = True
                 raise
@@ -170,14 +178,6 @@ def decode_image(data_url: str) -> np.ndarray:
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
-def detect_faces_haar(img: np.ndarray) -> list[tuple[int, int, int, int]]:
-    """Detect faces with the OpenCV Haar cascade. Returns list of (x1, y1, x2, y2)."""
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
-    return [(int(x), int(y), int(x + w), int(y + h)) for (x, y, w, h) in faces]
-
-
 def get_face_crop(img: np.ndarray, reject_competing_faces: bool = False) -> Optional[np.ndarray]:
     """Crop the largest detected face to 112x112.
 
@@ -185,7 +185,7 @@ def get_face_crop(img: np.ndarray, reject_competing_faces: bool = False) -> Opti
     containing more than one face of comparable size raises MultipleFacesError instead
     of silently picking one of them.
     """
-    faces = detect_faces_haar(img)
+    faces = detect_faces_hog(img)
     if not faces:
         return None
     if reject_competing_faces and has_competing_faces(faces):
@@ -256,6 +256,7 @@ def health():
         "model_failed": _rec_failed,
         "degraded_reason": reason,
         "version": SERVICE_VERSION,
+        "detector_version": DETECTOR_VERSION,
         "rec_model": str(REC_PATH),
         "rec_exists": REC_PATH.exists(),
         "min_pairwise_similarity": MIN_PAIRWISE_SIMILARITY,
@@ -264,6 +265,12 @@ def health():
 
 
 def _inspect_enrollment_photo(index: int, photo: str) -> tuple[PhotoResult, Optional[np.ndarray]]:
+    # One decoded photo + HOG pyramid at a time, including concurrent requests.
+    with _image_lock:
+        return _inspect_enrollment_photo_locked(index, photo)
+
+
+def _inspect_enrollment_photo_locked(index: int, photo: str) -> tuple[PhotoResult, Optional[np.ndarray]]:
     """Classify one enrollment photo and embed it when it is usable."""
     try:
         img = decode_image(photo)
@@ -366,8 +373,9 @@ def match(req: MatchRequest):
         return MatchResponse(match=None)
 
     try:
-        img = decode_image(req.photo)
-        emb = get_embedding(img)
+        with _image_lock:
+            img = decode_image(req.photo)
+            emb = get_embedding(img)
     except HTTPException:
         raise
     except Exception:

@@ -1,0 +1,121 @@
+{
+  "reference": "face_recognition 1.3.0 (real kiosk API)",
+  "model_sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f",
+  "padding": 0.25,
+  "rows": [
+    {
+      "image": "synthetic-1.jpg",
+      "haar_box": [
+        145,
+        125,
+        369,
+        349
+      ],
+      "hog_box": [
+        172,
+        172,
+        350,
+        352
+      ],
+      "haar_vs_kiosk": 0.02295,
+      "calibrated_held_out_vs_kiosk": 0.921787,
+      "corrected_vs_kiosk": 1.0,
+      "kiosk_vs_shift3px": 0.979357
+    },
+    {
+      "image": "synthetic-2.jpg",
+      "haar_box": [
+        128,
+        103,
+        385,
+        360
+      ],
+      "hog_box": [
+        134,
+        160,
+        350,
+        374
+      ],
+      "haar_vs_kiosk": 0.315139,
+      "calibrated_held_out_vs_kiosk": 0.851254,
+      "corrected_vs_kiosk": 1.0,
+      "kiosk_vs_shift3px": 0.94163
+    },
+    {
+      "image": "synthetic-3.jpg",
+      "haar_box": [
+        133,
+        126,
+        371,
+        364
+      ],
+      "hog_box": [
+        134,
+        160,
+        350,
+        374
+      ],
+      "haar_vs_kiosk": 0.464523,
+      "calibrated_held_out_vs_kiosk": 0.707396,
+      "corrected_vs_kiosk": 1.0,
+      "kiosk_vs_shift3px": 0.926606
+    },
+    {
+      "image": "synthetic-4.jpg",
+      "haar_box": [
+        139,
+        102,
+        382,
+        345
+      ],
+      "hog_box": [
+        158,
+        136,
+        374,
+        350
+      ],
+      "haar_vs_kiosk": 0.490721,
+      "calibrated_held_out_vs_kiosk": 0.761649,
+      "corrected_vs_kiosk": 1.0,
+      "kiosk_vs_shift3px": 0.979783
+    },
+    {
+      "image": "synthetic-5.jpg",
+      "haar_box": [
+        151,
+        110,
+        373,
+        332
+      ],
+      "hog_box": [
+        172,
+        152,
+        350,
+        332
+      ],
+      "haar_vs_kiosk": 0.165041,
+      "calibrated_held_out_vs_kiosk": 0.916176,
+      "corrected_vs_kiosk": 1.0,
+      "kiosk_vs_shift3px": 0.592536
+    },
+    {
+      "image": "synthetic-6.jpg",
+      "haar_box": [
+        131,
+        76,
+        398,
+        343
+      ],
+      "hog_box": [
+        158,
+        136,
+        374,
+        350
+      ],
+      "haar_vs_kiosk": 0.407973,
+      "calibrated_held_out_vs_kiosk": 0.88664,
+      "corrected_vs_kiosk": 1.0,
+      "kiosk_vs_shift3px": 0.986222
+    }
+  ]
+}

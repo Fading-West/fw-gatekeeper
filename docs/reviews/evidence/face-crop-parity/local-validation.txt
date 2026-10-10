@@ -1,0 +1,24 @@
+2026-10-09 America/Chicago; base origin/master 1048899
+Python 3.11.17 uv venv under /dev/shm; dlib 20.0.1 compiled locally.
+Lock files regenerated with scripts/lock-python-dependencies.sh, uv 0.12.13.
+
+npm run lint: passed, six pre-existing warnings.
+npm run typecheck: both projects passed.
+npx vitest run --maxWorkers=2 --testTimeout=15000: 81 files / 557 tests passed.
+  Earlier runs hit the default 5s auth-test timeout on the busy shared host;
+  the unchanged auth suite also passed alone with the default timeout (15 tests).
+npm run test:python: all 22 files passed, with FACE_PARITY_MODEL pointing to
+  the digest-verified production ONNX model; native parity tests did not skip.
+  Peak RSS for six 4 MP images in that test process: 253.3 MiB.
+npm run test:contracts: all 18 files passed.
+npm run build: passed.
+git diff --check: passed.
+
+Independent service-process maximum-photo check:
+  import peak 94.05 MiB; recognition session peak 139.87 MiB;
+  six 2000x2000 images peak 248.70 MiB; encode duration 11.13s.
+Direct HOG import peak 107.75 MiB vs full face_recognition import peak 208.66 MiB.
+Local compiled dlib extension ~12 MiB; first successful build took 4m19s.
+Docker is unavailable on this host. The PR's face-service-image CI job must
+verify the actual production build, image size, model load and 512 MiB limit.
+No production biometrics accessed; no deployment or repair performed.
