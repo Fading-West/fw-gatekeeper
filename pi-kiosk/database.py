@@ -687,6 +687,26 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+def _infer_clock_action(worker_id: int, timestamp: str) -> str:
+    """Infer inside the attendance write transaction shared by both writers."""
+    if config.KIOSK_TYPE == "entry":
+        return "clock_in"
+    if config.KIOSK_TYPE == "exit":
+        return "clock_out"
+    last = _get_last_attendance(worker_id)
+    if last is None or last["action"] != "clock_in":
+        return "clock_in"
+    scan_epoch = _attendance_epoch(timestamp)
+    if scan_epoch is None:
+        raise ValueError("Auto clock inference requires a valid timestamp")
+    # Compare elapsed seconds, not local dates: 22:00 -> 06:00 is one shift,
+    # even across DST. Exactly the configured window still permits clock-out.
+    # An unreadable legacy timestamp cannot establish an active shift.
+    if last["epoch"] is None or scan_epoch - last["epoch"] > config.AUTO_CLOCK_STALE_HOURS * 3600:
+        return "clock_in"
+    return "clock_out"
+
+
 def log_attendance(
     worker_id: int,
     worker_name: str,
@@ -712,15 +732,10 @@ def log_attendance(
     with conn if owns_transaction else nullcontext():
         if owns_transaction:
             conn.execute("BEGIN IMMEDIATE")
-        if action is None:
-            if config.KIOSK_TYPE == "entry":
-                action = "clock_in"
-            elif config.KIOSK_TYPE == "exit":
-                action = "clock_out"
-            else:
-                action = "clock_out" if get_last_action(worker_id) == "clock_in" else "clock_in"
-        normalized_action = _normalize_action(action)
         timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if action is None:
+            action = _infer_clock_action(worker_id, timestamp)
+        normalized_action = _normalize_action(action)
         server_worker_id = server_worker_id or get_server_id(worker_id) or None
         cursor = conn.execute(
             """
@@ -794,14 +809,20 @@ def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     return row is not None
 
 
-def get_last_action(worker_id: int) -> Optional[str]:
-    """Return last clock action for a worker."""
+def _get_last_attendance(worker_id: int) -> Optional[sqlite3.Row]:
+    """Read the latest action and its instant together, including same-second ties."""
     conn = _get_conn()
-    row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
+    return conn.execute(
+        """SELECT action, attendance_epoch(timestamp) AS epoch
+        FROM attendance_log WHERE worker_id = ?
         ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
         (worker_id,),
     ).fetchone()
+
+
+def get_last_action(worker_id: int) -> Optional[str]:
+    """Return last clock action for a worker."""
+    row = _get_last_attendance(worker_id)
     return row["action"] if row else None
 
 

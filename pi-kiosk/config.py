@@ -1,5 +1,6 @@
 """Configuration for FW Gatekeeper Pi kiosk."""
 
+import math
 import os
 from pathlib import Path
 
@@ -42,6 +43,9 @@ RECOGNITION_ATTEMPTS_ENDPOINT = "/api/recognition-attempts/bulk"
 # Ignore repeat scans of the same person for this long. Keep it short: a long
 # debounce blocks workers from clocking out again after a quick errand.
 CLOCK_DEBOUNCE_MINUTES = 5
+# Auto/both kiosks start a new shift after an unmatched clock-in ages out.
+# Elapsed hours preserve overnight shifts; a local date change would not.
+AUTO_CLOCK_STALE_HOURS = 16
 DISPLAY_TIME_SEC = 5  # Hold failure/info results so the worker can read why
 DISPLAY_TIME_SUCCESS_SEC = 2  # Successful scans clear fast to keep the line moving
 
@@ -66,3 +70,10 @@ try:
     from config_local import *  # noqa: F401, F403
 except ImportError:
     pass
+
+# Validate after config_local.py so per-kiosk overrides obey the same rule.
+if (isinstance(AUTO_CLOCK_STALE_HOURS, bool)
+        or not isinstance(AUTO_CLOCK_STALE_HOURS, (int, float))
+        or not math.isfinite(AUTO_CLOCK_STALE_HOURS)
+        or AUTO_CLOCK_STALE_HOURS <= 0):
+    raise ValueError("AUTO_CLOCK_STALE_HOURS must be a finite positive number of hours")
