@@ -687,6 +687,10 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+class ClockInferenceError(ValueError):
+    """The device clock cannot establish a safe automatic direction."""
+
+
 def _infer_clock_action(worker_id: int, timestamp: str) -> str:
     """Infer inside the attendance write transaction shared by both writers."""
     if config.KIOSK_TYPE == "entry":
@@ -694,15 +698,23 @@ def _infer_clock_action(worker_id: int, timestamp: str) -> str:
     if config.KIOSK_TYPE == "exit":
         return "clock_out"
     last = _get_last_attendance(worker_id)
-    if last is None or last["action"] != "clock_in":
-        return "clock_in"
     scan_epoch = _attendance_epoch(timestamp)
     if scan_epoch is None:
-        raise ValueError("Auto clock inference requires a valid timestamp")
+        raise ClockInferenceError("Auto clock inference requires a valid timestamp")
+    if last is None or last["epoch"] is None:
+        return "clock_in"
+    age_seconds = scan_epoch - last["epoch"]
+    # A backward clock correction makes event chronology uncertain. Never
+    # record a guessed direction from negative age, or the future row can
+    # dominate every subsequent scan and produce repeated clock-outs.
+    if age_seconds < 0:
+        raise ClockInferenceError("Device clock is behind the last attendance event; correct the clock before retrying")
+    if last["action"] != "clock_in":
+        return "clock_in"
     # Compare elapsed seconds, not local dates: 22:00 -> 06:00 is one shift,
     # even across DST. Exactly the configured window still permits clock-out.
     # An unreadable legacy timestamp cannot establish an active shift.
-    if last["epoch"] is None or scan_epoch - last["epoch"] > config.AUTO_CLOCK_STALE_HOURS * 3600:
+    if age_seconds > config.AUTO_CLOCK_STALE_HOURS * 3600:
         return "clock_in"
     return "clock_out"
 

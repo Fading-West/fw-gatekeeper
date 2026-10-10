@@ -72,8 +72,11 @@ except ImportError:
     pass
 
 # Validate after config_local.py so per-kiosk overrides obey the same rule.
-if (isinstance(AUTO_CLOCK_STALE_HOURS, bool)
-        or not isinstance(AUTO_CLOCK_STALE_HOURS, (int, float))
-        or not math.isfinite(AUTO_CLOCK_STALE_HOURS)
-        or AUTO_CLOCK_STALE_HOURS <= 0):
-    raise ValueError("AUTO_CLOCK_STALE_HOURS must be a finite positive number of hours")
+try:
+    if (isinstance(AUTO_CLOCK_STALE_HOURS, bool)
+            or not isinstance(AUTO_CLOCK_STALE_HOURS, (int, float))
+            or AUTO_CLOCK_STALE_HOURS <= 0
+            or not math.isfinite(AUTO_CLOCK_STALE_HOURS * 3600)):
+        raise ValueError
+except (ValueError, OverflowError):
+    raise ValueError("AUTO_CLOCK_STALE_HOURS must be a finite positive number of hours representable in seconds") from None

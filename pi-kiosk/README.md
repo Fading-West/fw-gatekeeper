@@ -115,7 +115,7 @@ All settings live in `config.py` with per-kiosk overrides in
 | `RECOGNITION_MATCH_THRESHOLD` | `0.45` | Cosine similarity accept threshold, **higher = stricter** (tune 0.40–0.55 in `config_local.py`) |
 | `LIVENESS_REQUIRED` | `False` | Require a blink before recording a clock event |
 | `CLOCK_DEBOUNCE_MINUTES` | `5` | Ignore repeat scans of the same worker |
-| `AUTO_CLOCK_STALE_HOURS` | `16` | Finite positive maximum shift hours for auto inference; override in `config_local.py` |
+| `AUTO_CLOCK_STALE_HOURS` | `16` | Positive maximum shift hours, finite when converted to seconds; override in `config_local.py` |
 | `CAMERA_INDEX` / `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `0` / `640` / `480` | Camera settings |
 
 For `auto` kiosks, a last `clock_in` older than `AUTO_CLOCK_STALE_HOURS`
@@ -127,6 +127,9 @@ Automatic scans and manual clocks with no explicit action use the same rule.
 Entry/exit kiosks and explicit supervisor actions retain their fixed choices.
 Tune the window to the site's longest expected shift. This only infers the
 next scan; it does not repair past events or download portal corrections.
+If the device clock moves behind the latest attendance event, auto inference
+refuses to insert a guessed direction until the clock is corrected. The manual
+route returns a retryable error; explicit supervisor actions remain available.
 
 ### Command Line
 

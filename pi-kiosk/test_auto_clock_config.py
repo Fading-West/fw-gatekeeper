@@ -22,7 +22,8 @@ class AutoClockConfigTests(unittest.TestCase):
                 self.assertEqual(self.load_config(AUTO_CLOCK_STALE_HOURS=hours)["AUTO_CLOCK_STALE_HOURS"], hours)
 
     def test_invalid_local_overrides_fail_with_setting_name(self):
-        for hours in (0, -1, float("nan"), float("inf"), float("-inf"), True, False, "16", None):
+        for hours in (0, -1, float("nan"), float("inf"), float("-inf"), True, False, "16", None,
+                      1e308, 10 ** 1000):
             with self.subTest(hours=hours), self.assertRaisesRegex(ValueError, "AUTO_CLOCK_STALE_HOURS"):
                 self.load_config(AUTO_CLOCK_STALE_HOURS=hours)
 

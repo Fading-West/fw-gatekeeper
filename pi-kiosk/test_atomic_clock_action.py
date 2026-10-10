@@ -293,6 +293,58 @@ class AtomicClockActionTests(Fixture):
     def test_legacy_local_timestamp_uses_existing_instant_interpretation(self):
         self.assert_inferred_action("2026-10-05T22:00:00", "2026-10-06T06:00:00-06:00", "clock_out")
 
+    def test_stored_timestamp_formats_share_the_stale_boundary(self):
+        # All strings identify 2026-10-06 04:00 UTC on the Denver device.
+        for previous in ("2026-10-05T22:00:00", "2026-10-05 22:00:00",
+                         "2026-10-05T22:00:00.000000", "2026-10-05T22:00:00-06:00",
+                         "2026-10-06T04:00:00+00:00", "2026-10-06 04:00:00+00:00",
+                         "2026-10-06T04:00:00Z", "2026-10-06T06:00:00+02:00"):
+            for scan, expected in (("2026-10-06T20:00:00Z", "clock_out"),
+                                   ("2026-10-06T20:00:01Z", "clock_in")):
+                with self.subTest(previous=previous, scan=scan):
+                    self.assert_inferred_action(previous, scan, expected)
+
+    def test_backward_clock_refuses_inference_without_writing_or_arming_debounce(self):
+        conn = database._get_conn()
+        start = datetime(2026, 10, 6, 14, tzinfo=timezone.utc)
+        for last_action in ("clock_in", "clock_out"):
+            for seconds in (1, 24 * 3600):
+                with self.subTest(last_action=last_action, seconds=seconds):
+                    conn.execute("DELETE FROM attendance_log")
+                    conn.commit()
+                    self.last_clocks.clear()
+                    original_id = database.log_attendance(
+                        self.worker, "Synthetic worker", last_action, timestamp=start.isoformat())
+                    with local_clock("America/Denver", start - timedelta(seconds=seconds)):
+                        self.assertFalse(self.automatic())
+                        self.assertEqual(self.last_clocks, {})
+                        with app.app.test_client() as client:
+                            client.set_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token())
+                            response = client.post("/manual-clock", json={"worker_id": self.worker},
+                                                   headers={"X-Kiosk-UI-Key": config.KIOSK_UI_KEY})
+                            self.assertEqual(response.status_code, 503)
+                            self.assertFalse(response.json["success"])
+                            self.assertIn("correct the clock", response.json["error"])
+                        self.assertEqual([row["id"] for row in database.get_unsynced_logs()], [original_id])
+                        self.assertFalse(conn.in_transaction)
+                        # Clock faults do not override an explicit supervisor choice.
+                        self.assertEqual(self.manual(action="clock_out")["action"], "clock_out")
+                    # Correcting the clock allows inference again.
+                    with local_clock("America/Denver", start + timedelta(minutes=5)):
+                        self.assertTrue(self.automatic())
+
+    def test_manual_payload_cannot_supply_the_inference_clock(self):
+        start = datetime(2026, 10, 6, 14, tzinfo=timezone.utc)
+        database.log_attendance(self.worker, "Synthetic worker", "clock_in", timestamp=start.isoformat())
+        with local_clock("America/Denver", start + timedelta(hours=8)), app.app.test_client() as client:
+            client.set_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token())
+            response = client.post("/manual-clock", json={"worker_id": self.worker,
+                                   "timestamp": "9999-12-31T23:59:59Z"},
+                                   headers={"X-Kiosk-UI-Key": config.KIOSK_UI_KEY})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json["action"], "clock_out")
+        self.assertEqual(database.get_unsynced_logs()[-1]["timestamp"], "2026-10-06T22:00:00+00:00")
+
     def test_unreadable_legacy_clock_in_does_not_establish_an_active_shift(self):
         self.assert_inferred_action("not-a-timestamp", "2026-10-06T06:00:00-06:00", "clock_in")
 
