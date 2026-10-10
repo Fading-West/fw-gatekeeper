@@ -9,6 +9,7 @@ import pwd
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -318,6 +319,66 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         self.assertFalse(apt_log.exists())
         self.assert_mode(data, 0o755)
         self.assert_mode(photo, 0o644)
+
+    def test_setup_permission_pass_cannot_follow_concurrently_swapped_symlinks(self):
+        source = Path(__file__).with_name('setup.sh').read_text()
+        program = source.split("<<'PRIVATE_DATA'\n", 1)[1].split('\nPRIVATE_DATA', 1)[0]
+        # Insert deterministic swaps at the actual open/chown boundaries. The
+        # child runs as the same unprivileged user that owns the kiosk tree.
+        hooks = '''import os
+victim = os.environ['SWAP_VICTIM']
+target = os.environ['SWAP_TARGET']
+timing = os.environ['SWAP_TIMING']
+inode = os.stat(victim).st_ino
+real_open, real_chown = os.open, os.fchown
+swapped = False
+def swap():
+    global swapped
+    os.rename(victim, victim + '.saved')
+    os.symlink(target, victim)
+    swapped = True
+def racing_open(path, flags, *args, **kwargs):
+    if timing == 'before-open' and not swapped and path == os.path.basename(victim):
+        swap()
+    return real_open(path, flags, *args, **kwargs)
+def racing_chown(fd, uid, gid):
+    if timing == 'after-open' and not swapped and os.fstat(fd).st_ino == inode:
+        swap()
+    return real_chown(fd, uid, gid)
+os.open, os.fchown = racing_open, racing_chown
+'''
+        for kind in ('file', 'directory', 'root'):
+            for timing in ('before-open', 'after-open'):
+                with self.subTest(kind=kind, timing=timing):
+                    case = self.root / f'{kind}-{timing}'
+                    data = case / 'data'
+                    data.mkdir(parents=True)
+                    outside = case / 'outside'
+                    outside.mkdir(mode=0o755)
+                    outside_photo = outside / 'photo.jpg'
+                    outside_photo.write_bytes(b'unrelated')
+                    outside_photo.chmod(0o644)
+                    victim = data if kind == 'root' else data / ('faces' if kind == 'directory' else 'photo.jpg')
+                    if kind == 'directory':
+                        victim.mkdir()
+                        (victim / 'photo.jpg').write_bytes(b'inside')
+                    elif kind == 'file':
+                        victim.write_bytes(b'inside')
+                    target = outside_photo if kind == 'file' else outside
+                    result = subprocess.run(
+                        [sys.executable, '-c', hooks + program, str(data), pwd.getpwuid(os.getuid()).pw_name],
+                        capture_output=True, text=True, env=os.environ | {
+                            'SWAP_VICTIM': str(victim), 'SWAP_TARGET': str(target), 'SWAP_TIMING': timing,
+                        })
+                    self.assertTrue(victim.is_symlink(), result.stderr)
+                    if kind == 'root' and timing == 'before-open':
+                        self.assertNotEqual(result.returncode, 0)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assert_mode(outside, 0o755)
+                    self.assert_mode(outside_photo, 0o644)
+                    if timing == 'after-open':
+                        self.assert_mode(str(victim) + '.saved', 0o600 if kind == 'file' else 0o700)
 
     def test_unavailable_data_symlink_exits_before_installer_side_effects(self):
         install = self.root / 'install'
