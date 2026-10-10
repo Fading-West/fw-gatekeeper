@@ -313,10 +313,20 @@ offered a one-tap added clock-out.
 
 Before the exit happens, an open shift after its scheduled end remains a warning
 and a closeout acknowledgement blocker, matching existing closeout behavior.
-Within the 16-hour window it explicitly says the shift may still be in progress,
-offers review only, and requires supervisors to confirm its status and record an
-acknowledgement note before completing closeout. It never assumes a future exit
-or suggests inventing one to clear an in-progress shift.
+Schedules cannot cross midnight, so an open clock-in is treated as possibly
+overnight only when, in factory-local wall time, it is at or after the scheduled
+end, or the clock-in plus the longer of the scheduled duration and 8 hours reaches
+midnight. Within 16 hours of such a clock-in the exception says the shift may
+still be in progress, offers review only, and requires supervisors to confirm
+its status and record an acknowledgement note before completing closeout. It
+never assumes a future exit or suggests inventing one. Any other open shift is a
+day shift and keeps the one-tap "Add missing clock-out" at the scheduled end
+unless a plausible exit exists. A clock-in after the scheduled end is never
+offered a scheduled-end clock-out, which would precede it.
+
+The exceptions build reads D-1 through D+1 with one bounded `by_timestamp` scan
+(one extra calendar date on each side for UTC and offset timestamps) and one
+correction date-range read, then partitions the rows per factory date.
 
 ### Monitor Display
 

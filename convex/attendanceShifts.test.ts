@@ -2,9 +2,11 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./_generated/api";
+import { listEffectiveAttendanceByFactoryDates, listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createShiftClock, MAX_PLAUSIBLE_SHIFT_HOURS, pairShiftEvents } from "./attendanceShifts";
 import { getFactoryLocalDateKey, getNextFactoryLocalDateKey } from "./localDate";
 import schema from "./schema";
+import { buildShiftExceptions } from "./shiftExceptions";
 
 const modules = import.meta.glob("./**/*.ts");
 const date = "2026-09-03";
@@ -214,6 +216,122 @@ describe("overnight shift attribution in exceptions and closeout", () => {
     expect(exceptions.filter(row => row.type === "scan_sequence")).toHaveLength(2);
     expect(exceptions.find(row => row.attendance_id === repeatedId)?.suggested_resolution.action).toBe("review_only");
     expect(exceptions.some(row => row.suggested_resolution.action === "void_event")).toBe(false);
+  });
+
+  async function setSchedule(actor: Awaited<ReturnType<typeof setup>>["actor"], startTime: string, endTime: string) {
+    await actor.run(async ctx => {
+      const schedule = (await ctx.db.query("schedules").collect())[0];
+      await ctx.db.patch(schedule._id, { startTime, endTime });
+    });
+  }
+
+  it("keeps the one-tap scheduled-end clock-out for a day shift still open after its end", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${date}T22:00:00Z`)); // 17:00 Central, 9 h after clock-in
+    const { actor } = await setup(`${date}T08:00:00`, null);
+    await setSchedule(actor, "06:00", "14:30");
+    const [exception] = (await actor.query(api.shiftExceptions.summary, { date })).exceptions
+      .filter(row => row.type === "missing_clock_out");
+    expect(exception).toMatchObject({
+      severity: "warning",
+      description: "Night Worker last scanned in at 08:00 and has no clock-out after the 14:30 scheduled end.",
+      suggested_resolution: { action: "add_clock_out", corrected_time: "14:30", can_apply: true },
+    });
+    expect((await actor.query(api.shiftCloseouts.get, { date })).summary.missing_clock_outs).toBe(1);
+  });
+
+  it.each([
+    // (a) clock-in at/after the scheduled end: the end cannot be its exit.
+    ["06:00", "14:30", "15:00", `${date}T22:00:00Z`, "after the 14:30 scheduled end"],
+    // (b) 15:00 + 9.5 h scheduled duration reaches the next date.
+    ["14:00", "23:30", "15:00", `${nextDate}T04:45:00Z`, "after the 23:30 scheduled end"],
+    // (b) a schedule truncated at midnight still uses the 8-hour standard shift.
+    ["17:00", "20:00", "17:00", `${nextDate}T02:00:00Z`, "after the 20:00 scheduled end"],
+  ])("treats a %s-%s shift entered at %s as possibly overnight while within 16 hours", async (startTime, endTime, clockIn, now, endText) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(now));
+    const { actor } = await setup(`${date}T${clockIn}:00`, null);
+    await setSchedule(actor, startTime, endTime);
+    expect((await actor.query(api.shiftExceptions.summary, { date })).exceptions
+      .filter(row => row.type === "missing_clock_out")).toMatchObject([{
+      description: expect.stringMatching(new RegExp(`clocked in at ${clockIn}.*${endText}.*may still be in progress`)),
+      suggested_resolution: { action: "review_only", can_apply: false, corrected_time: null },
+    }]);
+  });
+
+  it("never suggests a scheduled-end clock-out that precedes the clock-in, even after 16 hours", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${nextDate}T13:00:00Z`)); // D+1 08:00 Central, 17 h later
+    const { actor } = await setup(`${date}T15:00:00`, null);
+    await setSchedule(actor, "06:00", "14:30");
+    const [exception] = (await actor.query(api.shiftExceptions.summary, { date })).exceptions
+      .filter(row => row.type === "missing_clock_out");
+    expect(exception.description).toContain("scheduled end precedes the clock-in");
+    expect(exception.description).not.toContain("in progress");
+    expect(exception.suggested_resolution).toMatchObject({ action: "review_only", can_apply: false, corrected_time: null });
+  });
+
+  it("reads attendance for D-1..D+1 with one bounded timestamp scan and one correction range", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-04T12:00:00Z"));
+    const { actor } = await setup(`${date}T22:00:00`, `${nextDate}T06:00:00`);
+    const reads: { table: string; index: string; bounds: unknown[][] }[] = [];
+    const bind = (target: any, prop: PropertyKey) => {
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    };
+    const recordBounds = (builder: any, bounds: unknown[][]): any => new Proxy(builder, {
+      get: (target, prop) => typeof prop === "string" && ["eq", "gt", "gte", "lt", "lte"].includes(prop)
+        ? (...args: unknown[]) => { bounds.push([prop, ...args]); return recordBounds(target[prop](...args), bounds); }
+        : bind(target, prop),
+    });
+    const exceptions = await actor.run(async ctx => {
+      const db = new Proxy(ctx.db, { get: (target, prop) => prop !== "query" ? bind(target, prop) : (table: any) =>
+        new Proxy(target.query(table), { get: (query, queryProp) => queryProp !== "withIndex" ? bind(query, queryProp) : (index: string, build?: any) => {
+          const read = { table, index, bounds: [] as unknown[][] };
+          reads.push(read);
+          return query.withIndex(index, build && ((q: any) => build(recordBounds(q, read.bounds))));
+        } }) });
+      return await buildShiftExceptions({ ...ctx, db }, date);
+    });
+    expect(exceptions).toEqual([]);
+    // Before: three per-date helpers each scanned their date +/- 1 (9 days of
+    // prefixes). Now: one scan of D-1..D+1 plus the same one-date margin.
+    expect(reads.filter(read => read.table === "attendance")).toEqual([{
+      table: "attendance", index: "by_timestamp",
+      bounds: [["gte", "timestamp", "2026-09-01"], ["lt", "timestamp", "2026-09-06"]],
+    }]);
+    expect(reads.filter(read => read.table === "attendanceCorrections")).toEqual([{
+      table: "attendanceCorrections", index: "by_date",
+      bounds: [["gte", "date", "2026-09-02"], ["lte", "date", "2026-09-04"]],
+    }]);
+  });
+
+  it("partitions the multi-date read exactly like per-date effective attendance", async () => {
+    const { actor, workerId, startId } = await setup(`${date}T22:00:00`, `${nextDate}T06:00:00`);
+    const byDate = await actor.run(async ctx => {
+      const userId = (await ctx.db.query("users").collect())[0]._id;
+      for (const timestamp of [
+        "2026-09-01T23:30:00", "2026-09-01T21:00:00-10:00", "2026-09-02T04:30:00Z", "2026-09-02T00:15:00-10:00", "2026-09-02T23:59:59",
+        "2026-09-03T04:59:59Z", "2026-09-04T05:00:00Z", "2026-09-05T03:00:00+02:00", "2026-09-05T05:30:00Z", "2026-09-05T08:00:00",
+      ]) await ctx.db.insert("attendance", { workerId, eventType: "clock_in", timestamp, synced: true });
+      const add = (correctionDate: string, correctedTimestamp: string) => ctx.db.insert("attendanceCorrections", {
+        date: correctionDate, workerId, action: "add_clock_out", eventType: "clock_out", correctedTimestamp,
+        reason: "Verified", createdAt: date, updatedAt: date,
+      });
+      await add("2026-09-02", "2026-09-02T17:00:00");
+      await add("2026-09-04", "2026-09-04T07:00:00");
+      const reversedId = await add(nextDate, `${nextDate}T08:00:00`);
+      await ctx.db.insert("attendanceCorrectionReversals", { correctionId: reversedId, requestId: "r", date: nextDate, workerId, reason: "Wrong", actorUserId: userId, createdAt: date });
+      // A void filed under another date only applies to that date's punches.
+      await ctx.db.insert("attendanceCorrections", { date: nextDate, workerId, action: "void_event", originalAttendanceId: startId!, reason: "Wrong day", createdAt: date, updatedAt: date });
+      const combined = await listEffectiveAttendanceByFactoryDates(ctx, "2026-09-02", nextDate);
+      const separate = await Promise.all(["2026-09-02", date, nextDate].map(day => listEffectiveAttendanceByTimestampRange(ctx, day)));
+      return { combined: [...combined.entries()], separate };
+    });
+    expect(byDate.combined.map(([day]) => day)).toEqual(["2026-09-02", date, nextDate]);
+    expect(byDate.combined.map(([, rows]) => rows)).toEqual(byDate.separate);
+    expect(byDate.separate.map(rows => rows.length)).toEqual([5, 1, 4]);
   });
 
   it("uses effective neighboring punches, including corrections and reversals", async () => {
