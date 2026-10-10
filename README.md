@@ -305,6 +305,9 @@ exit on the following date. The maximum inferred shift is 16 elapsed hours
 (`MAX_PLAUSIBLE_SHIFT_HOURS` in `convex/attendanceShifts.ts`), including DST nights.
 Longer intervals remain review items and do not automatically suggest voiding the
 exit. Existing overnight schedule validation is unchanged.
+Repeated punches, including repeated entries across midnight, remain review
+items. Any punch with a plausible opposite punch uses a review-only suggestion,
+even when that evidence was attributed to another inferred interval.
 
 Before the exit happens, an open shift after its scheduled end remains a warning
 and a closeout acknowledgement blocker, matching existing closeout behavior.

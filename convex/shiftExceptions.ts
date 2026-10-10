@@ -421,7 +421,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const firstIn = clockIns[0] || null;
     const lastEvent = workerEvents[workerEvents.length - 1] || null;
-    const { pairedClockIns, pairedClockOuts, overlongClockOuts, clock } = pairShiftEvents(pairingEventsByWorker.get(workerId) || [], shiftClock);
+    const { pairedClockIns, pairedClockOuts, overlongClockOuts, repeatedEvents, plausiblePairEvents, clock } = pairShiftEvents(pairingEventsByWorker.get(workerId) || [], shiftClock);
     const workerName = worker.name || "Unknown worker";
     const department = worker.department || null;
     const baseLinks = {
@@ -540,11 +540,18 @@ export async function buildShiftExceptions(ctx: any, date: string) {
 
     for (let index = 0; index < workerEvents.length; index += 1) {
       const event = workerEvents[index];
-      const previous = workerEvents[index - 1];
-      const repeated = previous && previous.eventType === event.eventType;
+      const previous = repeatedEvents.get(event) || workerEvents[index - 1];
+      const repeated = repeatedEvents.has(event);
       const firstEventIsOut = index === 0 && event.eventType === "clock_out" && !pairedClockOuts.has(event);
       const overlong = overlongClockOuts.has(event);
       if (!repeated && !firstEventIsOut && !overlong) continue;
+      const reviewOnlyReason = overlong
+        ? "The interval exceeds the maximum shift; review both punches before correcting attendance."
+        : plausiblePairEvents.has(event)
+          ? "This punch has a plausible opposite punch; review the competing shift evidence before deciding which scan needs correction."
+          : repeated && getFactoryLocalDateKey(previous.timestamp) !== date
+            ? "Repeated scans cross midnight; review both days before deciding which scan needs correction."
+            : undefined;
 
       // Use the source ID, including synthetic correction IDs: independent scans
       // can share a timestamp and type. Timestamp-only legacy reviews cannot be
@@ -558,9 +565,11 @@ export async function buildShiftExceptions(ctx: any, date: string) {
         title: `${workerName} has a scan sequence issue`,
         description: overlong
           ? `${workerName}'s clock-out exceeds the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour maximum shift. Review both punches; the exit is not automatically a mistaken scan.`
-          : firstEventIsOut
-            ? `${workerName} clocked out without a plausible prior clock-in within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window.`
-            : `${workerName} has repeated ${event.eventType.replace("_", " ")} scans without the opposite event between them.`,
+          : firstEventIsOut && plausiblePairEvents.has(event)
+            ? `${workerName}'s clock-out has competing scan evidence within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window. Review the possible pairings before correcting attendance.`
+            : firstEventIsOut
+              ? `${workerName} clocked out without a plausible prior clock-in within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window.`
+              : `${workerName} has repeated ${event.eventType.replace("_", " ")} scans without the opposite event between them.`,
         worker_id: workerId,
         worker_name: workerName,
         department,
@@ -577,7 +586,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           ...baseLinks,
           activity_log: getActivityLogHref(date, workerId, String(event._id).startsWith("correction:") ? null : String(event._id)),
         },
-      }, overlong ? "The interval exceeds the maximum shift; review both punches before correcting attendance." : undefined));
+      }, reviewOnlyReason));
     }
   }
 

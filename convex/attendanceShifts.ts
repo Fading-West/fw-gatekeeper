@@ -39,9 +39,36 @@ export function pairShiftEvents<T extends ShiftTimestamp & { eventType: string }
   const pairedClockIns = new Set<T>();
   const pairedClockOuts = new Set<T>();
   const overlongClockOuts = new Set<T>();
+  const repeatedEvents = new Map<T, T>();
+  const plausiblePairEvents = new Set<T>();
   let openIns: T[] = [];
   const ordered = [...events].sort(clock.compare);
+  // Pair attribution is deliberately conservative, but it cannot prove which
+  // repeated punch is mistaken. Find any plausible counterpart, even one used
+  // by a different inferred interval, before offering destructive suggestions.
+  const timed = ordered.map(event => ({ event, instant: clock.instantMs(event) }))
+    .filter(item => Number.isFinite(item.instant));
+  const ins = timed.filter(item => item.event.eventType === "clock_in");
+  const outs = timed.filter(item => item.event.eventType === "clock_out");
+  let nextOut = 0;
+  for (const start of ins) {
+    while (nextOut < outs.length && outs[nextOut].instant < start.instant) nextOut += 1;
+    if (nextOut < outs.length && clock.isPlausibleShift(start.event, outs[nextOut].event)) {
+      plausiblePairEvents.add(start.event);
+    }
+  }
+  let previousIn = ins.length - 1;
+  for (let index = outs.length - 1; index >= 0; index -= 1) {
+    const end = outs[index];
+    while (previousIn >= 0 && ins[previousIn].instant > end.instant) previousIn -= 1;
+    if (previousIn >= 0 && clock.isPlausibleShift(ins[previousIn].event, end.event)) {
+      plausiblePairEvents.add(end.event);
+    }
+  }
+  let previous: T | undefined;
   for (const event of ordered) {
+    if (previous?.eventType === event.eventType) repeatedEvents.set(event, previous);
+    previous = event;
     if (event.eventType === "clock_in") {
       // A new day's entry cannot close yesterday's unclosed shift.
       if (openIns.length && getFactoryLocalDateKey(openIns[0].timestamp) !== getFactoryLocalDateKey(event.timestamp)) {
@@ -58,5 +85,5 @@ export function pairShiftEvents<T extends ShiftTimestamp & { eventType: string }
       openIns = [];
     }
   }
-  return { pairedClockIns, pairedClockOuts, overlongClockOuts, clock };
+  return { pairedClockIns, pairedClockOuts, overlongClockOuts, repeatedEvents, plausiblePairEvents, clock };
 }
