@@ -176,33 +176,31 @@ function LogPageContent() {
   };
 
   const exportHoursCSV = async () => {
-    // Pair clock_in/clock_out events per worker in timestamp order. Shifts
-    // that start on the selected date may end after midnight, so the next
-    // day's events are fetched too and intervals are attributed to the day
-    // the clock-in happened. A truly open interval (still clocked in) is
-    // reported with an empty Out and 0 hours rather than a guess.
-    // Without the boundary day, overnight shifts would silently export as
-    // still-clocked-in with zero hours - refuse to produce bad payroll data.
+    // Query exactly the two neighboring factory dates: yesterday identifies
+    // legitimate overnight exits, tomorrow closes shifts started today.
+    // Calendar arithmetic avoids treating a DST day as a fixed 24 hours.
     let boundaryEvents: AttendanceWithWorker[] = [];
+    let previousEvents: AttendanceWithWorker[] = [];
     try {
-      const next = new Date(`${date}T00:00:00Z`);
-      next.setUTCDate(next.getUTCDate() + 1);
-      const nextDate = next.toISOString().slice(0, 10);
-      const params = new URLSearchParams({ date: nextDate });
-      if (queryWorkerId) params.set('worker_id', queryWorkerId);
-      const res = await fetch(`/api/attendance?${params.toString()}`);
-      if (!res.ok) throw new Error(`next-day fetch failed (${res.status})`);
-      const rows = await res.json();
-      if (!Array.isArray(rows)) throw new Error('next-day fetch returned an unexpected payload');
-      boundaryEvents = rows;
+      [previousEvents, boundaryEvents] = await Promise.all([-1, 1].map(async (offset) => {
+        const neighbor = new Date(`${date}T00:00:00Z`);
+        neighbor.setUTCDate(neighbor.getUTCDate() + offset);
+        const params = new URLSearchParams({ date: neighbor.toISOString().slice(0, 10) });
+        if (queryWorkerId) params.set('worker_id', queryWorkerId);
+        const res = await fetch(`/api/attendance?${params.toString()}`);
+        if (!res.ok) throw new Error(`neighboring-day fetch failed (${res.status})`);
+        const rows = await res.json();
+        if (!Array.isArray(rows)) throw new Error('neighboring-day fetch returned an unexpected payload');
+        return rows;
+      }));
     } catch {
-      toast('Could not load the next day\u2019s events, so overnight hours would be wrong. Export cancelled - try again.', 'error');
+      toast('Could not load the neighboring days\u2019 events, so overnight hours would be wrong. Export cancelled - try again.', 'error');
       return;
     }
 
-    const hoursRows = buildHoursExportRows(events, boundaryEvents, date);
+    const hoursRows = buildHoursExportRows(events, boundaryEvents, date, previousEvents);
     if (hoursRows.some((row) => row.ambiguous)) {
-      toast('Some workers need review: a next-day clock-in has no preceding clock-out. Their hours are blank in the CSV.', 'info');
+      toast('Some workers need review: punches are missing, repeated, or exceed the maximum shift length. Their hours are blank in the CSV.', 'info');
     }
     const rows = hoursRows.map((row) =>
       [row.name, row.department, row.firstIn, row.lastOut, row.hours, row.note].map(csvField).join(',')
