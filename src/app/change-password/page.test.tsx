@@ -46,8 +46,13 @@ it.each([
   ['INVALID_CURRENT_PASSWORD', 'Current password is incorrect.'],
   ['TOO_MANY_ATTEMPTS', 'Too many attempts. Try again later.'],
   ['PASSWORD_CHANGE_CONFLICT', 'Your account changed while the password was being updated. Try again.'],
+  ['Unauthorized', 'Your session has ended. Sign out and sign in again.'],
+  ['Choose a password different from your current password', 'Choose a password different from your current password'],
 ])('shows an actionable %s error without signing out', async (code, message) => {
-  changePassword.mockRejectedValue(new ConvexError(code));
+  // Mirror the Convex client: message has a stack prefix, data is the server string.
+  const error = new ConvexError(code);
+  error.message = `[CONVEX A(portalMembers:changePassword)] [Request ID: 1] Server Error\nUncaught ConvexError: ${code}\n  Called by client`;
+  changePassword.mockRejectedValue(error);
   const tree = await form();
   try {
     await act(async () => tree.root.findByType('form').props.onSubmit({ preventDefault() {} }));
