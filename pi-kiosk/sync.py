@@ -410,6 +410,10 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             if not isinstance(w, dict):
                 raise ValueError("Worker sync row must be an object")
             server_id = w.get("id")
+            # Legacy rows must not stringify structured values into logs or
+            # worker identities: a malformed id can contain private fields.
+            if server_id is not None and not isinstance(server_id, str):
+                raise ValueError("Worker sync row id must be a string")
             name = w.get("name")
             employee_id = w.get("employee_id")
             encoding_data = w.get("face_encoding")

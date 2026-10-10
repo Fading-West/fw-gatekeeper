@@ -164,6 +164,29 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         self.assertIn("server_id=synthetic-id", "\n".join(logs.output))
         self.assertNotIn(url, "\n".join(logs.output))
 
+    def test_malformed_worker_identifier_cannot_log_nested_sensitive_fields(self):
+        database.init_db()
+        # Legacy responses also need type validation before an identifier can
+        # be interpolated into a log or converted to a stored server id.
+        identifier = {"face_encoding": ["private-encoding-sentinel"],
+                      "photo_url": "https://photo.invalid/private-token",
+                      "token": "private-auth-sentinel"}
+        for name in (None, "Synthetic worker"):
+            with self.subTest(name=name):
+                row = {"id": identifier, "name": name, "active": True,
+                       "face_encoding": [0.5] * 512}
+                response = mock.Mock(status_code=200, json=lambda: {"workers": [row]})
+                with mock.patch.object(sync.requests, "get", return_value=response), \
+                     self.assertLogs("sync") as logs:
+                    self.assertFalse(sync.sync_workers())
+                output = "\n".join(logs.output)
+                self.assertIn("Worker sync row id must be a string", output)
+                for sensitive in ("face_encoding", "photo_url", "private-encoding-sentinel",
+                                  identifier["photo_url"], identifier["token"]):
+                    self.assertNotIn(sensitive, output)
+                self.assertEqual(database.get_all_workers(), [])
+                self.assertIsNone(database.get_sync_state("last_worker_sync"))
+
     def test_setup_unit_and_existing_install_permissions(self):
         source = Path(__file__).with_name("setup.sh").read_text()
         unit = source.split("cat > /etc/systemd/system/fw-gatekeeper-kiosk.service << EOF\n", 1)[1].split("\nEOF", 1)[0]
