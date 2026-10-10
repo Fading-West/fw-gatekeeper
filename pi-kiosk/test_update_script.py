@@ -11,7 +11,11 @@ REPO_DIR = KIOSK_DIR.parent
 
 
 def pip_lines(source):
-    return [line for line in source.splitlines() if "-m pip install" in line and not line.lstrip().startswith("#")]
+    # Compare commands, not indentation or spacing, so harmless reformatting passes.
+    return [
+        " ".join(line.split()) for line in source.splitlines()
+        if "-m pip install" in line and not line.lstrip().startswith("#")
+    ]
 
 
 class UpdateScriptTests(unittest.TestCase):
@@ -26,11 +30,15 @@ class UpdateScriptTests(unittest.TestCase):
         single = readme.split("### Update kiosk software", 1)[1].split("### Update all 4 kiosks at once", 1)
         bulk = single[1].split("\n### ", 1)[0]
         for section in (single[0], bulk):
-            self.assertIn("sudo git pull origin master", section)
-            self.assertIn("bash pi-kiosk/update.sh", section)
-            self.assertNotIn("systemctl restart", section)
+            # Only the commands matter; the prose may mention what not to do.
+            commands = "".join(section.split("```")[1::2])
+            # Pull as the owning kiosk user; a root pull leaves root-owned files.
+            self.assertIn("git pull origin master", commands)
+            self.assertNotIn("sudo git pull", commands)
+            self.assertIn("bash pi-kiosk/update.sh", commands)
+            self.assertNotIn("systemctl restart", commands)
 
-    def run_update(self, fail_build_lock=False):
+    def run_update(self, fail_build_lock=False, uid="1000"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             kiosk = root / "pi-kiosk"
@@ -46,7 +54,9 @@ class UpdateScriptTests(unittest.TestCase):
             )
             sudo = stubs / "sudo"
             sudo.write_text('#!/bin/sh\nprintf "sudo %s\\n" "$*" >> "$TEST_LOG"\n')
-            for stub in (python, sudo):
+            identity = stubs / "id"
+            identity.write_text(f'#!/bin/sh\necho {uid}\n')
+            for stub in (python, sudo, identity):
                 stub.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(kiosk / "update.sh")], cwd=root,
@@ -68,6 +78,12 @@ class UpdateScriptTests(unittest.TestCase):
         result, calls = self.run_update(fail_build_lock=True)
         self.assertEqual(result.returncode, 9)
         self.assertEqual(calls, ["python -m pip install --require-hashes -r requirements-build.lock"])
+
+    def test_refuses_root_before_touching_venv(self):
+        result, calls = self.run_update(uid="0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not with sudo or as root", result.stderr)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
