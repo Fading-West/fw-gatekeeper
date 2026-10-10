@@ -27,21 +27,23 @@ export function buildHoursExportRows(
     return day;
   };
   const byWorker = new Map<string, { name: string; department: string; events: AttendanceWithWorker[] }>();
-  for (const event of [...previousEvents, ...events, ...boundaryEvents].sort(clock.compare)) {
-    const entry = byWorker.get(event.worker_id) || {
+  const orderedEvents = [...previousEvents, ...events, ...boundaryEvents].sort(clock.compare);
+  // Anchor row order and labels to this day's punches. Neighboring history
+  // supplies pairing evidence without changing an otherwise normal CSV row.
+  for (const event of orderedEvents) {
+    if (localDay(event) !== date || byWorker.has(event.worker_id)) continue;
+    byWorker.set(event.worker_id, {
       name: event.worker_name || event.worker_id,
       department: event.worker_department || '',
       events: [],
-    };
-    entry.events.push(event);
-    byWorker.set(event.worker_id, entry);
+    });
+  }
+  for (const event of orderedEvents) {
+    byWorker.get(event.worker_id)?.events.push(event);
   }
 
   const rows: HoursExportRow[] = [];
   for (const entry of byWorker.values()) {
-    // Every worker punching on this day gets a row, including overnight exits.
-    // Workers appearing only in the surrounding days do not belong here.
-    if (!entry.events.some((event) => localDay(event) === date)) continue;
     let totalMs = 0;
     const reviewReasons = new Set<string>();
     const notes = new Set<string>();

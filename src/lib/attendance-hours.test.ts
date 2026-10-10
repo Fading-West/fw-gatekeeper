@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { buildHoursExportRows, MAX_PLAUSIBLE_SHIFT_HOURS } from './attendance-hours';
+import { csvField } from './csv';
 import type { AttendanceWithWorker } from './types';
 
 const event = (timestamp: string, event_type: 'clock_in' | 'clock_out', extra = {}): AttendanceWithWorker => ({
@@ -100,6 +101,22 @@ it('exports a normal day without a review flag', () => {
   }]);
 });
 
+it('preserves normal CSV bytes and selected-day labels despite neighboring history', () => {
+  const rows = buildHoursExportRows([
+    event(`${selected}T16:00:00`, 'clock_out', { worker_name: 'Current name' }),
+    event(`${selected}T15:00:00`, 'clock_out', { worker_id: 'earlier', worker_name: 'Earlier' }),
+    event(`${selected}T08:00:00`, 'clock_in', { worker_name: 'Current name' }),
+    event(`${selected}T07:00:00`, 'clock_in', { worker_id: 'earlier', worker_name: 'Earlier' }),
+  ], [], selected, [
+    event('2026-09-13T08:00:00', 'clock_in', { worker_name: 'Previous name', worker_department: 'Previous department' }),
+    event('2026-09-13T16:00:00', 'clock_out', { worker_name: 'Previous name', worker_department: 'Previous department' }),
+    event('2026-09-13T06:00:00', 'clock_in', { worker_id: 'previous-only' }),
+  ]);
+  const csv = 'Worker,Department,First In,Last Out,Hours,Note\n' + rows.map(row =>
+    [row.name, row.department, row.firstIn, row.lastOut, row.hours, row.note].map(csvField).join(',')).join('\n');
+  expect(csv).toBe('Worker,Department,First In,Last Out,Hours,Note\nEarlier,Assembly,2026-09-14T07:00:00,2026-09-14T15:00:00,8.00,\nCurrent name,Assembly,2026-09-14T08:00:00,2026-09-14T16:00:00,8.00,');
+});
+
 it('sums multiple intervals without counting a previous overnight shift again', () => {
   expect(buildHoursExportRows([
     event(`${selected}T06:00:00`, 'clock_out'),
@@ -179,4 +196,16 @@ it('uses factory-local day membership for offset timestamps', () => {
   expect(buildHoursExportRows([
     event('2026-09-15T01:00:00Z', 'clock_in'),
   ], [event('2026-09-15T09:00:00Z', 'clock_out')], selected)[0]).toMatchObject({ hours: '8.00', ambiguous: false });
+});
+
+it.each([
+  ['2026-03-08', '17:00:00', '17:00:01'],
+  ['2026-11-01', '15:00:00', '15:00:01'],
+])('applies the 16-hour maximum to elapsed time on DST date %s', (date, exact, over) => {
+  expect(buildHoursExportRows([
+    event(`${date}T00:00:00`, 'clock_in'), event(`${date}T${exact}`, 'clock_out'),
+  ], [], date)[0]).toMatchObject({ hours: '16.00', ambiguous: false });
+  expect(buildHoursExportRows([
+    event(`${date}T00:00:00`, 'clock_in'), event(`${date}T${over}`, 'clock_out'),
+  ], [], date)[0]).toMatchObject({ hours: '', ambiguous: true, note: expect.stringContaining('16-hour maximum') });
 });
