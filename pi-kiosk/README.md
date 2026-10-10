@@ -106,7 +106,7 @@ All settings live in `config.py` with per-kiosk overrides in
 | `SERVER_URL` | `https://fw-gatekeeper.onrender.com` | Gatekeeper server |
 | `SYNC_INTERVAL` | `30` | Seconds between sync cycles |
 | `KIOSK_ID` / `KIOSK_NAME` | `kiosk-entry-1` / `Main Entry` | Kiosk identity |
-| `KIOSK_TYPE` | `entry` | `entry`, `exit`, or `auto` (toggles by last action) |
+| `KIOSK_TYPE` | `entry` | `entry`, `exit`, or `auto` (both directions; toggles by last action within the shift window) |
 | `KIOSK_API_KEY` (env or local) | none | **Required** device credential issued on the portal's Kiosk readiness page; registered kiosks may use the shared key until migrated |
 | `KIOSK_UI_KEY` (env or local) | none | **Required** Pi-local secret for camera feed, roster/status, and log routes |
 | `KIOSK_SUPERVISOR_PIN` (env or local) | none | **Required** separate passcode for manual attendance (5-minute session) |
@@ -115,7 +115,23 @@ All settings live in `config.py` with per-kiosk overrides in
 | `RECOGNITION_MATCH_THRESHOLD` | `0.45` | Cosine similarity accept threshold, **higher = stricter** (tune 0.40–0.55 in `config_local.py`) |
 | `LIVENESS_REQUIRED` | `False` | Require a blink before recording a clock event |
 | `CLOCK_DEBOUNCE_MINUTES` | `5` | Ignore repeat scans of the same worker |
+| `AUTO_CLOCK_STALE_HOURS` | `16` | Positive maximum shift hours, finite when converted to seconds; override in `config_local.py` |
 | `CAMERA_INDEX` / `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `0` / `640` / `480` | Camera settings |
+
+For `auto` kiosks, a last `clock_in` older than `AUTO_CLOCK_STALE_HOURS`
+starts a new shift with `clock_in` instead of keeping later days inverted
+after a missed clock-out. Exactly at the window boundary still gives
+`clock_out`. Elapsed time preserves overnight shifts (22:00–06:00) and
+accounts for DST; crossing factory-local midnight does not reset the shift.
+Automatic scans and manual clocks with no explicit action use the same rule.
+Entry/exit kiosks and explicit supervisor actions retain their fixed choices.
+Tune the window to the site's longest expected shift. This only infers the
+next scan; it does not repair past events or download portal corrections.
+Direction follows the most recently recorded local event, even if the device
+clock moves backward after a power cut. Negative elapsed time does not prove a
+shift stale, so automatic and manual inference keep toggling without waiting
+for network time. Future timestamps do not arm debounce; a newly recorded scan
+still does. Original event timestamps are retained for reconciliation.
 
 ### Command Line
 

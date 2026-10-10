@@ -251,15 +251,18 @@ def manual_clock():
     if action not in {"clock_in", "clock_out"}:
         action = None
 
-    log_id = database.log_attendance(
-        worker_id=worker["id"],
-        worker_name=worker["name"],
-        action=action,
-        liveness_confirmed=False,
-        confidence=1.0,
-        note="manual_clock",
-        server_worker_id=worker.get("server_id"),
-    )
+    try:
+        log_id = database.log_attendance(
+            worker_id=worker["id"],
+            worker_name=worker["name"],
+            action=action,
+            liveness_confirmed=False,
+            confidence=1.0,
+            note="manual_clock",
+            server_worker_id=worker.get("server_id"),
+        )
+    except database.ClockInferenceError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 503
     action = database.get_attendance_action(log_id)
     action_label = "Clocked in" if action == "clock_in" else "Clocked out"
     update_status(

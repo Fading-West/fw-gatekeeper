@@ -200,6 +200,7 @@ def init_db():
             ON attendance_rejections(log_id) WHERE released_at IS NULL;
 
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_attendance_worker_id ON attendance_log(worker_id, id);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_time ON recognition_attempts(timestamp);
@@ -687,6 +688,36 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+class ClockInferenceError(ValueError):
+    """The scan timestamp cannot establish an automatic direction."""
+
+
+def _infer_clock_action(worker_id: int, timestamp: str) -> str:
+    """Infer inside the attendance write transaction shared by both writers."""
+    if config.KIOSK_TYPE == "entry":
+        return "clock_in"
+    if config.KIOSK_TYPE == "exit":
+        return "clock_out"
+    last = _get_last_attendance(worker_id)
+    scan_epoch = _attendance_epoch(timestamp)
+    if scan_epoch is None:
+        raise ClockInferenceError("Auto clock inference requires a valid timestamp")
+    if last is None or last["epoch"] is None:
+        return "clock_in"
+    age_seconds = scan_epoch - last["epoch"]
+    # After a power cut an offline Pi may restore an earlier saved clock.
+    # Negative age cannot establish staleness: keep toggling from the last
+    # inserted event so attendance stays available without repeating outs.
+    if last["action"] != "clock_in":
+        return "clock_in"
+    # Compare elapsed seconds, not local dates: 22:00 -> 06:00 is one shift,
+    # even across DST. Exactly the configured window still permits clock-out.
+    # An unreadable legacy timestamp cannot establish an active shift.
+    if age_seconds > config.AUTO_CLOCK_STALE_HOURS * 3600:
+        return "clock_in"
+    return "clock_out"
+
+
 def log_attendance(
     worker_id: int,
     worker_name: str,
@@ -712,15 +743,10 @@ def log_attendance(
     with conn if owns_transaction else nullcontext():
         if owns_transaction:
             conn.execute("BEGIN IMMEDIATE")
-        if action is None:
-            if config.KIOSK_TYPE == "entry":
-                action = "clock_in"
-            elif config.KIOSK_TYPE == "exit":
-                action = "clock_out"
-            else:
-                action = "clock_out" if get_last_action(worker_id) == "clock_in" else "clock_in"
-        normalized_action = _normalize_action(action)
         timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if action is None:
+            action = _infer_clock_action(worker_id, timestamp)
+        normalized_action = _normalize_action(action)
         server_worker_id = server_worker_id or get_server_id(worker_id) or None
         cursor = conn.execute(
             """
@@ -780,28 +806,32 @@ def get_attendance_action(log_id: int) -> str:
 
 
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
-    """Return True if worker has any recent clock event within N minutes."""
+    """Debounce the last recorded scan, without blocking on a future clock."""
+    last = _get_last_attendance(worker_id)
+    if last is None or last["epoch"] is None:
+        return False
+    age_seconds = datetime.now(timezone.utc).timestamp() - last["epoch"]
+    return 0 <= age_seconds <= minutes * 60
+
+
+def _get_last_attendance(worker_id: int) -> Optional[sqlite3.Row]:
+    """Read the last inserted local event, independent of wall-clock jumps.
+
+    This table contains local writes, not downloaded portal history. A new
+    scan must advance the toggle even if its timestamp precedes an old row.
+    """
     conn = _get_conn()
-    threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
-    row = conn.execute(
-        """
-        SELECT id FROM attendance_log
-        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
-        LIMIT 1
-        """,
-        (worker_id, threshold),
+    return conn.execute(
+        """SELECT action, attendance_epoch(timestamp) AS epoch
+        FROM attendance_log WHERE worker_id = ?
+        ORDER BY id DESC LIMIT 1""",
+        (worker_id,),
     ).fetchone()
-    return row is not None
 
 
 def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
-    conn = _get_conn()
-    row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
-        ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
-        (worker_id,),
-    ).fetchone()
+    row = _get_last_attendance(worker_id)
     return row["action"] if row else None
 
 
