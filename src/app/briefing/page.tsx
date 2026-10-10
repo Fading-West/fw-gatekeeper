@@ -23,6 +23,7 @@ const coverageStyles: Record<DepartmentCoverageStatus, string> = {
   covered: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/20',
   short: 'bg-amber-400/10 text-amber-300 border-amber-400/20',
   critical: 'bg-red-400/10 text-red-300 border-red-400/20',
+  not_yet_due: 'bg-sky-400/10 text-sky-300 border-sky-400/20',
   unscheduled: 'bg-slate-400/10 text-slate-300 border-slate-400/20',
 };
 
@@ -30,6 +31,7 @@ const workerStyles: Record<WorkerCoverageStatus, string> = {
   present: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/20',
   late: 'bg-amber-400/10 text-amber-300 border-amber-400/20',
   missing: 'bg-red-400/10 text-red-300 border-red-400/20',
+  not_yet_due: 'bg-sky-400/10 text-sky-300 border-sky-400/20',
   clocked_out: 'bg-slate-400/10 text-slate-300 border-slate-400/20',
   still_clocked_in: 'bg-blue-400/10 text-blue-300 border-blue-400/20',
 };
@@ -120,7 +122,7 @@ function validDateParam(value: string | null) {
 }
 
 function validWorkerStatusParam(value: string | null): WorkerCoverageStatus | 'all' {
-  return value === 'missing' || value === 'late' || value === 'present' || value === 'clocked_out' || value === 'still_clocked_in'
+  return value === 'missing' || value === 'late' || value === 'present' || value === 'not_yet_due' || value === 'clocked_out' || value === 'still_clocked_in'
     ? value
     : 'all';
 }
@@ -349,6 +351,7 @@ function ShiftBriefingPageContent() {
             ['Present', sourceCounts?.present ?? summary?.present ?? 0, 'text-emerald-300'],
             ['Late', sourceCounts?.late ?? summary?.late ?? 0, 'text-amber-300'],
             ['Missing', sourceCounts?.missing ?? summary?.missing ?? 0, 'text-red-300'],
+            ['Not Yet Due', sourceCounts?.not_yet_due ?? summary?.not_yet_due ?? 0, 'text-sky-300'],
             ['Open Exceptions', sourceCounts?.open_exceptions ?? summary?.open_exceptions ?? 0, 'text-gold'],
             ['Critical Exceptions', sourceCounts?.critical_exceptions ?? 0, 'text-red-300'],
             ['Recognition Reviews', sourceCounts?.recognition_reviews ?? summary?.recognition_reviews ?? 0, 'text-blue-300'],
@@ -480,6 +483,7 @@ function ShiftBriefingPageContent() {
             <select value={status} onChange={(event) => setStatus(event.target.value as WorkerCoverageStatus | 'all')} className="input-field">
               <option value="all">All statuses</option>
               <option value="missing">Missing</option>
+              <option value="not_yet_due">Not yet due</option>
               <option value="late">Late</option>
               <option value="present">Present</option>
               <option value="clocked_out">Clocked out</option>
@@ -508,12 +512,13 @@ function ShiftBriefingPageContent() {
                   </div>
                   <span className={`badge border ${coverageStyles[row.status]}`}>{titleCase(row.status)}</span>
                 </div>
-                <div className="grid grid-cols-4 gap-2 text-center">
+                <div className={`grid ${row.not_yet_due ? 'grid-cols-5' : 'grid-cols-4'} gap-2 text-center`}>
                   {[
                     ['Present', row.present, 'text-emerald-300'],
                     ['Expected', row.expected, 'text-slate-200'],
                     ['Late', row.late, 'text-amber-300'],
                     ['Missing', row.missing, 'text-red-300'],
+                    ...(row.not_yet_due ? [['Not Yet Due', row.not_yet_due, 'text-sky-300']] : []),
                   ].map(([label, value, tone]) => (
                     <div key={label} className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className={`font-display text-xl ${tone}`}>{value}</p>
@@ -523,7 +528,7 @@ function ShiftBriefingPageContent() {
                 </div>
                 <div className="h-2 rounded-full bg-navy-900/70 overflow-hidden">
                   <div
-                    className={`h-full ${departmentRisk(row) >= 50 ? 'bg-red-400' : departmentRisk(row) > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                    className={`h-full ${row.status === 'not_yet_due' ? 'bg-sky-400/60' : departmentRisk(row) >= 50 ? 'bg-red-400' : departmentRisk(row) > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`}
                     style={{ width: `${Math.min(100, Math.max(0, 100 - departmentRisk(row)))}%` }}
                   />
                 </div>
