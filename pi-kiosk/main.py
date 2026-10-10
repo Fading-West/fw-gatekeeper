@@ -207,9 +207,9 @@ def run(args):
             exc,
         )
 
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    os.makedirs(config.FACES_DIR, exist_ok=True)
-    os.makedirs(config.MODEL_DIR, exist_ok=True)
+    for directory in (config.DATA_DIR, config.FACES_DIR, config.MODEL_DIR):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
     database.init_db()
 
     # Download and load the MobileFaceNet model, but continue booting if it

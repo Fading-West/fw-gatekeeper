@@ -164,6 +164,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User=$KIOSK_USER
+UMask=0077
 WorkingDirectory=$INSTALL_DIR/pi-kiosk
 ExecStart=$INSTALL_DIR/pi-kiosk/venv/bin/python main.py \\
   --server $SERVER_URL \\
@@ -274,6 +275,8 @@ fi
 # ─── 8. Permissions & Cleanup ──────────────────────────────────
 echo "[8/8] Setting permissions..."
 chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
+# Tighten pre-upgrade databases, sidecars, photos and directories too.
+chmod -R go-rwx "$INSTALL_DIR/pi-kiosk/data"
 
 # Disable console screen blanking so the kiosk display never goes dark
 CMDLINE="$BOOT_DIR/cmdline.txt"

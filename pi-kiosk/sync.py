@@ -428,16 +428,20 @@ def sync_workers(health: Optional[dict] = None) -> bool:
 
             if server_id and not is_active:
                 if database.remove_worker_by_server_id(str(server_id), strict_cleanup=receipt_protocol):
-                    logger.info("Removed deactivated worker: %s (server_id=%s)", name or "unknown", server_id)
+                    logger.info("Removed deactivated worker (server_id=%s)", server_id)
                 continue
 
             if not server_id or not name or encoding_data is None:
                 if receipt_protocol:
                     raise ValueError("Worker sync row has missing required fields")
-                logger.warning("Skipping worker sync row with missing required fields: %s", w)
+                logger.warning("Skipping worker sync row with missing required fields (server_id=%s)", server_id)
                 continue
 
-            encoding = np.array(encoding_data, dtype=np.float64)
+            try:
+                encoding = np.array(encoding_data, dtype=np.float64)
+            except (TypeError, ValueError) as exc:
+                # NumPy's conversion error can include the raw encoding value.
+                raise ValueError("Worker encoding must be a numeric vector") from exc
             if receipt_protocol and (encoding.ndim != 1 or encoding.size not in {128, 512} or not np.isfinite(encoding).all()):
                 raise ValueError("Worker encoding must be a 128-dim or 512-dim vector")
 
@@ -478,7 +482,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             finally:
                 if staged_photo and os.path.exists(staged_photo):
                     os.unlink(staged_photo)
-            logger.info("Synced worker: %s (server_id=%s)", name, server_id)
+            logger.info("Synced worker (server_id=%s)", server_id)
 
         if full_roster:
             for stale_id in database.get_synced_server_ids() - seen_server_ids:
@@ -545,7 +549,8 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
     """Stage a worker photo; caller publishes it after row validation."""
     staged = None
     try:
-        os.makedirs(config.PHOTO_DIR, exist_ok=True)
+        os.makedirs(config.PHOTO_DIR, mode=0o700, exist_ok=True)
+        os.chmod(config.PHOTO_DIR, 0o700)
         safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
         identifier = uuid.uuid4().hex
         path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{identifier}.jpg")
@@ -553,8 +558,11 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             database.record_photo_cleanup([Path(staged)], "published")
-            with open(staged, "xb") as f:
+            fd = os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "wb") as f:
                 f.write(r.content)
+                f.flush()
+                os.fsync(f.fileno())
             return staged, path
     except Exception as e:
         if staged:
@@ -562,7 +570,7 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
                 os.unlink(staged)
             except OSError:
                 logger.warning("Could not remove incomplete staged photo: %s", staged)
-        logger.warning("Failed to download photo for %s: %s", name, e)
+        logger.warning("Failed to download photo (server_id=%s, error=%s)", name, type(e).__name__)
     return None
 
 

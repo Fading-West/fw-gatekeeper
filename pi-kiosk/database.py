@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -58,14 +59,29 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
+        # Keep this process-wide restriction: SQLite can recreate WAL/SHM
+        # files on later connections, including in background threads.
+        os.umask(0o077)
         db_path = Path(config.DB_PATH)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        db_path.parent.chmod(0o700)
+        _secure_db_files(db_path)
         _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA foreign_keys=OFF")
+        _secure_db_files(db_path)
     return _local.conn
+
+
+def _secure_db_files(db_path: Path):
+    """Tighten existing databases and sidecars before SQLite opens them."""
+    for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        try:
+            path.chmod(0o600)
+        except FileNotFoundError:
+            pass  # Sidecars are absent until WAL is opened, or after a checkpoint.
 
 
 def _migrate_sync_state(conn: sqlite3.Connection):
