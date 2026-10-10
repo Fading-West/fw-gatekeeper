@@ -55,6 +55,12 @@ async function postSecuredIngest<T>(path: string, body: unknown): Promise<T> {
   }
 }
 
+// Routine kiosk ingest (attendance, heartbeats and roster acknowledgements)
+// intentionally leaves system-health cached for its 30-second TTL. Each kiosk
+// syncs about every 30 seconds, while dashboards poll every 10 seconds; clearing
+// all dates on each write would eliminate most cache hits as the fleet grows.
+// Portal roster/inventory mutations still invalidate immediately, and admins
+// can request fresh health to inspect telemetry or purge acknowledgement now.
 export function ingestAttendanceBatch(events: unknown[], checkpoint = false) {
   return postSecuredIngest<{ synced: number; acknowledged: number }>('/api/ingest/attendance/bulk', { events, ...(checkpoint ? { checkpoint: true } : {}) });
 }
