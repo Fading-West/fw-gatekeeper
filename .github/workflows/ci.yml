@@ -52,3 +52,8 @@ jobs:
             -v "$PWD:/repo:ro" -e FACE_PARITY_MODEL=/app/models/rec_model.onnx \
             gatekeeper-face-service:ci python /repo/face-service/test_crop_parity.py
           docker image inspect gatekeeper-face-service:ci --format 'Runtime image bytes: {{.Size}}'
+      - name: Measure maximum-size HTTP enrollment requests within the Render memory limit
+        run: |
+          docker run --rm --memory=512m --memory-swap=512m -v "$PWD:/repo:ro" \
+            gatekeeper-face-service:ci \
+            python /repo/scripts/check-face-service-memory.py --model /app/models/rec_model.onnx

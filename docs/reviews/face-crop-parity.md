@@ -91,6 +91,28 @@ checks peak RSS <450 MiB, leaving headroom. These are bounded workload checks,
 not a promise about unbounded request volume. Queueing/cold-start latency must
 be checked on Render; the portal request timeout remains 60 seconds.
 
+That in-process figure excludes HTTP bodies, and the serialization lock does not
+cover them: each waiting request has already read and parsed up to 24 MB of
+JSON. Review measurements over HTTP (uvicorn child process, six 3.6–3.8 MB
+photos per request, one pinned core) peaked at **288 MiB** for one request,
+**424 MiB** for two concurrent requests and **498–535 MiB** for three, at or
+above the 512 MB instance (master's Haar service: 382/638/914 MiB). `image_admission.py` therefore
+admits authenticated `/encode` and `/match` requests by declared body size
+(32 MiB in flight; always one when idle). Portal captures (three 640px JPEGs,
+~45 KB each) are never refused for one another; a second maximum-size request
+gets 503 with `Retry-After`; its body is discarded chunk by chunk, never
+buffered or parsed. With admission, three
+concurrent maximum requests returned one 200 and two 503s and peaked at
+**303 MiB**; five concurrent portal-sized requests all returned 200 (184 MiB). CI runs
+`scripts/check-face-service-memory.py` in the built image under 512 MiB.
+
+CPU per photo on one host core: HOG at 640×480 57 ms, 1280×720 178 ms,
+2000×2000 880 ms. A real portal request (three 640×480 photos) used 1.4 s of
+service CPU end to end; six ~4 MP photos used 7.8 s. `render.yaml` uses the free
+plan (0.1 CPU), so expect roughly 10× longer wall time: about 14 s for a portal
+enrollment, but over the portal's 60 s timeout for six 4 MP photos, which the
+portal UI never sends (it captures at most 640 px wide).
+
 ## Existing templates: opt-in repair plan
 
 `RETENTION.md` explicitly retains enrollment JPEGs to regenerate templates.

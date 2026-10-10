@@ -61,12 +61,16 @@ class CropParityTests(unittest.TestCase):
         else:
             cls.real_session = None
 
-    def assert_crop_parity(self, img, loc):
+    def assert_crop_parity(self, img, loc, detected=False):
         # Capture the actual kiosk crop before its resize/preprocessing.
         with patch.object(kiosk, 'get_512_embedding', side_effect=lambda crop: cv2.resize(crop, (112,112))):
             expected = kiosk.embed_face(img, loc)
-        with patch.object(main, 'detect_faces_hog', return_value=[(loc[3],loc[0],loc[1],loc[2])]):
-            actual = main.get_face_crop(img)
+        if detected:
+            # Use the service's own production detector wiring, not a patched box.
+            actual = main.get_face_crop(img, reject_competing_faces=True)
+        else:
+            with patch.object(main, 'detect_faces_hog', return_value=[(loc[3],loc[0],loc[1],loc[2])]):
+                actual = main.get_face_crop(img)
         np.testing.assert_array_equal(actual, expected)
         with patch.object(main, 'get_rec_session', return_value=self.session), patch.object(kiosk, 'get_rec_session', return_value=self.session):
             main.embed_face_crop(actual)
@@ -82,13 +86,14 @@ class CropParityTests(unittest.TestCase):
 
     def test_real_detections_and_embeddings_for_synthetic_faces(self):
         for i, img in enumerate(self.images):
-            for shape in [(512,512), (511,509), (1024,768)]:
+            # 640x480 is both the kiosk camera and the portal capture size.
+            for shape in [(640,480), (512,512), (511,509), (1024,768)]:
                 with self.subTest(face=i+1, shape=shape):
                     frame = cv2.resize(img, shape)
                     locs = kiosk_locations(frame)
                     self.assertEqual(len(locs), 1)
                     self.assertEqual(detect_faces_hog(frame), [(l,t,r,b) for t,r,b,l in locs])
-                    self.assert_crop_parity(frame, locs[0])
+                    self.assert_crop_parity(frame, locs[0], detected=True)
 
     def test_padding_rounding_and_all_image_edges(self):
         frame = self.images[0]

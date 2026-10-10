@@ -30,6 +30,7 @@ import onnxruntime as ort
 from model_pinning import REC_MODEL_URL, REC_MODEL_SHA256, ensure_pinned_model
 
 from face_detection import DETECTOR_VERSION, detect_faces_hog
+from image_admission import ImageAdmissionMiddleware
 
 from enrollment_quality import (
     MIN_GOOD_PHOTOS,
@@ -57,6 +58,8 @@ async def service_lifespan(_app):
 
 
 app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
+# Inner to CORS: bound bodies of concurrent image requests before they are parsed.
+app.add_middleware(ImageAdmissionMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),
