@@ -688,7 +688,7 @@ def _normalize_action(action: str) -> str:
 
 
 class ClockInferenceError(ValueError):
-    """The device clock cannot establish a safe automatic direction."""
+    """The scan timestamp cannot establish an automatic direction."""
 
 
 def _infer_clock_action(worker_id: int, timestamp: str) -> str:
@@ -704,11 +704,9 @@ def _infer_clock_action(worker_id: int, timestamp: str) -> str:
     if last is None or last["epoch"] is None:
         return "clock_in"
     age_seconds = scan_epoch - last["epoch"]
-    # A backward clock correction makes event chronology uncertain. Never
-    # record a guessed direction from negative age, or the future row can
-    # dominate every subsequent scan and produce repeated clock-outs.
-    if age_seconds < 0:
-        raise ClockInferenceError("Device clock is behind the last attendance event; correct the clock before retrying")
+    # After a power cut an offline Pi may restore an earlier saved clock.
+    # Negative age cannot establish staleness: keep toggling from the last
+    # inserted event so attendance stays available without repeating outs.
     if last["action"] != "clock_in":
         return "clock_in"
     # Compare elapsed seconds, not local dates: 22:00 -> 06:00 is one shift,
@@ -807,27 +805,25 @@ def get_attendance_action(log_id: int) -> str:
 
 
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
-    """Return True if worker has any recent clock event within N minutes."""
-    conn = _get_conn()
-    threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
-    row = conn.execute(
-        """
-        SELECT id FROM attendance_log
-        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
-        LIMIT 1
-        """,
-        (worker_id, threshold),
-    ).fetchone()
-    return row is not None
+    """Debounce the last recorded scan, without blocking on a future clock."""
+    last = _get_last_attendance(worker_id)
+    if last is None or last["epoch"] is None:
+        return False
+    age_seconds = datetime.now(timezone.utc).timestamp() - last["epoch"]
+    return 0 <= age_seconds <= minutes * 60
 
 
 def _get_last_attendance(worker_id: int) -> Optional[sqlite3.Row]:
-    """Read the latest action and its instant together, including same-second ties."""
+    """Read the last inserted local event, independent of wall-clock jumps.
+
+    This table contains local writes, not downloaded portal history. A new
+    scan must advance the toggle even if its timestamp precedes an old row.
+    """
     conn = _get_conn()
     return conn.execute(
         """SELECT action, attendance_epoch(timestamp) AS epoch
         FROM attendance_log WHERE worker_id = ?
-        ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
+        ORDER BY id DESC LIMIT 1""",
         (worker_id,),
     ).fetchone()
 

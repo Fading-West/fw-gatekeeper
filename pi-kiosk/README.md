@@ -127,9 +127,11 @@ Automatic scans and manual clocks with no explicit action use the same rule.
 Entry/exit kiosks and explicit supervisor actions retain their fixed choices.
 Tune the window to the site's longest expected shift. This only infers the
 next scan; it does not repair past events or download portal corrections.
-If the device clock moves behind the latest attendance event, auto inference
-refuses to insert a guessed direction until the clock is corrected. The manual
-route returns a retryable error; explicit supervisor actions remain available.
+Direction follows the most recently recorded local event, even if the device
+clock moves backward after a power cut. Negative elapsed time does not prove a
+shift stale, so automatic and manual inference keep toggling without waiting
+for network time. Future timestamps do not arm debounce; a newly recorded scan
+still does. Original event timestamps are retained for reconciliation.
 
 ### Command Line
 
