@@ -10,7 +10,7 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 
@@ -63,14 +63,7 @@ function formatScore(value: number | null | undefined) {
 }
 
 function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || '—';
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return formatFactoryLocalDateTime(value);
 }
 
 function titleCase(value: string) {

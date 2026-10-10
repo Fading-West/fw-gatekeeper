@@ -651,20 +651,23 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   const hydrated = exceptions.map((exception) => withReview(exception, reviewsByKey.get(exception.key)));
+  const timestampKey = createRecognitionTimestampSortKey();
+  const chronologicalKeys = new Map(hydrated.map(exception =>
+    [exception.key, timestampKey(exception.first_seen || "")],
+  ));
   hydrated.sort((a, b) => {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     const statusOrder = { open: 0, reviewed: 1, resolved: 2, ignored: 3 };
     return (
       statusOrder[a.status] - statusOrder[b.status] ||
       severityOrder[a.severity] - severityOrder[b.severity] ||
-      (a.first_seen || "").localeCompare(b.first_seen || "") ||
+      chronologicalKeys.get(a.key)!.localeCompare(chronologicalKeys.get(b.key)!) ||
       a.title.localeCompare(b.title)
     );
   });
 
-  // Keep the existing evidence order, then expose factory wall time for all
+  // Order by evidence instants, then expose factory wall time for all
   // display/export consumers. Relative-time consumers still need the instant.
-  const timestampKey = createRecognitionTimestampSortKey();
   return hydrated.map(exception => {
     if (exception.type !== "recognition_review") return exception;
     const key = timestampKey(exception.first_seen || "");

@@ -30,12 +30,14 @@ afterEach(async () => {
 });
 
 it.each([
-  ['2026-10-09', ['2026-10-09T12:05:00+00:00'], ['2026-10-09T07:05:00']],
-  ['2026-03-08', ['2026-03-08T07:59:00Z', '2026-03-08T08:01:00Z'], ['2026-03-08T01:59:00', '2026-03-08T03:01:00']],
-  ['2026-11-01', ['2026-11-01T06:45:00Z', '2026-11-01T07:15:00Z'], ['2026-11-01T01:45:00', '2026-11-01T01:15:00']],
-] as Array<[string, string[], string[]]>)('renders and exports factory times through both portal consumers on %s', async (date, timestamps, localTimes) => {
+  ['2026-10-09', ['2026-10-09T12:05:00+00:00'], ['2026-10-09T07:05:00'], 'Asia/Tokyo'],
+  ['2026-03-08', ['2026-03-08T07:59:00Z', '2026-03-08T08:01:00Z'], ['2026-03-08T01:59:00', '2026-03-08T03:01:00'], 'Asia/Tokyo'],
+  ['2026-11-01', ['2026-11-01T06:45:00Z', '2026-11-01T07:15:00Z'], ['2026-11-01T01:45:00', '2026-11-01T01:15:00'], 'Asia/Tokyo'],
+  ['2026-03-29', ['2026-03-29T07:30:00Z'], ['2026-03-29T02:30:00'], 'Europe/Berlin'],
+  ['2026-03-29', ['2026-03-29T02:30:00'], ['2026-03-29T02:30:00'], 'Europe/Berlin'],
+] as Array<[string, string[], string[], string]>)('renders and exports factory times through both portal consumers on %s', async (date, timestamps, localTimes, viewerTimeZone) => {
   // A supervisor viewing from outside Chicago must still see factory wall time.
-  vi.stubEnv('TZ', 'Asia/Tokyo');
+  vi.stubEnv('TZ', viewerTimeZone);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(`${date}T12:00:00Z`));
   const t = convexTest(schema, modules);
@@ -70,7 +72,7 @@ it.each([
   expect(rows.map(row => row.split(',').slice(6, 8))).toEqual(localTimes.map(time => [time, time]));
 
   // The dashboard uses elapsed time, so it must consume the retained UTC instant.
-  vi.setSystemTime(new Date(Date.parse(timestamps.at(-1)!) + 5 * 60_000));
+  vi.setSystemTime(new Date(Date.parse(recognition.attempts[0].timestamp_utc) + 5 * 60_000));
   vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
     ok: url.startsWith('/api/shift-exceptions'),

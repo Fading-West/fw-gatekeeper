@@ -12,6 +12,8 @@ it.each([
   ["2026-03-08", ["2026-03-08T07:59:00Z", "2026-03-08T08:01:00Z"], ["2026-03-08T01:59:00", "2026-03-08T03:01:00"]],
   ["2026-11-01", ["2026-11-01T06:45:00Z", "2026-11-01T07:15:00Z"], ["2026-11-01T01:45:00", "2026-11-01T01:15:00"]],
   ["2026-11-01", ["2026-11-02T05:05:00.123456Z"], ["2026-11-01T23:05:00.123456"]],
+  ["2026-11-01", ["2026-11-01T01:30:00"], ["2026-11-01T01:30:00"]],
+  ["2026-03-08", ["2026-03-08T02:30:00"], ["2026-03-08T02:30:00"]],
 ] as Array<[string, string[], string[]]>)("uses attendance display formatting on %s without changing evidence order", async (date, timestamps, localTimes) => {
   const t = convexTest(schema, modules);
   const { userId, ids } = await t.run(async ctx => {
@@ -36,7 +38,7 @@ it.each([
   expect(attempts.map(row => row.timestamp_utc)).toEqual(attendance.map(row => row.timestamp_utc));
   expect((await viewer.query(api.recognitionAttempts.listByDate, { date, limit: 1 }))[0].id).toBe(ids.at(-1));
   for (const [index, id] of ids.entries()) {
-    expect(await viewer.query(api.recognitionAttempts.getById, { id, date })).toMatchObject({ timestamp: localTimes[index] });
+    expect(await viewer.query(api.recognitionAttempts.getById, { id, date })).toMatchObject({ timestamp: localTimes[index], timestamp_utc: attendance[timestamps.length - 1 - index].timestamp_utc });
     expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ timestamp: timestamps[index] });
   }
   const exceptions = (await viewer.query(api.shiftExceptions.summary, { date })).exceptions.filter(row => row.type === "recognition_review");
@@ -51,4 +53,24 @@ it("respects the configured factory zone and retains fractional attendance preci
     .toBe("2026-10-09T05:05:00.123456");
   expect(getRecognitionDisplayTimestamp("2026-10-09T07:05:00.123456"))
     .toBe("2026-10-09T07:05:00.123456");
+});
+
+it.each([
+  ["2026-10-09", ["2026-10-09T12:05:00Z", "2026-10-09T07:50:00"]],
+  ["2026-11-01", ["2026-11-01T01:45:00-05:00", "2026-11-01T01:15:00-06:00"]],
+  ["2026-10-09", ["2026-10-09T12:05:00.123455Z", "2026-10-09T07:05:00.123456"]],
+])("orders the exceptions queue by instant on %s before formatting", async (date, timestamps) => {
+  const t = convexTest(schema, modules);
+  const { userId, ids } = await t.run(async ctx => {
+    const userId = await ctx.db.insert("users", { email: "viewer@example.test" });
+    await ctx.db.insert("portalMembers", { userId, role: "viewer", active: true, createdAt: date });
+    const ids = [];
+    for (const timestamp of timestamps) ids.push(await ctx.db.insert("recognitionAttempts", {
+      timestamp, kioskId: "entry", faceDetected: true, decision: "near_miss",
+      threshold: 0.3, reviewed: false, createdAt: date,
+    }));
+    return { userId, ids };
+  });
+  const exceptions = (await t.withIdentity({ subject: userId }).query(api.shiftExceptions.summary, { date })).exceptions;
+  expect(exceptions.map(row => row.key)).toEqual(ids.map(id => `${date}:recognition_review:${id}`));
 });

@@ -7,6 +7,24 @@ export function getLocalDateString(date = new Date()): string {
 
 export const DEFAULT_FACTORY_TIME_ZONE = 'America/Chicago';
 
+/** Format factory wall time without letting the viewer's DST rules alter it. */
+export function formatFactoryLocalDateTime(value: string | null | undefined, emptyLabel = '—'): string {
+  if (!value) return emptyLabel;
+  const timestamp = value.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T');
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp);
+  // Offset-free values already contain factory wall time. UTC here is only a
+  // neutral calendar for formatting those fields, not an inferred instant.
+  const date = new Date(hasOffset ? timestamp : `${timestamp}Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    timeZone: hasOffset ? DEFAULT_FACTORY_TIME_ZONE : 'UTC',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 const LOCAL_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const LOCAL_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
 const DAYS_BY_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
