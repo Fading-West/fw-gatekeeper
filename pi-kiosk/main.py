@@ -39,13 +39,15 @@ class Camera:
     def __init__(self, mode="auto"):
         self._cam = None
         self._mode = mode
-        self._is_rgb = False  # True if camera returns RGB (picamera2)
 
     def start(self):
         if self._mode in ("pi", "auto"):
             try:
                 from picamera2 import Picamera2
                 self._cam = Picamera2()
+                # Picamera2/libcamera "RGB888" is laid out [B, G, R] in memory,
+                # i.e. OpenCV BGR (its "BGR888" is [R, G, B]). Keep RGB888 so
+                # capture_array() matches cv2.VideoCapture's BGR output.
                 cam_config = self._cam.create_video_configuration(
                     main={"size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT), "format": "RGB888"}
                 )
@@ -53,8 +55,7 @@ class Camera:
                 self._cam.start()
                 time.sleep(1)
                 self._mode = "pi"
-                self._is_rgb = True
-                logger.info("Pi Camera initialized (RGB mode)")
+                logger.info("Pi Camera initialized (RGB888 = BGR order)")
                 return
             except Exception as e:
                 if self._mode == "pi":
@@ -67,21 +68,19 @@ class Camera:
         if not self._cam.isOpened():
             raise RuntimeError("No camera available")
         self._mode = "usb"
-        self._is_rgb = False
         logger.info("USB Camera initialized (BGR mode)")
 
     def capture(self):
-        """Returns (bgr_frame, rgb_frame)"""
+        """Returns (bgr_frame, rgb_frame) with the same channel order for every camera."""
         if self._mode == "pi":
-            rgb = self._cam.capture_array()
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            return bgr, rgb
+            # RGB888 frames are already BGR; see start().
+            bgr = self._cam.capture_array()
         else:
             ret, bgr = self._cam.read()
             if not ret:
                 raise RuntimeError("Failed to capture frame")
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            return bgr, rgb
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        return bgr, rgb
 
     def stop(self):
         if self._cam is None:
