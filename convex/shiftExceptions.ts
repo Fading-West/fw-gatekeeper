@@ -696,7 +696,8 @@ export const review = mutation({
       date: args.date,
       type: args.type,
       status: args.status,
-      note: normalizeText(args.note),
+      // An omitted note keeps the saved note; an empty or whitespace-only note clears it.
+      note: args.note === undefined ? existing?.note : normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,
       updatedAt: now,
     };

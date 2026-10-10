@@ -249,6 +249,8 @@ function ExceptionsPageContent() {
       return;
     }
     if (!dataReady || exception.date !== date || reviewPendingRef.current || correctionPendingRef.current) return;
+    // Send the note exactly as shown. An empty draft is an explicit clear, not "keep the old note".
+    const noteDraft = noteDrafts[exception.key];
     reviewPendingRef.current = true;
     setIsPending(true);
     void (async () => {
@@ -261,11 +263,15 @@ function ExceptionsPageContent() {
             date: exception.date,
             type: exception.type,
             status: nextStatus,
-            note: noteDrafts[exception.key] || exception.review_note || undefined,
+            note: noteDraft ?? exception.review_note ?? '',
           }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body?.error || 'Failed to update exception');
+        const savedNote = typeof body?.note === 'string' ? body.note : '';
+        setNoteDrafts((current) => (
+          current[exception.key] === noteDraft ? { ...current, [exception.key]: savedNote } : current
+        ));
         toast(`Exception marked ${titleCase(nextStatus)}`);
         await fetchExceptions();
       } catch (err) {
@@ -288,7 +294,7 @@ function ExceptionsPageContent() {
       toast(resolution.disabled_reason || 'This exception does not have a one-tap correction path.', 'error');
       return;
     }
-    const existingReason = noteDrafts[exception.key] || exception.review_note || '';
+    const existingReason = (noteDrafts[exception.key] ?? exception.review_note ?? '').trim();
     correctionTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setCorrectionDraft({
       exception,
