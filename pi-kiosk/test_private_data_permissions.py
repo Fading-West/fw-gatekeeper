@@ -273,6 +273,52 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         self.assert_mode(outside, 0o755)
         self.assert_mode(photo, 0o644)
 
+    def test_setup_validates_data_relocated_by_parent_symlink_before_changes(self):
+        install = self.root / 'install'
+        install.mkdir()
+        outside = self.root / 'relocated-kiosk'
+        data = outside / 'data'
+        data.mkdir(parents=True)
+        photo = data / 'photo.jpg'
+        photo.write_bytes(b'synthetic-photo')
+        (install / 'pi-kiosk').symlink_to(outside, target_is_directory=True)
+        command = self.setup_permission_command()
+        for _ in range(2):
+            subprocess.run(['bash', '-c', command], env=self.setup_env(install), check=True)
+            self.assert_mode(data, 0o700)
+            self.assert_mode(photo, 0o600)
+
+        # Simulate a root installer configured for a different kiosk user.
+        # This must fail at preflight, before even the first package command.
+        data.chmod(0o755)
+        photo.chmod(0o644)
+        script = self.root / 'setup.sh'
+        script.write_text(Path(__file__).with_name('setup.sh').read_text().replace(
+            'INSTALL_DIR="/opt/fw-gatekeeper"', f'INSTALL_DIR="{install}"'))
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        for name, body in {
+            'id': '#!/bin/sh\nif [ "$#" -eq 1 ]; then echo 0; else /usr/bin/id "$@"; fi\n',
+            'python3': '#!/bin/sh\nexit 0\n',
+            'apt-get': '#!/bin/sh\ntouch "$TEST_APT_LOG"\nexit 72\n',
+        }.items():
+            path = bin_dir / name
+            path.write_text(body)
+            path.chmod(0o755)
+        apt_log = self.root / 'apt.log'
+        result = subprocess.run(['bash', str(script)], capture_output=True, text=True,
+                                env=self.setup_env(install) | {
+                                    'PATH': f'{bin_dir}:{os.environ["PATH"]}',
+                                    'KIOSK_USER': 'nobody' if os.getuid() == 0 else 'root',
+                                    'KIOSK_API_KEY': 'synthetic', 'KIOSK_UI_KEY': 'synthetic',
+                                    'KIOSK_SUPERVISOR_PIN': 'synthetic', 'TEST_APT_LOG': str(apt_log),
+                                })
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('dedicated directory owned by', result.stdout)
+        self.assertFalse(apt_log.exists())
+        self.assert_mode(data, 0o755)
+        self.assert_mode(photo, 0o644)
+
     def test_unavailable_data_symlink_exits_before_installer_side_effects(self):
         install = self.root / 'install'
         (install / 'pi-kiosk').mkdir(parents=True)

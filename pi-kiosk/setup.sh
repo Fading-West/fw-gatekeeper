@@ -75,8 +75,12 @@ PYTHON_TARGET
 # may keep a dedicated data directory on a USB drive via a symlink.
 resolve_data_root() {
   DATA_ROOT="$INSTALL_DIR/pi-kiosk/data"
-  if [ -L "$DATA_ROOT" ]; then
-    local target owner kiosk_uid
+  local target owner kiosk_uid
+  # A parent directory can relocate the store too (for example pi-kiosk).
+  # Resolve missing paths for fresh installs, then require an existing,
+  # kiosk-owned target whenever any component redirects the data path.
+  target=$(realpath -m -- "$DATA_ROOT")
+  if [ -L "$DATA_ROOT" ] || [ "$target" != "$DATA_ROOT" ]; then
     if ! target=$(realpath -e -- "$DATA_ROOT") || [ ! -d "$target" ]; then
       echo "❌ Data symlink target is unavailable. Mount its drive or repair the link, then rerun setup."
       return 1
