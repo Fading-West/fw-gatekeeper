@@ -47,19 +47,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          container_id=$(docker run --detach --publish 127.0.0.1:5557:5557 \
-            --env FACE_SERVICE_KEY=ci-startup-key \
-            --env OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 \
-            gatekeeper-face-service:ci uvicorn main:app --host 0.0.0.0 --port 5557)
+          container_name="face-service-startup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup() {
             result=$?
             if [ "$result" -ne 0 ]; then
-              docker logs "$container_id" || true
+              docker logs "$container_name" || true
             fi
-            docker rm --force "$container_id" >/dev/null || true
+            docker rm --force "$container_name" >/dev/null || true
             exit "$result"
           }
           trap cleanup EXIT
+          docker run --detach --name "$container_name" --publish 127.0.0.1:5557:5557 \
+            --env FACE_SERVICE_KEY=ci-startup-key \
+            --env OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 \
+            gatekeeper-face-service:ci uvicorn main:app --host 0.0.0.0 --port 5557 >/dev/null
           deadline=$((SECONDS + 90))
           while [ "$SECONDS" -lt "$deadline" ]; do
             if [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -67,7 +68,7 @@ jobs:
               echo "Face service started and /health returned 200"
               exit 0
             fi
-            if [ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != "true" ]; then
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != "true" ]; then
               echo "Face service exited before becoming healthy"
               exit 1
             fi
