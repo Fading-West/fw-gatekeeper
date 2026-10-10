@@ -200,6 +200,7 @@ def init_db():
             ON attendance_rejections(log_id) WHERE released_at IS NULL;
 
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_attendance_worker_id ON attendance_log(worker_id, id);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_time ON recognition_attempts(timestamp);

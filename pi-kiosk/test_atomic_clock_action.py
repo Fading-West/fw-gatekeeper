@@ -239,6 +239,25 @@ class AtomicClockActionTests(Fixture):
         self.assertEqual(database.get_attendance_action(first), "clock_in")
         self.assertEqual(database.get_attendance_action(second), "clock_out")
 
+    def test_latest_insert_query_uses_worker_id_index_without_sorting_history(self):
+        conn = database._get_conn()
+        conn.executemany("""INSERT INTO attendance_log
+            (worker_id, worker_name, action, timestamp) VALUES (?, 'Synthetic worker', 'clock_in', ?)""",
+            [(self.worker, "2026-10-06T14:00:00+00:00")] * 2000)
+        conn.commit()
+        database.log_attendance(self.worker, "Synthetic worker", "clock_out",
+                                timestamp="2026-10-06T13:00:00+00:00")
+        statements = []
+        conn.set_trace_callback(statements.append)
+        try:
+            self.assertEqual(database.get_last_action(self.worker), "clock_out")
+        finally:
+            conn.set_trace_callback(None)
+        query = next(sql for sql in statements if "FROM attendance_log" in sql)
+        plan = " ".join(row["detail"] for row in conn.execute("EXPLAIN QUERY PLAN " + query))
+        self.assertIn("SEARCH attendance_log USING INDEX idx_attendance_worker_id", plan)
+        self.assertNotIn("TEMP B-TREE", plan)
+
     def assert_inferred_action(self, previous, scan, expected, *, mode="auto", hours=16,
                                last_action="clock_in"):
         # Reset only this isolated fixture so every case starts with one prior scan.
