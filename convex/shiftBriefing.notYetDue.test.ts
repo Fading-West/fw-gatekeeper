@@ -168,6 +168,24 @@ describe('shift briefing does not mark workers missing before their shift starts
     expect(after.closeout_draft.narrative).not.toContain('not yet due');
   });
 
+  it('requires an acknowledgement note to sign a closeout before a shift starts', async () => {
+    at('2026-09-03T15:00:00Z'); // second shift not due until 14:00 Central
+    const { t, admin, workers } = await fixture([DAY_SHIFT, SECOND_SHIFT]);
+    await t.run((ctx) => ctx.db.insert('attendance', { workerId: workers.Avery, eventType: 'clock_in', timestamp: `${DATE}T07:55:00`, synced: true }));
+
+    const closeout = await admin.query(api.shiftCloseouts.get, { date: DATE });
+    expect(closeout.can_complete).toBe(false);
+    expect(closeout.blockers).toContainEqual(expect.objectContaining({ id: 'not_yet_due', count: 1 }));
+    await expect(admin.mutation(api.shiftCloseouts.save, { date: DATE, action: 'complete' })).rejects.toThrow('acknowledgement note');
+    await admin.mutation(api.shiftCloseouts.save, { date: DATE, action: 'complete', notes: 'Signed early; Blake not yet due', acknowledgedBlockers: true });
+    const signed = await admin.query(api.shiftCloseouts.get, { date: DATE });
+    expect(signed.closeout).toMatchObject({ status: 'completed', notes: 'Signed early; Blake not yet due' });
+    expect(signed.closeout?.snapshot).toMatchObject({ expected: 2, present: 1, missing: 0 });
+
+    vi.setSystemTime(new Date('2026-09-04T15:00:00Z')); // past date: no not-yet-due checklist item
+    expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).checklist.map((item: any) => item.id)).not.toContain('not_yet_due');
+  });
+
   it('uses the factory timezone across the DST fall-back change', async () => {
     // 2026-11-01 is the CDT -> CST switch; 13:30Z is 07:30 CST (08:30 under CDT).
     at('2026-11-01T13:30:00Z');

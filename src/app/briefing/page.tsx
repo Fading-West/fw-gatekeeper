@@ -345,7 +345,7 @@ function ShiftBriefingPageContent() {
             {readinessLabel}
           </span>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5 mt-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mt-5">
           {[
             ['Expected', sourceCounts?.expected ?? summary?.expected ?? 0, 'text-slate-100'],
             ['Present', sourceCounts?.present ?? summary?.present ?? 0, 'text-emerald-300'],

@@ -200,7 +200,8 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.missing_clock_outs || 0) +
     Number(payload?.summary.recognition_reviews || 0) +
     Number(payload?.summary.kiosk_warnings || 0) +
-    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0);
+    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0) +
+    Number(payload?.checklist.find((item) => item.id === 'not_yet_due')?.count || 0);
   const canComplete = Boolean(payload && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
