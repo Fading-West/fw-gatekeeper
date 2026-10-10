@@ -52,6 +52,7 @@ KIOSK_PORT = 5555
 DATA_DIR = "data"
 _DATA_PATH = Path(DATA_DIR)
 DB_PATH = str(_DATA_PATH / "attendance.db")
+LOCAL_HISTORY_RETENTION_DAYS = 30  # Synced rows only; override in config_local.py
 FACES_DIR = str(_DATA_PATH / "faces")
 MODEL_DIR = str(_DATA_PATH / "models")
 SHAPE_PREDICTOR_PATH = str(Path(MODEL_DIR) / "shape_predictor_68_face_landmarks.dat")
@@ -66,3 +67,11 @@ try:
     from config_local import *  # noqa: F401, F403
 except ImportError:
     pass
+
+
+def validate_history_retention():
+    if type(LOCAL_HISTORY_RETENTION_DAYS) is not int or LOCAL_HISTORY_RETENTION_DAYS < 1:
+        raise ValueError("LOCAL_HISTORY_RETENTION_DAYS must be a positive integer")
+
+
+validate_history_retention()

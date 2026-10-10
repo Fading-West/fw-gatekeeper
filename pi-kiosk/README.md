@@ -126,6 +126,79 @@ python3 main.py --server URL --kiosk-id ID --camera [auto|pi|usb]
 The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 `config_local.py`.
 
+## Upgrade notes: local history
+
+The first upgrade adds numeric timestamp columns and saved migration cursors
+during startup. Historical backfill and index creation run in a background
+thread after the UI and detection have started. Manual attendance, scanning,
+and sync remain available. New events receive their numeric timestamps at
+insert; today's log, debounce, and last-action selection still include legacy
+rows while the backfill is incomplete. The temporary log fallback parses only
+NULL epochs in the remaining migration ID range, so the supervisor log can be
+slower until attendance backfill finishes.
+
+The worker creates indexes before populating epochs, excludes NULLs from new
+indexes, commits at most 100 rows per batch, and yields between transactions.
+SQLite holds its writer lock during index creation, including on a restart
+with partially populated epochs or a device with a missing index. Every
+manual attendance, recognized attendance, and recognition telemetry write
+signals the index worker before opening its connection or transaction. The
+worker checks that signal every 1,000 SQLite instructions, atomically rolls
+back the current index build, and retries after 30 seconds. Completed indexes
+remain; no backfill begins until all four indexes exist. Busy door traffic can
+therefore defer migration and retention until a quieter period. This also
+protects the camera/UI loop, which records recognized attendance synchronously.
+Foreground connections wait up to 10 seconds for other writers; lock timeouts
+show a "please try again" message for both manual and recognized attendance.
+Failed event writes roll back their transaction. The background connection
+waits only five seconds for other writers. Shutdown interrupts index creation,
+finishes or rolls back the current batch, wakes retry delays, and joins the
+worker so its own connection is closed. Progress survives restart, and failures
+(including opening the connection) are logged and retried every 30 seconds.
+Look for
+`Local history epoch migration complete` in the service journal. Retention
+waits until both tables are migrated and the required indexes exist; sync
+continues during that wait.
+
+Afterward, only synced history older than `LOCAL_HISTORY_RETENTION_DAYS`
+(default **30**, positive integer override in `config_local.py`) is eligible
+for bounded cleanup. Unsynced events, active rejection evidence, debounce
+history, and each worker's latest action remain. SQLite reuses freed pages;
+the database file does not immediately shrink because no full vacuum runs.
+
+For scale, a synthetic 185 MiB WAL database with 200,000 attendance rows and
+600,000 recognition attempts took 3.65 seconds to migrate synchronously on an
+x86 host, with 8,003 commits (an earlier run during dependency installation
+took 13.07 seconds). A conservative sizing assumption of 20 times these host
+durations plus 10–50 ms per SD-card commit flush gives roughly **2.5–11 minutes**;
+this is an estimate, not a measured Pi 3B duration. This historical work no
+longer gates startup.
+
+Round 4 measured individual index builds on an x86 host with a synthetic
+181 MiB database containing 200,000 attendance rows and 600,000 recognition
+attempts. First-upgrade indexes with NULL historical epochs took **72–429 ms**;
+rebuilding indexes with populated epochs took **201–1,813 ms**. Concurrent
+attendance inserts queued and committed without errors. The same 20x sizing
+assumption gives up to **8.6 seconds** and **36.3 seconds**, respectively,
+before extra SD-card I/O costs. Round 5 replaces waiting through these builds
+with interruption when an event write arrives.
+
+Round 5 used a separate **199 MiB** WAL/FULL database with the same row counts,
+mixed naive/offset timestamps, 200 worker identities and 95% synced history.
+Across three builds per index, before the fix, the recognition retention
+index took **71–76 ms** at 0% populated epochs, **141–167 ms** at 25%,
+**207–208 ms** at 50%, and **282–340 ms** at 100%. Across all attendance
+indexes, corresponding ranges were **15–20**, **31–40**, **51–63**, and
+**79–118 ms**. These vary from round 4 with host load and data distribution.
+Attendance inserts issued 1, 50 or 200 ms into recognition index creation
+took up to **79, 180, 230 and 330 ms**, respectively, before the fix, and up to
+**0.54, 1.31, 1.59 and 1.63 ms** after it. Active builds were interrupted;
+builds that had already finished needed no interruption. Pi hardware and SD
+flush latency remain unmeasured. Regression coverage also verifies interruption
+of a populated attendance index, concurrent manual/recognized/telemetry writes,
+unchanged backfill cursors and retention gating, shutdown, restart, and real
+lock-timeout messages.
+
 ## Tools
 
 - `enroll.py` — local enrollment CLI (add/list/remove workers) with a

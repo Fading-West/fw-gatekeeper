@@ -650,6 +650,13 @@ class SyncWorker:
             except Exception as e:
                 logger.error("Sync error: %s", e)
 
+            # Maintenance also runs offline, after all upload/ack work in this
+            # cycle has returned. It never removes rows still awaiting sync.
+            try:
+                database.prune_synced_history()
+            except Exception as e:
+                logger.error("Local history maintenance error: %s", e)
+
             # Sleep in small increments so we can stop quickly
             for _ in range(config.SYNC_INTERVAL):
                 if not self._running:
