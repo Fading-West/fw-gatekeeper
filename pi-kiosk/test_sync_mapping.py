@@ -367,7 +367,8 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         first_warnings = [r for r in first.records if r.levelno >= logging.WARNING]
         second_warnings = [r for r in second.records if r.levelno >= logging.WARNING]
         self.assertEqual(len(first_warnings), 1)
-        self.assertIn("local_worker_id=4 name=caleb x2", first_warnings[0].getMessage())
+        self.assertIn("local_worker_id=4 x2", first_warnings[0].getMessage())
+        self.assertNotIn("caleb", first_warnings[0].getMessage())
         self.assertEqual(second_warnings, [])
         # Still counted for health reporting; nothing was silently dropped or marked synced.
         self.assertEqual(database.count_unsynced_logs(), 2)
@@ -396,7 +397,8 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
                 self.assertFalse(sync.sync_attendance())
             post.assert_not_called()
 
-        self.assertIn("'E1042'", logs.output[0])
+        self.assertIn(f"Attendance log {log_id}", logs.output[0])
+        self.assertNotIn("E1042", logs.output[0])
         self.assertEqual(self._row(log_id)["synced"], 0)
 
     def test_mixed_batch_sends_mapped_rows_and_keeps_orphans(self):

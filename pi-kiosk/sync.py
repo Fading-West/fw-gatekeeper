@@ -74,7 +74,7 @@ def _resolve_log_server_id(log: dict) -> Optional[str]:
     if snapshot:
         if _SERVER_ID_RE.fullmatch(snapshot):
             return snapshot
-        logger.error("Attendance log %s has invalid server_worker_id=%r; leaving it queued", log.get("id"), snapshot)
+        logger.error("Attendance log %d has invalid server worker identity; leaving it queued", int(log["id"]))
         return None
     live = database.get_server_id(int(log["worker_id"]))
     return str(live) if live else None
@@ -93,7 +93,7 @@ def _track_orphans(orphans: list[dict], total: int) -> None:
         logger.debug("Attendance sync: %d of %d queued logs still have no server worker mapping", len(orphans), total)
         return
     _last_orphan_warned_at = now
-    by_worker = Counter(f"local_worker_id={o['worker_id']} name={o.get('worker_name')}" for o in orphans)
+    by_worker = Counter(f"local_worker_id={int(o['worker_id'])}" for o in orphans)
     logger.warning(
         "Attendance sync: %d of %d queued logs have no server worker mapping and will stay queued "
         "until server_worker_id is set or the rows are removed (%s); log ids=%s%s",
@@ -153,8 +153,8 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
             json={"kiosk_id": config.KIOSK_ID, "logs": payload},
             headers=_auth_headers(), timeout=min(15, remaining),
         )
-    except requests.RequestException:
-        logger.exception("Attendance sync request failed; retaining unacknowledged batch")
+    except requests.RequestException as exc:
+        logger.warning("Attendance sync request failed; retaining unacknowledged batch (error=%s)", type(exc).__name__)
         return False
     if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
         database.mark_synced(log_ids)
@@ -164,7 +164,7 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
     if reason:
         if len(log_ids) == 1:
             database.reject_attendance(log_ids[0], reason)
-            logger.error("Quarantined attendance log %s: %s", log_ids[0], reason)
+            logger.error("Quarantined attendance log %d; inspect its stored rejection reason", log_ids[0])
             return True
         midpoint = len(log_ids) // 2
         return (_upload_attendance(log_ids[:midpoint], payload[:midpoint], budget, deadline)
@@ -290,13 +290,12 @@ def sync_recognition_attempts() -> bool:
             return True
 
         logger.warning(
-            "Recognition attempt sync failed with status=%d body=%s",
+            "Recognition attempt sync failed with status=%d",
             r.status_code,
-            r.text[:1000],
         )
         return False
-    except requests.RequestException:
-        logger.exception("Recognition attempt sync request failed")
+    except requests.RequestException as exc:
+        logger.warning("Recognition attempt sync request failed (error=%s)", type(exc).__name__)
         return False
 
 
@@ -317,6 +316,16 @@ def _health_params(health: Optional[dict]) -> dict:
     return params
 
 
+def _worker_log_context(row_index: int, worker) -> str:
+    """Use DB row numbers for identity without exposing server-supplied fields."""
+    context = f"row={row_index}"
+    if isinstance(worker, dict) and isinstance(worker.get("id"), str):
+        local_id = database.get_worker_id_by_server_id(worker["id"])
+        if local_id is not None:
+            context += f" local_id={local_id}"
+    return context
+
+
 def sync_workers(health: Optional[dict] = None) -> bool:
     """Download new/updated workers from server. Returns True on success."""
     if database.has_workers_missing_employee_id():
@@ -326,6 +335,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
     else:
         last_sync = database.get_sync_state("last_worker_sync") or "2000-01-01T00:00:00"
 
+    context = "phase=request"
     try:
         r = requests.get(
             f"{config.SERVER_URL}/api/sync",
@@ -363,8 +373,11 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         # Deleting a template commits before strict thumbnail cleanup, so one
         # cleanup failure must not prevent subsequent revocations either.
         revocation_error = None
+        revocation_context = None
         revoked_server_ids: set[str] = set()
-        for w in workers:
+        for row_index, w in enumerate(workers):
+            context = f"phase=revocation row={row_index}"
+            context = "phase=revocation " + _worker_log_context(row_index, w)
             if (not isinstance(w, dict) or not isinstance(w.get("id"), str) or not w["id"] or
                 type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
                 continue
@@ -377,15 +390,18 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             revoked_server_ids.add(w["id"])
             try:
                 if database.remove_worker_by_server_id(w["id"], strict_cleanup=receipt_protocol):
-                    logger.info("Removed revoked worker template (server_id=%s)", w["id"])
+                    logger.info("Removed revoked worker template (%s)", context)
             except Exception as exc:
                 revocation_error = revocation_error or exc
-                logger.warning("Worker revocation incomplete (server_id=%s): %s", w["id"], exc)
+                revocation_context = revocation_context or context
+                logger.warning("Worker revocation incomplete (%s error=%s)", context, type(exc).__name__)
         if revocation_error:
+            context = revocation_context
             raise revocation_error
 
         # A prior process may have died between photo publication and the
         # SQLite commit, or between commit and retired-file cleanup.
+        context = "phase=cleanup"
         try:
             database.recover_photo_cleanup()
         except (OSError, ValueError):
@@ -396,7 +412,9 @@ def sync_workers(health: Optional[dict] = None) -> bool:
 
         if receipt_protocol:
             response_ids: set[str] = set()
-            for w in workers:
+            for row_index, w in enumerate(workers):
+                context = f"phase=validation row={row_index}"
+                context = "phase=validation " + _worker_log_context(row_index, w)
                 if (not isinstance(w, dict) or not isinstance(w.get("id"), str) or not w["id"] or
                     type(w.get("active")) not in (bool, int) or w["active"] not in (0, 1)):
                     raise ValueError("Receipt sync worker row is missing id or active state")
@@ -406,10 +424,16 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     raise ValueError("Receipt sync contains duplicate worker ids")
                 response_ids.add(w["id"])
 
-        for w in workers:
+        for row_index, w in enumerate(workers):
+            context = f"phase=apply row={row_index}"
+            context = "phase=apply " + _worker_log_context(row_index, w)
             if not isinstance(w, dict):
                 raise ValueError("Worker sync row must be an object")
             server_id = w.get("id")
+            # Legacy rows must not stringify structured values into logs or
+            # worker identities: a malformed id can contain private fields.
+            if server_id is not None and not isinstance(server_id, str):
+                raise ValueError("Worker sync row id must be a string")
             name = w.get("name")
             employee_id = w.get("employee_id")
             encoding_data = w.get("face_encoding")
@@ -428,16 +452,20 @@ def sync_workers(health: Optional[dict] = None) -> bool:
 
             if server_id and not is_active:
                 if database.remove_worker_by_server_id(str(server_id), strict_cleanup=receipt_protocol):
-                    logger.info("Removed deactivated worker: %s (server_id=%s)", name or "unknown", server_id)
+                    logger.info("Removed deactivated worker (%s)", context)
                 continue
 
             if not server_id or not name or encoding_data is None:
                 if receipt_protocol:
                     raise ValueError("Worker sync row has missing required fields")
-                logger.warning("Skipping worker sync row with missing required fields: %s", w)
+                logger.warning("Skipping worker sync row with missing required fields (row=%d)", row_index)
                 continue
 
-            encoding = np.array(encoding_data, dtype=np.float64)
+            try:
+                encoding = np.array(encoding_data, dtype=np.float64)
+            except (TypeError, ValueError) as exc:
+                # NumPy's conversion error can include the raw encoding value.
+                raise ValueError("Worker encoding must be a numeric vector") from exc
             if receipt_protocol and (encoding.ndim != 1 or encoding.size not in {128, 512} or not np.isfinite(encoding).all()):
                 raise ValueError("Worker encoding must be a 128-dim or 512-dim vector")
 
@@ -448,8 +476,10 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                 photo_download = _download_photo(str(server_id), photo_url)
                 if photo_download:
                     staged_photo, photo_path = photo_download
-                elif receipt_protocol:
-                    raise ValueError(f"Worker photo download failed for {server_id}")
+                else:
+                    logger.warning("Worker photo download failed (%s)", context)
+                    if receipt_protocol:
+                        raise ValueError("Worker photo download failed")
 
             try:
                 retired_photos = database.replaced_worker_photo_paths(
@@ -461,7 +491,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     os.replace(staged_photo, photo_path)
                     staged_photo = None
                 try:
-                    database.add_worker(
+                    local_id = database.add_worker(
                         name=name,
                         encoding=encoding,
                         photo_paths=[photo_path] if photo_path else [],
@@ -474,23 +504,29 @@ def sync_workers(health: Optional[dict] = None) -> bool:
                     # failed SQLite update, including across a process crash.
                     database.recover_photo_cleanup()
                     raise
+                context = f"phase=apply row={row_index} local_id={local_id}"
                 database.recover_photo_cleanup()
             finally:
                 if staged_photo and os.path.exists(staged_photo):
                     os.unlink(staged_photo)
-            logger.info("Synced worker: %s (server_id=%s)", name, server_id)
+            logger.info("Synced worker (row=%d local_id=%d)", row_index, local_id)
 
+        context = "phase=prune"
         if full_roster:
             for stale_id in database.get_synced_server_ids() - seen_server_ids:
+                context = f"phase=prune local_id={database.get_worker_id_by_server_id(stale_id)}"
                 database.remove_worker_by_server_id(stale_id, strict_cleanup=True)
 
+        context = "phase=receipt"
         if receipt_protocol:
             unmanaged = database.count_unmanaged_local_workers()
             if unmanaged:
+                logger.warning("Roster acknowledgement blocked by %d unmanaged local profiles; map or remove them after review", unmanaged)
                 raise ValueError(f"{unmanaged} unmanaged local worker profile(s) prevent roster acknowledgement; map or remove them after review")
             unreferenced = database.list_unreferenced_photo_files()
             if unreferenced:
-                raise ValueError(f"{len(unreferenced)} unreferenced local photo file(s) prevent roster acknowledgement; review {unreferenced[0]}")
+                logger.warning("Roster acknowledgement blocked by %d unreferenced photo files; inspect the local photo directory", len(unreferenced))
+                raise ValueError("Unreferenced local photo files prevent roster acknowledgement")
 
         if receipt_protocol:
             # A pending receipt is only cached after all changes are durable.
@@ -506,10 +542,11 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         return True
 
     except requests.RequestException as e:
-        logger.warning("Worker sync failed: %s", e)
+        logger.warning("Worker sync failed (%s error=%s)", context, type(e).__name__)
         return False
-    except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
-        logger.error("Invalid sync response: %s", e)
+    except Exception as e:
+        # Exceptions can include paths derived from arbitrary legacy IDs.
+        logger.error("Invalid sync response (%s error=%s)", context, type(e).__name__)
         return False
 
 
@@ -537,7 +574,7 @@ def acknowledge_applied_roster() -> bool:
         database.delete_sync_state("roster_pending_receipt")
         return True
     except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-        logger.warning("Roster acknowledgement unavailable; will reapply and retry: %s", exc)
+        logger.warning("Roster acknowledgement unavailable; will reapply and retry (error=%s)", type(exc).__name__)
         return False
 
 
@@ -545,7 +582,8 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
     """Stage a worker photo; caller publishes it after row validation."""
     staged = None
     try:
-        os.makedirs(config.PHOTO_DIR, exist_ok=True)
+        os.makedirs(config.PHOTO_DIR, mode=0o700, exist_ok=True)
+        os.chmod(config.PHOTO_DIR, 0o700)
         safe_name = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "_")
         identifier = uuid.uuid4().hex
         path = os.path.join(config.PHOTO_DIR, f"{safe_name}-{identifier}.jpg")
@@ -553,16 +591,19 @@ def _download_photo(name: str, url: str) -> Optional[tuple[str, str]]:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             database.record_photo_cleanup([Path(staged)], "published")
-            with open(staged, "xb") as f:
+            fd = os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "wb") as f:
                 f.write(r.content)
+                f.flush()
+                os.fsync(f.fileno())
             return staged, path
     except Exception as e:
         if staged:
             try:
                 os.unlink(staged)
             except OSError:
-                logger.warning("Could not remove incomplete staged photo: %s", staged)
-        logger.warning("Failed to download photo for %s: %s", name, e)
+                logger.warning("Could not remove incomplete staged photo")
+        logger.warning("Failed to download photo (error=%s)", type(e).__name__)
     return None
 
 
@@ -599,7 +640,7 @@ class SyncWorker:
             try:
                 self._health_reporter(**fields)
             except Exception as e:
-                logger.debug("Health reporter failed: %s", e)
+                logger.debug("Health reporter failed (error=%s)", type(e).__name__)
 
     def _run(self):
         """Main sync loop."""
@@ -624,7 +665,7 @@ class SyncWorker:
                                 "queued_attempts": queued_attempts,
                             }
                         except Exception as e:
-                            logger.debug("Health provider failed: %s", e)
+                            logger.debug("Health provider failed (error=%s)", type(e).__name__)
                     try:
                         workers_synced = sync_workers(health=health)
                     finally:
@@ -648,7 +689,7 @@ class SyncWorker:
                 else:
                     logger.debug("Server offline, skipping sync")
             except Exception as e:
-                logger.error("Sync error: %s", e)
+                logger.error("Sync error (error=%s)", type(e).__name__)
 
             # Sleep in small increments so we can stop quickly
             for _ in range(config.SYNC_INTERVAL):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -58,14 +59,29 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
+        # Keep this process-wide restriction: SQLite can recreate WAL/SHM
+        # files on later connections, including in background threads.
+        os.umask(0o077)
         db_path = Path(config.DB_PATH)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        db_path.parent.chmod(0o700)
+        _secure_db_files(db_path)
         _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA foreign_keys=OFF")
+        _secure_db_files(db_path)
     return _local.conn
+
+
+def _secure_db_files(db_path: Path):
+    """Tighten existing databases and sidecars before SQLite opens them."""
+    for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        try:
+            path.chmod(0o600)
+        except FileNotFoundError:
+            pass  # Sidecars are absent until WAL is opened, or after a checkpoint.
 
 
 def _migrate_sync_state(conn: sqlite3.Connection):
@@ -93,7 +109,7 @@ def _migrate_sync_state(conn: sqlite3.Connection):
             "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_worker_sync', ?)",
             (old_value,),
         )
-    logger.info("Migrated sync_state to keyed schema (last_worker_sync=%s)", old_value)
+    logger.info("Migrated sync_state to keyed schema")
 
 
 def _migrate_worker_identity(conn: sqlite3.Connection):
@@ -300,7 +316,7 @@ def init_db():
         logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
 
     conn.commit()
-    logger.info("Database initialized at %s", config.DB_PATH)
+    logger.info("Database initialized")
 
 
 def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
@@ -408,7 +424,8 @@ def add_worker(
         worker_id = int(cursor.lastrowid)
 
     conn.commit()
-    logger.info("Saved worker: %s (id=%d, server_id=%s)", normalized_name, worker_id, stored_server_id)
+    # Sync values may contain private data even when their JSON type is valid.
+    logger.info("Saved worker (local_id=%d)", worker_id)
     return worker_id
 
 
@@ -451,8 +468,14 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     except (OSError, ValueError) as exc:
         if strict_cleanup:
             raise
-        logger.warning("Worker deactivated; thumbnail cleanup remains pending: %s", exc)
+        logger.warning("Worker deactivated; thumbnail cleanup remains pending (error=%s)", type(exc).__name__)
     return cursor.rowcount > 0
+
+
+def get_worker_id_by_server_id(server_id: str) -> Optional[int]:
+    """Resolve a server identity to an operator-safe local row number."""
+    row = _get_conn().execute("SELECT id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
+    return int(row["id"]) if row else None
 
 
 def get_synced_server_ids() -> set[str]:
@@ -729,8 +752,8 @@ def log_attendance(
     conn.commit()
     log_id = int(cursor.lastrowid)
     logger.info(
-        "Gatekeeper logged: worker=%s action=%s confidence=%.3f live=%s",
-        worker_name,
+        "Gatekeeper logged: local_id=%d action=%s confidence=%.3f live=%s",
+        int(worker_id),
         normalized_action,
         confidence,
         liveness_confirmed,
@@ -976,9 +999,9 @@ def log_recognition_attempt(
     conn.commit()
     attempt_id = int(cursor.lastrowid)
     logger.info(
-        "Recognition attempt logged: decision=%s candidate=%s score=%s threshold=%s",
+        "Recognition attempt logged: decision=%s local_id=%s score=%s threshold=%s",
         decision,
-        candidate_worker_name or "unknown",
+        int(candidate_worker_id) if candidate_worker_id is not None else "unknown",
         f"{best_score:.3f}" if best_score is not None else "n/a",
         f"{threshold:.3f}" if threshold is not None else "n/a",
     )
