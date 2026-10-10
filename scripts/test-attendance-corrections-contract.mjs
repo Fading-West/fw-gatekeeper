@@ -41,7 +41,7 @@ assert.match(attendanceApi, /includeCorrections/, 'Attendance API must support c
 assert.match(systemHealthApi, /includeCorrections:\s*false/, 'System health should keep kiosk upload evidence raw.');
 
 assert.match(stats, /listEffectiveAttendanceByTimestampRange/, 'Stats must use effective attendance.');
-assert.match(exceptions, /listEffectiveAttendanceByTimestampRange/, 'Shift exceptions must use effective attendance.');
+assert.match(exceptions, /listEffectiveAttendanceBy(?:TimestampRange|FactoryDates)/, 'Shift exceptions must use effective attendance.');
 assert.match(exceptions, /attendance_id/, 'Shift exceptions should expose attendance ids for void corrections.');
 assert.match(briefing, /listEffectiveAttendanceByTimestampRange/, 'Shift briefing must use effective attendance.');
 assert.match(closeouts, /attendance_corrections/, 'Closeout payload must include correction context.');

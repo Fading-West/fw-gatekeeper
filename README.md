@@ -298,6 +298,36 @@ Flash → SSH → Connect hardware → Run setup script (with unique KIOSK_ID) �
 - **Workers** page to manage/deactivate employees
 - **Kiosks** page to monitor kiosk health
 
+Shift exceptions and closeout pair effective punches on the selected factory
+date (America/Chicago) and its two neighboring dates. Completed overnight shifts
+belong to the clock-in date: a next-day exit closes that shift and is not an orphan
+exit on the following date. The maximum inferred shift is 16 elapsed hours
+(`MAX_PLAUSIBLE_SHIFT_HOURS` in `convex/attendanceShifts.ts`), including DST nights.
+Longer intervals remain review items and do not automatically suggest voiding the
+exit. Existing overnight schedule validation is unchanged.
+Repeated punches, including repeated entries across midnight, remain review
+items. Any punch with a plausible opposite punch uses a review-only suggestion,
+even when that evidence was attributed to another inferred interval. This includes
+missing clock-outs: an unpaired entry with a later exit inside the window is never
+offered a one-tap added clock-out.
+
+Before the exit happens, an open shift after its scheduled end remains a warning
+and a closeout acknowledgement blocker, matching existing closeout behavior.
+Schedules cannot cross midnight, so an open clock-in is treated as possibly
+overnight only when, in factory-local wall time, it is at or after the scheduled
+end, or the clock-in plus the longer of the scheduled duration and 8 hours reaches
+midnight. Within 16 hours of such a clock-in the exception says the shift may
+still be in progress, offers review only, and requires supervisors to confirm
+its status and record an acknowledgement note before completing closeout. It
+never assumes a future exit or suggests inventing one. Any other open shift is a
+day shift and keeps the one-tap "Add missing clock-out" at the scheduled end
+unless a plausible exit exists. A clock-in after the scheduled end is never
+offered a scheduled-end clock-out, which would precede it.
+
+The exceptions build reads D-1 through D+1 with one bounded `by_timestamp` scan
+(one extra calendar date on each side for UTC and offset timestamps) and one
+correction date-range read, then partitions the rows per factory date.
+
 ### Monitor Display
 
 Each kiosk runs a local web UI (Flask on port 5555) displayed fullscreen via Firefox ESR in kiosk mode. The display shows:

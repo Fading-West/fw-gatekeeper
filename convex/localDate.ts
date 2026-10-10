@@ -160,12 +160,27 @@ export function getNextFactoryLocalDateKey(dateKey: string) {
   return shiftDateKey(dateKey, 1);
 }
 
-export function buildConservativeFactoryLocalTimestampRanges(dateKey: string): TimestampQueryRange[] {
+// Inclusive consecutive factory dates, oldest first.
+export function listFactoryLocalDateKeys(startDateKey: string, endDateKey: string) {
+  assertFactoryLocalDateKey(startDateKey);
+  assertFactoryLocalDateKey(endDateKey);
+  if (endDateKey < startDateKey) throw new RangeError("endDateKey must not precede startDateKey");
+  const dates = [startDateKey];
+  while (dates[dates.length - 1] < endDateKey) dates.push(shiftDateKey(dates[dates.length - 1], 1));
+  return dates;
+}
+
+// Stored timestamps may be factory-local, UTC or offset strings, so a factory
+// date's rows can carry the previous or next calendar-date prefix. Scan one
+// extra date on each side of the inclusive range and filter by membership.
+export function buildConservativeFactoryLocalTimestampRanges(dateKey: string, endDateKey = dateKey): TimestampQueryRange[] {
   assertFactoryLocalDateKey(dateKey);
+  assertFactoryLocalDateKey(endDateKey);
+  if (endDateKey < dateKey) throw new RangeError("endDateKey must not precede dateKey");
   return [
     {
       startTimestamp: getPreviousFactoryLocalDateKey(dateKey),
-      endTimestamp: shiftDateKey(dateKey, 2),
+      endTimestamp: shiftDateKey(endDateKey, 2),
     },
   ];
 }
