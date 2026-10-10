@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ingestAttendanceBatch, ingestAttendanceEvent, updateKioskLastSync, acknowledgeRosterReceipt, SecuredIngestError } from './convex-ingest';
-import { systemHealthCache } from './system-health-cache';
+import { systemHealthCache, SYSTEM_HEALTH_CACHE_TTL_MS } from './system-health-cache';
 
 beforeEach(() => {
   vi.stubEnv('CONVEX_INGEST_URL', 'https://example.convex.site');
   vi.stubEnv('CONVEX_INGEST_KEY', 'test-key');
   systemHealthCache.invalidate();
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 it('keeps the Convex attendance validation code and reason across the secured ingest hop', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
@@ -37,10 +37,16 @@ function warmHealth() {
   for (const date of ['2026-10-08', '2026-10-09']) systemHealthCache.set(date, 'cached', systemHealthCache.generation);
 }
 
-it.each(healthWrites)('invalidates all health dates after a committed %s', async (_label, write, result) => {
+it.each(healthWrites)('preserves the health TTL after a committed %s', async (_label, write, result) => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
   warmHealth();
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(result)));
+  // A successful ingest shortly before expiry must neither clear nor renew it.
+  vi.advanceTimersByTime(SYSTEM_HEALTH_CACHE_TTL_MS - 1);
   await write();
+  for (const date of ['2026-10-08', '2026-10-09']) expect(systemHealthCache.get(date)).toBe('cached');
+  vi.advanceTimersByTime(1);
   for (const date of ['2026-10-08', '2026-10-09']) expect(systemHealthCache.get(date)).toBeUndefined();
 });
 

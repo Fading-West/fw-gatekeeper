@@ -9,6 +9,7 @@ export class SystemHealthCache {
   private entries = new Map<string, { expiresAt: number; payload: unknown; requestId: number }>();
   private version = 0;
   private readSequence = 0;
+  private retiredReadSequence = 0;
 
   get generation() { return this.version; }
 
@@ -16,10 +17,20 @@ export class SystemHealthCache {
     return { generation: this.version, requestId: ++this.readSequence };
   }
 
+  private evict(date: string) {
+    const entry = this.entries.get(date);
+    if (!entry) return;
+    // Retain ordering after TTL/LRU removes a newer result. A single watermark
+    // keeps metadata bounded; conservatively skip older fills for other dates
+    // too, rather than allowing a delayed response to resurrect stale data.
+    this.retiredReadSequence = Math.max(this.retiredReadSequence, entry.requestId);
+    this.entries.delete(date);
+  }
+
   private evictExpired() {
     const now = Date.now();
     for (const [date, entry] of this.entries) {
-      if (entry.expiresAt <= now) this.entries.delete(date);
+      if (entry.expiresAt <= now) this.evict(date);
     }
   }
 
@@ -36,12 +47,13 @@ export class SystemHealthCache {
     this.evictExpired();
     // A query started before a mutation/refresh must not repopulate stale data.
     if (generation !== this.version) return;
+    if (requestId <= this.retiredReadSequence) return;
     // Concurrent misses in the same generation may complete out of order.
     if ((this.entries.get(date)?.requestId ?? -1) > requestId) return;
     this.entries.delete(date);
     this.entries.set(date, { expiresAt: Date.now() + SYSTEM_HEALTH_CACHE_TTL_MS, payload, requestId });
     while (this.entries.size > SYSTEM_HEALTH_CACHE_MAX_ENTRIES) {
-      this.entries.delete(this.entries.keys().next().value!);
+      this.evict(this.entries.keys().next().value!);
     }
   }
 

@@ -36,3 +36,38 @@ it('does not let an in-flight query restore data invalidated by a mutation', () 
   cache.set('today', 'stale', oldGeneration);
   expect(cache.get('today')).toBe('fresh');
 });
+
+it('rejects a pre-invalidation read even before a replacement is cached', () => {
+  const cache = new SystemHealthCache();
+  const older = cache.beginRead();
+  cache.invalidate();
+  cache.set('today', 'stale', older.generation, older.requestId);
+  expect(cache.get('today')).toBeUndefined();
+});
+
+it('does not restore an older response after the newer entry expires', () => {
+  const cache = new SystemHealthCache();
+  const older = cache.beginRead();
+  const newer = cache.beginRead();
+  cache.set('today', 'newer', newer.generation, newer.requestId);
+  vi.advanceTimersByTime(SYSTEM_HEALTH_CACHE_TTL_MS);
+  cache.set('today', 'older', older.generation, older.requestId);
+  expect(cache.get('today')).toBeUndefined();
+  const latest = cache.beginRead();
+  cache.set('today', 'latest', latest.generation, latest.requestId);
+  expect(cache.get('today')).toBe('latest');
+});
+
+it('does not restore an older response after the newer entry is evicted by LRU', () => {
+  const cache = new SystemHealthCache();
+  const older = cache.beginRead();
+  const newer = cache.beginRead();
+  cache.set('today', 'newer', newer.generation, newer.requestId);
+  for (let i = 0; i < SYSTEM_HEALTH_CACHE_MAX_ENTRIES; i++) cache.set(String(i), i, cache.generation);
+  expect(cache.get('today')).toBeUndefined();
+  cache.set('today', 'older', older.generation, older.requestId);
+  expect(cache.get('today')).toBeUndefined();
+  const latest = cache.beginRead();
+  cache.set('today', 'latest', latest.generation, latest.requestId);
+  expect(cache.get('today')).toBe('latest');
+});
