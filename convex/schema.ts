@@ -50,7 +50,8 @@ export default defineSchema({
     faceEncoding: v.optional(v.array(v.float64())),
     enrolledAt: v.string(),
     updatedAt: v.optional(v.string()),
-    // Commit-ordered cursor; legacy rows without it are always re-sent.
+    // Commit-ordered cursor; legacy rows are re-sent until the batched backfill
+    // or a normal roster write assigns one. See RETENTION.md deploy steps.
     rosterSequence: v.optional(v.number()),
     active: v.boolean(),
     // ISO timestamp of the most recent biometric consent acknowledgement

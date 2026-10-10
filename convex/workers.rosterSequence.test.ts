@@ -161,3 +161,85 @@ it('routes seed and roster enrollment through the same counter', async () => {
   });
   expect((await t.run(ctx => ctx.db.get(enrolled.id)))!.rosterSequence).toBe(6);
 });
+
+it('backfills bounded batches, resumes safely, and stops resending unchanged legacy encodings', async () => {
+  const { t, issue, ack, sync } = await setup();
+  vi.useFakeTimers();
+  await t.run(async ctx => {
+    for (let index = 0; index < 204; index++) {
+      await ctx.db.insert('workers', {
+        name: `Legacy ${index}`, department: '', active: index % 2 === 0,
+        enrolledAt: '2026-09-01T00:00:00.000Z', faceEncoding: encoding,
+      });
+    }
+  });
+  const before = await t.run(ctx => ctx.db.query('workers').collect());
+  const old = await issue();
+  await sync(old.since);
+  await ack(old.receipt);
+
+  expect(await t.mutation(internal.workers.backfillRosterSequences, {}))
+    .toEqual({ migrated: 100, isDone: false });
+  expect(await t.run(ctx => ctx.db.query('workers')
+    .withIndex('by_roster_sequence', q => q.eq('rosterSequence', undefined)).collect()))
+    .toHaveLength(105);
+  // A manual retry while continuation is queued must not rewrite earlier rows.
+  const assigned = (await t.run(ctx => ctx.db.query('workers').collect()))
+    .filter(w => w.rosterSequence !== undefined);
+  expect(await t.mutation(internal.workers.backfillRosterSequences, {}))
+    .toEqual({ migrated: 100, isDone: false });
+  await t.finishAllScheduledFunctions(() => vi.runAllTimers());
+  const after = await t.run(ctx => ctx.db.query('workers').collect());
+  expect(after.map(worker => {
+    const original = { ...worker };
+    delete original.rosterSequence;
+    return original;
+  })).toEqual(before);
+  expect(new Set(after.map(w => w.rosterSequence)).size).toBe(205);
+  for (const worker of assigned) expect(after.find(w => w._id === worker._id)).toEqual(worker);
+  expect(await t.mutation(internal.workers.backfillRosterSequences, {}))
+    .toEqual({ migrated: 0, isDone: true });
+
+  const next = await issue();
+  expect(next.since).toBe('seq:0');
+  expect(await sync(next.since)).toHaveLength(205);
+  await ack(next.receipt);
+  expect(await sync((await issue()).since)).toEqual([]);
+});
+
+it('keeps a purge after backfill pending when an earlier receipt is acknowledged', async () => {
+  const { t, admin, workerId, issue, ack, pending, sync } = await setup();
+  const old = await issue();
+  await sync(old.since);
+  expect(await t.mutation(internal.workers.backfillRosterSequences, {}))
+    .toEqual({ migrated: 1, isDone: true });
+  vi.setSystemTime(t0 - 500);
+  await admin.mutation(api.workers.purgeBiometrics, { id: workerId, reason: 'During migration' });
+  vi.setSystemTime(t0);
+  await ack(old.receipt);
+  expect(await pending()).toBe(true);
+  const next = await issue();
+  expect(await sync(next.since)).toMatchObject([{ id: workerId, active: 0, face_encoding: null }]);
+  await ack(next.receipt);
+  expect(await pending()).toBe(false);
+  const counter = await t.run(ctx => ctx.db.query('rosterSequence').unique());
+  expect(counter).toMatchObject({ value: 2, lastPurgeSequence: 2 });
+  await t.mutation(internal.workers.backfillRosterSequences, {});
+  expect(await t.run(ctx => ctx.db.query('rosterSequence').unique())).toEqual(counter);
+});
+
+it('requires a newly registered kiosk to acknowledge the purge and lets its first full sync confirm it', async () => {
+  const { t, admin, workerId, pending } = await setup();
+  await admin.mutation(api.workers.purgeBiometrics, { id: workerId, reason: 'Before registration' });
+  const created = await admin.mutation(api.kiosks.create, { name: 'New entry', type: 'pi' });
+  await admin.mutation(api.kiosks.rotateCredential, { id: created.id, credentialHash: 'b'.repeat(64) });
+  const list = () => admin.query(api.kiosks.list, {});
+  expect((await list()).find(k => k.id === created.id)?.purge_pending).toBe(true);
+  const issued = (await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: created.id }))!;
+  expect(issued.since).toBeNull();
+  expect((await t.query(internal.workers.listForSyncFromHttp, {})).workers)
+    .toMatchObject([{ id: workerId, active: 0 }]);
+  await t.mutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, { documentId: created.id, receipt: issued.receipt });
+  expect((await list()).find(k => k.id === created.id)?.purge_pending).toBe(false);
+  expect(await pending()).toBe(true); // The original, never-acked kiosk still blocks.
+});

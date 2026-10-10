@@ -3,7 +3,7 @@ import {
   BIOMETRIC_CONSENT_ERROR_MESSAGE,
   isRecentBiometricConsent,
 } from "../src/lib/biometric-consent";
-import { internalQuery, query, mutation } from "./_generated/server";
+import { internalMutation, internalQuery, query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -471,11 +471,36 @@ const workerSyncResult = v.array(v.object({
   active: v.number(),
 }));
 
+// One-time deploy step. Selecting only missing sequences makes this resumable
+// without a cursor, including if a normal worker write races a batch. All
+// assignments use the same counter transaction as production roster writes;
+// a receipt issued before a batch cannot skip its newly sequenced workers.
+export const backfillRosterSequences = internalMutation({
+  args: {},
+  returns: v.object({ migrated: v.number(), isDone: v.boolean() }),
+  handler: async (ctx): Promise<{ migrated: number; isDone: boolean }> => {
+    const batchSize = 100;
+    const workers = await ctx.db.query("workers")
+      .withIndex("by_roster_sequence", q => q.eq("rosterSequence", undefined))
+      .take(batchSize + 1);
+    for (const worker of workers.slice(0, batchSize)) {
+      // Preserve every business field, timestamp, and purge marker.
+      await writeRosterWorker(ctx, {}, worker._id);
+    }
+    const isDone = workers.length <= batchSize;
+    if (!isDone) {
+      await ctx.scheduler.runAfter(1000, internal.workers.backfillRosterSequences, {});
+    }
+    return { migrated: Math.min(workers.length, batchSize), isDone };
+  },
+});
+
 async function listWorkersForSync(ctx: QueryCtx, args: { since?: string; inclusive?: boolean; cursor?: string }) {
   const sequence = parseRosterCursor(args.since);
   // Legacy timestamps require a full resync, including inactive workers. A
   // sequence delta has two disjoint indexed phases: changes, then every row
-  // without a sequence. Re-sending legacy rows avoids any need for a backfill.
+  // without a sequence. Keep this fallback during and after the backfill so
+  // unsequenced rows can never be skipped, even if the migration is interrupted.
   const phase = sequence !== null && args.cursor?.startsWith("l:") ? "legacy" : "updated";
   if (sequence !== null && args.cursor && !/^[ul]:/.test(args.cursor)) throw new Error("Invalid incremental roster cursor");
   const cursor = sequence !== null ? args.cursor?.slice(2) || null : args.cursor ?? null;
