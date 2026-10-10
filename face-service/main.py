@@ -27,6 +27,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel, Field
 import onnxruntime as ort
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from model_pinning import REC_MODEL_URL, REC_MODEL_SHA256, ensure_pinned_model
 
@@ -45,6 +47,54 @@ from face_auth import (
 )
 
 SERVICE_VERSION = "3.1-quality-gate"
+MAX_PHOTO_CHARACTERS = 4_000_000
+MAX_ENROLLMENT_PHOTOS = 6
+# Six maximum-size base64 photos (ASCII bytes) plus 64 KiB for JSON framing
+# and whitespace. Enforce before FastAPI buffers/parses JSON or checks auth.
+MAX_REQUEST_BODY_BYTES = MAX_PHOTO_CHARACTERS * MAX_ENROLLMENT_PHOTOS + 64 * 1024
+# Matching accepts a worker roster, not enrollment photos. Keep room for 1,000
+# 512-dimensional vectors within the shared request-body budget.
+MAX_MATCH_ENCODINGS = 1_000
+
+
+class RequestBodyLimitMiddleware:
+    """Bound bodies on both uvicorn entry points, including chunked requests."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    declared_size = int(value)
+                except ValueError:
+                    # The server validates framing; still count actual bytes.
+                    continue
+                if declared_size > MAX_REQUEST_BODY_BYTES:
+                    await JSONResponse(
+                        status_code=413, content={"detail": "Request body too large"},
+                    )(scope, receive, send)
+                    return
+
+        received_bytes = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > MAX_REQUEST_BODY_BYTES:
+                    # FastAPI preserves HTTPException from its body reader;
+                    # never forward the chunk that exceeds the limit to it.
+                    raise HTTPException(413, "Request body too large")
+            return message
+
+        await self.app(scope, limited_receive, send)
 
 @asynccontextmanager
 async def service_lifespan(_app):
@@ -56,6 +106,7 @@ async def service_lifespan(_app):
 
 
 app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),
@@ -118,11 +169,11 @@ def _warm_recognition_model():
         print("Face recognition model initialization failed; enrollment unavailable")
 
 
-PhotoInput = Annotated[str, Field(min_length=1, max_length=4_000_000)]
+PhotoInput = Annotated[str, Field(min_length=1, max_length=MAX_PHOTO_CHARACTERS)]
 
 
 class EncodeRequest(BaseModel):
-    photos: list[PhotoInput] = Field(min_length=1, max_length=6)
+    photos: list[PhotoInput] = Field(min_length=1, max_length=MAX_ENROLLMENT_PHOTOS)
 
 class PhotoResult(BaseModel):
     index: int
@@ -139,8 +190,8 @@ class WorkerEncoding(BaseModel):
     encoding: list[float]
 
 class MatchRequest(BaseModel):
-    photo: str
-    encodings: list[WorkerEncoding]
+    photo: str = Field(max_length=MAX_PHOTO_CHARACTERS)
+    encodings: list[WorkerEncoding] = Field(max_length=MAX_MATCH_ENCODINGS)
 
 class MatchResult(BaseModel):
     worker_id: str

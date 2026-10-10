@@ -115,7 +115,15 @@ interpreter, e.g. `~/fsvenv/bin/python face-service/test_encode_quality.py`. Mis
 packages make the affected tests skip with a warning rather than fail.
 
 Enrollment requests accept at most six photos and four million base64 characters
-per photo. Images must be still images of at most four million pixels. Invalid or
+per photo. All HTTP request bodies are capped at 24,065,536 bytes (six maximum-size
+base64 photos plus 64 KiB of JSON overhead). Oversized requests return
+`413 {"detail": "Request body too large"}` before parsing or authentication;
+both Content-Length and streamed bytes are checked. Matching accepts a photo of
+at most four million characters and a roster of at most 1,000 worker encodings;
+an empty roster still returns no match. Run `python3 face-service/test_body_size_limit.py`
+to check these boundaries without loading the recognition model.
+
+Images must be still images of at most four million pixels. Invalid or
 zero model embeddings fail closed. Similarity thresholds must be finite in (0,1],
 and at least two consistent photos are required. Only accepted photo indexes are
 stored by the dashboard. Concurrent cold starts share one recognition session.
