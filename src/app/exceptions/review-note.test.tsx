@@ -51,6 +51,8 @@ async function renderWithSavedNote(note: string) {
   const storedReview = () => t.run(ctx => ctx.db.query('exceptionReviews').withIndex('by_key', q => q.eq('exceptionKey', key)).first());
   const patches: any[] = [];
   const requests: Promise<unknown>[] = [];
+  // Test hooks: hold the next PATCH until released, or run something right after it saves.
+  const hooks: { patchGate?: Promise<void>; afterPatch?: () => Promise<unknown> } = {};
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
     const request = respond(url, init);
     requests.push(request);
@@ -59,7 +61,13 @@ async function renderWithSavedNote(note: string) {
   async function respond(url: string, init?: RequestInit) {
     if (init?.method === 'PATCH') {
       patches.push(JSON.parse(String(init.body)));
-      return PATCH(new NextRequest(`https://example.test${url}`, { method: 'PATCH', headers: init.headers, body: init.body }));
+      const { patchGate, afterPatch } = hooks;
+      delete hooks.patchGate;
+      delete hooks.afterPatch;
+      await patchGate;
+      const res = await PATCH(new NextRequest(`https://example.test${url}`, { method: 'PATCH', headers: init.headers, body: init.body }));
+      await afterPatch?.();
+      return res;
     }
     const review = await storedReview();
     return {
@@ -76,13 +84,21 @@ async function renderWithSavedNote(note: string) {
   await act(async () => { tree = create(<ExceptionsPage />); });
   const button = (text: string) => tree.root.findAllByType('button').find((node) => label(node) === text)!;
   // Review saves are fire-and-forget; wait for the PATCH and the refresh it triggers.
-  const click = async (text: string) => act(async () => {
-    button(text).props.onClick();
+  const drain = async () => {
     for (let seen = -1; seen !== requests.length;) {
       seen = requests.length;
       await Promise.allSettled(requests);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+  };
+  const click = async (text: string) => act(async () => {
+    button(text).props.onClick();
+    await drain();
+  });
+  const settle = async () => act(drain);
+  const setStoredNote = (value: string) => t.run(async ctx => {
+    const review = await ctx.db.query('exceptionReviews').withIndex('by_key', q => q.eq('exceptionKey', key)).first();
+    await ctx.db.patch(review!._id, { note: value });
   });
   const textarea = () => tree.root.findByType('textarea');
   const type = async (value: string) => act(async () => textarea().props.onChange({ target: { value } }));
@@ -97,7 +113,7 @@ async function renderWithSavedNote(note: string) {
     await act(async () => button('Export CSV').props.onClick());
     return blob!.text();
   };
-  return { button, click, textarea, type, reload, exportedCsv, storedReview, patches };
+  return { button, click, settle, textarea, type, reload, exportedCsv, storedReview, setStoredNote, patches, hooks };
 }
 
 it('persists a cleared note, keeps the textarea empty after reload, and exports the cleared note', async () => {
@@ -155,4 +171,31 @@ it('does not prefill the correction reason with a note the supervisor cleared', 
   const reason = tree.root.findAllByType('textarea').find((node) => node.props.value === 'Verified arrival');
   expect(reason).toBeDefined();
   expect(tree.root.findAllByType('textarea').some((node) => node.props.value === 'Old note')).toBe(false);
+});
+
+it('keeps text typed while a save is in flight and sends it on the next save', async () => {
+  const page = await renderWithSavedNote('Old note');
+  let release!: () => void;
+  page.hooks.patchGate = new Promise<void>((resolve) => { release = resolve; });
+  await page.type('');
+  await act(async () => page.button('Reviewed').props.onClick());
+  await page.type('Typed during save');
+  release();
+  await page.settle();
+  expect(await page.storedReview()).toMatchObject({ status: 'reviewed' });
+  expect(await page.storedReview()).not.toHaveProperty('note');
+  expect(page.textarea().props.value).toBe('Typed during save');
+  await page.click('Resolved');
+  expect(page.patches.at(-1)).toMatchObject({ status: 'resolved', note: 'Typed during save' });
+  expect(await page.storedReview()).toMatchObject({ status: 'resolved', note: 'Typed during save' });
+});
+
+it('shows the refreshed server note after a save instead of pinning the sent note', async () => {
+  const page = await renderWithSavedNote('Old note');
+  // Another supervisor saves a note after this save lands but before the page refreshes.
+  page.hooks.afterPatch = () => page.setStoredNote('Other supervisor note');
+  await page.click('Reviewed');
+  expect(page.textarea().props.value).toBe('Other supervisor note');
+  await page.click('Resolved');
+  expect(page.patches.at(-1)).toMatchObject({ status: 'resolved', note: 'Other supervisor note' });
 });

@@ -268,10 +268,14 @@ function ExceptionsPageContent() {
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body?.error || 'Failed to update exception');
-        const savedNote = typeof body?.note === 'string' ? body.note : '';
-        setNoteDrafts((current) => (
-          current[exception.key] === noteDraft ? { ...current, [exception.key]: savedNote } : current
-        ));
+        // Drop the draft (unless it was edited during the save) so the textarea shows the saved note
+        // from the refresh below, and later refreshes are not hidden behind a pinned copy.
+        setNoteDrafts((current) => {
+          if (!(exception.key in current) || current[exception.key] !== noteDraft) return current;
+          const next = { ...current };
+          delete next[exception.key];
+          return next;
+        });
         toast(`Exception marked ${titleCase(nextStatus)}`);
         await fetchExceptions();
       } catch (err) {
