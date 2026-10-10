@@ -427,6 +427,19 @@ describe('required password rotation', { timeout: 20_000 }, () => {
     expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
   });
 
+  it.each([
+    ['TemporaryPass123!', 'TemporaryPass123！'],
+    ['ＴemporaryPass123!', 'TemporaryPass123!'],
+  ])('rejects password reuse after auth normalization (%s → %s)', async (currentPassword, newPassword) => {
+    const { actor, t, memberId, accountId, sessionId } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword, newPassword }))
+      .rejects.toThrow('Choose a password different from your current password');
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
+    expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+  });
+
   it('rolls back credentials, flag, and session revocation when auditing fails', async () => {
     const { t, actor, memberId, accountId, sessionId } = await temporaryMember();
     const before = await t.run(ctx => ctx.db.get(accountId));
