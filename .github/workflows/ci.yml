@@ -29,7 +29,8 @@ jobs:
           cache: pip
           cache-dependency-path: scripts/requirements-ci.txt
       - run: npm ci
-      - run: python -m pip install --require-hashes --only-binary=:all: -r face-service/requirements-build.lock
+      - run: |
+          python -m pip install --require-hashes --only-binary=:all: -r face-service/requirements-build.lock
       - run: python -m pip install --no-build-isolation -r scripts/requirements-ci.txt
       - run: npm run lint
       - run: npm test
