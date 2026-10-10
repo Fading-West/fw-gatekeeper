@@ -5,6 +5,7 @@ import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
@@ -48,6 +49,8 @@ type ShiftException = {
   kiosk_name: string | null;
   first_seen: string | null;
   last_seen: string | null;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
   schedule_name: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
@@ -659,7 +662,22 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     );
   });
 
-  return hydrated;
+  // Keep the existing evidence order, then expose factory wall time for all
+  // display/export consumers. Relative-time consumers still need the instant.
+  const timestampKey = createRecognitionTimestampSortKey();
+  return hydrated.map(exception => {
+    if (exception.type !== "recognition_review") return exception;
+    const key = timestampKey(exception.first_seen || "");
+    const timestampUtc = key ? `${key}Z`.replace(".Z", "Z") : null;
+    const timestamp = getRecognitionDisplayTimestamp(exception.first_seen);
+    return {
+      ...exception,
+      first_seen: timestamp,
+      last_seen: timestamp,
+      first_seen_utc: timestampUtc,
+      last_seen_utc: timestampUtc,
+    };
+  });
 }
 
 export const summary = query({

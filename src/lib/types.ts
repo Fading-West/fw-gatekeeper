@@ -80,6 +80,7 @@ export interface RecognitionAttempt {
   threshold?: number | null;
   liveness_passed?: boolean | null;
   timestamp: string;
+  timestamp_utc?: string | null;
   reviewed_at?: string | null;
   review_note?: string | null;
   model_version?: string | null;
@@ -143,6 +144,8 @@ export interface ShiftException {
   kiosk_name: string | null;
   first_seen: string | null;
   last_seen: string | null;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
   schedule_name: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
