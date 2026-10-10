@@ -89,7 +89,8 @@ Review the generated diff, install into a fresh Python 3.11 environment with
 `pip install --require-hashes --only-binary=:all: -r requirements.lock`, run the
 face-service tests, and load the pinned ONNX model before rollout.
 
-CI uses uv 0.12.13 to recompile the face-service lock with the same options as
+CI installs uv 0.12.13 from the SHA-256-verified wheel pinned in
+`scripts/requirements-uv.txt` to recompile the face-service lock with the same options as
 `scripts/lock-python-dependencies.sh` and rejects any diff. Dependency-update PRs
 must commit the regenerated lock alongside `requirements.txt`.
 

@@ -29,8 +29,10 @@ jobs:
           cache-dependency-path: |
             face-service/requirements.lock
             scripts/requirements-ci.txt
+            scripts/requirements-uv.txt
       - name: Install the lockfile compiler
-        run: python -m pip install uv==0.12.13
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r scripts/requirements-uv.txt
       - name: Check the face-service lock is current
         run: |
           uv pip compile face-service/requirements.txt \
