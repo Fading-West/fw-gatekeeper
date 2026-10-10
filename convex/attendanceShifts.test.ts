@@ -153,6 +153,29 @@ describe("overnight shift attribution in exceptions and closeout", () => {
     expect((await actor.query(api.shiftCloseouts.get, { date })).summary.missing_clock_outs).toBe(time === "23:00" ? 0 : 1);
   });
 
+  it("does not suggest adding a clock-out once a plausible later exit exists", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // D+1 15:00 Central: more than 16 hours after the 22:00 entry.
+    vi.setSystemTime(new Date("2026-09-04T20:00:00Z"));
+    const { actor, workerId } = await setup(`${date}T22:00:00`, null);
+    // Control: with no exit evidence, an expired open shift keeps its correction path.
+    expect((await actor.query(api.shiftExceptions.summary, { date })).exceptions).toMatchObject([{
+      type: "missing_clock_out", suggested_resolution: { action: "add_clock_out", corrected_time: "23:00" },
+    }]);
+    await actor.run(async ctx => {
+      await ctx.db.insert("attendance", { workerId, eventType: "clock_in", timestamp: `${nextDate}T05:00:00`, synced: true });
+      await ctx.db.insert("attendance", { workerId, eventType: "clock_out", timestamp: `${nextDate}T06:00:00`, synced: true });
+    });
+    // The repeated entry across midnight blocks automatic pairing, but the
+    // 06:00 exit could still close the 22:00 entry. Inventing a 23:00 exit
+    // would cut the paid shift, so only review is offered.
+    expect((await actor.query(api.shiftExceptions.summary, { date })).exceptions).toMatchObject([{
+      type: "missing_clock_out", severity: "warning", description: expect.stringContaining("later clock-out"),
+      suggested_resolution: { action: "review_only", can_apply: false, corrected_time: null },
+    }]);
+    expect((await actor.query(api.shiftCloseouts.get, { date })).summary.missing_clock_outs).toBe(1);
+  });
+
   it("does not suggest voiding a repeated exit with a plausible entry", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-04T13:00:00Z"));

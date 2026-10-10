@@ -507,7 +507,10 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     if (schedule && unfinishedShift) {
       const shouldFlagMissingClockOut = scheduleTimeHasPassed(date, schedule.endTime, factoryNow);
       if (shouldFlagMissingClockOut) {
-        const inProgress = clock.isPlausibleShift(lastEvent, { timestamp: now });
+        // Pairing may refuse a plausible exit (e.g. after a repeated entry across
+        // midnight). Inventing an exit would then shorten a real shift.
+        const competingExit = plausiblePairEvents.has(lastEvent);
+        const inProgress = !competingExit && clock.isPlausibleShift(lastEvent, { timestamp: now });
         const key = `${date}:missing_clock_out:${workerId}`;
         exceptions.push(createException({
           key,
@@ -515,7 +518,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           type: "missing_clock_out",
           severity: "warning",
           title: `${workerName} is still clocked in`,
-          description: inProgress
+          description: competingExit
+            ? `${workerName}'s ${lastEvent.timestamp.slice(11, 16)} clock-in was not paired automatically, but a later clock-out within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window could close it. Review the competing scans before correcting attendance; do not add a clock-out.`
+            : inProgress
             ? `${workerName} has no clock-out yet after the ${formatTime(schedule.endTime)} scheduled end. The shift may still be in progress across midnight within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window. Confirm its status and acknowledge it in closeout notes; do not invent an exit punch.`
             : `${workerName} last scanned in at ${lastEvent.timestamp.slice(11, 16)} and has no clock-out after the ${formatTime(schedule.endTime)} scheduled end.`,
           worker_id: workerId,
@@ -534,7 +539,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
             ...baseLinks,
             activity_log: getActivityLogHref(date, workerId, String(lastEvent._id).startsWith("correction:") ? null : String(lastEvent._id)),
           },
-        }, inProgress ? "The shift may still be in progress; confirm its status before adding a clock-out." : undefined));
+        }, competingExit
+          ? "A later clock-out could close this shift; review the competing scans before adding a clock-out."
+          : inProgress ? "The shift may still be in progress; confirm its status before adding a clock-out." : undefined));
       }
     }
 

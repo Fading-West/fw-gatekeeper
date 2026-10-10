@@ -307,7 +307,9 @@ Longer intervals remain review items and do not automatically suggest voiding th
 exit. Existing overnight schedule validation is unchanged.
 Repeated punches, including repeated entries across midnight, remain review
 items. Any punch with a plausible opposite punch uses a review-only suggestion,
-even when that evidence was attributed to another inferred interval.
+even when that evidence was attributed to another inferred interval. This includes
+missing clock-outs: an unpaired entry with a later exit inside the window is never
+offered a one-tap added clock-out.
 
 Before the exit happens, an open shift after its scheduled end remains a warning
 and a closeout acknowledgement blocker, matching existing closeout behavior.
