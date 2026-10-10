@@ -72,7 +72,7 @@ rebuild. `GET /health` echoes the active values.
 ## Reproducible production install
 
 The Docker image installs `requirements.lock` with SHA-256 verification. It locks
-all 26 runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
+all runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
 editable direct-dependency input. The image and OS packages remain separately
 maintained. On another OS, use the development inputs below instead of this
 platform-specific production lock.
@@ -88,6 +88,17 @@ bash scripts/lock-python-dependencies.sh
 Review the generated diff, install into a fresh Python 3.11 environment with
 `pip install --require-hashes --only-binary=:all: -r requirements.lock`, run the
 face-service tests, and load the pinned ONNX model before rollout.
+
+CI uses uv 0.12.13 to recompile the face-service lock with the same options as
+`scripts/lock-python-dependencies.sh` and rejects any diff. Dependency-update PRs
+must commit the regenerated lock alongside `requirements.txt`.
+
+The shared Python test environment installs the production lock with hash
+verification, then adds `scripts/requirements-ci.txt` using uv with the lock as
+version constraints. These additions provide `httpx2` for FastAPI's TestClient
+and Flask/Requests for the kiosk tests; shared runtime versions stay locked.
+The installs are separate because pip enables hash checking when it sees hashes
+in constraints, which would reject the unhashed test dependencies.
 
 ## Development run
 
