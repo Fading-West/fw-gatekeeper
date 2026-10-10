@@ -8,9 +8,12 @@ import sys
 import tempfile
 import sqlite3
 import threading
+import time
 from types import ModuleType
 import unittest
 from unittest import mock
+
+import numpy as np
 
 import config
 import database
@@ -181,7 +184,8 @@ class LocalHistoryTests(unittest.TestCase):
                            datetime.fromtimestamp(end.timestamp(), timezone.utc).isoformat(),
                            '2026-02-30T08:00:00']
                 conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
-                                 "VALUES (1, 'Alex', 'clock_in', ?)", [(s,) for s in strings])
+                                 "VALUES (1, 'Alex', ?, ?)",
+                                 [('clock_in' if i % 2 else 'clock_out', s) for i, s in enumerate(strings)])
                 conn.commit()
                 database.init_db()
                 # Inserts beyond the high-water ID must appear during backfill.
@@ -194,6 +198,15 @@ class LocalHistoryTests(unittest.TestCase):
                     for limit, rows in expected.items():
                         self.assertEqual(database.get_today_logs(limit), rows)
                     self.assertIn(live, [row['id'] for row in database.get_today_logs(-1)])
+                    for worker_id in (1, 2):
+                        old_action = conn.execute('SELECT action FROM attendance_log WHERE worker_id = ? '
+                            'ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1', (worker_id,)).fetchone()
+                        self.assertEqual(database.get_last_action(worker_id), old_action[0] if old_action else None)
+                        for minutes in (0, 5, 30000):
+                            threshold = (database.datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
+                            old_recent = conn.execute('SELECT id FROM attendance_log WHERE worker_id = ? '
+                                'AND attendance_epoch(timestamp) >= ? LIMIT 1', (worker_id, threshold)).fetchone()
+                            self.assertEqual(database.was_recently_clocked(worker_id, minutes), old_recent is not None)
                 verify()
                 with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2):
                     database._migrate_event_epoch(conn, 'attendance_log', pause=verify)
@@ -275,14 +288,13 @@ class LocalHistoryTests(unittest.TestCase):
         worker_connections = []
         def fail_once(pause=None):
             worker_connections.append(database._get_conn())
+            self.assertIsNot(worker_connections[-1], conn)
+            self.assertEqual(worker_connections[-1].execute('PRAGMA busy_timeout').fetchone()[0], 5000)
             if len(worker_connections) == 1:
                 raise sqlite3.OperationalError('transient database lock')
             migrate(pause=pause)
-        def check_retry_delay(seconds):
-            if seconds == 30:
-                self.assertIsNotNone(database.get_sync_state('epoch_backfill:attendance_log'))
         with mock.patch.object(database, '_migrate_history', side_effect=fail_once), \
-             mock.patch.object(database.time, 'sleep', side_effect=check_retry_delay) as sleep, \
+             mock.patch.object(database, '_HISTORY_RETRY_SECONDS', 0.01), \
              mock.patch.object(database.logger, 'exception') as log:
             worker = database.start_history_migration()
             worker.join(5)
@@ -291,11 +303,195 @@ class LocalHistoryTests(unittest.TestCase):
         self.assertIs(worker_connections[0], worker_connections[1])
         with self.assertRaises(sqlite3.ProgrammingError):
             worker_connections[0].execute('SELECT 1')
-        sleep.assert_any_call(30)
         log.assert_called_once()
         self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
         self.assertEqual(conn.execute('SELECT timestamp_epoch FROM attendance_log WHERE id = ?',
                                      (row_id,)).fetchone()[0], database._attendance_epoch(NOW.isoformat()))
+
+    def test_background_worker_retries_connection_open_failure(self):
+        connect = database._get_conn
+        calls = []
+        def fail_once(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise sqlite3.OperationalError('temporary connection failure')
+            return connect(*args, **kwargs)
+        with mock.patch.object(database, '_get_conn', side_effect=fail_once), \
+             mock.patch.object(database, '_HISTORY_RETRY_SECONDS', 0.01), \
+             mock.patch.object(database.logger, 'exception') as log:
+            worker = database.start_history_migration()
+            try:
+                worker.join(5)
+            finally:
+                database.stop_history_migration()
+        self.assertFalse(worker.is_alive())
+        self.assertGreaterEqual(len(calls), 2)
+        log.assert_called_once()
+
+    def test_stop_interrupts_retry_backoff_and_connection_open_failure_is_retried(self):
+        failed = threading.Event()
+        def fail_open(*args, **kwargs):
+            failed.set()
+            raise sqlite3.OperationalError('cannot open database yet')
+        with mock.patch.object(database, '_get_conn', side_effect=fail_open) as connect, \
+             mock.patch.object(database.logger, 'exception') as log:
+            worker = database.start_history_migration()
+            try:
+                self.assertTrue(failed.wait(5))
+                time.sleep(0.05)
+                self.assertEqual(connect.call_count, 1)  # No hot loop.
+                started = time.monotonic()
+            finally:
+                database.stop_history_migration()
+            self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(worker.is_alive())
+        log.assert_called_once()
+
+    def test_stop_between_batches_closes_connection_and_restart_resumes(self):
+        ids = [self.attendance() for _ in range(5)]
+        conn = database._get_conn()
+        conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL')
+        database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, ids[-1]]))
+        committed = threading.Event()
+        closed = threading.Event()
+        migrate = database._migrate_history
+        def migrate_one_batch(pause=None):
+            def stop_after_commit():
+                committed.set()
+                database._history_stop.wait(5)
+                pause()
+            migrate(pause=stop_after_commit)
+        # Observe cleanup on the owning thread, since cross-thread access is
+        # forbidden even while the worker's connection is open.
+        real_connect = sqlite3.connect
+        class TrackedConnection(sqlite3.Connection):
+            def close(self):
+                super().close()
+                closed.set()
+        def connect(*args, **kwargs):
+            return real_connect(*args, **kwargs, factory=TrackedConnection)
+        with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2), \
+             mock.patch.object(database, '_migrate_history', side_effect=migrate_one_batch), \
+             mock.patch.object(database.sqlite3, 'connect', side_effect=connect):
+            worker = database.start_history_migration()
+            try:
+                self.assertTrue(committed.wait(5))
+            finally:
+                database.stop_history_migration()
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(closed.is_set())
+        self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:attendance_log')), [2, ids[-1]])
+        worker = database.start_history_migration()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
+
+    def test_attendance_writes_queue_through_index_lock_longer_than_old_timeout(self):
+        worker_id = database.add_worker('Alex', np.zeros(128))
+        conn = database._get_conn()
+        self.assertEqual(conn.execute('PRAGMA busy_timeout').fetchone()[0], 60000)
+        conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
+                         "VALUES (?, 'Alex', 'clock_in', ?)", [(worker_id, OLD)] * 400)
+        conn.commit()
+        conn.execute('DROP INDEX idx_attendance_epoch')
+        locked = threading.Event()
+        release = threading.Event()
+        attempted = [threading.Event(), threading.Event()]
+        ready = [threading.Event(), threading.Event()]
+        results, errors = [], []
+        def indexer():
+            c = database._get_conn()
+            def hold_index_lock():
+                locked.set()
+                if not release.wait(10):
+                    return 1
+                return 0
+            c.set_progress_handler(hold_index_lock, 1000)
+            try:
+                c.execute('CREATE INDEX idx_attendance_epoch ON attendance_log(timestamp_epoch, id) '
+                          'WHERE timestamp_epoch IS NOT NULL')
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                c.close()
+        def writer(i):
+            c = database._get_conn()
+            ready[i].set()
+            locked.wait(10)
+            attempted[i].set()
+            try:
+                if i == 0:
+                    results.append(database.log_attendance(worker_id, 'Alex', 'clock_in'))
+                else:
+                    results.append(database.log_recognized_attendance(
+                        worker_id=worker_id, worker_name='Alex', action='clock_out',
+                        expected_encoding=np.zeros(128)))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                c.close()
+        writers = [threading.Thread(target=writer, args=(i,)) for i in range(2)]
+        for thread in writers:
+            thread.start()
+        index = threading.Thread(target=indexer)
+        try:
+            self.assertTrue(all(event.wait(5) for event in ready))
+            index.start()
+            self.assertTrue(all(event.wait(5) for event in attempted))
+            time.sleep(5.2)  # Exceeds the actual pre-fix SQLite busy timeout.
+            self.assertEqual(results, [])
+            self.assertEqual(errors, [])
+        finally:
+            release.set()
+            if index.ident is not None:
+                index.join(5)
+            locked.set()
+            for thread in writers:
+                thread.join(5)
+        self.assertFalse(index.is_alive())
+        self.assertFalse(any(thread.is_alive() for thread in writers))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(set(results)), 2)
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM attendance_log WHERE synced = 0 '
+                                     'AND timestamp_epoch IS NOT NULL').fetchone()[0], 2)
+
+    def test_stop_interrupts_create_index_and_restart_rebuilds_it(self):
+        conn = self.legacy_tables()
+        conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
+                         "VALUES (1, 'Alex', 'clock_in', ?)", [(OLD,)] * 400)
+        conn.commit()
+        database.init_db()
+        indexing = threading.Event()
+        closed = threading.Event()
+        real_connect = sqlite3.connect
+        class InterruptibleConnection(sqlite3.Connection):
+            def set_progress_handler(self, callback, count):
+                def wait_for_shutdown():
+                    indexing.set()
+                    database._history_stop.wait(5)
+                    return callback()
+                super().set_progress_handler(wait_for_shutdown, count)
+            def close(self):
+                super().close()
+                closed.set()
+        def connect(*args, **kwargs):
+            return real_connect(*args, **kwargs, factory=InterruptibleConnection)
+        with mock.patch.object(database.sqlite3, 'connect', side_effect=connect), \
+             mock.patch.object(database.logger, 'exception') as log:
+            worker = database.start_history_migration()
+            try:
+                self.assertTrue(indexing.wait(5))
+            finally:
+                database.stop_history_migration()
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(closed.is_set())
+        log.assert_not_called()
+        self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name = 'idx_attendance_epoch'").fetchone())
+        self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:attendance_log')), [0, 400])
+        worker = database.start_history_migration()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
 
     def test_interrupted_epoch_migration_can_be_retried(self):
         conn = self.legacy_tables()

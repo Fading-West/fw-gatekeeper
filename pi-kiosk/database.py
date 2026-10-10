@@ -6,7 +6,6 @@ import json
 import logging
 import sqlite3
 import threading
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +22,12 @@ _HISTORY_PRUNE_BATCH_SIZE = 100
 _EPOCH_BACKFILL_BATCH_SIZE = 100
 _history_thread = None
 _history_lock = threading.Lock()
+_history_stop = None
+_HISTORY_RETRY_SECONDS = 30
+
+
+class _HistoryMigrationStopped(Exception):
+    pass
 
 
 def _attendance_epoch(value: str) -> Optional[float]:
@@ -132,16 +137,26 @@ def _migrate_history(pause=None):
 
 def start_history_migration():
     """Start one resumable worker after the UI and detection have started."""
-    global _history_thread
+    global _history_thread, _history_stop
+    def pause():
+        if stop.wait(0.01):
+            raise _HistoryMigrationStopped()
+
     def run():
         try:
-            while True:
+            while not stop.is_set():
                 try:
-                    _migrate_history(pause=lambda: time.sleep(0.01))
+                    conn = _get_conn(timeout=5.0)
+                    # Interrupt CREATE INDEX on shutdown too. SQLite rolls back
+                    # the interrupted statement atomically.
+                    conn.set_progress_handler(lambda: int(stop.is_set()), 1000)
+                    _migrate_history(pause=pause)
                     return
                 except Exception:
+                    if stop.is_set():
+                        return
                     logger.exception("Local history migration paused; retrying in 30 seconds")
-                    time.sleep(30)
+                    stop.wait(_HISTORY_RETRY_SECONDS)
         finally:
             conn = getattr(_local, "conn", None)
             if conn is not None:
@@ -150,17 +165,29 @@ def start_history_migration():
 
     with _history_lock:
         if _history_thread is None or not _history_thread.is_alive():
+            stop = _history_stop = threading.Event()
             _history_thread = threading.Thread(target=run, daemon=True, name="history-migration")
             _history_thread.start()
         return _history_thread
 
 
-def _get_conn() -> sqlite3.Connection:
+def stop_history_migration():
+    """Finish/roll back active work and close the worker's connection before exit."""
+    with _history_lock:
+        if _history_thread is not None:
+            _history_stop.set()
+            _history_thread.join()
+
+
+def _get_conn(timeout: float = 60.0) -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
         db_path = Path(config.DB_PATH)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # Foreground writes queue through index builds: the 600k-row benchmark
+        # sized at 20x host time can exceed SQLite's default five-second wait.
+        # The background worker passes five seconds so shutdown stays bounded.
+        _local.conn = sqlite3.connect(str(db_path), timeout=timeout)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")

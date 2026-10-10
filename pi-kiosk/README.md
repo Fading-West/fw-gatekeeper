@@ -139,8 +139,14 @@ slower until attendance backfill finishes.
 
 The worker creates indexes before populating epochs, excludes NULLs from new
 indexes, commits at most 100 rows per batch, and yields between transactions.
-Index creation still briefly holds SQLite's writer lock. Progress survives
-restart, and failures are logged and retried every 30 seconds. Look for
+Index creation holds SQLite's writer lock for the full statement. Foreground
+connections wait up to 60 seconds for that lock, so manual and recognized
+attendance can queue through a large build. The background connection waits
+only five seconds for other writers. Shutdown interrupts index creation,
+finishes or rolls back the current batch, wakes retry delays, and joins the
+worker so its own connection is closed. Progress survives restart, and failures
+(including opening the connection) are logged and retried every 30 seconds.
+Look for
 `Local history epoch migration complete` in the service journal. Retention
 waits until both tables are migrated and the required indexes exist; sync
 continues during that wait.
@@ -158,6 +164,18 @@ took 13.07 seconds). A conservative sizing assumption of 20 times these host
 durations plus 10–50 ms per SD-card commit flush gives roughly **2.5–11 minutes**;
 this is an estimate, not a measured Pi 3B duration. This historical work no
 longer gates startup.
+
+Round 4 measured individual index builds on an x86 host with a synthetic
+181 MiB database containing 200,000 attendance rows and 600,000 recognition
+attempts. First-upgrade indexes with NULL historical epochs took **72–429 ms**;
+rebuilding indexes with populated epochs took **201–1,813 ms**. Concurrent
+attendance inserts queued and committed without errors. The same 20x sizing
+assumption gives up to **8.6 seconds** and **36.3 seconds**, respectively,
+before extra SD-card I/O costs. These estimates exceed the former five-second
+SQLite timeout; the 60-second foreground timeout provides headroom. This is
+still a host benchmark, not a Pi measurement. Regression tests hold an actual
+index writer lock for over five seconds and verify that both manual and
+recognized attendance commit exactly once afterward.
 
 ## Tools
 

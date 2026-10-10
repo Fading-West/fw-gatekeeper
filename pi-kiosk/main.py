@@ -851,6 +851,7 @@ def run(args):
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
+        database.stop_history_migration()
         camera.stop()
         if sync_worker:
             sync_worker.stop()
