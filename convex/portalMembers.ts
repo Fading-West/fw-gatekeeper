@@ -1,14 +1,17 @@
-import { getAuthUserId } from '@convex-dev/auth/server';
+import { getAuthUserId, retrieveAccount, modifyAccountCredentials, invalidateSessions } from '@convex-dev/auth/server';
 import { ConvexError, v } from 'convex/values';
 
 import { action, internalMutation, internalQuery, mutation, query } from './_generated/server';
 import { internal } from './_generated/api';
-import { assertPortalRole, hasCurrentPortalSession } from './access';
+import { assertPortalRole, assertPortalMember, assertPasswordChanged, hasCurrentPortalSession } from './access';
 import { writeAuditLog } from './audit';
 import type { Doc } from './_generated/dataModel';
 import type { ActionCtx, MutationCtx } from './_generated/server';
 
 const portalMemberRole = v.union(v.literal('admin'), v.literal('enrollment'), v.literal('viewer'));
+const currentMemberValidator = v.object({
+  userId: v.id('users'), role: portalMemberRole, active: v.boolean(), mustChangePassword: v.boolean(),
+});
 type PortalMemberRole = Doc<'portalMembers'>['role'];
 
 function normalizeEmail(email: string) {
@@ -17,15 +20,16 @@ function normalizeEmail(email: string) {
 
 function assertValidPassword(password: string) {
   if (password.length < 8) {
-    throw new ConvexError('Temporary password must be at least 8 characters long');
+    throw new ConvexError('Password must be at least 8 characters long');
   }
   if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>/?`~]/.test(password)) {
-    throw new ConvexError('Temporary password must include uppercase, lowercase, and a number or symbol');
+    throw new ConvexError('Password must include uppercase, lowercase, and a number or symbol');
   }
 }
 
 export const current = query({
   args: {},
+  returns: v.union(v.null(), currentMemberValidator),
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) {
@@ -45,26 +49,19 @@ export const current = query({
       userId: member.userId,
       role: member.role,
       active: member.active,
+      mustChangePassword: member.mustChangePassword === true,
     };
   },
 });
 
 export const list = query({
   args: {},
+  returns: v.array(v.object({
+    id: v.id('portalMembers'), userId: v.id('users'), email: v.string(),
+    role: portalMemberRole, active: v.boolean(), createdAt: v.string(), updatedAt: v.optional(v.string()),
+  })),
   handler: async (ctx) => {
-    const currentUserId = await getAuthUserId(ctx);
-    if (!currentUserId) {
-      throw new ConvexError('Unauthorized');
-    }
-
-    const currentMember = await ctx.db
-      .query('portalMembers')
-      .withIndex('by_user', (q) => q.eq('userId', currentUserId))
-      .unique();
-
-    if (!currentMember?.active || currentMember.role !== 'admin' || !(await hasCurrentPortalSession(ctx, currentUserId))) {
-      throw new ConvexError('Admin access required');
-    }
+    await assertPortalRole(ctx, ['admin']);
 
     const members = await ctx.db.query('portalMembers').collect();
     const rows = [];
@@ -87,6 +84,7 @@ export const list = query({
 
 export const getActiveMemberByUserId = internalQuery({
   args: { userId: v.id('users') },
+  returns: v.union(v.null(), currentMemberValidator),
   handler: async (ctx, args) => {
     const member = await ctx.db
       .query('portalMembers')
@@ -97,10 +95,13 @@ export const getActiveMemberByUserId = internalQuery({
       return null;
     }
 
+    assertPasswordChanged(member);
+
     return {
       userId: member.userId,
       role: member.role,
       active: member.active,
+      mustChangePassword: member.mustChangePassword === true,
     };
   },
 });
@@ -156,6 +157,7 @@ export const createAccountAndMember = internalMutation({
       userId: created.user._id,
       role: args.role,
       active: true,
+      mustChangePassword: true,
       createdAt: now,
       updatedAt: now,
     });
@@ -286,7 +288,7 @@ export const resetAccountPassword = internalMutation({
     const latestSession = await ctx.db.query('authSessions')
       .withIndex('userId', q => q.eq('userId', account.userId)).order('desc').first();
     const cutoff = Math.max(Date.now(), latestSession?._creationTime ?? 0, target.sessionRevokedAt ?? 0);
-    await ctx.db.patch(target._id, { sessionRevokedAt: cutoff, updatedAt: new Date().toISOString() });
+    await ctx.db.patch(target._id, { mustChangePassword: true, sessionRevokedAt: cutoff, updatedAt: new Date().toISOString() });
     await revokeSessionBatch(ctx, account.userId, cutoff);
     await writeAuditLog(ctx, { actorUserId: actor.userId, action: 'portalMembers.resetPassword', targetTable: 'portalMembers', targetId: target._id });
     return { active: target.active, role: target.role };
@@ -314,6 +316,7 @@ export const createPortalAccount = action({
     password: v.string(),
     role: portalMemberRole,
   },
+  returns: v.object({ email: v.string(), role: portalMemberRole, active: v.boolean() }),
   handler: async (ctx, args): Promise<{ email: string; role: PortalMemberRole; active: boolean }> => {
     await assertAdminUser(ctx);
 
@@ -335,6 +338,7 @@ export const resetPortalAccountPassword = action({
     password: v.string(),
     role: portalMemberRole,
   },
+  returns: v.object({ email: v.string(), role: portalMemberRole, active: v.boolean() }),
   handler: async (ctx, args): Promise<{ email: string; role: PortalMemberRole; active: boolean }> => {
     await assertAdminUser(ctx);
 
@@ -349,5 +353,64 @@ export const resetPortalAccountPassword = action({
     });
 
     return { email, role: member.role, active: member.active };
+  },
+});
+
+// The 0.0.95 auth helpers only need runMutation. A narrow adapter lets them
+// call auth:store as nested mutations, preserving one transaction for current
+// password verification, replacement, revocation, flag clearing, and audit.
+// Keeping this atomic prevents an intervening admin reset from being overwritten.
+export const changeOwnPassword = internalMutation({
+  args: { currentPassword: v.string(), newPassword: v.string() },
+  returns: v.union(v.null(), v.literal('INVALID_CURRENT_PASSWORD'), v.literal('TOO_MANY_ATTEMPTS')),
+  handler: async (ctx, args) => {
+    const member = await assertPortalMember(ctx);
+    assertValidPassword(args.newPassword);
+    if (args.currentPassword === args.newPassword) {
+      throw new ConvexError('Choose a password different from your current password');
+    }
+    const account = await ctx.db.query('authAccounts')
+      .withIndex('userIdAndProvider', q => q.eq('userId', member.userId).eq('provider', 'password')).unique();
+    if (!account) throw new ConvexError('Password account not found');
+    const authCtx = { runMutation: ctx.runMutation } as unknown as ActionCtx;
+    try {
+      const verified = await retrieveAccount(authCtx, {
+        provider: 'password', account: { id: account.providerAccountId, secret: args.currentPassword },
+      });
+      if (verified.user._id !== member.userId) throw new ConvexError('Unauthorized');
+    } catch (error) {
+      // Return instead of throwing here so Convex commits the auth library's
+      // failed-attempt counter. The public action reports the error afterward.
+      if (error instanceof Error && error.message === 'InvalidSecret') return 'INVALID_CURRENT_PASSWORD' as const;
+      if (error instanceof Error && error.message === 'TooManyFailedAttempts') return 'TOO_MANY_ATTEMPTS' as const;
+      throw error;
+    }
+    await modifyAccountCredentials(authCtx, {
+      provider: 'password', account: { id: account.providerAccountId, secret: args.newPassword },
+    });
+    const latestSession = await ctx.db.query('authSessions')
+      .withIndex('userId', q => q.eq('userId', member.userId)).order('desc').first();
+    const cutoff = Math.max(Date.now(), latestSession?._creationTime ?? 0, member.sessionRevokedAt ?? 0);
+    await invalidateSessions(authCtx, { userId: member.userId });
+    // Session deletion alone cannot revoke already-issued JWTs. The cutoff
+    // denies every old JWT immediately; the user signs in with the new password.
+    await ctx.db.patch(member._id, {
+      mustChangePassword: false, sessionRevokedAt: cutoff, updatedAt: new Date().toISOString(),
+    });
+    await writeAuditLog(ctx, {
+      actorUserId: member.userId, action: 'portalMembers.changePassword',
+      targetTable: 'portalMembers', targetId: member._id,
+    });
+    return null;
+  },
+});
+
+export const changePassword = action({
+  args: { currentPassword: v.string(), newPassword: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const error = await ctx.runMutation(internal.portalMembers.changeOwnPassword, args);
+    if (error) throw new ConvexError(error);
+    return null;
   },
 });

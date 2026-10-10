@@ -23,10 +23,9 @@ export async function hasCurrentPortalSession(ctx: QueryCtx | MutationCtx, userI
     && session._creationTime > member.sessionRevokedAt;
 }
 
-export async function assertPortalRole(
-  ctx: QueryCtx | MutationCtx,
-  allowedRoles: readonly PortalMemberRole[],
-) {
+// Only current-member lookup and self-service password rotation may use this
+// identity check without also enforcing mustChangePassword.
+export async function assertPortalMember(ctx: QueryCtx | MutationCtx) {
   const userId = await getAuthUserId(ctx);
   if (!userId) {
     throw new ConvexError("Unauthorized");
@@ -43,6 +42,21 @@ export async function assertPortalRole(
   if (!member?.active) {
     throw new ConvexError("Unauthorized");
   }
+  return member;
+}
+
+export function assertPasswordChanged(member: Doc<"portalMembers">) {
+  if (member.mustChangePassword === true) {
+    throw new ConvexError("PASSWORD_CHANGE_REQUIRED");
+  }
+}
+
+export async function assertPortalRole(
+  ctx: QueryCtx | MutationCtx,
+  allowedRoles: readonly PortalMemberRole[],
+) {
+  const member = await assertPortalMember(ctx);
+  assertPasswordChanged(member);
   if (!allowedRoles.includes(member.role)) {
     throw new ConvexError("Insufficient permissions");
   }

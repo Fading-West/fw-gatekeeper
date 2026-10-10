@@ -74,7 +74,7 @@ const activityFeedRead = httpAction(async (ctx, request) => {
   });
   if (!result.authorized) {
     const status = result.reason === 'mapping_missing' ? 503 : 403;
-    return activityJsonResponse({ error: status === 503 ? 'Activity source account is not configured' : 'Forbidden' }, status);
+    return activityJsonResponse({ error: result.reason === 'PASSWORD_CHANGE_REQUIRED' ? result.reason : status === 503 ? 'Activity source account is not configured' : 'Forbidden' }, status);
   }
   if ('error' in result) {
     console.error('activity_feed_scan_limit_exceeded');

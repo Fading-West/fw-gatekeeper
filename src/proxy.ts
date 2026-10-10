@@ -1,7 +1,7 @@
 import { convexAuthNextjsMiddleware } from '@convex-dev/auth/nextjs/server';
 import { NextFetchEvent, NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, hasValidKioskKey, isKioskRequestAllowed, unauthorizedApiResponse } from '@/lib/auth';
-import { hasPortalMemberAccess, type PortalMemberRole } from '@/lib/portal-member';
+import { getPortalMemberForToken, type PortalMemberRole } from '@/lib/portal-member';
 
 // /api/activity has its own dedicated bearer authentication. It must not use
 // browser cookies, but the route and its Convex data path both remain protected.
@@ -87,6 +87,7 @@ async function legacyAccessMiddleware(
   hasConvexPortalMember: boolean,
   hasConvexPortalApiAccess: boolean,
   hasConvexPortalAdmin: boolean,
+  mustChangePassword: boolean,
 ) {
   const { pathname } = req.nextUrl;
 
@@ -97,6 +98,15 @@ async function legacyAccessMiddleware(
   // Allow static assets and Next.js internals
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) {
     return NextResponse.next();
+  }
+
+  if (mustChangePassword) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'PASSWORD_CHANGE_REQUIRED' }, { status: 403 });
+    }
+    return pathname === '/change-password'
+      ? NextResponse.next()
+      : NextResponse.redirect(new URL('/change-password', req.url));
   }
 
   if (pathname.startsWith('/api/')) {
@@ -125,12 +135,12 @@ async function legacyAccessMiddleware(
 const authenticatedMiddleware = convexAuthNextjsMiddleware(async (req, { convexAuth }) => {
   const token = await convexAuth.getToken();
   const apiAllowedRoles = getApiAllowedRoles(req);
-  const hasConvexPortalMember = await hasPortalMemberAccess(token);
-  const hasConvexPortalAdmin = await hasPortalMemberAccess(token, ['admin']);
-  const hasConvexPortalApiAccess = apiAllowedRoles.join(',') === 'admin'
-    ? hasConvexPortalAdmin
-    : await hasPortalMemberAccess(token, apiAllowedRoles);
-  return legacyAccessMiddleware(req, hasConvexPortalMember, hasConvexPortalApiAccess, hasConvexPortalAdmin);
+  const member = await getPortalMemberForToken(token);
+  const mustChangePassword = member?.mustChangePassword === true;
+  const hasConvexPortalMember = Boolean(member?.active && !mustChangePassword);
+  const hasConvexPortalAdmin = hasConvexPortalMember && member?.role === 'admin';
+  const hasConvexPortalApiAccess = Boolean(member && hasConvexPortalMember && apiAllowedRoles.includes(member.role));
+  return legacyAccessMiddleware(req, hasConvexPortalMember, hasConvexPortalApiAccess, hasConvexPortalAdmin, mustChangePassword);
 }, {
   apiRoute: '/api/convex-auth',
 });

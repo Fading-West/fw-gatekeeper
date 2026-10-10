@@ -32,7 +32,7 @@ function AuthenticatedLogin() {
       await signIn('password', {
         flow: 'signIn',
         email: email.trim().toLowerCase(),
-        password: password.trim(),
+        password,
       });
       finishLogin();
     } catch (error) {

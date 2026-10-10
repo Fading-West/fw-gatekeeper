@@ -330,3 +330,123 @@ it('caps refresh token cleanup per transaction and continues until complete', as
     vi.useRealTimers();
   }
 });
+
+async function temporaryMember(role: 'admin' | 'enrollment' | 'viewer' = 'admin') {
+  const { t, admin } = await setup();
+  await t.withIdentity({ subject: admin }).action(api.portalMembers.createPortalAccount, {
+    email: 'temporary@example.com', password: 'TemporaryPass123!', role,
+  });
+  const state = await t.run(async ctx => {
+    const account = await ctx.db.query('authAccounts').withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'temporary@example.com')).unique();
+    const member = await ctx.db.query('portalMembers').withIndex('by_user', q => q.eq('userId', account!.userId)).unique();
+    const sessionId = await ctx.db.insert('authSessions', { userId: account!.userId, expirationTime: Date.now() + 60_000 });
+    const otherSession = await ctx.db.insert('authSessions', { userId: account!.userId, expirationTime: Date.now() + 60_000 });
+    const refreshToken = await ctx.db.insert('authRefreshTokens', { sessionId: otherSession, expirationTime: Date.now() + 60_000 });
+    return { userId: account!.userId, memberId: member!._id, sessionId, otherSession, refreshToken, accountId: account!._id };
+  });
+  return { t, admin, ...state, actor: t.withIdentity({ subject: `${state.userId}|${state.sessionId}` }) };
+}
+
+describe('required password rotation', { timeout: 20_000 }, () => {
+  it.each(['admin', 'enrollment', 'viewer'] as const)('sets the flag for a new %s and blocks role gates while allowing current lookup', async role => {
+    const { actor, t, userId } = await temporaryMember(role);
+    await expect(actor.query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: true, role });
+    await expect(actor.query(api.workers.list, { includeEncodings: false })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.mutation(api.schedules.create, { name: 'Blocked', days: '[1]', startTime: '08:00', endTime: '17:00' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.query(api.portalMembers.list, {})).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    const workerId = await t.run(ctx => ctx.db.insert('workers', { name: 'Protected', department: 'Test', enrolledAt: new Date().toISOString(), active: true }));
+    await expect(actor.mutation(api.workers.purgeBiometrics, { id: workerId, reason: 'Must not purge' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.action(api.enrollmentPhotos.upload, { photo: new Uint8Array([1]).buffer })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.query(internal.portalMembers.getActiveMemberByUserId, { userId })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.action(api.portalMembers.createPortalAccount, { email: 'blocked@example.com', password: 'AnotherPass123!', role: 'viewer' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.action(api.portalMembers.resetPortalAccountPassword, { email: 'admin@example.com', password: 'AnotherPass123!', role: 'admin' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(t.query(internal.activityFeed.read, { sourceAccountId: userId, queriedAt: new Date().toISOString() }))
+      .resolves.toEqual({ authorized: false, reason: 'PASSWORD_CHANGE_REQUIRED' });
+  });
+
+  it('rejects a wrong current password, persists rate limits, and leaves credentials and flag unchanged', async () => {
+    const { t, actor, memberId, accountId, sessionId } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'WrongPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow('INVALID_CURRENT_PASSWORD');
+    const after = await t.run(async ctx => ({
+      member: await ctx.db.get(memberId), account: await ctx.db.get(accountId),
+      session: await ctx.db.get(sessionId), rateLimits: await ctx.db.query('authRateLimits').collect(),
+      audits: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', memberId)).collect(),
+    }));
+    expect(after.account?.secret).toBe(before?.secret);
+    expect(after.member?.mustChangePassword).toBe(true);
+    expect(after.session).not.toBeNull();
+    expect(after.rateLimits).toHaveLength(1);
+    await t.run(ctx => ctx.db.patch(after.rateLimits[0]._id, { attemptsLeft: 0, lastAttemptTime: Date.now() }));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow('TOO_MANY_ATTEMPTS');
+    expect(after.audits.map(row => row.action)).toEqual(['portalMembers.create']);
+  });
+
+  it('clears the flag, audits the owner, revokes sessions and old JWTs, and accepts only the new password', async () => {
+    const { t, actor, userId, memberId, sessionId, otherSession, refreshToken } = await temporaryMember();
+    await actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+    const state = await t.run(async ctx => ({
+      member: await ctx.db.get(memberId), sessions: [await ctx.db.get(sessionId), await ctx.db.get(otherSession)],
+      token: await ctx.db.get(refreshToken), audits: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', memberId)).collect(),
+    }));
+    expect(state.member?.mustChangePassword).toBe(false);
+    expect(state.sessions).toEqual([null, null]);
+    expect(state.token).toBeNull();
+    expect(state.audits[1]).toMatchObject({ action: 'portalMembers.changePassword', actorUserId: userId });
+    expect(state.audits[1].details).toBeUndefined();
+    await expect(actor.query(api.portalMembers.current, {})).resolves.toBeNull();
+    await expect(actor.query(api.workers.list, { includeEncodings: false })).rejects.toThrow('Unauthorized');
+    await expect(t.withIdentity({ subject: `${userId}|${otherSession}` }).query(api.workers.list, { includeEncodings: false })).rejects.toThrow('Unauthorized');
+    await withLocalAuthKeys(async () => {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: 'TemporaryPass123!', flow: 'signIn' } })).rejects.toThrow();
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: 'PrivatePass456!', flow: 'signIn' } })).resolves.toBeTruthy();
+    });
+    const session = await t.run(ctx => ctx.db.query('authSessions').withIndex('userId', q => q.eq('userId', userId)).order('desc').first());
+    const fresh = t.withIdentity({ subject: `${userId}|${session!._id}` });
+    await expect(fresh.query(api.workers.list, { includeEncodings: false })).resolves.toEqual([]);
+    await expect(fresh.query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: false });
+  });
+
+  it('requires rotation again after an admin reset and invalidates the previously rotated session', async () => {
+    const { t, actor, admin, userId, memberId } = await temporaryMember();
+    await actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+    const oldSession = await t.run(ctx => ctx.db.insert('authSessions', { userId, expirationTime: Date.now() + 60_000 }));
+    await t.withIdentity({ subject: admin }).action(api.portalMembers.resetPortalAccountPassword, { email: 'temporary@example.com', password: 'ResetPass789!', role: 'admin' });
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    await expect(t.withIdentity({ subject: `${userId}|${oldSession}` }).query(api.portalMembers.current, {})).resolves.toBeNull();
+    const sessionId = await t.run(ctx => ctx.db.insert('authSessions', { userId, expirationTime: Date.now() + 60_000 }));
+    const resetActor = t.withIdentity({ subject: `${userId}|${sessionId}` });
+    await expect(resetActor.query(api.workers.list, { includeEncodings: false })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await resetActor.action(api.portalMembers.changePassword, { currentPassword: 'ResetPass789!', newPassword: 'PrivateAgain789!' });
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: false });
+  });
+
+  it.each(['short', 'lowercase123!', 'UPPERCASE123!', 'NoNumbers', 'TemporaryPass123!'])('rejects weak or unchanged new password %s', async newPassword => {
+    const { actor, t, memberId } = await temporaryMember();
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword })).rejects.toThrow();
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+  });
+
+  it('rolls back credentials, flag, and session revocation when auditing fails', async () => {
+    const { t, actor, memberId, accountId, sessionId } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    const spy = vi.spyOn(audit, 'writeAuditLog').mockRejectedValueOnce(new Error('audit failed'));
+    try {
+      await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow('audit failed');
+      expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+      expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
+      expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
+  it('allows existing members without the flag and rejects disabled or anonymous password changes', async () => {
+    const { t, admin, viewer, viewerMember } = await setup();
+    await expect(t.withIdentity({ subject: viewer }).query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: false });
+    await expect(t.withIdentity({ subject: viewer }).query(api.workers.list, { includeEncodings: false })).resolves.toEqual([]);
+    const args = { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' };
+    await expect(t.action(api.portalMembers.changePassword, args)).rejects.toThrow('Unauthorized');
+    await t.withIdentity({ subject: admin }).mutation(api.portalMembers.setActive, { userId: viewer, active: false });
+    await expect(t.withIdentity({ subject: viewer }).action(api.portalMembers.changePassword, args)).rejects.toThrow('Unauthorized');
+    expect(await t.run(ctx => ctx.db.get(viewerMember))).toMatchObject({ active: false });
+  });
+});

@@ -27,12 +27,12 @@ assert.match(
 );
 assert.match(
   middleware,
-  /hasPortalMemberAccess\(token,\s*apiAllowedRoles\)/,
-  'middleware should pass route-specific allowed roles into portal-member authorization',
+  /hasConvexPortalApiAccess = Boolean\(member && hasConvexPortalMember && apiAllowedRoles\.includes\(member\.role\)\)/,
+  'middleware should authorize the current member against route-specific allowed roles',
 );
 assert.match(
   middleware,
-  /hasPortalMemberAccess\(token,\s*\['admin'\]\)/,
+  /hasConvexPortalAdmin = hasConvexPortalMember && member\?\.role === 'admin'/,
   'middleware should still compute explicit admin status for admin-only UI/API routes',
 );
 
