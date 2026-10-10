@@ -49,7 +49,7 @@ This protects new uploads through the enrollment API. It does not identify or re
 
 ### Deployment order
 
-Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations, and updated worker mutations to Convex before deploying the portal enrollment route that calls them. Keep the portal's automatic Render deployment skipped until the backend deployment is verified. Existing worker photo references remain compatible; cleanup never deletes untracked storage IDs.
+Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations, and updated worker mutations to the production Convex deployment (`npx convex deploy`) before deploying the portal enrollment route that calls them. Keep the portal's automatic Render deployment skipped until the backend deployment is verified. Existing worker photo references remain compatible; cleanup never deletes untracked storage IDs.
 
 ## How to purge a worker's face data
 

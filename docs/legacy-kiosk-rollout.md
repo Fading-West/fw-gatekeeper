@@ -18,6 +18,6 @@ Recognition embedding dimensions and preprocessing remain compatible in source. 
 
 ## Coordinated production release
 
-Use `[skip render]` in merge commit messages to defer Render auto-deploy during this stack. After all approved changes are merged and checks pass, deploy Convex, manually deploy the face service and verify `/health`, then deploy the portal and verify `/api/health`. Confirm the deployed commit matches the final main-branch commit. Do not apply the entire Blueprint to existing services merely to deploy code; their current plans and configuration may differ.
+Use `[skip render]` in merge commit messages to defer Render auto-deploy during this stack. After all approved changes are merged and checks pass, deploy Convex (`npx convex deploy` from an up-to-date checkout of the main branch; it targets the production deployment, unlike `npx convex dev`), manually deploy the face service and verify `/health`, then deploy the portal and verify `/api/health`. Confirm the deployed commit matches the final main-branch commit. Do not apply the entire Blueprint to existing services merely to deploy code; their current plans and configuration may differ.
 
 Alert checks can run without notification delivery configured. Set up recipients and a provider separately when notification delivery is desired.

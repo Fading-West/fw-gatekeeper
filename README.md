@@ -159,7 +159,7 @@ Before bringing kiosks online, configure server secrets and issue each kiosk its
 
 1. In Render (`fw-gatekeeper` → **Environment**), set:
    - `KIOSK_API_KEY` to a long random shared secret
-   - `CONVEX_INGEST_KEY` to a long random secret, then set the **same** value on the Convex deployment with `npx convex env set CONVEX_INGEST_KEY <value>`
+   - `CONVEX_INGEST_KEY` to a long random secret, then set the **same** value on the production Convex deployment with `npx convex env set --prod CONVEX_INGEST_KEY <value>` and confirm it with `npx convex env list --prod --names-only`. Without `--prod` the CLI writes to your dev deployment, and production rejects every kiosk ingest request (see [Convex deployment environment](#convex-deployment-environment)).
 2. Register each kiosk in the portal before syncing it. Existing registered kiosks may keep using the shared `KIOSK_API_KEY` during migration.
 3. In **Kiosk readiness**, select **Issue / rotate credential** for one kiosk. Save the displayed credential immediately; the portal shows it only once. Pass that kiosk's credential as `KIOSK_API_KEY` when running its setup script. Repeat one kiosk at a time. For an already installed Pi, set the credential in `config_local.py` and restart its service.
 
@@ -405,23 +405,23 @@ If monitor doesn't wake up:
 ## Maintenance
 
 ### Update kiosk software
+Every kiosk update is the same two steps: pull the code, then run `pi-kiosk/update.sh`. The script installs the hash-locked dependencies with the same two commands as `setup.sh` (`requirements-build.lock`, then `requirements.lock`, into `/opt/fw-gatekeeper/pi-kiosk/venv`). It then restarts `fw-gatekeeper-kiosk`. If either install fails, it stops before the restart. It is safe to rerun. Do not restart the service after a pull without running it, or a dependency change leaves the kiosk crash-looping on a stale virtual environment.
+
 ```bash
 ssh pi@fw-kiosk-1.local
 cd /opt/fw-gatekeeper
 sudo git pull origin master
-cd pi-kiosk
-./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
-PATH="$PWD/venv/bin:$PATH" ./venv/bin/python -m pip install --require-hashes --no-build-isolation -r requirements.lock
-sudo systemctl restart fw-gatekeeper-kiosk
+bash pi-kiosk/update.sh
 ```
 
 ### Update all 4 kiosks at once
-From any machine on the same network:
+From any machine on the same network, run the same procedure on each kiosk in turn. The loop stops at the first kiosk that fails, so a bad dependency change cannot take down the whole fleet; fix that kiosk before rerunning.
 
 ```bash
 for host in fw-kiosk-1 fw-kiosk-2 fw-kiosk-3 fw-kiosk-4; do
   echo "Updating $host..."
-  ssh pi@$host.local "cd /opt/fw-gatekeeper && sudo git pull && sudo systemctl restart fw-gatekeeper-kiosk"
+  ssh pi@$host.local "cd /opt/fw-gatekeeper && sudo git pull origin master && bash pi-kiosk/update.sh" \
+    || { echo "Update failed on $host; stopping."; break; }
 done
 ```
 
@@ -454,13 +454,23 @@ done
 
 ### Convex deployment environment
 
-Set these on the Convex deployment (`npx convex env set NAME value` or the Convex dashboard), not on Render:
+Set these on the **production** Convex deployment (`modest-bat-146`, the one Render's `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_INGEST_URL` point at), not on Render. Use the Convex dashboard (switch to the Production deployment) or the CLI with `--prod`:
+
+```bash
+npx convex env set --prod CONVEX_INGEST_KEY '<same value as on Render>'
+npx convex env set --prod SITE_URL https://fw-gatekeeper.onrender.com
+npx convex env list --prod --names-only   # verify every variable below is listed
+```
+
+`JWT_PRIVATE_KEY` and `JWKS` are generated once, on first setup, by `npx @convex-dev/auth --prod`. It asks before overwriting existing keys; decline unless you intend to rotate the production signing key. The optional alerting and activity-feed variables are set the same way; see [docs/alerting.md](docs/alerting.md) and [docs/activity-feed.md](docs/activity-feed.md).
+
+`--prod` selects the project's default production deployment; `--deployment modest-bat-146` names it explicitly. Without either flag, `npx convex env set`, `npx convex env list` and `npx convex run` target your personal **dev** deployment, which is only correct while developing with `npx convex dev`. A production variable set without the flag never reaches production: with `CONVEX_INGEST_KEY` missing there, `convex/http.ts` rejects every kiosk ingest request and logs `secured_ingest_auth_unconfigured`. From a local checkout, `npx convex deploy` pushes Convex functions to production; `npx convex dev` pushes them to your dev deployment.
 
 | Variable | Value | Description |
 |----------|-------|-------------|
 | `CONVEX_INGEST_KEY` | same value as on Render | Bearer secret checked by `convex/http.ts` for secured ingest |
-| `JWT_PRIVATE_KEY` | generated | Convex Auth RS256 signing key; created and set by `npx @convex-dev/auth` |
-| `JWKS` | generated | Convex Auth public key set matching `JWT_PRIVATE_KEY`; set by `npx @convex-dev/auth` |
+| `JWT_PRIVATE_KEY` | generated | Convex Auth RS256 signing key; created and set by `npx @convex-dev/auth --prod` |
+| `JWKS` | generated | Convex Auth public key set matching `JWT_PRIVATE_KEY`; set by `npx @convex-dev/auth --prod` |
 | `SITE_URL` | `https://fw-gatekeeper.onrender.com` | Dashboard URL used by Convex Auth for redirects |
 
 ### Kiosk Setup Variables

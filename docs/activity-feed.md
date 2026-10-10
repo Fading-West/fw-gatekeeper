@@ -4,12 +4,15 @@ FW Gateway exposes the version-1 operational activity contract at `GET /api/acti
 
 ## Source configuration
 
-The directory configures `ACTIVITY_FW_GATEWAY_PATH=/api/activity` and an `ACTIVITY_FW_GATEWAY_TOKEN` of at least 32 random characters. Set the same token on the **Convex deployment only**:
+The directory configures `ACTIVITY_FW_GATEWAY_PATH=/api/activity` and an `ACTIVITY_FW_GATEWAY_TOKEN` of at least 32 random characters. Set the same token on the **production Convex deployment only** (the one Render's `NEXT_PUBLIC_CONVEX_URL` points at):
 
 ```sh
-npx convex env set ACTIVITY_FW_GATEWAY_TOKEN '<secret-manager-value>'
-npx convex env set ACTIVITY_FW_GATEWAY_ACCOUNT_ID '<existing-convex-user-id>'
+npx convex env set --prod ACTIVITY_FW_GATEWAY_TOKEN '<secret-manager-value>'
+npx convex env set --prod ACTIVITY_FW_GATEWAY_ACCOUNT_ID '<existing-convex-user-id>'
+npx convex env list --prod --names-only   # both names must be listed
 ```
+
+`--prod` is required: without it (or an explicit `--deployment <name>`) the CLI writes to your personal dev deployment, and the production feed keeps returning 503. Drop the flag only when configuring a dev deployment you run with `npx convex dev`; the account ID must then be a `users` document ID from that dev deployment.
 
 `ACTIVITY_FW_GATEWAY_ACCOUNT_ID` binds the activity credential to an existing Gateway source account. That account must have an active `portalMembers` row with the `admin` role. Existence, active status, and role are re-read on every request at the Convex database boundary. Removing the token, rotating it, disabling the account, or demoting it revokes access. If either variable or the mapping is absent, the integration stays disabled.
 
