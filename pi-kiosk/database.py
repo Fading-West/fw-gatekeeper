@@ -7,6 +7,7 @@ import logging
 import sqlite3
 import threading
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -689,7 +690,7 @@ def _normalize_action(action: str) -> str:
 def log_attendance(
     worker_id: int,
     worker_name: str,
-    action: str,
+    action: Optional[str] = None,
     liveness_confirmed: bool = False,
     confidence: float = 0.0,
     timestamp: Optional[str] = None,
@@ -702,31 +703,44 @@ def log_attendance(
     event can still be synced if the local worker row is later removed.
     Callers that already hold the id (recognizer roster, manual clock) pass
     it in; otherwise it is looked up from the workers table.
+    Omit action to apply the kiosk's entry/exit/toggle behavior while holding
+    the same write transaction as the insert. Recognition already owns that
+    transaction so its enrollment check remains atomic with this write.
     """
     conn = _get_conn()
-    normalized_action = _normalize_action(action)
-    timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    server_worker_id = server_worker_id or get_server_id(worker_id) or None
-    cursor = conn.execute(
-        """
-        INSERT INTO attendance_log
-            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
-             server_worker_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        """,
-        (
-            int(worker_id),
-            worker_name,
-            normalized_action,
-            timestamp,
-            1 if liveness_confirmed else 0,
-            float(confidence),
-            config.KIOSK_ID,
-            note,
-            server_worker_id,
-        ),
-    )
-    conn.commit()
+    owns_transaction = not conn.in_transaction
+    with conn if owns_transaction else nullcontext():
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if action is None:
+            if config.KIOSK_TYPE == "entry":
+                action = "clock_in"
+            elif config.KIOSK_TYPE == "exit":
+                action = "clock_out"
+            else:
+                action = "clock_out" if get_last_action(worker_id) == "clock_in" else "clock_in"
+        normalized_action = _normalize_action(action)
+        timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        server_worker_id = server_worker_id or get_server_id(worker_id) or None
+        cursor = conn.execute(
+            """
+            INSERT INTO attendance_log
+                (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
+                 server_worker_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                int(worker_id),
+                worker_name,
+                normalized_action,
+                timestamp,
+                1 if liveness_confirmed else 0,
+                float(confidence),
+                config.KIOSK_ID,
+                note,
+                server_worker_id,
+            ),
+        )
     log_id = int(cursor.lastrowid)
     logger.info(
         "Gatekeeper logged: worker=%s action=%s confidence=%.3f live=%s",
@@ -742,7 +756,7 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
     """Reject a removed or re-enrolled face before committing automatic attendance.
 
     BEGIN IMMEDIATE prevents a concurrent sync deletion/replacement between the
-    identity check and insert. Existing offline rows remain untouched.
+    identity check, action inference, and insert. Existing offline rows remain untouched.
     """
     conn = _get_conn()
     with conn:
@@ -753,6 +767,16 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
                 or not np.array_equal(worker["face_encoding"], expected_encoding)):
             raise ValueError("Worker enrollment changed during recognition; scan again")
         return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
+
+
+def get_attendance_action(log_id: int) -> str:
+    """Return the action actually inserted, independent of subsequent clocks."""
+    row = _get_conn().execute(
+        "SELECT action FROM attendance_log WHERE id = ?", (log_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Attendance log {log_id} does not exist")
+    return row["action"]
 
 
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
