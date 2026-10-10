@@ -31,6 +31,7 @@ export default defineSchema({
     createdAt: v.string(),
     updatedAt: v.optional(v.string()),
     sessionRevokedAt: v.optional(v.number()),
+    mustChangePassword: v.optional(v.boolean()),
   })
     .index("by_user", ["userId"])
     .index("by_active", ["active"])

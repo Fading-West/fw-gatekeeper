@@ -3,10 +3,11 @@ import { api } from '../../convex/_generated/api';
 
 export type PortalMemberRole = 'admin' | 'enrollment' | 'viewer';
 
-type PortalMember = {
+export type PortalMember = {
   userId: string;
   role: PortalMemberRole;
   active: boolean;
+  mustChangePassword?: boolean;
 };
 
 export async function getPortalMemberForToken(token?: string): Promise<PortalMember | null> {
@@ -23,7 +24,7 @@ export async function getPortalMemberForToken(token?: string): Promise<PortalMem
   client.setAuth(token);
 
   try {
-    return await client.query((api as any).portalMembers.current, {});
+    return await client.query(api.portalMembers.current, {});
   } catch {
     return null;
   }
@@ -34,5 +35,5 @@ export async function hasPortalMemberAccess(
   allowedRoles: PortalMemberRole[] = ['admin', 'enrollment', 'viewer'],
 ): Promise<boolean> {
   const member = await getPortalMemberForToken(token);
-  return Boolean(member && allowedRoles.includes(member.role));
+  return Boolean(member && member.active && !member.mustChangePassword && allowedRoles.includes(member.role));
 }

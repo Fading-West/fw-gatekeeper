@@ -265,8 +265,9 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {/* Logout */}
+        {/* Account controls */}
         <div className="p-3 border-t border-navy-600/40">
+          <Link href="/change-password" className="block px-3 py-2.5 text-sm text-slate-300 hover:text-gold">Change password</Link>
           {logoutError && (
             <p role="alert" className="px-3 pb-2 text-xs text-red-400">
               {logoutError}
@@ -357,6 +358,7 @@ export default function Sidebar() {
               })}
             </div>
             <div className="mt-3 border-t border-navy-600/40 pt-3">
+              <Link href="/change-password" onClick={() => setMobileMenuOpen(false)} className="block px-3 py-2.5 text-sm text-slate-300 hover:text-gold">Change password</Link>
               {logoutError && (
                 <p role="alert" className="px-2 pb-2 text-xs text-red-400">
                   {logoutError}

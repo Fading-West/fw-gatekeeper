@@ -229,7 +229,7 @@ libcamera-hello --timeout 5000
 Before the kiosks can recognize anyone, enroll workers:
 
 1. Go to https://fw-gatekeeper.onrender.com
-2. Sign in with the portal account provided by your administrator.
+2. Sign in with the portal account provided by your administrator. Newly created accounts and admin password resets require you to change the temporary password before accessing portal data or actions.
 3. Click **Enroll Face** in the sidebar
 4. Enter the worker's name and department
 5. Capture 3 photos (look straight at camera, good lighting)
@@ -527,3 +527,32 @@ The match threshold is not a CLI flag: set `RECOGNITION_MATCH_THRESHOLD` in
 | Dashboard | https://fw-gatekeeper.onrender.com | Render Free |
 | Face Service | https://fw-face-service.onrender.com | Render Free |
 | Database | https://dashboard.convex.dev/t/thiesnoah/fw-gatekeeper | Convex Free |
+
+### Portal password management
+
+Administrators create named accounts and reset forgotten passwords on **Accounts**.
+These passwords are temporary: after sign-in the member is sent to
+`/change-password` and must enter the current password, a new password, and its
+confirmation. The new password must differ from the current password and have at
+least 8 characters, uppercase and lowercase letters, and a number or symbol.
+Members can also visit `/change-password` to change their own password anytime.
+A successful change records `portalMembers.changePassword` in the audit log,
+revokes all existing sessions (including the current one), and requires a fresh
+sign-in. Wrong-current-password attempts share Convex Auth's sign-in
+failed-attempt budget (10 per hour per account). Password hashing and
+verification run in a Convex action; the final mutation only writes the new
+hash and aborts with `PASSWORD_CHANGE_CONFLICT` (retry) if the credential or
+flag changed meanwhile.
+
+Deploy the Convex schema/functions together with the portal update. The schema
+adds optional `portalMembers.mustChangePassword`; existing records without the
+field are treated as false and require no migration. Existing members are
+unaffected until their next admin reset. While true, backend role gates, portal
+API access, and the mapped activity-feed account deny access; only current-member
+lookup and password rotation are available, alongside authentication/sign-out.
+
+An administrator who knows a temporary password can still change it before the
+intended member does. Forced rotation limits indefinite use after the member
+changes it; it does not prove who received the temporary credential. Owners may
+choose a separate policy requiring a second administrator for admin resets or
+an out-of-band identity check. Neither policy is implemented here.

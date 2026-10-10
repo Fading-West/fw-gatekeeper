@@ -1,14 +1,30 @@
 'use client';
 
-import { usePathname } from 'next/navigation';
+import { useEffect } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { useConvexAuth, useQuery } from 'convex/react';
+import { api } from '../../convex/_generated/api';
 import Sidebar from './Sidebar';
 import GuideDrawer from './GuideDrawer';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { isAuthenticated, isLoading } = useConvexAuth();
+  const member = useQuery(api.portalMembers.current, isAuthenticated ? {} : 'skip');
   const isLogin = pathname === '/login';
+  const isPasswordChange = pathname === '/change-password';
 
-  if (isLogin) {
+  useEffect(() => {
+    if (member?.mustChangePassword && !isPasswordChange) router.replace('/change-password');
+  }, [member?.mustChangePassword, isPasswordChange, router]);
+
+  // Do not mount protected page queries while identity/rotation is unresolved.
+  if (!isPasswordChange && !isLogin && (isLoading || (isAuthenticated && member === undefined) || member?.mustChangePassword)) {
+    return <div className="min-h-screen bg-navy-950 p-8 text-slate-300">Loading account…</div>;
+  }
+
+  if (isLogin || isPasswordChange) {
     return <>{children}</>;
   }
 

@@ -44,7 +44,7 @@ const activityFeedPayloadValidator = v.object({
 const activityFeedResultValidator = v.union(
   v.object({
     authorized: v.literal(false),
-    reason: v.union(v.literal("mapping_missing"), v.literal("permission_denied")),
+    reason: v.union(v.literal("mapping_missing"), v.literal("permission_denied"), v.literal("PASSWORD_CHANGE_REQUIRED")),
   }),
   v.object({ authorized: v.literal(true), payload: activityFeedPayloadValidator }),
   v.object({ authorized: v.literal(true), error: v.literal("scan_limit_exceeded") }),
@@ -98,6 +98,9 @@ export const read = internalQuery({
     ]);
     if (!sourceAccount || !sourceMember) {
       return { authorized: false as const, reason: "mapping_missing" as const };
+    }
+    if (sourceMember.mustChangePassword === true) {
+      return { authorized: false as const, reason: "PASSWORD_CHANGE_REQUIRED" as const };
     }
     if (!sourceMember.active || sourceMember.role !== "admin") {
       return { authorized: false as const, reason: "permission_denied" as const };

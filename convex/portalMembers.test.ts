@@ -2,6 +2,7 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import { convexTest } from 'convex-test';
+import { Scrypt } from 'lucia';
 import { describe, expect, it, vi } from 'vitest';
 
 import { api, internal } from './_generated/api';
@@ -329,4 +330,303 @@ it('caps refresh token cleanup per transaction and continues until complete', as
   } finally {
     vi.useRealTimers();
   }
+});
+
+async function temporaryMember(role: 'admin' | 'enrollment' | 'viewer' = 'admin', password = 'TemporaryPass123!') {
+  const { t, admin } = await setup();
+  await t.withIdentity({ subject: admin }).action(api.portalMembers.createPortalAccount, {
+    email: 'temporary@example.com', password, role,
+  });
+  const state = await t.run(async ctx => {
+    const account = await ctx.db.query('authAccounts').withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', 'temporary@example.com')).unique();
+    const member = await ctx.db.query('portalMembers').withIndex('by_user', q => q.eq('userId', account!.userId)).unique();
+    const sessionId = await ctx.db.insert('authSessions', { userId: account!.userId, expirationTime: Date.now() + 60_000 });
+    const otherSession = await ctx.db.insert('authSessions', { userId: account!.userId, expirationTime: Date.now() + 60_000 });
+    const refreshToken = await ctx.db.insert('authRefreshTokens', { sessionId: otherSession, expirationTime: Date.now() + 60_000 });
+    return { userId: account!.userId, memberId: member!._id, sessionId, otherSession, refreshToken, accountId: account!._id };
+  });
+  return { t, admin, ...state, actor: t.withIdentity({ subject: `${state.userId}|${state.sessionId}` }) };
+}
+
+describe('required password rotation', { timeout: 20_000 }, () => {
+  it.each(['admin', 'enrollment', 'viewer'] as const)('sets the flag for a new %s and blocks role gates while allowing current lookup', async role => {
+    const { actor, t, userId } = await temporaryMember(role);
+    await expect(actor.query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: true, role });
+    await expect(actor.query(api.workers.list, { includeEncodings: false })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.mutation(api.schedules.create, { name: 'Blocked', days: '[1]', startTime: '08:00', endTime: '17:00' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.query(api.portalMembers.list, {})).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    const workerId = await t.run(ctx => ctx.db.insert('workers', { name: 'Protected', department: 'Test', enrolledAt: new Date().toISOString(), active: true }));
+    await expect(actor.mutation(api.workers.purgeBiometrics, { id: workerId, reason: 'Must not purge' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.action(api.enrollmentPhotos.upload, { photo: new Uint8Array([1]).buffer })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.query(internal.portalMembers.getActiveMemberByUserId, { userId })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.action(api.portalMembers.createPortalAccount, { email: 'blocked@example.com', password: 'AnotherPass123!', role: 'viewer' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(actor.action(api.portalMembers.resetPortalAccountPassword, { email: 'admin@example.com', password: 'AnotherPass123!', role: 'admin' })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await expect(t.query(internal.activityFeed.read, { sourceAccountId: userId, queriedAt: new Date().toISOString() }))
+      .resolves.toEqual({ authorized: false, reason: 'PASSWORD_CHANGE_REQUIRED' });
+  });
+
+  it('rejects a wrong current password, persists rate limits, and leaves credentials and flag unchanged', async () => {
+    const { t, actor, memberId, accountId, sessionId } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'WrongPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow('INVALID_CURRENT_PASSWORD');
+    const after = await t.run(async ctx => ({
+      member: await ctx.db.get(memberId), account: await ctx.db.get(accountId),
+      session: await ctx.db.get(sessionId), rateLimits: await ctx.db.query('authRateLimits').collect(),
+      audits: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', memberId)).collect(),
+    }));
+    expect(after.account?.secret).toBe(before?.secret);
+    expect(after.member?.mustChangePassword).toBe(true);
+    expect(after.session).not.toBeNull();
+    expect(after.rateLimits).toHaveLength(1);
+    await t.run(ctx => ctx.db.patch(after.rateLimits[0]._id, { attemptsLeft: 0, lastAttemptTime: Date.now() }));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow('TOO_MANY_ATTEMPTS');
+    expect(after.audits.map(row => row.action)).toEqual(['portalMembers.create']);
+  });
+
+  it('clears the flag, audits the owner, revokes sessions and old JWTs, and accepts only the new password', async () => {
+    const { t, actor, userId, memberId, sessionId, otherSession, refreshToken } = await temporaryMember();
+    await actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+    const state = await t.run(async ctx => ({
+      member: await ctx.db.get(memberId), sessions: [await ctx.db.get(sessionId), await ctx.db.get(otherSession)],
+      token: await ctx.db.get(refreshToken), audits: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', memberId)).collect(),
+    }));
+    expect(state.member?.mustChangePassword).toBe(false);
+    expect(state.sessions).toEqual([null, null]);
+    expect(state.token).toBeNull();
+    expect(state.audits[1]).toMatchObject({ action: 'portalMembers.changePassword', actorUserId: userId });
+    expect(state.audits[1].details).toBeUndefined();
+    await expect(actor.query(api.portalMembers.current, {})).resolves.toBeNull();
+    await expect(actor.query(api.workers.list, { includeEncodings: false })).rejects.toThrow('Unauthorized');
+    await expect(t.withIdentity({ subject: `${userId}|${otherSession}` }).query(api.workers.list, { includeEncodings: false })).rejects.toThrow('Unauthorized');
+    await withLocalAuthKeys(async () => {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: 'TemporaryPass123!', flow: 'signIn' } })).rejects.toThrow();
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: 'PrivatePass456!', flow: 'signIn' } })).resolves.toBeTruthy();
+    });
+    const session = await t.run(ctx => ctx.db.query('authSessions').withIndex('userId', q => q.eq('userId', userId)).order('desc').first());
+    const fresh = t.withIdentity({ subject: `${userId}|${session!._id}` });
+    await expect(fresh.query(api.workers.list, { includeEncodings: false })).resolves.toEqual([]);
+    await expect(fresh.query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: false });
+  });
+
+  it('requires rotation again after an admin reset and invalidates the previously rotated session', async () => {
+    const { t, actor, admin, userId, memberId } = await temporaryMember();
+    await actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+    const oldSession = await t.run(ctx => ctx.db.insert('authSessions', { userId, expirationTime: Date.now() + 60_000 }));
+    await t.withIdentity({ subject: admin }).action(api.portalMembers.resetPortalAccountPassword, { email: 'temporary@example.com', password: 'ResetPass789!', role: 'admin' });
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    await expect(t.withIdentity({ subject: `${userId}|${oldSession}` }).query(api.portalMembers.current, {})).resolves.toBeNull();
+    const sessionId = await t.run(ctx => ctx.db.insert('authSessions', { userId, expirationTime: Date.now() + 60_000 }));
+    const resetActor = t.withIdentity({ subject: `${userId}|${sessionId}` });
+    await expect(resetActor.query(api.workers.list, { includeEncodings: false })).rejects.toThrow('PASSWORD_CHANGE_REQUIRED');
+    await resetActor.action(api.portalMembers.changePassword, { currentPassword: 'ResetPass789!', newPassword: 'PrivateAgain789!' });
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: false });
+  });
+
+  it.each(['short', 'lowercase123!', 'UPPERCASE123!', 'NoNumbers', 'TemporaryPass123!'])('rejects weak or unchanged new password %s', async newPassword => {
+    const { actor, t, memberId } = await temporaryMember();
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword })).rejects.toThrow();
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+  });
+
+  it.each([
+    ['TemporaryPass123!', 'TemporaryPass123！'],
+    ['ＴemporaryPass123!', 'TemporaryPass123!'],
+  ])('rejects password reuse after auth normalization (%s → %s)', async (currentPassword, newPassword) => {
+    const { actor, t, memberId, accountId, sessionId } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword, newPassword }))
+      .rejects.toThrow('Choose a password different from your current password');
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
+    expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+  });
+
+  it.each([
+    ['TemporaryCafé123!', 'TemporaryCafe\u0301123!'],
+    ['TemporaryPass123! ', 'TemporaryPass123!\u00a0'],
+    ['TemporaryPass123!\ud800', 'TemporaryPass123!\ufffd'],
+    ['TemporaryPass123!\ufffd', 'TemporaryPass123!\udfff'],
+  ])('rejects reuse of the stored credential across Unicode encodings (%s → %s)', async (currentPassword, newPassword) => {
+    const { actor, t, memberId, accountId, sessionId } = await temporaryMember('viewer', currentPassword);
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    await expect(actor.action(api.portalMembers.changePassword, { currentPassword, newPassword }))
+      .rejects.toThrow('Choose a password different from your current password');
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
+    expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+  });
+
+  it.each([
+    ['TemporaryPass123!', 'TemporaryPass123! '],
+    ['TemporaryPass123!', 'temporaryPass123!'],
+    ['TemporaryCafé123!', 'TemporaryCafe123!'],
+  ])('accepts distinct passwords without trimming, case folding, or removing accents (%s → %s)', async (currentPassword, newPassword) => {
+    const { actor, t, memberId } = await temporaryMember('viewer', currentPassword);
+    await actor.action(api.portalMembers.changePassword, { currentPassword, newPassword });
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: false });
+    await withLocalAuthKeys(async () => {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: currentPassword, flow: 'signIn' } })).rejects.toThrow();
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: newPassword, flow: 'signIn' } })).resolves.toBeTruthy();
+    });
+  });
+
+  it('rolls back credentials, flag, and session revocation when auditing fails', async () => {
+    const { t, actor, memberId, accountId, sessionId } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    const spy = vi.spyOn(audit, 'writeAuditLog').mockRejectedValueOnce(new Error('audit failed'));
+    try {
+      await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow('audit failed');
+      expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+      expect((await t.run(ctx => ctx.db.get(accountId)))?.secret).toBe(before?.secret);
+      expect(await t.run(ctx => ctx.db.get(sessionId))).not.toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
+  it.each(['credential', 'flag'] as const)('aborts with a retryable conflict if the %s changes between the action read and the final mutation', async changed => {
+    const { t, actor, memberId, accountId, sessionId, refreshToken } = await temporaryMember();
+    const before = await t.run(ctx => ctx.db.get(accountId));
+    const hash = Scrypt.prototype.hash;
+    // The new hash is computed in the action after the read and before the final
+    // mutation. Commit a concurrent change at exactly that point.
+    const spy = vi.spyOn(Scrypt.prototype, 'hash').mockImplementationOnce(async function (this: Scrypt, password: string) {
+      const newHash = await hash.call(this, password);
+      await t.run(async ctx => {
+        if (changed === 'credential') await ctx.db.patch(accountId, { secret: 'intervening-credential-hash' });
+        else await ctx.db.patch(memberId, { mustChangePassword: false });
+      });
+      return newHash;
+    });
+    try {
+      await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' }))
+        .rejects.toThrow('PASSWORD_CHANGE_CONFLICT');
+      const after = await t.run(async ctx => ({
+        account: await ctx.db.get(accountId), member: await ctx.db.get(memberId),
+        session: await ctx.db.get(sessionId), token: await ctx.db.get(refreshToken),
+        audits: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', memberId)).collect(),
+      }));
+      expect(after.account?.secret).toBe(changed === 'credential' ? 'intervening-credential-hash' : before?.secret);
+      expect(after.member?.mustChangePassword).toBe(changed === 'credential');
+      expect(after.member?.sessionRevokedAt).toBeUndefined();
+      expect(after.session).not.toBeNull();
+      expect(after.token).not.toBeNull();
+      expect(after.audits.map(row => row.action)).toEqual(['portalMembers.create']);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('does not overwrite an admin reset that commits while the action is hashing', async () => {
+    const { t, actor, admin, memberId, accountId } = await temporaryMember();
+    const hash = Scrypt.prototype.hash;
+    const spy = vi.spyOn(Scrypt.prototype, 'hash').mockImplementationOnce(async function (this: Scrypt, password: string) {
+      const newHash = await hash.call(this, password);
+      await t.withIdentity({ subject: admin }).action(api.portalMembers.resetPortalAccountPassword, { email: 'temporary@example.com', password: 'ResetPass789!', role: 'admin' });
+      return newHash;
+    });
+    try {
+      // The reset also revoked the caller's session, so the final mutation fails closed.
+      await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' })).rejects.toThrow();
+    } finally { spy.mockRestore(); }
+    const after = await t.run(async ctx => ({
+      account: await ctx.db.get(accountId), member: await ctx.db.get(memberId),
+      audits: await ctx.db.query('auditLog').withIndex('by_target', q => q.eq('targetTable', 'portalMembers').eq('targetId', memberId)).collect(),
+    }));
+    expect(await new Scrypt().verify(after.account!.secret!, 'ResetPass789!')).toBe(true);
+    expect(after.member?.mustChangePassword).toBe(true);
+    expect(after.audits.map(row => row.action)).toEqual(['portalMembers.create', 'portalMembers.resetPassword']);
+  });
+
+  it('rejects a stale snapshot before reserving an attempt', async () => {
+    const { t, actor, accountId } = await temporaryMember();
+    const snapshot = await actor.query(internal.portalMembers.getOwnPasswordAccount, {});
+    await t.run(ctx => ctx.db.patch(accountId, { secret: 'intervening-credential-hash' }));
+    await expect(actor.mutation(internal.portalMembers.reserveCurrentPasswordAttempt, snapshot)).rejects.toThrow('PASSWORD_CHANGE_CONFLICT');
+    await expect(actor.mutation(internal.portalMembers.recordCurrentPasswordVerified, snapshot)).rejects.toThrow('PASSWORD_CHANGE_CONFLICT');
+    expect(await t.run(ctx => ctx.db.query('authRateLimits').collect())).toEqual([]);
+  });
+
+  it('performs no scrypt work in any mutation; the action does exactly two verifies and one hash', async () => {
+    const { t, actor, memberId, accountId, sessionId } = await temporaryMember();
+    const snapshot = await actor.query(internal.portalMembers.getOwnPasswordAccount, {});
+    expect(snapshot).toEqual({ accountId, storedHash: expect.any(String), mustChangePassword: true });
+    const newHash = await new Scrypt().hash('PrivatePass456!');
+    const hash = vi.spyOn(Scrypt.prototype, 'hash').mockRejectedValue(new Error('scrypt hash in mutation'));
+    const verify = vi.spyOn(Scrypt.prototype, 'verify').mockRejectedValue(new Error('scrypt verify in mutation'));
+    try {
+      await actor.mutation(internal.portalMembers.reserveCurrentPasswordAttempt, snapshot);
+      await actor.mutation(internal.portalMembers.recordCurrentPasswordVerified, snapshot);
+      await actor.mutation(internal.portalMembers.completePasswordChange, { ...snapshot, newHash });
+      expect(hash).not.toHaveBeenCalled();
+      expect(verify).not.toHaveBeenCalled();
+    } finally { hash.mockRestore(); verify.mockRestore(); }
+    const after = await t.run(async ctx => ({ account: await ctx.db.get(accountId), member: await ctx.db.get(memberId), session: await ctx.db.get(sessionId) }));
+    expect(after.account?.secret).toBe(newHash);
+    expect(after.member?.mustChangePassword).toBe(false);
+    expect(after.session).toBeNull();
+
+    const second = await temporaryMember();
+    const hashCalls = vi.spyOn(Scrypt.prototype, 'hash');
+    const verifyCalls = vi.spyOn(Scrypt.prototype, 'verify');
+    try {
+      await second.actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+      expect(verifyCalls).toHaveBeenCalledTimes(2);
+      expect(hashCalls).toHaveBeenCalledTimes(1);
+    } finally { hashCalls.mockRestore(); verifyCalls.mockRestore(); }
+  });
+
+  it('increments the shared failed-attempt counter on each failed verify and resets it on success', async () => {
+    const { t, actor, accountId } = await temporaryMember();
+    const bucket = () => t.run(ctx => ctx.db.query('authRateLimits').withIndex('identifier', q => q.eq('identifier', accountId)).unique());
+    const wrong = { currentPassword: 'WrongPass123!', newPassword: 'PrivatePass456!' };
+    await expect(actor.action(api.portalMembers.changePassword, wrong)).rejects.toThrow('INVALID_CURRENT_PASSWORD');
+    expect((await bucket())?.attemptsLeft).toBeCloseTo(9, 2);
+    await expect(actor.action(api.portalMembers.changePassword, wrong)).rejects.toThrow('INVALID_CURRENT_PASSWORD');
+    expect((await bucket())?.attemptsLeft).toBeCloseTo(8, 2);
+    await actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+    expect(await bucket()).toBeNull();
+  });
+
+  it('bounds racing wrong guesses to the remaining budget before any verify finishes', async () => {
+    const { t, actor, accountId, memberId } = await temporaryMember();
+    let openGate!: (valid: boolean) => void;
+    let markTenStarted!: () => void;
+    const gate = new Promise<boolean>(resolve => { openGate = resolve; });
+    const tenStarted = new Promise<void>(resolve => { markTenStarted = resolve; });
+    let started = 0;
+    const verify = vi.spyOn(Scrypt.prototype, 'verify').mockImplementation(() => {
+      started += 1;
+      if (started === 10) markTenStarted();
+      return gate;
+    });
+    const wrong = { currentPassword: 'WrongPass123!', newPassword: 'PrivatePass456!' };
+    const pending = Promise.allSettled(Array.from({ length: 15 }, () => actor.action(api.portalMembers.changePassword, wrong)));
+    try {
+      await tenStarted;
+      // All ten admitted verifications are still pending, yet the budget is spent,
+      // even for the correct password.
+      await expect(actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' }))
+        .rejects.toThrow('TOO_MANY_ATTEMPTS');
+      openGate(false);
+      const errors = (await pending).map(result => result.status === 'rejected' ? String(result.reason) : 'success');
+      expect(errors.filter(error => error.includes('INVALID_CURRENT_PASSWORD'))).toHaveLength(10);
+      expect(errors.filter(error => error.includes('TOO_MANY_ATTEMPTS'))).toHaveLength(5);
+      expect(verify).toHaveBeenCalledTimes(10);
+    } finally { openGate(false); await pending; verify.mockRestore(); }
+    const limit = await t.run(ctx => ctx.db.query('authRateLimits').withIndex('identifier', q => q.eq('identifier', accountId)).unique());
+    expect(limit!.attemptsLeft).toBeLessThan(1);
+    expect(await t.run(ctx => ctx.db.get(memberId))).toMatchObject({ mustChangePassword: true });
+    // The budget is the library's sign-in bucket, so sign-in is limited too.
+    await withLocalAuthKeys(async () => {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: 'TemporaryPass123!', flow: 'signIn' } })).rejects.toThrow();
+    });
+  });
+
+  it('allows existing members without the flag and rejects disabled or anonymous password changes', async () => {
+    const { t, admin, viewer, viewerMember } = await setup();
+    await expect(t.withIdentity({ subject: viewer }).query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: false });
+    await expect(t.withIdentity({ subject: viewer }).query(api.workers.list, { includeEncodings: false })).resolves.toEqual([]);
+    const args = { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' };
+    await expect(t.action(api.portalMembers.changePassword, args)).rejects.toThrow('Unauthorized');
+    await t.withIdentity({ subject: admin }).mutation(api.portalMembers.setActive, { userId: viewer, active: false });
+    await expect(t.withIdentity({ subject: viewer }).action(api.portalMembers.changePassword, args)).rejects.toThrow('Unauthorized');
+    expect(await t.run(ctx => ctx.db.get(viewerMember))).toMatchObject({ active: false });
+  });
 });
