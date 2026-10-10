@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Optional
 
@@ -24,10 +25,60 @@ _history_thread = None
 _history_lock = threading.Lock()
 _history_stop = None
 _HISTORY_RETRY_SECONDS = 30
+_event_write_lock = threading.Lock()
+_event_writers = 0
+_event_write_pending = threading.Event()
 
 
 class _HistoryMigrationStopped(Exception):
     pass
+
+
+class _HistoryMigrationYielded(Exception):
+    pass
+
+
+def _prioritize_event_write(write):
+    """Interrupt a history index build before a UI-loop write waits on it."""
+    @wraps(write)
+    def prioritized(*args, **kwargs):
+        global _event_writers
+        with _event_write_lock:
+            _event_writers += 1
+            _event_write_pending.set()
+        try:
+            return write(*args, **kwargs)
+        except sqlite3.Error:
+            conn = getattr(_local, "conn", None)
+            if conn is not None:
+                conn.rollback()
+            raise
+        finally:
+            with _event_write_lock:
+                _event_writers -= 1
+                if _event_writers == 0:
+                    _event_write_pending.clear()
+    return prioritized
+
+
+def _create_history_index(conn, sql):
+    """SQLite has no online CREATE INDEX; yield its lock to incoming events."""
+    if _event_write_pending.is_set():
+        raise _HistoryMigrationYielded()
+    stop = _history_stop if threading.current_thread() is _history_thread else None
+    def stopped():
+        return stop is not None and stop.is_set()
+    conn.set_progress_handler(lambda: int(stopped() or _event_write_pending.is_set()), 1000)
+    try:
+        conn.execute(sql)
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT and not stopped():
+            # CREATE INDEX is rolled back atomically. Keep completed indexes
+            # and all backfill markers, and retry when the door is quieter.
+            raise _HistoryMigrationYielded() from exc
+        raise
+    finally:
+        conn.set_progress_handler(lambda: int(stopped()), 1000)
 
 
 def _attendance_epoch(value: str) -> Optional[float]:
@@ -123,12 +174,12 @@ def _migrate_history(pause=None):
     conn = _get_conn()
     # Exclude NULLs so a first upgrade scans the tables but does not sort/write
     # hundreds of thousands of empty index entries. Existing indexes are valid.
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id) "
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id) "
                  "WHERE timestamp_epoch IS NOT NULL")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id) "
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id) "
                  "WHERE timestamp_epoch IS NOT NULL")
     for table in ("attendance_log", "recognition_attempts"):
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
+        _create_history_index(conn, f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
                      f"ON {table}(timestamp_epoch, id) WHERE synced = 1 AND timestamp_epoch IS NOT NULL")
     for table in ("attendance_log", "recognition_attempts"):
         _migrate_event_epoch(conn, table, pause=pause)
@@ -152,6 +203,9 @@ def start_history_migration():
                     conn.set_progress_handler(lambda: int(stop.is_set()), 1000)
                     _migrate_history(pause=pause)
                     return
+                except _HistoryMigrationYielded:
+                    logger.info("Local history index deferred for event write; retrying in 30 seconds")
+                    stop.wait(_HISTORY_RETRY_SECONDS)
                 except Exception:
                     if stop.is_set():
                         return
@@ -179,14 +233,13 @@ def stop_history_migration():
             _history_thread.join()
 
 
-def _get_conn(timeout: float = 60.0) -> sqlite3.Connection:
+def _get_conn(timeout: float = 10.0) -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
         db_path = Path(config.DB_PATH)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        # Foreground writes queue through index builds: the 600k-row benchmark
-        # sized at 20x host time can exceed SQLite's default five-second wait.
-        # The background worker passes five seconds so shutdown stays bounded.
+        # Index builds yield to event writes. Bound waits for other writers;
+        # the background worker uses five seconds so shutdown stays bounded.
         _local.conn = sqlite3.connect(str(db_path), timeout=timeout)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
@@ -817,6 +870,7 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+@_prioritize_event_write
 def log_attendance(
     worker_id: int,
     worker_name: str,
@@ -870,6 +924,7 @@ def log_attendance(
     return log_id
 
 
+@_prioritize_event_write
 def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_encoding=None, **fields):
     """Reject a removed or re-enrolled face before committing automatic attendance.
 
@@ -1086,6 +1141,7 @@ def _optional_float(value) -> Optional[float]:
     return float(value)
 
 
+@_prioritize_event_write
 def log_recognition_attempt(
     *,
     decision: str,

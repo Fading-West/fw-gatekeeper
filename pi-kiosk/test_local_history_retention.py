@@ -386,74 +386,159 @@ class LocalHistoryTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
 
-    def test_attendance_writes_queue_through_index_lock_longer_than_old_timeout(self):
+    def test_index_yields_to_manual_recognized_and_telemetry_writes(self):
         worker_id = database.add_worker('Alex', np.zeros(128))
         conn = database._get_conn()
-        self.assertEqual(conn.execute('PRAGMA busy_timeout').fetchone()[0], 60000)
-        conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
-                         "VALUES (?, 'Alex', 'clock_in', ?)", [(worker_id, OLD)] * 400)
+        self.assertEqual(conn.execute('PRAGMA busy_timeout').fetchone()[0], 10000)
+        conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp, timestamp_epoch) "
+                         "VALUES (?, 'Alex', 'clock_in', ?, ?)",
+                         [(worker_id, OLD, database._attendance_epoch(OLD))] * 400)
         conn.commit()
         conn.execute('DROP INDEX idx_attendance_epoch')
+        database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, 400]))
         locked = threading.Event()
-        release = threading.Event()
-        attempted = [threading.Event(), threading.Event()]
-        ready = [threading.Event(), threading.Event()]
+        ready = [threading.Event() for _ in range(3)]
         results, errors = [], []
-        def indexer():
-            c = database._get_conn()
-            def hold_index_lock():
-                locked.set()
-                if not release.wait(10):
-                    return 1
-                return 0
-            c.set_progress_handler(hold_index_lock, 1000)
-            try:
-                c.execute('CREATE INDEX idx_attendance_epoch ON attendance_log(timestamp_epoch, id) '
-                          'WHERE timestamp_epoch IS NOT NULL')
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                c.close()
+        real_connect = sqlite3.connect
+        class SlowIndexConnection(sqlite3.Connection):
+            waited = False
+            def set_progress_handler(self, callback, count):
+                def hold_until_event():
+                    if not self.waited:
+                        self.waited = True
+                        locked.set()
+                        database._event_write_pending.wait(5)
+                    return callback()
+                super().set_progress_handler(hold_until_event, count)
+        def connect(*args, **kwargs):
+            return real_connect(*args, **kwargs, factory=SlowIndexConnection)
         def writer(i):
             c = database._get_conn()
             ready[i].set()
-            locked.wait(10)
-            attempted[i].set()
+            locked.wait(5)
             try:
                 if i == 0:
                     results.append(database.log_attendance(worker_id, 'Alex', 'clock_in'))
-                else:
+                elif i == 1:
                     results.append(database.log_recognized_attendance(
                         worker_id=worker_id, worker_name='Alex', action='clock_out',
                         expected_encoding=np.zeros(128)))
+                else:
+                    results.append(database.log_recognition_attempt(decision='unknown'))
             except Exception as exc:
                 errors.append(exc)
             finally:
                 c.close()
-        writers = [threading.Thread(target=writer, args=(i,)) for i in range(2)]
+        writers = [threading.Thread(target=writer, args=(i,)) for i in range(3)]
         for thread in writers:
             thread.start()
-        index = threading.Thread(target=indexer)
         try:
             self.assertTrue(all(event.wait(5) for event in ready))
-            index.start()
-            self.assertTrue(all(event.wait(5) for event in attempted))
-            time.sleep(5.2)  # Exceeds the actual pre-fix SQLite busy timeout.
-            self.assertEqual(results, [])
-            self.assertEqual(errors, [])
+            with mock.patch.object(database.sqlite3, 'connect', side_effect=connect), \
+                 mock.patch.object(database.logger, 'exception') as log:
+                worker = database.start_history_migration()
+                self.assertTrue(locked.wait(5))
+                started = time.monotonic()
+                for thread in writers:
+                    thread.join(2)
+                self.assertLess(time.monotonic() - started, 2)
+                self.assertFalse(any(thread.is_alive() for thread in writers))
+                self.assertEqual(errors, [])
+                self.assertEqual(len(results), 3)
+                self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name='idx_attendance_epoch'").fetchone())
+                self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:attendance_log')), [0, 400])
+                self.assertEqual(database.prune_synced_history(), {'attendance_log': 0, 'recognition_attempts': 0})
+                database.stop_history_migration()
+                self.assertFalse(worker.is_alive())
+                log.assert_not_called()
         finally:
-            release.set()
-            if index.ident is not None:
-                index.join(5)
             locked.set()
+            database.stop_history_migration()
             for thread in writers:
                 thread.join(5)
-        self.assertFalse(index.is_alive())
-        self.assertFalse(any(thread.is_alive() for thread in writers))
-        self.assertEqual(errors, [])
-        self.assertEqual(len(set(results)), 2)
-        self.assertEqual(conn.execute('SELECT COUNT(*) FROM attendance_log WHERE synced = 0 '
-                                     'AND timestamp_epoch IS NOT NULL').fetchone()[0], 2)
+        self.assertFalse(database._event_write_pending.is_set())
+        worker = database.start_history_migration()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(database.get_sync_state('epoch_backfill:attendance_log'))
+        self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE name='idx_attendance_epoch'").fetchone())
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM attendance_log WHERE synced=0 AND timestamp_epoch IS NOT NULL').fetchone()[0], 402)
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM recognition_attempts').fetchone()[0], 1)
+
+    def test_all_indexes_precede_backfill_even_on_partial_upgrade(self):
+        conn = self.legacy_tables()
+        conn.executemany("INSERT INTO attendance_log (worker_id, worker_name, action, timestamp) "
+                         "VALUES (1, 'Alex', 'clock_in', ?)", [(OLD,)] * 5)
+        conn.executemany('INSERT INTO recognition_attempts (timestamp) VALUES (?)', [(OLD,)] * 5)
+        conn.commit()
+        database.init_db()
+        for table in ('attendance_log', 'recognition_attempts'):
+            conn.execute(f'UPDATE {table} SET timestamp_epoch=? WHERE id<=2', (database._attendance_epoch(OLD),))
+            database.set_sync_state(f'epoch_backfill:{table}', json.dumps([2, 5]))
+        migrate = database._migrate_event_epoch
+        def check_indexes(c, table, pause=None):
+            names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+            self.assertTrue({'idx_attendance_epoch', 'idx_attendance_worker_epoch',
+                             'idx_attendance_log_retention', 'idx_recognition_attempts_retention'} <= names)
+            migrate(c, table, pause=pause)
+        with mock.patch.object(database, '_migrate_event_epoch', side_effect=check_indexes):
+            database._migrate_history()
+
+    def test_manual_lock_timeout_returns_retry_message_and_releases_transaction(self):
+        import app as web_app
+        worker_id = database.add_worker('Alex', np.zeros(128))
+        conn = database._get_conn()
+        conn.execute('PRAGMA busy_timeout=30')
+        blocker = sqlite3.connect(config.DB_PATH)
+        self.addCleanup(blocker.close)
+        blocker.execute('BEGIN IMMEDIATE')
+        route = web_app.manual_clock.__wrapped__.__wrapped__
+        with web_app.app.test_request_context('/manual-clock', method='POST', json={'worker_id': worker_id}), \
+             mock.patch.object(web_app.logger, 'exception'):
+            response, status = route()
+        self.assertEqual(status, 503)
+        self.assertFalse(response.json['success'])
+        self.assertIn('please try again', response.json['error'])
+        self.assertFalse(conn.in_transaction)
+        self.assertFalse(database._event_write_pending.is_set())
+        self.assertEqual(database.count_unsynced_logs(), 0)
+        blocker.rollback()
+        with web_app.app.test_request_context('/manual-clock', method='POST', json={'worker_id': worker_id}):
+            response = route()
+        self.assertTrue(response.json['success'])
+        self.assertEqual(database.count_unsynced_logs(), 1)
+
+    def test_automatic_lock_timeout_shows_retry_without_marking_clock_successful(self):
+        import ast
+        import app as web_app
+        from types import SimpleNamespace
+        worker_id = database.add_worker('Alex', np.zeros(128))
+        conn = database._get_conn()
+        conn.execute('PRAGMA busy_timeout=30')
+        blocker = sqlite3.connect(config.DB_PATH)
+        self.addCleanup(blocker.close)
+        blocker.execute('BEGIN IMMEDIATE')
+        # Run the actual nested UI-loop function without loading camera/dlib.
+        source = ast.parse(Path(__file__).with_name('main.py').read_text())
+        record = next(n for n in ast.walk(source) if isinstance(n, ast.FunctionDef) and n.name == 'record_clock')
+        last_clocks = {}
+        telemetry = mock.Mock()
+        env = dict(config=config, database=database, web_app=web_app, logger=mock.Mock(),
+                   recognizer=SimpleNamespace(known_count=1, liveness_policy=SimpleNamespace(record=lambda write, **kw: write(**kw))),
+                   _log_recognition_attempt=telemetry, last_clocks=last_clocks,
+                   datetime=datetime, timezone=timezone, _now_iso=lambda: NOW.isoformat(), base_degraded_reason=lambda: None)
+        exec(compile(ast.Module(body=[record], type_ignores=[]), 'main.py', 'exec'), env)
+        with mock.patch.object(web_app, 'update_status') as status, mock.patch.object(web_app, 'update_health') as health:
+            self.assertFalse(env['record_clock']({'candidate_encoding': np.zeros(128)}, worker_id, 'Alex', '1', .9, False))
+        self.assertEqual(status.call_args.kwargs['state'], 'ERROR')
+        self.assertIn('please try again', status.call_args.kwargs['message'])
+        health.assert_not_called()
+        telemetry.assert_not_called()
+        self.assertEqual(last_clocks, {})
+        self.assertEqual(database.count_unsynced_logs(), 0)
+        self.assertFalse(conn.in_transaction)
+        self.assertFalse(database._event_write_pending.is_set())
+        blocker.rollback()
 
     def test_stop_interrupts_create_index_and_restart_rebuilds_it(self):
         conn = self.legacy_tables()

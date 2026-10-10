@@ -139,10 +139,19 @@ slower until attendance backfill finishes.
 
 The worker creates indexes before populating epochs, excludes NULLs from new
 indexes, commits at most 100 rows per batch, and yields between transactions.
-Index creation holds SQLite's writer lock for the full statement. Foreground
-connections wait up to 60 seconds for that lock, so manual and recognized
-attendance can queue through a large build. The background connection waits
-only five seconds for other writers. Shutdown interrupts index creation,
+SQLite holds its writer lock during index creation, including on a restart
+with partially populated epochs or a device with a missing index. Every
+manual attendance, recognized attendance, and recognition telemetry write
+signals the index worker before opening its connection or transaction. The
+worker checks that signal every 1,000 SQLite instructions, atomically rolls
+back the current index build, and retries after 30 seconds. Completed indexes
+remain; no backfill begins until all four indexes exist. Busy door traffic can
+therefore defer migration and retention until a quieter period. This also
+protects the camera/UI loop, which records recognized attendance synchronously.
+Foreground connections wait up to 10 seconds for other writers; lock timeouts
+show a "please try again" message for both manual and recognized attendance.
+Failed event writes roll back their transaction. The background connection
+waits only five seconds for other writers. Shutdown interrupts index creation,
 finishes or rolls back the current batch, wakes retry delays, and joins the
 worker so its own connection is closed. Progress survives restart, and failures
 (including opening the connection) are logged and retried every 30 seconds.
@@ -171,11 +180,24 @@ attempts. First-upgrade indexes with NULL historical epochs took **72–429 ms**
 rebuilding indexes with populated epochs took **201–1,813 ms**. Concurrent
 attendance inserts queued and committed without errors. The same 20x sizing
 assumption gives up to **8.6 seconds** and **36.3 seconds**, respectively,
-before extra SD-card I/O costs. These estimates exceed the former five-second
-SQLite timeout; the 60-second foreground timeout provides headroom. This is
-still a host benchmark, not a Pi measurement. Regression tests hold an actual
-index writer lock for over five seconds and verify that both manual and
-recognized attendance commit exactly once afterward.
+before extra SD-card I/O costs. Round 5 replaces waiting through these builds
+with interruption when an event write arrives.
+
+Round 5 used a separate **199 MiB** WAL/FULL database with the same row counts,
+mixed naive/offset timestamps, 200 worker identities and 95% synced history.
+Across three builds per index, before the fix, the recognition retention
+index took **71–76 ms** at 0% populated epochs, **141–167 ms** at 25%,
+**207–208 ms** at 50%, and **282–340 ms** at 100%. Across all attendance
+indexes, corresponding ranges were **15–20**, **31–40**, **51–63**, and
+**79–118 ms**. These vary from round 4 with host load and data distribution.
+Attendance inserts issued 1, 50 or 200 ms into recognition index creation
+took up to **79, 180, 230 and 330 ms**, respectively, before the fix, and up to
+**0.54, 1.31, 1.59 and 1.63 ms** after it. Active builds were interrupted;
+builds that had already finished needed no interruption. Pi hardware and SD
+flush latency remain unmeasured. Regression coverage also verifies interruption
+of a populated attendance index, concurrent manual/recognized/telemetry writes,
+unchanged backfill cursors and retention gating, shutdown, restart, and real
+lock-timeout messages.
 
 ## Tools
 
