@@ -409,6 +409,7 @@ export interface ShiftCloseoutDraftSection {
 export interface ShiftCloseoutDraft {
   generated_at: string;
   source_counts: ShiftCloseoutSnapshot & {
+    not_yet_due?: number;
     missing_clock_outs: number;
     recognition_reviews: number;
     attendance_corrections: number;
@@ -426,6 +427,8 @@ export interface ShiftCloseoutResponse {
   generated_at: string;
   closeout: ShiftCloseoutRecord | null;
   summary: ShiftCloseoutSnapshot & {
+    // Live only (not in the signed snapshot); optional for older deployments.
+    not_yet_due?: number;
     missing_clock_outs: number;
     recognition_reviews: number;
     attendance_corrections: number;

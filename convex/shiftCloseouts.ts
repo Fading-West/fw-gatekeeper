@@ -152,6 +152,7 @@ function buildSuggestedNote(input: {
     present: number;
     late: number;
     missing: number;
+    not_yet_due: number;
     open_exceptions: number;
     critical_exceptions: number;
     missing_clock_outs: number;
@@ -166,6 +167,8 @@ function buildSuggestedNote(input: {
     `${input.summary.present} present`,
     `${input.summary.late} late`,
     `${input.summary.missing} missing`,
+    // Closeout before a shift starts: keep expected = present + missing + not yet due.
+    ...(input.summary.not_yet_due > 0 ? [`${input.summary.not_yet_due} not yet due`] : []),
     `${input.summary.open_exceptions} open exceptions`,
     `${input.summary.critical_exceptions} critical exceptions`,
     `${input.summary.missing_clock_outs} missing clock-outs`,
@@ -192,6 +195,7 @@ function buildCloseoutDraft(input: {
     present: number;
     late: number;
     missing: number;
+    not_yet_due: number;
     open_exceptions: number;
     critical_exceptions: number;
     missing_clock_outs: number;
@@ -229,7 +233,7 @@ function buildCloseoutDraft(input: {
     buildDraftSection(
       "attendance_summary",
       "Attendance summary",
-      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.`,
+      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.${input.summary.not_yet_due > 0 ? ` ${plural(input.summary.not_yet_due, "scheduled worker")} ${input.summary.not_yet_due === 1 ? "is" : "are"} not yet due because their shift has not started.` : ""}`,
       [
         {
           label: "briefing attendance evidence",
@@ -351,6 +355,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     present: briefing.daily_attendance.present,
     late: briefing.daily_attendance.late,
     missing: briefing.daily_attendance.missing,
+    not_yet_due: briefing.daily_attendance.not_yet_due,
     open_exceptions: openExceptions.length,
     critical_exceptions: criticalExceptions.length,
     missing_clock_outs: missingClockOuts.length,
