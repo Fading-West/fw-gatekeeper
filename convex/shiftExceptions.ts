@@ -107,6 +107,26 @@ function normalizeText(value?: string | null) {
   return trimmed || undefined;
 }
 
+/**
+ * Both screens can review or reopen a recognition exception. The latest action wins;
+ * an old exception disposition must not undo a newer Recognition Lab review.
+ */
+function explicitReviewIsNewer(explicitReview: { updatedAt: string } | null | undefined, attemptUpdatedAt: string | null) {
+  return Boolean(explicitReview) && (!attemptUpdatedAt || Date.parse(explicitReview!.updatedAt) > Date.parse(attemptUpdatedAt));
+}
+
+/** The note the summary shows for a review row, so an omitted note keeps what supervisors see. */
+async function currentReviewNote(ctx: any, args: { exceptionKey: string; date: string; type: string }, existing: any) {
+  const prefix = `${args.date}:recognition_review:`;
+  if (args.type === "recognition_review" && args.exceptionKey.startsWith(prefix)) {
+    const attemptId = ctx.db.normalizeId("recognitionAttempts", args.exceptionKey.slice(prefix.length));
+    const attempt = attemptId ? await ctx.db.get(attemptId) : null;
+    const attemptUpdatedAt = normalizeText(attempt?.updatedAt) || normalizeText(attempt?.reviewedAt) || null;
+    if (attempt && !explicitReviewIsNewer(existing, attemptUpdatedAt)) return normalizeText(attempt.reviewedNote);
+  }
+  return existing?.note;
+}
+
 function buildHref(path: string, params: Record<string, string | null | undefined>) {
   const query = Object.entries(params)
     .filter((entry): entry is [string, string] => entry[1] !== null && entry[1] !== undefined && entry[1] !== "")
@@ -601,12 +621,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     const attemptReviewedAt = recognitionText(attempt, "reviewed_at", "reviewedAt");
     const attemptUpdatedAt = recognitionText(attempt, "updated_at", "updatedAt") || attemptReviewedAt;
     const explicitReview = reviewsByKey.get(key) as { updatedAt: string } | undefined;
-    // Both screens can review or reopen an exception. The latest action wins;
-    // an old exception disposition must not undo a newer Recognition Lab review.
-    const explicitIsNewer = explicitReview && (
-      !attemptUpdatedAt || Date.parse(explicitReview.updatedAt) > Date.parse(attemptUpdatedAt)
-    );
-    if (!explicitIsNewer) {
+    if (!explicitReviewIsNewer(explicitReview, attemptUpdatedAt)) {
       reviewsByKey.set(key, {
         status: completed ? (label === "ignored" ? "ignored" : "reviewed") : "open",
         note: recognitionText(attempt, "reviewed_note", "reviewedNote"),
@@ -696,8 +711,9 @@ export const review = mutation({
       date: args.date,
       type: args.type,
       status: args.status,
-      // An omitted note keeps the saved note; an empty or whitespace-only note clears it.
-      note: args.note === undefined ? existing?.note : normalizeText(args.note),
+      // An omitted note keeps the note currently shown (for recognition reviews, a newer
+      // Recognition Lab note wins over an older exceptions note); an empty or whitespace-only note clears it.
+      note: args.note === undefined ? await currentReviewNote(ctx, args, existing) : normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,
       updatedAt: now,
     };

@@ -160,16 +160,52 @@ describe("recognition review completion", () => {
     expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(1);
     expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(1);
     vi.advanceTimersByTime(1000);
+    // The Lab keeps its own note when none is sent, and that newer note replaces "Recheck".
     await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed" });
-    expect(await status()).toMatchObject({ status: "reviewed" });
+    expect(await status()).toMatchObject({ status: "reviewed", review_note: "Reviewed ignored" });
     expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(0);
     expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(0);
     vi.advanceTimersByTime(1000);
+    // An omitted note keeps the note shown, not the older exceptions note.
     await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "resolved" });
-    expect(await status()).toMatchObject({ status: "resolved" });
+    expect(await status()).toMatchObject({ status: "resolved", review_note: "Reviewed ignored" });
     vi.advanceTimersByTime(1000);
     await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewed: false });
     expect(await status()).toMatchObject({ status: "open", reviewed_at: null });
+  });
+});
+
+describe("recognition review notes", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps the newest review's note when an exceptions review omits the note", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${DATE}T15:00:00Z`));
+    const admin = await seedShift();
+    const id = await admin.run(ctx => ctx.db.insert("recognitionAttempts", {
+      timestamp: `${DATE}T09:00:00`, kioskId: "entry", faceDetected: true,
+      decision: "near_miss", scoreMargin: 0.01, threshold: 0.3, reviewed: false, createdAt: `${DATE}T14:00:00Z`,
+    }));
+    const exceptionKey = `${DATE}:recognition_review:${id}`;
+    const row = async () => (await admin.query(api.shiftExceptions.summary, { date: DATE })).exceptions.find(item => item.key === exceptionKey);
+    const review = (status: "open" | "reviewed" | "resolved", note?: string) =>
+      admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status, ...(note === undefined ? {} : { note }) });
+
+    await review("open", "Recheck");
+    expect(await row()).toMatchObject({ status: "open", review_note: "Recheck" });
+    // A newer Recognition Lab review clears its note; the old exceptions note must not come back.
+    vi.advanceTimersByTime(1000);
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed", reviewedNote: "" });
+    expect(await row()).toMatchObject({ status: "reviewed", review_note: null });
+    vi.advanceTimersByTime(1000);
+    await review("resolved");
+    expect(await row()).toMatchObject({ status: "resolved", review_note: null });
+    // Once the exceptions review is the newest, an omitted note keeps its own saved note.
+    vi.advanceTimersByTime(1000);
+    await review("open", "Second look");
+    vi.advanceTimersByTime(1000);
+    await review("reviewed");
+    expect(await row()).toMatchObject({ status: "reviewed", review_note: "Second look" });
   });
 });
 
