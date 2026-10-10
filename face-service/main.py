@@ -52,9 +52,14 @@ MAX_ENROLLMENT_PHOTOS = 6
 # Six maximum-size base64 photos (ASCII bytes) plus 64 KiB for JSON framing
 # and whitespace. Enforce before FastAPI buffers/parses JSON or checks auth.
 MAX_REQUEST_BODY_BYTES = MAX_PHOTO_CHARACTERS * MAX_ENROLLMENT_PHOTOS + 64 * 1024
-# Matching accepts a worker roster, not enrollment photos. Keep room for 1,000
-# 512-dimensional vectors within the shared request-body budget.
-MAX_MATCH_ENCODINGS = 1_000
+# workers.create can insert one last worker after its 1,000-row identity scan.
+# Keep room for that entire roster of 512-dimensional vectors.
+MAX_MATCH_ENCODINGS = 1_001
+
+
+class RequestBodyTooLarge(HTTPException):
+    def __init__(self):
+        super().__init__(413, "Request body too large")
 
 
 class RequestBodyLimitMiddleware:
@@ -69,7 +74,7 @@ class RequestBodyLimitMiddleware:
             return
 
         for name, value in scope.get("headers", []):
-            if name == b"content-length":
+            if name.lower() == b"content-length":
                 try:
                     declared_size = int(value)
                 except ValueError:
@@ -82,19 +87,52 @@ class RequestBodyLimitMiddleware:
                     return
 
         received_bytes = 0
+        body_too_large = False
+        response_started = False
+
+        async def tracked_send(message: Message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
 
         async def limited_receive() -> Message:
-            nonlocal received_bytes
+            nonlocal received_bytes, body_too_large
+            if body_too_large:
+                raise RequestBodyTooLarge()
             message = await receive()
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
                 if received_bytes > MAX_REQUEST_BODY_BYTES:
+                    body_too_large = True
                     # FastAPI preserves HTTPException from its body reader;
                     # never forward the chunk that exceeds the limit to it.
-                    raise HTTPException(413, "Request body too large")
+                    raise RequestBodyTooLarge()
+                # Routing has selected the endpoint before it reads the body;
+                # its path also works behind a configured ASGI root_path.
+                route_path = getattr(scope.get("route"), "path", scope.get("path", ""))
+                if not message.get("more_body", False) and route_path in ("/encode", "/match"):
+                    # A small JSON body can expand into millions of Python
+                    # objects. Authenticate after the byte limit but before
+                    # returning the final chunk to FastAPI's JSON parser.
+                    # Earlier chunks remain only in its bounded byte buffer.
+                    provided_key = next((
+                        value.decode("latin-1") for name, value in scope.get("headers", [])
+                        if name.lower() == FACE_SERVICE_KEY_HEADER.encode("ascii")
+                    ), None)
+                    require_face_service_key(provided_key)
             return message
 
-        await self.app(scope, limited_receive, send)
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except RequestBodyTooLarge:
+            # FastAPI handles HTTPException itself; other ASGI apps may let it
+            # escape. Never replace a response that has already started.
+            if response_started:
+                raise
+            await JSONResponse(
+                status_code=413, content={"detail": "Request body too large"},
+            )(scope, receive, send)
 
 @asynccontextmanager
 async def service_lifespan(_app):
