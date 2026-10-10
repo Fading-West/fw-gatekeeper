@@ -1,6 +1,20 @@
 """Temporal face matching whose accepted identity must match the current frame."""
 from collections import deque
+import math
 import numpy as np
+import config
+
+
+def has_minimum_margin(scores, min_margin):
+    """A lone candidate needs no separation; multiple workers must be distinct."""
+    if len(scores) < 2:
+        return True
+    gap = scores[0][0] - scores[1][0]
+    # Normalization and subtraction can put an exact boundary a few floating
+    # point steps below the margin. Only allow that machine-precision error.
+    return gap >= min_margin or math.isclose(
+        gap, min_margin, rel_tol=0., abs_tol=4 * math.ulp(1.),
+    )
 
 
 def cosine_similarity(a, b):
@@ -20,9 +34,10 @@ class FreshFaceMatcher:
     A high historical score cannot rescue a current-frame rejection. A change
     of worker, roster encoding, missing face, or frame sequence clears history.
     """
-    def __init__(self, window, threshold, max_gap_seconds=2.0):
+    def __init__(self, window, threshold, max_gap_seconds=2.0, min_margin=None):
         self._history = deque(maxlen=max(1, int(window)))
         self.threshold = threshold
+        self.min_margin = config.RECOGNITION_MIN_MARGIN if min_margin is None else min_margin
         self.max_gap_seconds = max_gap_seconds
         self.clear()
 
@@ -48,8 +63,7 @@ class FreshFaceMatcher:
             self.clear()
             return [], False
         raw_score, raw_index = raw_scores[0]
-        # An exact tie provides no evidence for choosing either identity.
-        ambiguous = len(raw_scores) > 1 and abs(raw_score - raw_scores[1][0]) < 1e-9
+        ambiguous = not has_minimum_margin(raw_scores, self.min_margin)
         if raw_score < self.threshold or ambiguous:
             self.clear()
             return raw_scores, False
@@ -67,6 +81,10 @@ class FreshFaceMatcher:
         scores = rank(np.mean(np.stack(self._history), axis=0))
         # Averaging may change the nearest neighbor; it never supplies evidence
         # for a worker that the current, unaveraged frame did not identify.
-        tied = len(scores) > 1 and abs(scores[0][0] - scores[1][0]) < 1e-9
-        approved = scores[0][1] == raw_index and scores[0][0] >= self.threshold and not tied
+        approved = (
+            scores[0][1] == raw_index and scores[0][0] >= self.threshold
+            and has_minimum_margin(scores, self.min_margin)
+        )
+        if not approved:
+            self.clear()
         return scores, approved
