@@ -6,7 +6,7 @@ import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey } from "./localDate";
 
-import { createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { createScheduleMinutesElapsed, createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -68,23 +68,6 @@ type ShiftException = {
 function getDayOfWeek(dateKey: string): number {
   const [year, month, day] = dateKey.split("-").map(Number);
   return new Date(year, month - 1, day).getDay();
-}
-
-function getMinutesFromTime(value?: string | null): number | null {
-  if (!value) return null;
-  const match = value.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours * 60 + minutes;
-}
-
-function getMinutesFromTimestamp(timestamp?: string | null): number | null {
-  if (!timestamp) return null;
-  const match = timestamp.match(/T(\d{2}):(\d{2})/);
-  if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
 }
 
 function formatTime(value?: string | null) {
@@ -359,6 +342,7 @@ function summarize(exceptions: ShiftException[]) {
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
   const hasScheduleTimePassed = createScheduleTimeHasPassed(new Date().toISOString());
+  const scheduleMinutesElapsed = createScheduleMinutesElapsed();
   const [workers, attendance, schedules, reviews, recognitionAttempts] = await Promise.all([
     ctx.db
       .query("workers")
@@ -445,15 +429,14 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
 
     if (schedule && firstIn) {
-      const startMinutes = getMinutesFromTime(schedule.startTime);
-      const firstInMinutes = getMinutesFromTimestamp(firstIn.timestamp);
-      if (startMinutes !== null && firstInMinutes !== null && firstInMinutes > startMinutes) {
+      const minutesLate = scheduleMinutesElapsed(date, schedule.startTime, firstIn);
+      if (minutesLate !== null && minutesLate > 0) {
         const key = `${date}:late_arrival:${workerId}`;
         exceptions.push(createException({
           key,
           date,
           type: "late_arrival",
-          severity: firstInMinutes - startMinutes >= 30 ? "critical" : "warning",
+          severity: minutesLate >= 30 ? "critical" : "warning",
           title: `${workerName} arrived late`,
           description: `${workerName} clocked in at ${firstIn.timestamp.slice(11, 16)}, after the ${formatTime(schedule.startTime)} scheduled start.`,
           worker_id: workerId,

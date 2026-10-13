@@ -5,7 +5,7 @@ import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
-import { createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { createScheduleMinutesElapsed, createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 // not_yet_due: scheduled, no clock-in, and the factory clock has not reached
 // the scheduled start yet (same gate as shiftExceptions missing_arrival).
@@ -34,20 +34,6 @@ const STALE_THRESHOLD_MS = 60 * 60 * 1000;
 function getDayOfWeek(dateKey: string): number {
   const [year, month, day] = dateKey.split("-").map(Number);
   return new Date(year, month - 1, day).getDay();
-}
-
-function getMinutesFromTime(value?: string | null): number | null {
-  if (!value) return null;
-  const match = value.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
-}
-
-function getMinutesFromTimestamp(timestamp?: string | null): number | null {
-  if (!timestamp) return null;
-  const match = timestamp.match(/T(\d{2}):(\d{2})/);
-  if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
 }
 
 function parseScheduleDays(days: string): number[] {
@@ -451,6 +437,7 @@ function buildHref(path: string, params: Record<string, string | null | undefine
 function getWorkerStatus(input: {
   date: string;
   hasScheduleTimePassed: (date: string, time: string) => boolean;
+  scheduleMinutesElapsed: ReturnType<typeof createScheduleMinutesElapsed>;
   schedule: any;
   firstIn: any | null;
   lastEvent: any | null;
@@ -462,10 +449,9 @@ function getWorkerStatus(input: {
       ? "missing"
       : "not_yet_due";
   }
-  const startMinutes = getMinutesFromTime(input.schedule?.startTime);
-  const firstInMinutes = getMinutesFromTimestamp(input.firstIn.timestamp);
   if (input.lastEvent?.eventType === "clock_out") return "clocked_out";
-  if (startMinutes !== null && firstInMinutes !== null && firstInMinutes > startMinutes) return "late";
+  const minutesLate = input.scheduleMinutesElapsed(input.date, input.schedule.startTime, input.firstIn);
+  if (minutesLate !== null && minutesLate > 0) return "late";
   return "present";
 }
 
@@ -474,6 +460,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     // Same clock as buildShiftExceptions (Convex freezes Date
     // within a query, so both builders see the same instant).
     const hasScheduleTimePassed = createScheduleTimeHasPassed(new Date().toISOString());
+    const scheduleMinutesElapsed = createScheduleMinutesElapsed();
     const [workers, schedules, attendance, kiosks, exceptions, attendanceCorrections] = await Promise.all([
       ctx.db
         .query("workers")
@@ -529,10 +516,10 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       const events = eventsByWorker.get(workerId) || []; // Already chronological.
       const firstIn = events.find((event) => event.eventType === "clock_in") || null;
       const lastEvent = events[events.length - 1] || null;
-      const status = getWorkerStatus({ date, hasScheduleTimePassed, schedule, firstIn, lastEvent });
+      const status = getWorkerStatus({ date, hasScheduleTimePassed, scheduleMinutesElapsed, schedule, firstIn, lastEvent });
       // Daily attendance survives clock-out; live coverage intentionally does not.
       if (firstIn) attended += 1;
-      if (getWorkerStatus({ date, hasScheduleTimePassed, schedule, firstIn, lastEvent: null }) === "late") arrivedLate += 1;
+      if (getWorkerStatus({ date, hasScheduleTimePassed, scheduleMinutesElapsed, schedule, firstIn, lastEvent: null }) === "late") arrivedLate += 1;
       const department = normalizeText(worker.department) || "Unassigned";
       const departmentKey = `${department}:${schedule.name}:${schedule.startTime}:${schedule.endTime}`;
 
