@@ -164,10 +164,45 @@ it.each([
     expect(alert).toContain('outcome unknown');
     expect(alert).toContain('Front Gate');
     expect(alert).toContain('issue a new credential');
+    expect(alert).toContain('Online status can reflect an earlier sync');
+    expect(alert).toContain('Verify a successful sync on this kiosk after this attempt');
     expect(toast).not.toHaveBeenCalledWith(expect.stringMatching(/failed/i), 'error');
     expect(statusReads).toBe(2);
     expect(badgeShows(tree, 'Device credential active')).toBe(true);
     expect(findButton(tree, 'Issue / rotate credential')!.props.disabled).toBe(false);
+  } finally {
+    await act(async () => tree.unmount());
+  }
+});
+
+it('retries only the status read after an unknown rotation, without issuing another credential', async () => {
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  let statusReads = 0;
+  let rotations = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/kiosks') {
+      statusReads += 1;
+      if (statusReads === 2) throw new TypeError('Failed to fetch');
+      return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: statusReads === 1 ? 'legacy' : 'device' }]) };
+    }
+    expect(url).toBe('/api/kiosks/credentials');
+    expect(init?.method).toBe('POST');
+    rotations += 1;
+    throw new TypeError('Failed to fetch');
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<KiosksPage />); });
+  try {
+    await act(async () => findButton(tree, 'Issue / rotate credential')!.props.onClick());
+    expect(rotations).toBe(1);
+    expect(badgeShows(tree, 'Credential status unavailable')).toBe(true);
+    await act(async () => findButton(tree, 'Retry')!.props.onClick());
+    expect(rotations).toBe(1);
+    expect(statusReads).toBe(3);
+    expect(globalThis.confirm).toHaveBeenCalledTimes(1);
+    expect(badgeShows(tree, 'Device credential active')).toBe(true);
+    expect(tree.root.findAll(node => node.type === 'div' && node.props.role === 'alert')).toHaveLength(1);
   } finally {
     await act(async () => tree.unmount());
   }

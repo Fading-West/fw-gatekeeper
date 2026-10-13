@@ -214,7 +214,7 @@ export default function KiosksPage() {
       {unknownCredentialOutcome && (
         <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
           <p className="text-amber-200 font-semibold">Credential change for {unknownCredentialOutcome}: outcome unknown.</p>
-          <p className="text-xs text-slate-400">The portal could not confirm the result, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. Check this kiosk&apos;s credential status; if it is not syncing, issue a new credential and install it on its device.</p>
+          <p className="text-xs text-slate-400">The portal could not confirm the result, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. The credential status only shows what the server accepts, and the Online status can reflect an earlier sync. Verify a successful sync on this kiosk after this attempt. If you cannot confirm one, issue a new credential and install it on its device.</p>
           <button type="button" className="btn-secondary" onClick={() => setUnknownCredentialOutcome(null)}>Dismiss</button>
         </div>
       )}
