@@ -1,9 +1,11 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
+import { FactoryDatePage } from '@/components/FactoryDatePage';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -204,19 +206,12 @@ function getRoleSafeRiskHref(risk: ShiftTrustBriefRisk, role: PortalRole | undef
 
 function ShiftBriefingPageContent() {
   const searchParams = useSearchParams();
-  // Keep this visit's default day stable so midnight cannot discard unsaved work.
-  const [initialDate] = useState(getFactoryLocalDateString);
-  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
+  const { date, setDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')));
   const queryDepartment = searchParams.get('department') || 'all';
   const queryStatus = validWorkerStatusParam(searchParams.get('status'));
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
   const [department, setDepartment] = useState(queryDepartment);
   const [status, setStatus] = useState<WorkerCoverageStatus | 'all'>(queryStatus);
-
-  useEffect(() => {
-    setDate(queryDate);
-  }, [queryDate]);
 
   useEffect(() => {
     setDepartment(queryDepartment);
@@ -323,6 +318,8 @@ function ShiftBriefingPageContent() {
           </button>
         </div>
       </div>
+
+      {newDay && <FactoryDayNotice date={date} today={today} />}
 
       <section className="glass-card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -673,8 +670,8 @@ function ShiftBriefingPageContent() {
 
 export default function ShiftBriefingPage() {
   return (
-    <Suspense fallback={null}>
+    <FactoryDatePage>
       <ShiftBriefingPageContent />
-    </Suspense>
+    </FactoryDatePage>
   );
 }

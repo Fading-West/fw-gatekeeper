@@ -1,12 +1,14 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
+import { FactoryDatePage } from '@/components/FactoryDatePage';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
-import { getFactoryLocalDateString } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
@@ -29,12 +31,9 @@ function LogPageContent() {
   const role = usePortalRole();
   const canReverse = role === 'admin' || role === 'enrollment';
   const searchParams = useSearchParams();
-  // Keep this visit's default day stable so midnight cannot discard unsaved work.
-  const [initialDate] = useState(getFactoryLocalDateString);
-  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
+  const { date, setDate, keepDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')));
   const queryWorkerId = searchParams.get('worker_id') || '';
   const queryAttendanceId = searchParams.get('attendance_id') || '';
-  const [date, setDate] = useState(queryDate);
   const [events, setEvents] = useState<AttendanceWithWorker[]>([]);
   const [corrections, setCorrections] = useState<AttendanceCorrection[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,9 +53,12 @@ function LogPageContent() {
   const fullDayHref = `/log?date=${encodeURIComponent(date)}`;
 
   useEffect(() => {
+    if (reversalDraft || reversing) keepDate();
+  }, [keepDate, reversalDraft, reversing]);
+
+  useEffect(() => {
     setReversalDraft(null);
-    setDate(queryDate);
-  }, [queryDate]);
+  }, [date]);
 
   useEffect(() => {
     setReversalDraft(null);
@@ -253,6 +255,8 @@ function LogPageContent() {
         </div>
       </div>
 
+      {newDay && <FactoryDayNotice date={date} today={today} />}
+
       {hasSourceContext && (
         <div className="glass-card mb-6 flex flex-col gap-4 border-l-4 border-gold/70 px-5 py-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -366,8 +370,8 @@ function LogPageContent() {
 
 export default function LogPage() {
   return (
-    <Suspense fallback={null}>
+    <FactoryDatePage>
       <LogPageContent />
-    </Suspense>
+    </FactoryDatePage>
   );
 }

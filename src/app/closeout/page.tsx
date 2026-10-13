@@ -1,10 +1,12 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
+import { FactoryDatePage } from '@/components/FactoryDatePage';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
-import { getFactoryLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 import {
@@ -161,21 +163,16 @@ function getCloseoutNextStep({
 function ShiftCloseoutPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  // Keep this visit's default day stable so midnight cannot discard unsaved work.
-  const [initialDate] = useState(getFactoryLocalDateString);
-  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
+  // Signoff and recoverable closeout actions belong to one day for this visit.
+  // The new-day notice offers an explicit switch without hiding those actions.
+  const { date, setDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')), false);
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
   const [supervisorName, setSupervisorName] = useState('');
   const [notes, setNotes] = useState('');
   const [acknowledgedBlockers, setAcknowledgedBlockers] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const mutationPendingRef = useRef(false);
   const canOperate = canOperateCloseout(currentRole);
-
-  useEffect(() => {
-    setDate(queryDate);
-  }, [queryDate]);
 
   const loadCloseout = useCallback(async (signal: AbortSignal): Promise<ShiftCloseoutResponse> => {
     const res = await fetch(`/api/shift-closeout?date=${date}`, { cache: 'no-store', signal });
@@ -319,6 +316,8 @@ function ShiftCloseoutPageContent() {
           {payload.warning || 'Shift closeout is waiting for deployment.'}
         </div>
       )}
+
+      {newDay && <FactoryDayNotice date={date} today={today} />}
 
       <section className="glass-card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -589,8 +588,8 @@ function ShiftCloseoutPageContent() {
 
 export default function ShiftCloseoutPage() {
   return (
-    <Suspense fallback={null}>
+    <FactoryDatePage>
       <ShiftCloseoutPageContent />
-    </Suspense>
+    </FactoryDatePage>
   );
 }
