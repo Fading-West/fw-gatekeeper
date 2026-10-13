@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import ijson
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -19,6 +20,29 @@ class MatchPayloadTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)
         self.headers = {"x-face-service-key": "test-key", "content-type": "application/json"}
+
+    def test_lone_surrogates_are_rejected_before_validation_error_serialization(self):
+        # Native YAJL substitutes '?' for some lone high surrogates, while
+        # Python JSON retains them. FastAPI's validation error then raised
+        # UnicodeEncodeError; a matching worker_id also failed serialization.
+        bodies = (
+            b'{"photo":"","encodings":[{"worker_id":["\\ud800"],"encoding":[]}]}',
+            b'{"photo":"","encodings":[{"\\ud800":0,"encoding":[]}]}',
+            b'{"photo":"","encodings":[{"worker_id":"\\ud800","encoding":[1]}]}',
+            b'{"photos":["a"],"ignored":"\\udfff"}',
+        )
+        for backend in ("yajl2_c", "python"):
+            with patch("bounded_json.ijson.basic_parse", ijson.get_backend(backend).basic_parse), \
+                    patch.object(Request, "json", side_effect=AssertionError("JSON parsing reached")):
+                for body in bodies:
+                    path = "/encode" if b'"photos"' in body else "/match"
+                    with self.subTest(backend=backend, path=path):
+                        self.assertEqual(self.client.post(path, content=body, headers=self.headers).status_code, 422)
+        with patch.object(main, "decode_image"), patch.object(main, "get_embedding", return_value=[1.0] * 512):
+            response = self.client.post("/match", json={"photo": "", "encodings": [
+                {"worker_id": "\U0001f600", "encoding": [1.0] * 512}]}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["match"]["worker_id"], "\U0001f600")
 
     def test_full_1001_worker_roster_and_maximum_photo_are_accepted(self):
         vector = np.random.default_rng(165).normal(size=512)

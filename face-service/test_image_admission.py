@@ -289,6 +289,13 @@ class ImageAdmissionEndpointTests(unittest.TestCase):
         self.assertEqual(self.client.post("/encode", content=b"invalid JSON", headers={
             **headers, "content-type": "application/json"}).status_code, 422)
         self.assertEqual(self.client.post("/encode", json={"photos": []}, headers=headers).status_code, 422)
+        for body in (
+            b'{"photos":["a"],"ignored":"\\ud800"}',
+            b'{"ignored":' + b'[' * 40 + b'0' + b']' * 40 + b'}',
+        ):
+            self.assertEqual(self.client.post("/encode", content=body, headers={
+                **headers, "content-type": "application/json"}).status_code, 422)
+            self.assertEqual(self.gate.in_flight, 0)
         self.assertEqual(self.client.post("/encode", json={"photos": ["bad", "bad"]}, headers=headers).status_code, 422)
         with patch.object(self.main, "_inspect_enrollment_photo", side_effect=HTTPException(503, "unavailable")):
             self.assertEqual(self.client.post("/encode", json={"photos": ["a", "b"]}, headers=headers).status_code, 503)
