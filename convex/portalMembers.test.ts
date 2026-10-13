@@ -11,6 +11,32 @@ import * as audit from './audit';
 
 const modules = import.meta.glob('./**/*.ts');
 
+const authHooks = vi.hoisted(() => ({ afterAuthorize: undefined as (() => Promise<void>) | undefined }));
+vi.mock('@convex-dev/auth/server', async importOriginal => {
+  const original = await importOriginal<typeof import('@convex-dev/auth/server')>();
+  return {
+    ...original,
+    convexAuth: (config: Parameters<typeof original.convexAuth>[0]) => original.convexAuth({
+      ...config,
+      providers: config.providers.map(provider => {
+        // Interleave at the action boundary between authorize and the library's
+        // session/token issuance. Keep the real auth store and password crypto.
+        const credentials = provider as import('@convex-dev/auth/server').ConvexCredentialsConfig & {
+          options: import('@convex-dev/auth/providers/ConvexCredentials').ConvexCredentialsUserConfig;
+        };
+        return { ...credentials, options: {
+          ...credentials.options,
+          authorize: async (...args: Parameters<typeof credentials.options.authorize>) => {
+            const result = await credentials.options.authorize(...args);
+            await authHooks.afterAuthorize?.();
+            return result;
+          },
+        } };
+      }),
+    }),
+  };
+});
+
 async function withLocalAuthKeys(run: () => Promise<void>) {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   vi.stubEnv('JWT_PRIVATE_KEY', privateKey.export({ format: 'pem', type: 'pkcs8' }).toString());
@@ -349,6 +375,53 @@ async function temporaryMember(role: 'admin' | 'enrollment' | 'viewer' = 'admin'
 }
 
 describe('required password rotation', { timeout: 20_000 }, () => {
+  it.each(['rotation', 'admin reset'] as const)('denies a sign-in verified before %s when its tokens are issued afterwards', async change => {
+    const { t, actor, admin } = await temporaryMember();
+    authHooks.afterAuthorize = async () => {
+      if (change === 'rotation') {
+        await actor.action(api.portalMembers.changePassword, { currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!' });
+      } else {
+        await t.withIdentity({ subject: admin }).action(api.portalMembers.resetPortalAccountPassword, {
+          email: 'temporary@example.com', password: 'ResetPass789!', role: 'admin',
+        });
+      }
+    };
+    try {
+      let subject!: string;
+      await withLocalAuthKeys(async () => {
+        const result = await t.action(api.auth.signIn, { provider: 'password', params: { email: 'temporary@example.com', password: 'TemporaryPass123!', flow: 'signIn' } });
+        expect(result.tokens).toBeTruthy();
+        subject = JSON.parse(Buffer.from(result.tokens!.token.split('.')[1], 'base64url').toString()).sub;
+      });
+      await expect(t.withIdentity({ subject }).query(api.workers.list, { includeEncodings: false })).rejects.toThrow('Unauthorized');
+      await expect(t.withIdentity({ subject }).query(api.portalMembers.current, {})).resolves.toBeNull();
+    } finally { authHooks.afterAuthorize = undefined; }
+  });
+
+  it('commits failed sign-in attempts without creating sessions and shares the rotation limit', async () => {
+    const { t, actor, accountId } = await temporaryMember();
+    const bucket = () => t.run(ctx => ctx.db.query('authRateLimits').withIndex('identifier', q => q.eq('identifier', accountId)).unique());
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: {
+        email: 'temporary@example.com', password: 'WrongPass123!', flow: 'signIn',
+      } })).rejects.toThrow('InvalidSecret');
+      expect((await bucket())!.attemptsLeft).toBeCloseTo(10 - attempt, 1);
+    }
+    await expect(actor.action(api.portalMembers.changePassword, {
+      currentPassword: 'TemporaryPass123!', newPassword: 'PrivatePass456!',
+    })).rejects.toThrow('TOO_MANY_ATTEMPTS');
+    await expect(t.action(api.auth.signIn, { provider: 'password', params: {
+      email: 'temporary@example.com', password: 'TemporaryPass123!', flow: 'signIn',
+    } })).rejects.toThrow('TooManyFailedAttempts');
+    const limit = (await bucket())!;
+    await t.run(ctx => ctx.db.patch(limit._id, { lastAttemptTime: Date.now() - 360_001 }));
+    await withLocalAuthKeys(async () => {
+      await expect(t.action(api.auth.signIn, { provider: 'password', params: {
+        email: 'temporary@example.com', password: 'TemporaryPass123!', flow: 'signIn',
+      } })).resolves.toMatchObject({ tokens: expect.any(Object) });
+    });
+    expect(await bucket()).toBeNull();
+  });
   it.each(['admin', 'enrollment', 'viewer'] as const)('sets the flag for a new %s and blocks role gates while allowing current lookup', async role => {
     const { actor, t, userId } = await temporaryMember(role);
     await expect(actor.query(api.portalMembers.current, {})).resolves.toMatchObject({ mustChangePassword: true, role });
@@ -457,6 +530,7 @@ describe('required password rotation', { timeout: 20_000 }, () => {
   });
 
   it.each([
+    ['TemporaryPass123!', '  Ab1   '],
     ['TemporaryPass123!', 'TemporaryPass123! '],
     ['TemporaryPass123!', 'temporaryPass123!'],
     ['TemporaryCafé123!', 'TemporaryCafe123!'],

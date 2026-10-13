@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import AppShell from './AppShell';
 
 const { state, replace } = vi.hoisted(() => ({
-  state: { pathname: '/', member: undefined as { mustChangePassword: boolean } | undefined }, replace: vi.fn(),
+  state: { pathname: '/', member: undefined as { mustChangePassword: boolean } | null | undefined }, replace: vi.fn(),
 }));
 vi.mock('next/navigation', () => ({ usePathname: () => state.pathname, useRouter: () => ({ replace }) }));
 vi.mock('convex/react', () => ({ useConvexAuth: () => ({ isAuthenticated: true, isLoading: false }), useQuery: () => state.member }));
@@ -38,5 +38,20 @@ it('shows only the change form when rotation is required and the route has arriv
     expect(tree.root.findAllByType('aside')).toHaveLength(0);
     expect(tree.root.findByType('p').children).toEqual(['Change form']);
     expect(replace).not.toHaveBeenCalled();
+  } finally { await act(async () => tree.unmount()); }
+});
+
+it('unmounts protected pages and returns to sign-in when an admin reset revokes the session', async () => {
+  state.member = { mustChangePassword: false };
+  let tree!: ReturnType<typeof create>;
+  const mounted = vi.fn();
+  function Protected() { mounted(); return <p>Protected page</p>; }
+  await act(async () => { tree = create(<AppShell><Protected /></AppShell>); });
+  try {
+    expect(mounted).toHaveBeenCalledTimes(1);
+    state.member = null;
+    await act(async () => tree.update(<AppShell><Protected /></AppShell>));
+    expect(tree.root.findAllByType(Protected)).toHaveLength(0);
+    expect(replace).toHaveBeenCalledWith('/login');
   } finally { await act(async () => tree.unmount()); }
 });

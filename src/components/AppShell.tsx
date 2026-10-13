@@ -16,11 +16,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const isPasswordChange = pathname === '/change-password';
 
   useEffect(() => {
+    if (!isLogin && !isPasswordChange && !isLoading && (!isAuthenticated || member === null)) {
+      router.replace('/login');
+      return;
+    }
     if (member?.mustChangePassword && !isPasswordChange) router.replace('/change-password');
-  }, [member?.mustChangePassword, isPasswordChange, router]);
+  }, [member, isAuthenticated, isLoading, isLogin, isPasswordChange, router]);
 
   // Do not mount protected page queries while identity/rotation is unresolved.
-  if (!isPasswordChange && !isLogin && (isLoading || (isAuthenticated && member === undefined) || member?.mustChangePassword)) {
+  if (!isPasswordChange && !isLogin && (isLoading || !isAuthenticated || !member || member.mustChangePassword)) {
     return <div className="min-h-screen bg-navy-950 p-8 text-slate-300">Loading account…</div>;
   }
 

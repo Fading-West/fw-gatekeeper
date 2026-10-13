@@ -544,6 +544,13 @@ verification run in a Convex action; the final mutation only writes the new
 hash and aborts with `PASSWORD_CHANGE_CONFLICT` (retry) if the credential or
 flag changed meanwhile.
 
+Password sign-in uses Convex Credentials with the Password provider's same
+Lucia scrypt helpers. An internal mutation calls Convex Auth's credential
+verification and session creation together, preserving its rate limit and
+session policy. This ensures a sign-in that verified an old password before
+rotation cannot create an authorized session after the revocation cutoff.
+Tokens issued later for that revoked session still fail the portal gates.
+
 Deploy the Convex schema/functions together with the portal update. The schema
 adds optional `portalMembers.mustChangePassword`; existing records without the
 field are treated as false and require no migration. Existing members are
