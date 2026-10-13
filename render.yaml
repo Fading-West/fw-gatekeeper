@@ -3,7 +3,8 @@ services:
     name: fw-gatekeeper
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    autoDeployTrigger: checksPass
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -28,6 +29,7 @@ services:
     name: fw-face-service
     runtime: docker
     plan: free
+    autoDeployTrigger: checksPass
     dockerfilePath: ./face-service/Dockerfile
     dockerContext: ./face-service
     healthCheckPath: /health
