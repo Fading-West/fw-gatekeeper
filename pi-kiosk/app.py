@@ -75,6 +75,15 @@ class _KioskServer(ThreadedWSGIServer):
     # Finish attendance requests before process exit; SQLite commits happen
     # synchronously in those handlers. Streaming requests must also wind down.
     daemon_threads = False
+    # Bound stalled header/body reads and feed writes so a client cannot keep
+    # non-daemon request threads alive after server death. This limits socket
+    # inactivity only; synchronous attendance commits still finish normally.
+    request_timeout = 10.0
+
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(self.request_timeout)
+        return connection, address
 
     def server_close(self):
         _server_stopped.set()

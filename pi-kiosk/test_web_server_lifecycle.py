@@ -143,6 +143,61 @@ class WebServerProcessTests(unittest.TestCase):
 
 
 class WebServerDrainTests(unittest.TestCase):
+    def test_shutdown_drains_idle_requests_and_blocked_feed_writes(self):
+        import threading
+        from unittest import mock
+        from werkzeug.serving import WSGIRequestHandler
+        import app
+        import config
+
+        for mode in ('idle_request', 'blocked_feed'):
+            with self.subTest(mode=mode):
+                entered = threading.Event()
+
+                class Handler(WSGIRequestHandler):
+                    def handle(self):
+                        if mode == 'idle_request':
+                            entered.set()
+                        return super().handle()
+
+                def blocked_feed():
+                    entered.set()
+                    yield b'--frame\r\n' + b'x' * (8 * 1024 * 1024)
+
+                server = app._KioskServer('127.0.0.1', 0, app.app, handler=Handler)
+                server.request_timeout = 0.25
+                original_get_request = server.get_request
+
+                def get_request():
+                    connection, address = original_get_request()
+                    connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+                    return connection, address
+
+                server.get_request = get_request
+                client = socket.socket()
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+                with mock.patch.object(config, 'KIOSK_UI_KEY', 'synthetic-ui-key', create=True), \
+                        mock.patch.object(app, '_KioskServer', return_value=server), \
+                        mock.patch.object(app, '_mjpeg_stream', side_effect=blocked_feed):
+                    web_thread = app.start_server()
+                    try:
+                        client.connect(server.server_address)
+                        if mode == 'idle_request':
+                            client.sendall(b'GET /health HTTP/1.1\r\nHost: localhost\r\n')
+                        else:
+                            client.sendall(
+                                b'GET /feed HTTP/1.1\r\nHost: localhost\r\n'
+                                b'X-Kiosk-UI-Key: synthetic-ui-key\r\n\r\n'
+                            )
+                        self.assertTrue(entered.wait(3))
+                        server.shutdown()
+                        web_thread.join(timeout=2)
+                        self.assertFalse(web_thread.is_alive(), 'Client prevented web shutdown')
+                    finally:
+                        client.close()
+                        server.shutdown()
+                        web_thread.join(timeout=3)
+
     def test_shutdown_finishes_manual_write_and_closes_feed(self):
         import threading
         from unittest import mock
@@ -166,6 +221,7 @@ class WebServerDrainTests(unittest.TestCase):
             responses = []
             failures = []
             server = app._KioskServer('127.0.0.1', 0, app.app)
+            server.request_timeout = 0.05
             url = f'http://127.0.0.1:{server.server_port}'
 
             def get_conn():
@@ -212,6 +268,9 @@ class WebServerDrainTests(unittest.TestCase):
                     self.assertTrue(web_thread.is_alive())
                     with self.assertRaisesRegex(RuntimeError, 'Kiosk web server stopped'):
                         app.check_server()
+                    # A commit longer than the socket inactivity timeout must
+                    # still finish; the timeout only bounds network I/O.
+                    self.assertFalse(finish.wait(0.1))
                     finish.set()
                     caller.join(timeout=3)
                     web_thread.join(timeout=3)
