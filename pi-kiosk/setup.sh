@@ -62,6 +62,14 @@ if [ -z "$KIOSK_SUPERVISOR_PIN" ]; then
   exit 1
 fi
 
+# A release-based installation must be updated through its guarded updater.
+# Re-running provisioning would modify a venv in use and leave the service's
+# release override pointing at different code.
+if [ -f "$INSTALL_DIR/.git/kiosk-current.json" ] || [ -L "$INSTALL_DIR/pi-kiosk/venv" ]; then
+  echo "Existing release installation: use update.sh as $KIOSK_USER. Do not reprovision a running kiosk."
+  exit 1
+fi
+
 # The native dependency lock targets Bookworm's Python 3.11 on 64-bit ARM.
 # Refuse other images before changing the machine or attempting source builds.
 python3 - <<'PYTHON_TARGET'
@@ -109,9 +117,7 @@ fi
 cd "$INSTALL_DIR/pi-kiosk"
 
 # Python virtual environment
-# update.sh uses a symlink to a permanently located release venv. Resolve it
-# when reprovisioning: Python's venv builder refuses a symlink as env_dir.
-python3 -m venv "$(readlink -f venv)" --system-site-packages
+python3 -m venv venv --system-site-packages
 # picamera2/libcamera remain apt-managed. No pip camera dependency or upgrade.
 # Hash-check the source-build tools first; isolated builds would fetch newer tools.
 ./venv/bin/python -m pip install --require-hashes -r requirements-build.lock

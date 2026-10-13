@@ -405,9 +405,13 @@ If monitor doesn't wake up:
 ## Maintenance
 
 ### Update kiosk software
-Run `pi-kiosk/update.sh` as the account selected by `setup.sh` (`KIOSK_USER`, normally `pi`), without `sudo`. It fetches `origin/master`, verifies a clean checkout and a fast-forward, and builds a fresh virtual environment with the same two hash-locked install commands as `setup.sh` (`requirements-build.lock`, then `requirements.lock`, with system site packages for the apt-managed camera libraries). The running code and virtual environment stay unchanged if either install fails. Do not pull first: the script must save the previous running commit for recovery.
+Run `pi-kiosk/update.sh` as the account selected by `setup.sh` (`KIOSK_USER`, normally `pi`), without `sudo`. Start with a working kiosk. The updater fetches `origin/master` and stages its code in a permanent release directory. If either dependency lock changed, it builds a fresh venv with the same two hash-locked install commands as `setup.sh`; otherwise it reuses the existing venv. Neither running code nor dependencies are edited in place. Do not pull first.
 
-After installation succeeds, the script stops the watchdog timer and job, stops the kiosk, fast-forwards the code, switches the venv, and restarts the kiosk. If a cutover command fails, it restores the previous commit and venv and starts the previously active services. Concurrent updates and local tracked edits are refused. Device configuration and offline attendance data are preserved. Downloads/native builds need space for a second venv; the old venv is removed after a successful switch. Check scanning on one kiosk before continuing the fleet rollout. A power loss or forced kill during cutover requires manual recovery of `.venv-before-update` and the previous commit from the Git reflog; the script refuses to overwrite a leftover backup.
+The updater installs a systemd launcher override, then signals the kiosk to restart through `Restart=always`. The watchdog stays enabled throughout. The recovery launcher is installed once and retained across app updates; changing its state protocol requires a separate migration. The launcher tries the candidate only while the updater is alive; a failed command, startup crash, SSH disconnect, forced kill, or reboot before commit selects the previous code and venv. The candidate is committed only after `/health` reports healthy camera and model continuously for 10 seconds (up to 5 minutes for startup). Check an actual scan on one kiosk before continuing the fleet rollout. If the kiosk uses a different local health port, set `KIOSK_HEALTH_URL` when invoking the updater; `KIOSK_UPDATE_TIMEOUT` can extend startup time on a slow SD card.
+
+Device configuration and offline attendance data remain in the original `pi-kiosk` directory and are linked into each release. `config_local.py` supplies the service's server and kiosk ID. The source checkout stays at its original revision; `.git/kiosk-current.json` records the deployed commit and release directory. Use that directory for manual Python maintenance commands. Re-running `setup.sh` on a committed release installation is refused; use the updater instead. The updater verifies the service user, checkout/venv ownership, clean tracked files and ancestry, and refuses concurrent updates.
+
+A changed lock needs space for a second venv and native builds: the preflight requires at least 2 GiB plus a 512 MiB OS/SQLite reserve (more for large installed environments). A build is aborted if the reserve is crossed. Unused releases are collected on subsequent runs and after success; active code and dependency directories are retained at their original paths, preserving absolute console-script shebangs. Backups left by an older updater (`.venv-before-update`) must be recovered before using this procedure.
 
 ```bash
 ssh pi@fw-kiosk-1.local
@@ -415,11 +419,11 @@ cd /opt/fw-gatekeeper
 bash pi-kiosk/update.sh
 ```
 
-Replace `pi` in the SSH commands with your `KIOSK_USER` if setup used another account. `setup.sh` makes that account own `/opt/fw-gatekeeper` and its virtual environment; the updater checks venv ownership and refuses root. It uses `sudo` only for service management.
+Replace `pi` in the SSH commands with your `KIOSK_USER` if setup used another account. `setup.sh` makes that account own `/opt/fw-gatekeeper` and its virtual environment; the updater checks venv ownership and refuses root. It uses `sudo` only to install the systemd override and manage the service.
 
 Older instructions used `sudo git pull`, which can leave root-owned files. If the updater reports `Permission denied` or `insufficient permission`, restore setup's ownership once with `sudo chown -R pi:pi /opt/fw-gatekeeper` (use your `KIOSK_USER` and its group if different), then rerun the script.
 
-For the first update from a version without `update.sh`, run the fetched script from a temporary file, leaving the installed code unchanged until its dependencies are ready. As the kiosk user, from `/opt/fw-gatekeeper`:
+For an installation without this release-based updater, run the fetched script from a temporary file, leaving the installed code unchanged until its dependencies are ready. As the kiosk user, from `/opt/fw-gatekeeper`. If the original checkout has no `update.sh`, use this fetched procedure for subsequent updates too:
 
 ```bash
 (
@@ -433,7 +437,7 @@ For the first update from a version without `update.sh`, run the fetched script 
 ```
 
 ### Update all 4 kiosks at once
-From any machine on the same network, run the same procedure on each kiosk in turn. The loop stops at the first reported update failure; fix that kiosk before rerunning. Validate scanning on a pilot kiosk before running the loop, because a successful systemd restart alone does not prove camera or recognition readiness.
+From any machine on the same network, run the same procedure on each kiosk in turn. The loop stops at the first reported update failure; fix that kiosk before rerunning. Validate scanning on a pilot kiosk before running the loop, because the health gate cannot prove that a real worker scan succeeds.
 
 ```bash
 for host in fw-kiosk-1 fw-kiosk-2 fw-kiosk-3 fw-kiosk-4; do
