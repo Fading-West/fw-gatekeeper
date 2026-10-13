@@ -1,0 +1,58 @@
+Independent GPT-6.1-Sol recheck, round 4; starting head ddead94.
+
+Blocking findings and minimal fixes:
+- bounded_json.py: ijson.parse batches prefixed events for an entire 64 KiB
+  chunk before the depth/key guards can run. A 30 KB object containing 15,000
+  nested array starts peaked at 580.6 MiB native / 750.7 MiB Python, exceeding
+  the Render limit before returning 422. Use ijson.basic_parse and construct
+  bounded tuple paths only as events pass the guards. The same payload now
+  peaks at 43.9 / 41.6 MiB; a subprocess regression imposes a 128 MiB address
+  limit and requires peak RSS below 100 MiB on both backends. Empty/dotted keys
+  cannot bypass array counts or impersonate known schema paths.
+- YAJL substitutes some lone high surrogate escapes, whereas Python JSON
+  preserves them. An invalid worker_id list or missing worker_id with such a
+  key passed preflight and caused UnicodeEncodeError in FastAPI's validation
+  response (HTTP 500). Reject unpaired surrogate escapes in raw body bytes,
+  respecting escaped backslashes and valid adjacent pairs. Both backends now
+  return 422 before FastAPI parsing, while valid Unicode worker IDs round-trip.
+
+Parser and whole-PR checks:
+- Float mode still rejects 5,000-digit integers and overflowing exponents on
+  both backends. Native float callbacks use checked PyLong_FromLongLong and
+  PyFloat_FromDouble; string/key conversions check failures. The unchecked
+  PyLong_FromString path is confined to non-float mode, which is not used.
+- Preflight is deliberately stricter than Python JSON for NaN/Infinity,
+  BOM/UTF-16, unpaired surrogates, overflowing numbers and non-object roots.
+  Both reject trailing data. Duplicate keys are accepted and every occurrence
+  counts toward limits; Python's last-key-wins decoding stays bounded. Finite
+  long decimal mantissas and extreme negative exponents parse safely in both.
+- Production round 3 image logs install the CPython 3.11 manylinux amd64 ijson
+  wheel. Its compiled yajl2_c backend is first in ijson's default selection;
+  local identical pinned packages select it. Pure-Python fallback is covered
+  by the same numeric, structural, Unicode and full-roster tests.
+- Repeated rejection (20 requests) with deep arrays, oversized strings or
+  oversized keys showed stable RSS on both backends. Iterator basic events
+  avoid leaking native callback allocations when application guards reject.
+- Admission reservations release after structural/Unicode, schema, decode,
+  model, receive and cancellation failures, and after the final response.
+  Authentication and actual-byte admission remain ahead of body parsing.
+- Portal caller in src/app/api/enroll/route.ts still sends {photos} with the
+  service key, expects a 512-number encoding and accepted photo indexes, and
+  saves only accepted photos through Convex. No caller or schema changes.
+- Native real-model crop/tensor/embedding parity against pi-kiosk remains exact.
+  No change to model digest, half-resolution HOG, trimming/scaling, padding,
+  preprocessing, or enrollment quality gates.
+
+Validation:
+- All 25 Python test files pass, including native real-model parity (249.0 MiB).
+- All 18 contract suites pass under the repository's Node 22 environment.
+- Portal enrollment route/page and Convex photo tests: 3 suites, 48 tests pass.
+- Full HTTP enrollment/roster/concurrency/streaming memory workload passes:
+  398.5 MiB peak, including maximum byte-padded matching and 1,001-worker rosters.
+- No new dependencies or subsystems. convex/schema.ts is unchanged.
+- Docker is unavailable locally; new-head production image build and hard
+  512 MiB checks must pass in GitHub CI before declaring the fixes validated.
+
+The PR description is updated for the final parser fixes and validation.
+Legacy Haar template repair/fresh capture, consent and supervised physical-camera
+rollout remain owner decisions; no merge, deployment or migration is performed.

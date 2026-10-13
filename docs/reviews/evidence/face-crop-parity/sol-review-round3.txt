@@ -1,0 +1,50 @@
+Independent GPT-6.1-Sol recheck, round 3; starting head 29452d9.
+
+Blocking findings and fixes:
+- bounded_json.py's default ijson yajl2_c parsing segfaulted (return code -11)
+  on an authenticated JSON body with a 5,000-digit integer in an ignored field.
+  An extreme exponent also raised uncaught decimal.InvalidOperation (HTTP 500).
+  Parse using use_float=True instead: native numeric overflow returns a parser
+  error, mapped to 422. ArithmeticError is caught for backend conversion errors.
+  Finite normalized 512-dimensional vectors do not need arbitrary precision.
+- Non-object roots bypassed the generic array counter because ijson uses
+  "item", not ".item", for root arrays. These are invalid API requests anyway;
+  reject the first non-map event before allocating/echoing a large invalid root.
+- Add subprocess regression coverage for numeric attacks on both C and pure
+  Python backends, plus six-photo/full-roster boundaries, nested arrays, event
+  caps, escaped keys, Unicode string lengths and malformed UTF-8.
+
+Other checks:
+- Full valid roster: 519,526 events versus a 521,544-event allowance. Container
+  starts count once as array entries; nested arrays have separate counters and
+  sibling counters reset. Six maximum strings fit the encode limits.
+- Received bytes are bounded before Request.body buffers accepted chunks.
+  Request.body caches bytes for the route and FastAPI; FastAPI still allocates
+  decoded JSON/validated objects. Reservations include a 16 MiB match floor;
+  real HTTP memory tests include these allocations, not just native inference.
+- Reservations are released in finally after response handling and all failures.
+  get_route_path is the same root_path normalization the pinned router uses.
+- With pinned Uvicorn 0.54.0 and httptools 0.8.0, and separately h11, real sockets
+  received immediate 401/413 on partial uploads, then sent remaining body bytes
+  and GET /health on the same connection: all follow-up responses were 200.
+  Chunked overflow plus remaining chunks and the next request also returned 200.
+- ijson 3.4.0.post0 CPython 3.11 manylinux amd64 and arm64 wheel digests both
+  appear in requirements.lock (verified against PyPI release metadata).
+  Default backend is yajl2_c, with automatic pure Python fallback on ImportError.
+  One 519,526-event preflight measured 0.34 s C / 1.38 s Python on this host;
+  both execute in the threadpool. No new global tools installed.
+- Regenerated all four locks using uv 0.12.13: byte-for-byte unchanged. This
+  branch's CI has no stale-lock regeneration step; checked freshness locally.
+- Full HTTP memory workload after the numeric fix: 415.6 MiB locally. Separate
+  six-photo Unicode-heavy invalid enrollment: 422, 438.6 MiB peak after real HOG.
+- All 25 Python test files (including real-model parity) and 18 contracts pass.
+
+Simplicity decision: retain the streaming preflight. The original 687 MiB
+reproduction shows why byte admission alone is insufficient; lowering the body
+cap breaks full-roster support. Limiting only /encode leaves an authenticated
+/match OOM path. No current caller uses /match, but the supported API and open
+PR #152 contract should not silently regress. No Convex schema changes.
+
+The PR description was rewritten around the final scope, removing superseded
+8 MiB /match claims. Legacy Haar template repair/re-enrollment and fresh-consent
+rollout remain owner decisions. No merge, deployment or migration performed.

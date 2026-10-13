@@ -18,6 +18,9 @@ click==8.5.0 \
     --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 \
     --hash=sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34
     # via uvicorn
+dlib==20.0.1 \
+    --hash=sha256:7cb2a09467de032332c743bc967007f016598c66c9c9ebc54a5b66d3d9e46d54
+    # via -r face-service/requirements.txt
 fastapi==0.142.1 \
     --hash=sha256:761663e3e6939da45f997a6f68362abc0fa9d8606e76d504f15f806d2281581d \
     --hash=sha256:7eea2b5b1632ed43de2c090b3a43b7d92267189dfbbd55a967307ed763b6c57a

@@ -239,7 +239,7 @@ else:
             with patch.object(main, "_rec_session", object()), patch.object(main, "_rec_failed", False):
                 body = self.client.get("/health").json()
             self.assertEqual(body["status"], "ok")
-            self.assertEqual(body["version"], "3.1-quality-gate")
+            self.assertEqual(body["version"], "3.2-hog-crop-parity")
             self.assertIn("rec_exists", body)
             self.assertNotIn("det_exists", body)
             self.assertEqual(body["min_good_photos"], 2)

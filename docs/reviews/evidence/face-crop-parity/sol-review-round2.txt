@@ -1,0 +1,45 @@
+Independent GPT-6.1-Sol recheck, round 2; starting head 5973cce.
+
+Confirmed regression: 1001 x 512 = 512,512 numeric values. A generated full
+normalized roster plus a maximum photo is 15,331,348 bytes with Python json.dumps
+and 14,815,831 bytes with JavaScript JSON.stringify; both exceed 8 MiB.
+Current src/ and convex/ callers use /encode and /health, not /match. Both
+pi-kiosk recognition callers match locally. The supported /match roster must
+still fit its API contract; the former limit does not.
+
+Changes:
+- Restore the PR #152-compatible 24,065,536-byte body cap. Match reservations
+  have a 16 MiB floor, bounding concurrent object rosters independently of the
+  spelling of their JSON floats.
+- Check JSON structure through pinned streaming ijson before FastAPI allocates
+  objects. Bound roster/vector lengths, scalar types, nesting, key/string sizes
+  and total events. This also handles ignored fields and pathological JSON.
+  Model constraints independently enforce 1001 rows, 512 numbers and 4M photo
+  characters. Empty rosters and short/zero invalid templates still yield no match.
+- Honor ASGI root_path for authentication/admission.
+- Reject without draining uploads: stalled clients cannot delay refusal or
+  retain reservations after exceeding the body limit. Missing authentication
+  configuration returns 503 without the busy Retry-After header.
+- Check expanded concurrency with one uvicorn worker on one core, real HOG and
+  ONNX, noisy 4 MP photos, full/compact float rosters, and mixed match/enrollment.
+
+Validation:
+- 24 Python test files passed, including 16 admission and 6 payload tests.
+- Real-model crop/tensor/embedding parity passed: 5 tests; six-photo 4 MP peak
+  252.3 MiB. No kiosk pipeline or template math changed in this round.
+- Expanded HTTP memory check passed twice; peaks 421.2 and 411.9 MiB. Maximum
+  enrollment: 200. Three maximum enrollments: 200/503/503. Two full 1001-row
+  matches plus a third: 200/200/503, also for compact 0.1 spellings. Match plus
+  four-photo enrollment: both 200. Body overflow: 413. Unauthorized: 401.
+  Hostile 24 MB numeric array: 422 before object parsing. Reservations release
+  on exceptions, actual-size growth, disconnect, cancellation and response finish.
+- 81 Vitest files / 557 tests, 18 contract test files, lint, both TypeScript
+  projects and production build passed. Lint has six existing warnings.
+- Docker runtime verification remains the face-service-image CI job, with
+  hash-locked runtime dependencies and a 512 MiB cgroup / 450 MiB RSS gate.
+
+Overlap: #152 limits agree, but auth/413 precedence differs; preserve one set
+of admission/structure middleware when merging. #149's telemetry auto_configure
+and startup test are independent shared-file edits and should be preserved.
+convex/schema.ts is unchanged. No merge, deployment or biometric migration.
+Owner must still select the existing-template repair/re-enrollment consent plan.

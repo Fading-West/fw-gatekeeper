@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import weakref
 from unittest.mock import patch
 
 import numpy as np
@@ -66,6 +67,25 @@ class QualityBoundaryTests(unittest.TestCase):
 
     def test_blank_image_has_no_center_crop_fallback(self):
         self.assertIsNone(main.get_face_crop(np.zeros((480,640,3),dtype=np.uint8)))
+
+    def test_match_releases_decoded_frame_before_unlocking_image_work(self):
+        references = []
+        def decode(_photo):
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            references.append(weakref.ref(frame))
+            return frame
+        test = self
+        class CheckingLock:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_exc):
+                test.assertIsNone(references[-1]())
+        with patch.object(main, '_image_lock', CheckingLock()), \
+             patch.object(main, 'decode_image', side_effect=decode), \
+             patch.object(main, 'get_embedding', new=lambda _frame: None):
+            result = main.match(main.MatchRequest(photo='photo', encodings=[
+                main.WorkerEncoding(worker_id='worker', encoding=[1.0] * 512)]))
+        self.assertIsNone(result.match)
 
 
 if __name__ == '__main__':
