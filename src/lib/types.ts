@@ -100,6 +100,10 @@ export interface RecognitionAttemptSummary {
 export interface RecognitionAttemptsResponse {
   attempts: RecognitionAttempt[];
   summary: RecognitionAttemptSummary;
+  truncated?: boolean;
+  summary_limited?: boolean;
+  summary_limited_fields?: string[];
+  next_scan_cursor?: string | null;
   backend_unavailable?: boolean;
   warning?: string;
 }
