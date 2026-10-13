@@ -318,6 +318,7 @@ def run(args):
     box_color = GOLD
     box_label = None
     unknown_streak = 0
+    unknown_embedding = None
 
     def detection_loop():
         logger.info("Detection thread started")
@@ -344,7 +345,7 @@ def run(args):
 
                 if not locs:
                     embedding_history.clear()
-                    current_result[0] = None
+                    current_result[0] = _empty_recognition_result(None)
                     continue
 
                 # Scale to full resolution
@@ -435,6 +436,7 @@ def run(args):
                     "candidate_worker_name": candidate_worker_name,
                     "server_worker_id": candidate_server_worker_id,
                     "candidate_encoding": candidate_encoding,
+                    "face_embedding": embedding,
                     "best_score": conf if best_idx is not None else None,
                     "second_best_score": second_score,
                     "score_margin": margin,
@@ -702,16 +704,21 @@ def run(args):
                 web_app.update_health(degraded_reason=expected_roster_fault or base_degraded_reason())
 
             if result is None:
-                if box_loc is not None:
-                    unknown_streak = 0
-                    box_loc = None
-                    box_label = None
-                    web_app.update_status(state="IDLE", message="Step toward camera",
-                                          worker_id=None, face_detected=False, known_workers=recognizer.known_count)
+                # The detector is still working; this is not a no-face frame.
                 time.sleep(0.05)
                 continue
 
             face_loc = result.get("face_loc")
+            if face_loc is None:
+                unknown_streak = 0
+                unknown_embedding = None
+                box_loc = None
+                box_label = None
+                web_app.update_status(state="IDLE", message="Step toward camera",
+                                      worker_id=None, face_detected=False, known_workers=recognizer.known_count)
+                time.sleep(0.05)
+                continue
+
             name = result.get("name")
             confidence = result.get("confidence") or 0.0
             decision = result.get("decision")
@@ -757,6 +764,15 @@ def run(args):
                 continue
 
             if name is None:
+                # Compare live faces, not the nearest (unmatched) roster worker.
+                embedding = result.get("face_embedding")
+                if unknown_embedding is not None and embedding is not None:
+                    if (
+                        len(unknown_embedding) != len(embedding)
+                        or cosine_sim(unknown_embedding, embedding) < config.RECOGNITION_MATCH_THRESHOLD
+                    ):
+                        unknown_streak = 0
+                unknown_embedding = embedding
                 # unknown_streak counts consumed detection results, so this is
                 # N real recognition attempts, not N camera frames.
                 unknown_streak += 1
@@ -776,6 +792,7 @@ def run(args):
                 continue
 
             unknown_streak = 0
+            unknown_embedding = None
             box_color = GREEN
 
             worker_id = result.get("candidate_worker_id")
