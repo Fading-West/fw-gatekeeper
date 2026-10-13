@@ -96,6 +96,13 @@ class SetupLivenessModelTests(unittest.TestCase):
                     result = self.run_download(mode)
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertNotIn("downloaded and verified", result.stdout)
+                    if mode == "failure":
+                        self.assertIn("Shape predictor download failed", result.stderr)
+                        self.assertIn("ENABLE_LIVENESS=1", result.stderr)
+                    elif mode == "truncated":
+                        self.assertIn("SHA-256 verification failed", result.stderr)
+                        self.assertIn("cached model was not replaced", result.stderr)
+                        self.assertIn("ENABLE_LIVENESS=1", result.stderr)
                     if cached:
                         self.assertEqual(self.model.read_bytes(), PAYLOAD[:5])
                     else:

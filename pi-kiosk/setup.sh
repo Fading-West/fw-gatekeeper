@@ -137,8 +137,14 @@ if [ "$ENABLE_LIVENESS" = "1" ]; then
       MODEL_TEMP=$(mktemp "${MODEL_PATH}.XXXXXX.part")
       trap 'rm -f -- "$MODEL_TEMP"' EXIT
       trap 'exit 1' HUP INT TERM
-      wget -q "$MODEL_URL" -O "$MODEL_TEMP"
-      printf '%s  %s\n' "$MODEL_SHA256" "$MODEL_TEMP" | sha256sum --check --status
+      if ! wget -q "$MODEL_URL" -O "$MODEL_TEMP"; then
+        echo "  ❌ Shape predictor download failed. Check network access and rerun setup with ENABLE_LIVENESS=1." >&2
+        exit 1
+      fi
+      if ! printf '%s  %s\n' "$MODEL_SHA256" "$MODEL_TEMP" | sha256sum --check --status; then
+        echo "  ❌ Shape predictor SHA-256 verification failed. The download is corrupt or incomplete; the cached model was not replaced. Rerun setup with ENABLE_LIVENESS=1 to retry." >&2
+        exit 1
+      fi
       mv -f -- "$MODEL_TEMP" "$MODEL_PATH"
       echo "  ✅ Shape predictor downloaded and verified"
     fi
