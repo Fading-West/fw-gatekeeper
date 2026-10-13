@@ -114,6 +114,16 @@ it('allows advancing an empty scan window without claiming the selection is empt
   expect(requests.has(`${day('2026-09-10')}&scan_cursor=cursor-1`)).toBe(true);
 });
 
+it('starts from the first window when returning to a previous filter selection', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ attempts: [], summary: { total: 0 }, truncated: true, summary_limited: true, next_scan_cursor: 'cursor-1' }));
+  await act(async () => button('Next scan window').props.onClick());
+  await act(async () => requests.get(`${day('2026-09-10')}&scan_cursor=cursor-1`)!(payload('last', 'Last worker')));
+  await selectDate('2026-09-11');
+  await act(async () => requests.get(day('2026-09-11'))!(payload('other', 'Other worker')));
+  await selectDate('2026-09-10');
+  expect(fetchMock.mock.calls.at(-1)![0]).toBe(day('2026-09-10'));
+});
+
 it('shows exact counts without plus signs for a complete selection', async () => {
   await act(async () => requests.get(day('2026-09-10'))!({ ...payload('only', 'Worker'), summary: { total: 1, accepted: 1, review_backlog: 1 }, truncated: false, summary_limited: false }));
   expect(label(tree.toJSON())).toContain('Review backlog1');

@@ -122,6 +122,9 @@ function RecognitionCalibrationLabContent() {
 
   const selectionKey = JSON.stringify([date, decision, reviewStatus, confidenceBand, kioskId.trim(), queryAttemptId]);
   const [scanWindow, setScanWindow] = useState({ key: selectionKey, cursor: '', limit: 150 });
+  if (scanWindow.key !== selectionKey) {
+    setScanWindow({ key: selectionKey, cursor: '', limit: 150 });
+  }
   // Derive the reset immediately so a changed filter never reuses an old cursor.
   const scanCursor = scanWindow.key === selectionKey ? scanWindow.cursor : '';
   const displayLimit = scanWindow.key === selectionKey ? scanWindow.limit : 150;
