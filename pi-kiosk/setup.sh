@@ -124,14 +124,25 @@ mkdir -p data/models
 # download unless the installer opts in.
 ENABLE_LIVENESS="${ENABLE_LIVENESS:-0}"
 if [ "$ENABLE_LIVENESS" = "1" ]; then
-  if [ ! -f "data/models/shape_predictor_68_face_landmarks.dat" ]; then
-    echo "  Downloading shape predictor (97MB)..."
-    wget -q "https://github.com/italojs/facial-landmarks-recognition/raw/master/shape_predictor_68_face_landmarks.dat" \
-      -O data/models/shape_predictor_68_face_landmarks.dat
-    echo "  ✅ Shape predictor downloaded"
-  else
-    echo "  ✅ Shape predictor already exists"
-  fi
+  (
+    MODEL_PATH="data/models/shape_predictor_68_face_landmarks.dat"
+    # Like model_pinning.py, pin both the upstream commit and the file digest.
+    # To re-pin, download the uncompressed .dat at the new commit and sha256sum it.
+    MODEL_URL="https://raw.githubusercontent.com/italojs/facial-landmarks-recognition/66c562fc6c51634bc18a02d123a7589d4fbde2ef/shape_predictor_68_face_landmarks.dat"
+    MODEL_SHA256="fbdc2cb80eb9aa7a758672cbfdda32ba6300efe9b6e6c7a299ff7e736b11b92f"
+    if [ -f "$MODEL_PATH" ] && printf '%s  %s\n' "$MODEL_SHA256" "$MODEL_PATH" | sha256sum --check --status; then
+      echo "  ✅ Shape predictor already exists and is verified"
+    else
+      echo "  Downloading missing or corrupt shape predictor (97MB)..."
+      MODEL_TEMP=$(mktemp "${MODEL_PATH}.XXXXXX.part")
+      trap 'rm -f -- "$MODEL_TEMP"' EXIT
+      trap 'exit 1' HUP INT TERM
+      wget -q "$MODEL_URL" -O "$MODEL_TEMP"
+      printf '%s  %s\n' "$MODEL_SHA256" "$MODEL_TEMP" | sha256sum --check --status
+      mv -f -- "$MODEL_TEMP" "$MODEL_PATH"
+      echo "  ✅ Shape predictor downloaded and verified"
+    fi
+  )
 else
   echo "  ⏭  Skipping 97MB dlib shape predictor (blink liveness is off by default)."
   echo "     To enable liveness later: rerun setup with ENABLE_LIVENESS=1 (or wget the"
