@@ -27,7 +27,12 @@ def check_structure(body: bytes, path: str):
                  "encodings.item.encoding.item": "number"} if matching else
                 {"photos": "start_array", "photos.item": "string"})
     try:
-        for count, (prefix, event, value) in enumerate(ijson.parse(io.BytesIO(body)), 1):
+        # Embeddings use finite doubles. Avoid the default arbitrary-precision
+        # integer/Decimal conversion: the pinned C backend can crash on integers
+        # beyond Python's digit limit. Float mode rejects numeric overflow safely.
+        for count, (prefix, event, value) in enumerate(ijson.parse(io.BytesIO(body), use_float=True), 1):
+            if count == 1 and event != "start_map":
+                raise HTTPException(422, "Image request JSON must be an object")
             if count > event_limit:
                 raise HTTPException(422, "Image request JSON has too many values")
             # Prefixes include ancestor keys. Bound keys before a deeply nested
@@ -55,7 +60,7 @@ def check_structure(body: bytes, path: str):
                 depth -= 1
                 if event == "end_array":
                     arrays.pop()
-    except (ijson.JSONError, ValueError, OverflowError):
+    except (ijson.JSONError, ValueError, ArithmeticError):
         raise HTTPException(422, "Invalid image request JSON") from None
 
 

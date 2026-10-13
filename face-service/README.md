@@ -154,7 +154,9 @@ four-million-character photo. Its reservation is the larger of its wire size
 and 16 MiB, allowing two compact full rosters at once. Unknown-length bodies
 reserve the entire budget. `bounded_json.py` uses hash-pinned ijson to check array
 sizes, scalar types, nesting, key/string lengths and total values before FastAPI
-allocates JSON objects. Invalid structures return 422. Rejections respond
+allocates JSON objects. Numeric preflight uses float mode to reject overflow
+without arbitrary-precision integer/Decimal conversion in the native parser.
+Non-object roots and invalid structures return 422. Rejections respond
 immediately without waiting for the rest of an upload. The kiosk matches its
 roster locally; the current portal calls only `/encode`.
 `scripts/check-face-service-memory.py` measures maximum and mixed-size concurrent
