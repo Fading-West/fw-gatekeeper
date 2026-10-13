@@ -19,7 +19,7 @@ import face_recognition as fr
 
 import config
 import database
-from embeddings import embed_face, model_ready as recognition_model_ready
+from embeddings import EXPECTED_EMBEDDING_DIM, embed_face, model_ready as recognition_model_ready
 from matching import FreshFaceMatcher
 from recognition import FaceRecognizer
 from sync import SyncWorker
@@ -322,6 +322,8 @@ def run(args):
     def detection_loop():
         logger.info("Detection thread started")
         embedding_history = FreshFaceMatcher(config.RECOGNITION_EMBEDDING_WINDOW, config.RECOGNITION_MATCH_THRESHOLD)
+        last_probe = 0.0
+        trial_state = os.environ.get("KIOSK_UPDATE_TRIAL")
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -337,12 +339,30 @@ def run(args):
                 # Use dlib for face DETECTION (finding where the face is)
                 small_rgb = cv2.resize(rgb_frame, (0, 0), fx=0.5, fy=0.5)
                 locs = fr.face_locations(small_rgb, model="hog")
+                web_app.update_health(last_detection=time.monotonic())
 
                 detect_count[0] += 1
                 if detect_count[0] % 20 == 1:
                     logger.info("Detection #%d: found %d faces", detect_count[0], len(locs))
 
                 if not locs:
+                    # Exercise ONNX at an unattended door during an update
+                    # trial only. Stop once the updater commits/cancels, so
+                    # normal idle kiosks spend no CPU on synthetic inference.
+                    if (trial_state and time.monotonic() - last_probe >= 2
+                            and Path(trial_state).is_file()):
+                        last_probe = time.monotonic()
+                        try:
+                            height, width = bgr_frame.shape[:2]
+                            probe = embed_face(bgr_frame, (0, width, height, 0))
+                            if (probe is None or probe.shape != (EXPECTED_EMBEDDING_DIM,)
+                                    or not np.isfinite(probe).all() or np.linalg.norm(probe) == 0):
+                                raise RuntimeError("Invalid model probe embedding")
+                            web_app.update_health(last_model_inference=time.monotonic(),
+                                                  model_ok=True, degraded_reason=base_degraded_reason())
+                        except Exception as e:
+                            logger.error("ONNX health probe error: %s", e)
+                            web_app.update_health(model_ok=False, degraded_reason="model_error")
                     embedding_history.clear()
                     current_result[0] = None
                     continue
@@ -355,8 +375,13 @@ def run(args):
                 # as server enrollment and the local enroll CLI)
                 try:
                     embedding = embed_face(bgr_frame, face_loc)
+                    if embedding is not None and (embedding.shape != (EXPECTED_EMBEDDING_DIM,)
+                                                  or not np.isfinite(embedding).all()
+                                                  or np.linalg.norm(embedding) == 0):
+                        raise RuntimeError("Invalid model embedding")
                 except Exception as e:
                     logger.error("ONNX encoding error: %s", e)
+                    web_app.update_health(model_ok=False, degraded_reason="model_error")
                     embedding_history.clear()
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_model_error")
                     continue
@@ -365,6 +390,9 @@ def run(args):
                     embedding_history.clear()
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_no_embedding")
                     continue
+
+                web_app.update_health(last_model_inference=time.monotonic(),
+                                      model_ok=True, degraded_reason=base_degraded_reason())
 
                 # Match against known workers
                 known_encs, known_ids, known_names, known_server_ids = recognizer.snapshot_known_faces()
@@ -446,6 +474,7 @@ def run(args):
 
             except Exception as e:
                 logger.error("Detection error: %s", e, exc_info=True)
+                web_app.update_health(model_ok=False, degraded_reason="detection_error")
                 embedding_history.clear()
                 current_result[0] = None
 
@@ -540,6 +569,7 @@ def run(args):
                 camera_healthy = True
                 web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
 
+            web_app.update_health(last_camera_frame=time.monotonic())
             now = time.time()
 
             # 1. Push BGR frame to MJPEG stream (always, never blocks)

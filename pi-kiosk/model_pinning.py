@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import shutil
 import tempfile
 import urllib.request
@@ -34,6 +35,7 @@ REC_MODEL_SHA256 = "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319
 
 DOWNLOAD_TIMEOUT_SECONDS = 120
 _CHUNK_SIZE = 1024 * 1024
+_DISK_RESERVE = 512 * 1024 * 1024
 
 
 class ModelDigestMismatch(RuntimeError):
@@ -67,8 +69,13 @@ def verify_model_digest(path: Path | str, expected_sha256: str) -> str:
 
 
 def _download(url: str, destination: Path) -> None:
+    trial_state = os.environ.get("KIOSK_UPDATE_TRIAL")
+    reserve = _DISK_RESERVE if trial_state and Path(trial_state).is_file() else 0
     with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, open(destination, "wb") as out:
-        shutil.copyfileobj(response, out, _CHUNK_SIZE)
+        for chunk in iter(lambda: response.read(_CHUNK_SIZE), b""):
+            if reserve and shutil.disk_usage(destination.parent).free - len(chunk) < reserve:
+                raise OSError("Recognition model download would exhaust the kiosk disk reserve")
+            out.write(chunk)
 
 
 def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, label: str = "model") -> Path:
@@ -96,9 +103,16 @@ def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, lab
     try:
         _download(url, partial)
         verify_model_digest(partial, expected_sha256)
+        with partial.open("rb") as stream:
+            os.fsync(stream.fileno())
     except Exception:
         partial.unlink(missing_ok=True)
         raise
     partial.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
     logger.info("Downloaded and verified %s at %s", label, path)
     return path
