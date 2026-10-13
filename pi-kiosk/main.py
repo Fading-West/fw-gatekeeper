@@ -323,6 +323,7 @@ def run(args):
         logger.info("Detection thread started")
         embedding_history = FreshFaceMatcher(config.RECOGNITION_EMBEDDING_WINDOW, config.RECOGNITION_MATCH_THRESHOLD)
         last_probe = 0.0
+        trial_state = os.environ.get("KIOSK_UPDATE_TRIAL")
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -345,10 +346,11 @@ def run(args):
                     logger.info("Detection #%d: found %d faces", detect_count[0], len(locs))
 
                 if not locs:
-                    # Exercise ONNX even at an unattended door. Loading a
-                    # session alone cannot prove inference works, and updates
-                    # must not need a worker to stand in front of the camera.
-                    if time.monotonic() - last_probe >= 2:
+                    # Exercise ONNX at an unattended door during an update
+                    # trial only. Stop once the updater commits/cancels, so
+                    # normal idle kiosks spend no CPU on synthetic inference.
+                    if (trial_state and time.monotonic() - last_probe >= 2
+                            and Path(trial_state).is_file()):
                         last_probe = time.monotonic()
                         try:
                             height, width = bgr_frame.shape[:2]

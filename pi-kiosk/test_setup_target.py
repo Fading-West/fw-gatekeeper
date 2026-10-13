@@ -50,7 +50,7 @@ class SetupTargetTests(unittest.TestCase):
     def test_interrupted_first_migration_cannot_be_reprovisioned(self):
         result, apt_called = self.run_setup('aarch64', (3, 11), migrated=True)
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn('use update.sh', result.stdout)
+        self.assertIn('fetched bootstrap for an interrupted first migration', result.stdout)
         self.assertFalse(apt_called)
 
     def test_unsupported_target_exits_before_system_changes(self):

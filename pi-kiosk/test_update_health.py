@@ -3,6 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import time
 from types import SimpleNamespace
@@ -24,7 +25,7 @@ class UpdateHealthTests(unittest.TestCase):
         self.assertIsNone(snapshot['last_detection'])
         self.assertIsNone(snapshot['last_model_inference'])
 
-    def scan_without_faces(self, embedding, initially_ready=True):
+    def scan_without_faces(self, embedding, initially_ready=True, trial=True, pending=True):
         # Only the native detector/roster are substituted. The actual main loop,
         # Flask health state, and detection thread execute against synthetic frames.
         detector = mock.Mock(face_locations=mock.Mock(return_value=[]))
@@ -36,6 +37,12 @@ class UpdateHealthTests(unittest.TestCase):
                              recognition=SimpleNamespace(FaceRecognizer=lambda: roster)):
             spec.loader.exec_module(main)
         completed = threading.Event()
+        detector.face_locations.side_effect = lambda *_args, **_kwargs: (completed.set(), [])[1]
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        trial_state = Path(temporary.name) / 'pending.json'
+        if pending:
+            trial_state.touch()
         threads = []
         real_thread = threading.Thread
         real_sleep = time.sleep
@@ -72,9 +79,12 @@ class UpdateHealthTests(unittest.TestCase):
         camera = mock.Mock(capture=mock.Mock(side_effect=capture))
         with mock.patch.dict(app._health, last_camera_frame=None, last_detection=None,
                              last_model_inference=None), \
+                mock.patch.dict(os.environ, KIOSK_UPDATE_TRIAL=str(trial_state) if trial else ''), \
                 mock.patch.object(main, 'Camera', return_value=camera), \
                 mock.patch.object(main, 'recognition_model_ready', return_value=initially_ready), \
-                mock.patch.object(main, 'embed_face', side_effect=infer), \
+                mock.patch.object(main, 'embed_face', side_effect=infer) as inference, \
+                mock.patch.object(main, '_log_recognition_attempt') as attempt, \
+                mock.patch.object(main.database, 'log_recognized_attendance') as attendance, \
                 mock.patch.object(main, 'require_kiosk_api_key', side_effect=RuntimeError('offline test')), \
                 mock.patch.object(main, 'require_kiosk_ui_key'), \
                 mock.patch.object(main.os, 'makedirs'), \
@@ -92,6 +102,10 @@ class UpdateHealthTests(unittest.TestCase):
                 for thread in threads:
                     thread.join(timeout=5)
                     self.assertFalse(thread.is_alive())
+            attempt.assert_not_called()
+            attendance.assert_not_called()
+            if not trial or not pending:
+                inference.assert_not_called()
         self.assertIsNotNone(snapshot['last_camera_frame'])
         self.assertIsNotNone(snapshot['last_detection'])
         return snapshot
@@ -101,6 +115,13 @@ class UpdateHealthTests(unittest.TestCase):
         self.assertEqual(snapshot['status'], 'ok')
         self.assertTrue(snapshot['model_ok'])
         self.assertIsNotNone(snapshot['last_model_inference'])
+
+    def test_normal_idle_kiosk_and_completed_trial_do_not_probe(self):
+        for trial, pending in ((False, True), (True, False)):
+            with self.subTest(trial=trial, pending=pending):
+                snapshot = self.scan_without_faces(np.ones(512), trial=trial, pending=pending)
+                self.assertEqual(snapshot['status'], 'ok')
+                self.assertIsNone(snapshot['last_model_inference'])
 
     def test_loaded_model_with_broken_or_invalid_inference_stays_degraded(self):
         for embedding in (RuntimeError('ONNX run failed'), np.full(512, np.nan), np.zeros(512), np.ones(128)):

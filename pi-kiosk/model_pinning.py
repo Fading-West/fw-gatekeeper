@@ -69,9 +69,11 @@ def verify_model_digest(path: Path | str, expected_sha256: str) -> str:
 
 
 def _download(url: str, destination: Path) -> None:
+    trial_state = os.environ.get("KIOSK_UPDATE_TRIAL")
+    reserve = _DISK_RESERVE if trial_state and Path(trial_state).is_file() else 0
     with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, open(destination, "wb") as out:
         for chunk in iter(lambda: response.read(_CHUNK_SIZE), b""):
-            if shutil.disk_usage(destination.parent).free - len(chunk) < _DISK_RESERVE:
+            if reserve and shutil.disk_usage(destination.parent).free - len(chunk) < reserve:
                 raise OSError("Recognition model download would exhaust the kiosk disk reserve")
             out.write(chunk)
 

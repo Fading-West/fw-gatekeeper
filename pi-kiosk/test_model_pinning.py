@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import io
 import importlib.util
+import os
 import re
 import sys
 import tempfile
@@ -106,12 +107,21 @@ class ModelPinningTests(unittest.TestCase):
     def test_model_download_reserves_disk_for_the_old_kiosk(self):
         candidate = self.path.with_name('candidate.onnx')
         with patch('model_pinning.urllib.request.urlopen', return_value=_FakeResponse(self.payload)), \
+                patch.dict(os.environ, KIOSK_UPDATE_TRIAL=str(self.path)), \
                 patch('model_pinning.shutil.disk_usage', return_value=Mock(free=1024)):
             with self.assertRaisesRegex(OSError, 'disk reserve'):
                 ensure_pinned_model('https://example.invalid/model', candidate, self.expected)
         self.assertEqual(self.path.read_bytes(), self.payload)
         self.assertFalse(candidate.exists())
         self.assertEqual(list(self.path.parent.glob('*.part')), [])
+
+    def test_normal_startup_can_copy_verified_legacy_model_below_update_reserve(self):
+        candidate = self.path.with_name('candidate.onnx')
+        with patch.dict(os.environ, KIOSK_UPDATE_TRIAL=''), \
+                patch('model_pinning.shutil.disk_usage', return_value=Mock(free=256 * 1024**2)):
+            ensure_pinned_model(self.path.as_uri(), candidate, self.expected)
+        self.assertEqual(candidate.read_bytes(), self.payload)
+        self.assertEqual(self.path.read_bytes(), self.payload)
 
     def test_model_flush_failure_keeps_committed_cache(self):
         legacy = self.path.with_name('legacy.onnx')

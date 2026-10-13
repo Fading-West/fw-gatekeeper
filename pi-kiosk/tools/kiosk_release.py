@@ -107,9 +107,13 @@ def launch(repo, arguments):
         if release == rejected:
             release = current(repo)
         directory = Path(release["directory"])
+        environment = os.environ.copy()
+        environment.pop("KIOSK_UPDATE_TRIAL", None)
+        if release != current(repo):
+            environment["KIOSK_UPDATE_TRIAL"] = str(repo / ".git/kiosk-pending.json")
         try:
             child = subprocess.Popen([str(directory / "venv/bin/python"), "main.py", *arguments],
-                                     cwd=directory, start_new_session=True)
+                                     cwd=directory, env=environment, start_new_session=True)
         except OSError:
             if release == current(repo):
                 raise

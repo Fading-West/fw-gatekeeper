@@ -41,6 +41,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"status": "ok" if healthy else "degraded",
                                     "camera_ok": healthy, "model_ok": healthy,
                                     "version": version, "arguments": sys.argv[1:],
+                                    "trial": bool(os.environ.get("KIOSK_UPDATE_TRIAL") and Path(os.environ["KIOSK_UPDATE_TRIAL"]).is_file()),
                                     "pid": (1 if version == "new" and os.environ.get("TEST_FAIL") == "wrong-pid" else os.getpid()),
                                     "last_camera_frame": progress, "last_detection": progress,
                                     "last_model_inference": progress}).encode())
@@ -296,6 +297,7 @@ state_path.write_text(json.dumps(state))
         result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.wait_version("new")
+        self.assertFalse(self.snapshot()["trial"])
         record = json.loads((self.repo / ".git/kiosk-current.json").read_text())
         self.assertEqual(record["revision"], self.target)
         venv = (Path(record["directory"]) / "venv").resolve()
@@ -350,9 +352,11 @@ state_path.write_text(json.dumps(state))
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             self.wait_version("new")
+            self.assertTrue(self.snapshot()["trial"])
             process.kill()
             process.wait(timeout=3)
             self.assert_old()
+            self.assertFalse(self.snapshot()["trial"])
             # Simulated reboot: the persisted trial record cannot select new.
             self.stop_service()
             with (self.repo / ".git/launcher.log").open("a") as output:
@@ -464,6 +468,17 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
         self.target = self.git(self.upstream, "rev-parse", "HEAD")
         fetched = self.root / "bootstrap.sh"
         shutil.copy(KIOSK / "update.sh", fetched)
+        # Retry a half-migration both before and after the override is active.
+        # The old checkout still has its unsafe updater throughout recovery.
+        for failure in ("requirements.lock", "health"):
+            result = self.run_update(failure, script=fetched)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assert_old()
+            self.assertTrue((self.repo / ".git/kiosk-launch.py").is_file())
+            result = subprocess.run([sys.executable, str(self.repo / ".git/kiosk-launch.py"), "update", str(self.repo)],
+                                    env=self.env, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Bootstrap", result.stderr)
         result = self.run_update(script=fetched)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.kiosk / "update.sh").read_text(), legacy)
