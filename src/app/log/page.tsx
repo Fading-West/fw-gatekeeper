@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
@@ -320,11 +320,11 @@ function LogPageContent() {
                       <div className="text-[11px] font-mono text-slate-500">{correction.worker_department}</div>
                     </td>
                     <td className="px-5 py-3 font-mono text-xs text-slate-400">
-                      {new Date(correctionTimestamp(correction)).toLocaleString()}
+                      {formatFactoryLocalDateTime(correctionTimestamp(correction))}
                     </td>
                     <td className="px-5 py-3 text-slate-400">
                       {correction.reason}
-                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {correction.reversed_at ? new Date(correction.reversed_at).toLocaleString() : ''}</div>}
+                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {formatFactoryLocalDateTime(correction.reversed_at, '')}</div>}
                     </td>
                     <td className="px-5 py-3 text-xs text-slate-500">
                       {correction.supervisor_name || 'Not recorded'}

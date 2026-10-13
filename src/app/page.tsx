@@ -4,12 +4,15 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import WorkerCard from '@/components/WorkerCard';
 import { DashboardSkeleton } from '@/components/Skeleton';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
 import { buildLiveShiftSentinelItems, buildProactiveActions, getLiveShiftSentinelSnapshot } from '@/lib/proactive-actions';
 import type { LiveShiftSentinelItem, LiveShiftSentinelSnapshot, ProactiveActionFreshness, ProactiveSignalFreshness } from '@/lib/proactive-actions';
 import type { ShiftBriefingResponse, ShiftCloseoutResponse, ShiftException, ShiftExceptionsResponse, ShiftTrustBriefStatus } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { latestAttendanceByWorker } from '@/lib/attendance-presence';
+import { createAttendanceClock } from '@/lib/attendance-time';
+
+const attendanceClock = createAttendanceClock();
 
 interface WorkerWithStatus {
   id: string;
@@ -421,7 +424,7 @@ export default function Dashboard() {
 
           if (latest) {
             status = latest.event_type === 'clock_in' ? 'in' : 'out';
-            clockInTime = new Date(latest.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            clockInTime = formatFactoryLocalDateTime(latest.timestamp, '—', { hour: '2-digit', minute: '2-digit', hour12: true });
           }
 
           return { ...w, status, clockInTime };
@@ -649,16 +652,19 @@ export default function Dashboard() {
         href: faceServiceWarning ? opsEnrollmentHref : opsKioskHref,
       };
     }),
-    ...attendanceEvents.map((event) => ({
-      id: event.id || `${event.worker_id}-${event.timestamp}-${event.event_type}`,
-      tone: event.event_type === 'clock_in' ? 'emerald' as const : 'slate' as const,
-      source: 'attendance' as const,
-      label: event.event_type === 'clock_in' ? 'Clock in' : event.event_type === 'clock_out' ? 'Clock out' : 'Attendance',
-      title: `${event.worker_name || 'Worker'} ${event.event_type === 'clock_in' ? 'clocked in' : event.event_type === 'clock_out' ? 'clocked out' : 'recorded an event'}`,
-      description: `${event.worker_department || 'No department'}${event.kiosk_name ? ` · ${event.kiosk_name}` : event.kiosk_id ? ` · ${event.kiosk_id}` : ''}`,
-      timestamp: event.timestamp,
-      href: `/log?date=${actionDate}`,
-    })),
+    ...attendanceEvents.map((event) => {
+      const instantMs = attendanceClock.instantMs(event);
+      return {
+        id: event.id || `${event.worker_id}-${event.timestamp}-${event.event_type}`,
+        tone: event.event_type === 'clock_in' ? 'emerald' as const : 'slate' as const,
+        source: 'attendance' as const,
+        label: event.event_type === 'clock_in' ? 'Clock in' : event.event_type === 'clock_out' ? 'Clock out' : 'Attendance',
+        title: `${event.worker_name || 'Worker'} ${event.event_type === 'clock_in' ? 'clocked in' : event.event_type === 'clock_out' ? 'clocked out' : 'recorded an event'}`,
+        description: `${event.worker_department || 'No department'}${event.kiosk_name ? ` · ${event.kiosk_name}` : event.kiosk_id ? ` · ${event.kiosk_id}` : ''}`,
+        timestamp: Number.isFinite(instantMs) ? new Date(instantMs).toISOString() : null,
+        href: `/log?date=${actionDate}`,
+      };
+    }),
   ]
     .sort((a, b) => {
       const bMs = b.timestamp ? new Date(b.timestamp).getTime() : 0;
