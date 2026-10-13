@@ -8,6 +8,12 @@ __pycache__/
 
 .env.local
 pi-kiosk/config_local.py
+pi-kiosk/venv
+pi-kiosk/.venv-releases/
+pi-kiosk/.venv-before-update
+pi-kiosk/.venv-retired
+pi-kiosk/venv.next
+pi-kiosk/.kiosk-releases/
 
 # Local scratch/build outputs
 outputs/
