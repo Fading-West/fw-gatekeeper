@@ -167,7 +167,7 @@ function sameEvidence(
   return evidenceFields.every(field => existing[field] === incoming[field]);
 }
 
-async function listRangeInternal(
+function recognitionRangeQuery(
   ctx: any,
   args: {
     startTimestamp: string;
@@ -176,10 +176,8 @@ async function listRangeInternal(
     reviewed?: boolean;
     limit?: number;
   },
-  options: { applyLimit?: boolean; readLimit?: number } = {},
 ) {
   const kioskId = normalizeOptionalText(args.kioskId);
-  const limit = clampLimit(args.limit);
   const start = args.startTimestamp;
   const end = args.endTimestamp;
 
@@ -208,9 +206,18 @@ async function listRangeInternal(
       .withIndex("by_timestamp", (q: any) => q.gte("timestamp", start).lt("timestamp", end));
   }
 
+  return builder.order("desc");
+}
+
+async function listRangeInternal(
+  ctx: any,
+  args: { startTimestamp: string; endTimestamp: string; kioskId?: string; reviewed?: boolean; limit?: number },
+  options: { applyLimit?: boolean } = {},
+) {
+  const builder = recognitionRangeQuery(ctx, args);
   const attempts = options.applyLimit === false
-    ? await builder.order("desc").collect()
-    : await builder.order("desc").take(options.readLimit ?? limit);
+    ? await builder.collect()
+    : await builder.take(clampLimit(args.limit));
   return attempts.map(serializeAttempt);
 }
 
@@ -229,9 +236,11 @@ export async function listRecognitionAttemptsByFactoryDate(
   return (await selectRecognitionAttemptsByFactoryDate(ctx, args)).attempts;
 }
 
-// Bound the conservative date-range read independently of the display limit.
-// The extra row detects an incomplete selection without an unbounded count.
+// Scan windows follow the raw timestamp index, including its tie breakers.
+// Sorting happens only within a window: mixed timestamp representations cannot
+// support a chronological cursor without normalizing stored evidence first.
 const SELECTION_READ_LIMIT = 1000;
+const SELECTION_BYTE_LIMIT = 4 * 1024 * 1024;
 
 async function selectRecognitionAttemptsByFactoryDate(
   ctx: any,
@@ -243,20 +252,23 @@ async function selectRecognitionAttemptsByFactoryDate(
     decision?: string;
     confidenceBand?: string;
     reviewStatus?: string;
+    scanCursor?: string;
   },
 ) {
-  const ranges = buildConservativeFactoryLocalTimestampRanges(args.date);
-  const rowsById = new Map<string, any>();
-  let summaryLimited = false;
-  for (const range of ranges) {
-    const rows = await listRangeInternal(ctx, { ...args, ...range }, { readLimit: SELECTION_READ_LIMIT + 1 });
-    if (rows.length > SELECTION_READ_LIMIT) summaryLimited = true;
-    for (const row of rows.slice(0, SELECTION_READ_LIMIT)) {
-      if (timestampBelongsToFactoryLocalDate(row.timestamp, args.date)) rowsById.set(String(row.id), row);
-    }
-  }
+  // The conservative range is one continuous index interval. Use Convex's
+  // cursor rather than a timestamp boundary so equal timestamps are not lost.
+  const [range] = buildConservativeFactoryLocalTimestampRanges(args.date);
+  const page = await recognitionRangeQuery(ctx, { ...args, ...range }).paginate({
+    cursor: args.scanCursor ?? null,
+    numItems: SELECTION_READ_LIMIT,
+    maximumRowsRead: SELECTION_READ_LIMIT + 1,
+    maximumBytesRead: SELECTION_BYTE_LIMIT,
+  });
+  const summaryLimited = Boolean(args.scanCursor) || !page.isDone;
+  const rows: ReturnType<typeof serializeAttempt>[] = page.page.map(serializeAttempt).filter((row: any) =>
+    timestampBelongsToFactoryLocalDate(row.timestamp, args.date));
   const timestampKey = createRecognitionTimestampSortKey();
-  const rows = Array.from(rowsById.values()).sort((a, b) => {
+  rows.sort((a: any, b: any) => {
     const aKey = timestampKey(a.timestamp);
     const bKey = timestampKey(b.timestamp);
     return aKey === bKey ? String(a.id).localeCompare(String(b.id)) : aKey < bKey ? 1 : -1;
@@ -281,6 +293,22 @@ async function selectRecognitionAttemptsByFactoryDate(
   // Normalize only after filtering and sorting the original evidence instants.
   const scores = matches.flatMap(row => typeof row.best_score === "number" ? [row.best_score] : []).sort((a, b) => a - b);
   const midpoint = Math.floor(scores.length / 2);
+  const decisionFilter = args.decision;
+  const allowsDecision = (matchesCategory: (decision: string) => boolean) =>
+    !decisionFilter || decisionFilter === "all" || matchesCategory(decisionFilter);
+  // A filter can prove a category empty even if other indexed rows are unread.
+  const possibleCounts = {
+    accepted: allowsDecision(decision => decision.startsWith("accepted")),
+    rejected: allowsDecision(decision => decision.startsWith("rejected")),
+    unknown: allowsDecision(decision => decision === "unknown"),
+    near_miss: allowsDecision(decision => decision === "near_miss"),
+    low_margin_accepted: allowsDecision(decision => decision.startsWith("accepted")),
+    review_backlog: !args.reviewStatus || args.reviewStatus === "all" || args.reviewStatus === "unreviewed",
+    total: true,
+  };
+  const summaryLimitedFields = summaryLimited
+    ? Object.entries(possibleCounts).filter(([, possible]) => possible).map(([field]) => field)
+    : [];
   return {
     attempts: matches.slice(0, limit).map(row => withFactoryLocalDisplayTimestamp(row, timestampKey)),
     summary: {
@@ -295,6 +323,8 @@ async function selectRecognitionAttemptsByFactoryDate(
     },
     truncated: summaryLimited || matches.length > limit,
     summary_limited: summaryLimited,
+    summary_limited_fields: summaryLimitedFields,
+    next_scan_cursor: page.isDone ? null : page.continueCursor,
   };
 }
 
@@ -453,6 +483,7 @@ export const listByDate = query({
     decision: v.optional(v.string()),
     confidenceBand: v.optional(v.string()),
     reviewStatus: v.optional(v.string()),
+    scanCursor: v.optional(v.string()),
   },
   returns: v.object({
     attempts: v.array(v.object({
@@ -494,6 +525,8 @@ export const listByDate = query({
     }),
     truncated: v.boolean(),
     summary_limited: v.boolean(),
+    summary_limited_fields: v.array(v.string()),
+    next_scan_cursor: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
@@ -506,6 +539,7 @@ export const listByDate = query({
       decision: args.decision,
       confidenceBand: args.confidenceBand,
       reviewStatus: args.reviewStatus,
+      scanCursor: args.scanCursor,
     });
   },
 });

@@ -106,6 +106,8 @@ function normalizeResponse(payload: any): RecognitionAttemptsResponse {
     attempts,
     truncated: payload?.truncated === true,
     summary_limited: payload?.summary_limited === true,
+    summary_limited_fields: payload?.summary_limited_fields,
+    next_scan_cursor: payload?.next_scan_cursor ?? null,
     summary: {
       accepted: summary.accepted ?? computedSummary.accepted,
       rejected: summary.rejected ?? computedSummary.rejected,
@@ -158,11 +160,13 @@ export async function GET(req: NextRequest) {
     const result = await convex.query((api as any).recognitionAttempts.listByDate, {
       date,
       kioskId: optionalString(searchParams.get('kiosk_id')),
-      reviewed: attemptId ? undefined : reviewStatus === 'unreviewed' ? false : reviewStatus && reviewStatus !== 'all' ? true : undefined,
+      // Invalid legacy review labels are also unresolved, even with reviewed=true.
+      reviewed: attemptId || reviewStatus === 'unreviewed' ? undefined : reviewStatus && reviewStatus !== 'all' ? true : undefined,
       limit: attemptId ? 1000 : Number(searchParams.get('limit') || 100),
       decision: attemptId ? undefined : optionalString(searchParams.get('decision')),
       confidenceBand: attemptId ? undefined : optionalString(searchParams.get('confidence_band')),
       reviewStatus: attemptId ? undefined : reviewStatus,
+      scanCursor: attemptId ? undefined : optionalString(searchParams.get('scan_cursor')),
     });
     const targetAttempt = attemptId
       ? await convex.query((api as any).recognitionAttempts.getById, { id: attemptId, date })
@@ -216,6 +220,8 @@ export async function GET(req: NextRequest) {
       response.summary = summarize(response.attempts);
       response.truncated = false;
       response.summary_limited = false;
+      response.summary_limited_fields = [];
+      response.next_scan_cursor = null;
     }
 
     return NextResponse.json(response);

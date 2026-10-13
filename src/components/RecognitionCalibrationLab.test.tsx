@@ -83,3 +83,50 @@ it('keeps capped empty selections distinct from an exact empty selection', async
   expect(label(tree.toJSON())).toContain('No matching attempts were found within the capped results.');
   expect(label(tree.toJSON())).not.toContain('No recognition attempts match these filters yet.');
 });
+
+
+it('reveals the full window before advancing and resets the cursor when filters change', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ ...payload('first', 'First worker'), summary: { total: 1000, review_backlog: 1000 }, truncated: true, summary_limited: true, next_scan_cursor: 'cursor-1' }));
+  expect(button('Next scan window').props.disabled).toBe(true);
+  await act(async () => button('Show all matches in this window').props.onClick());
+  const fullWindow = '/api/recognition-attempts?date=2026-09-10&limit=1000';
+  await act(async () => requests.get(fullWindow)!({ ...payload('first', 'First worker'), summary: { total: 1 }, truncated: true, summary_limited: true, next_scan_cursor: 'cursor-1' }));
+  expect(button('Next scan window').props.disabled).toBe(false);
+  await act(async () => button('Next scan window').props.onClick());
+  const nextWindow = `${day('2026-09-10')}&scan_cursor=cursor-1`;
+  expect(requests.has(nextWindow)).toBe(true);
+  await act(async () => requests.get(nextWindow)!({ ...payload('last', 'Last worker'), summary: { total: 1 }, truncated: true, summary_limited: true, next_scan_cursor: null }));
+  expect(label(tree.toJSON())).toContain('Last worker');
+  expect(label(tree.toJSON())).toContain('1+ matching attempts');
+  expect(button('First scan window')).toBeTruthy();
+  expect(button('Next scan window')).toBeUndefined();
+  expect(label(tree.toJSON())).toContain('This is the last scan window.');
+  await selectDate('2026-09-11');
+  expect(requests.has(day('2026-09-11'))).toBe(true);
+  expect(fetchMock.mock.calls.at(-1)![0]).not.toContain('scan_cursor');
+});
+
+it('allows advancing an empty scan window without claiming the selection is empty', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ attempts: [], summary: { total: 0 }, truncated: true, summary_limited: true, next_scan_cursor: 'cursor-1' }));
+  expect(button('Next scan window').props.disabled).toBe(false);
+  expect(label(tree.toJSON())).toContain('even when this window is empty');
+  await act(async () => button('Next scan window').props.onClick());
+  expect(requests.has(`${day('2026-09-10')}&scan_cursor=cursor-1`)).toBe(true);
+});
+
+it('shows exact counts without plus signs for a complete selection', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ ...payload('only', 'Worker'), summary: { total: 1, accepted: 1, review_backlog: 1 }, truncated: false, summary_limited: false }));
+  expect(label(tree.toJSON())).toContain('Review backlog1');
+  expect(label(tree.toJSON())).not.toContain('1+');
+  expect(button('Next scan window')).toBeUndefined();
+});
+
+
+it('leaves counts proven exact by filters unmarked while marking bounded counts', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ ...payload('first', 'Worker'), summary: { total: 1000, accepted: 1000, rejected: 0, review_backlog: 0 }, truncated: true, summary_limited: true,
+    summary_limited_fields: ['accepted', 'low_margin_accepted', 'total'], next_scan_cursor: 'cursor-1' }));
+  expect(label(tree.toJSON())).toContain('Accepted1000+');
+  expect(label(tree.toJSON())).toContain('Rejected0');
+  expect(label(tree.toJSON())).not.toContain('Rejected0+');
+  expect(label(tree.toJSON())).not.toContain('Review backlog0+');
+});

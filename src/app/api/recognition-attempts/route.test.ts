@@ -103,9 +103,14 @@ it('reports lower bounds and no median when the indexed read is capped', async (
   expect(response.summary).toMatchObject({ total: 1000, accepted: 1000, review_backlog: 0, median_score: null });
   expect(response.truncated).toBe(true);
   expect(response.summary_limited).toBe(true);
-  const unreviewed = await get('review_status=unreviewed');
+  const first = await get('review_status=unreviewed');
+  expect(first.summary_limited).toBe(true);
+  expect(first.next_scan_cursor).toBeTruthy();
+  const unreviewed = await get(`review_status=unreviewed&scan_cursor=${encodeURIComponent(first.next_scan_cursor)}`);
   expect(unreviewed.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
-  expect(unreviewed.summary_limited).toBe(false);
+  // Prior windows are outside this count, so it remains a full-day lower bound.
+  expect(unreviewed.summary_limited).toBe(true);
+  expect(unreviewed.next_scan_cursor).toBeNull();
 });
 
 it('reports an incomplete selection even when neighboring-day rows consume the read bound', async () => {
@@ -125,4 +130,92 @@ it('warns about capped legacy array responses during a staggered rollout', async
   expect(response.summary).toMatchObject({ total: 150, review_backlog: 0, median_score: null });
   expect(response.truncated).toBe(true);
   expect(response.summary_limited).toBe(true);
+});
+
+
+it.each(['', 'decision=accepted&confidence_band=high&kiosk_id=entry'])('includes invalid legacy review labels in the unresolved selection: %s', async filters => {
+  const id = await test.run(ctx => ctx.db.insert('recognitionAttempts', { ...base, reviewedLabel: 'legacy-pending' }));
+  const response = await get(`review_status=unreviewed&${filters}`);
+  expect(response.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
+  expect(response.summary.review_backlog).toBe(1);
+  expect(response.summary_limited).toBe(false);
+});
+
+it('reaches selected-day evidence after an empty window of neighboring-day scans', async () => {
+  const id = await test.run(async ctx => {
+    for (let i = 0; i < 1001; i++) await ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-15T10:00:00', reviewed: false });
+    return ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-14T08:00:00', reviewed: false });
+  });
+  const first = await get('review_status=unreviewed&decision=accepted&confidence_band=high&kiosk_id=entry');
+  expect(first.attempts).toHaveLength(0);
+  expect(first.summary_limited).toBe(true);
+  expect(first.next_scan_cursor).toBeTruthy();
+  const next = await get(`review_status=unreviewed&decision=accepted&confidence_band=high&kiosk_id=entry&scan_cursor=${encodeURIComponent(first.next_scan_cursor)}&limit=1000`);
+  expect(next.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
+  expect(next.next_scan_cursor).toBeNull();
+});
+
+it('visits every unresolved record across windows with equal and mixed-format timestamps', async () => {
+  const ids = await test.run(async ctx => {
+    const inserted = [];
+    for (let i = 0; i < 1100; i++) inserted.push(await ctx.db.insert('recognitionAttempts', { ...base, reviewed: false,
+      timestamp: ['2026-09-14T10:00:00', '2026-09-14T16:00:00Z', '2026-09-14T11:00:00-05:00'][i % 3] }));
+    return inserted;
+  });
+  const seen: string[] = [];
+  let cursor: string | null = null;
+  for (let window = 0; window < 4; window++) {
+    const response = await get(`review_status=unreviewed&limit=1000${cursor ? `&scan_cursor=${encodeURIComponent(cursor)}` : ''}`);
+    seen.push(...response.attempts.map((row: { id: string }) => row.id));
+    cursor = response.next_scan_cursor;
+    if (!cursor) break;
+  }
+  expect(cursor).toBeNull();
+  expect(seen).toHaveLength(ids.length);
+  expect(new Set(seen)).toEqual(new Set(ids));
+});
+
+
+it('marks only uncertain categories when filters prove other counts exact', async () => {
+  await test.run(async ctx => {
+    for (let i = 0; i < 1001; i++) await ctx.db.insert('recognitionAttempts', base);
+  });
+  const response = await get('decision=accepted&review_status=confirmed');
+  expect(response.summary_limited).toBe(true);
+  expect(response.summary_limited_fields.sort()).toEqual(['accepted', 'low_margin_accepted', 'total'].sort());
+  expect(response.summary).toMatchObject({ rejected: 0, unknown: 0, near_miss: 0, review_backlog: 0 });
+});
+
+it('keeps an exactly complete 1000-record selection exact', async () => {
+  await test.run(async ctx => {
+    for (let i = 0; i < 850; i++) await ctx.db.insert('recognitionAttempts', base);
+  });
+  const response = await get('limit=1000');
+  expect(response.summary.total).toBe(1000);
+  expect(response.summary_limited).toBe(false);
+  expect(response.summary_limited_fields).toEqual([]);
+  expect(response.next_scan_cursor).toBeNull();
+});
+
+
+it('keeps large review notes within a byte-bounded scan and continues without losing evidence', async () => {
+  const ids = await test.run(async ctx => {
+    const inserted = [];
+    for (let i = 0; i < 900; i++) inserted.push(await ctx.db.insert('recognitionAttempts', { ...base, reviewed: false, reviewedNote: 'x'.repeat(12000) }));
+    return inserted;
+  });
+  const first = await get('review_status=unreviewed&limit=1000');
+  expect(first.attempts.length).toBeGreaterThan(0);
+  expect(first.attempts.length).toBeLessThan(900);
+  expect(first.summary_limited).toBe(true);
+  const seen = first.attempts.map((row: { id: string }) => row.id);
+  let cursor = first.next_scan_cursor;
+  for (let window = 0; window < 5 && cursor; window++) {
+    const response = await get(`review_status=unreviewed&limit=1000&scan_cursor=${encodeURIComponent(cursor)}`);
+    seen.push(...response.attempts.map((row: { id: string }) => row.id));
+    cursor = response.next_scan_cursor;
+  }
+  expect(cursor).toBeNull();
+  expect(seen).toHaveLength(ids.length);
+  expect(new Set(seen)).toEqual(new Set(ids));
 });

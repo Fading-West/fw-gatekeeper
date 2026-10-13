@@ -59,8 +59,8 @@ it("orders equal instants deterministically by ID across timestamp representatio
 });
 
 it("bounds the lab read using the existing kiosk/review/timestamp index", async () => {
-  const take = vi.fn(async () => []);
-  const order = vi.fn(() => ({ take }));
+  const paginate = vi.fn(async () => ({ page: [], isDone: true, continueCursor: "" }));
+  const order = vi.fn(() => ({ paginate }));
   const withIndex = vi.fn(() => ({ order }));
   const query = vi.fn(() => ({ withIndex }));
   await listRecognitionAttemptsByFactoryDate({ db: { query } }, {
@@ -69,5 +69,5 @@ it("bounds the lab read using the existing kiosk/review/timestamp index", async 
   expect(query).toHaveBeenCalledWith("recognitionAttempts");
   expect(withIndex).toHaveBeenCalledWith("by_kiosk_reviewed_timestamp", expect.any(Function));
   expect(order).toHaveBeenCalledWith("desc");
-  expect(take).toHaveBeenCalledExactlyOnceWith(1001);
+  expect(paginate).toHaveBeenCalledExactlyOnceWith({ cursor: null, numItems: 1000, maximumRowsRead: 1001, maximumBytesRead: 4 * 1024 * 1024 });
 });
