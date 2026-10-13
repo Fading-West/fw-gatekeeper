@@ -8,6 +8,7 @@ import { ConvexError } from 'convex/values';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse } from '@/lib/api-errors';
 import { api } from '../../../../convex/_generated/api';
 import { getEncodingValidationMessage, isSupportedEncoding } from '@/lib/encoding';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -229,8 +230,18 @@ export async function POST(req: NextRequest) {
     if (error instanceof ConvexError && error.data?.code === BIOMETRIC_CONSENT_ERROR_CODE) {
       return NextResponse.json({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE }, { status: 400 });
     }
-    const message = error instanceof Error ? error.message : 'Internal server error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    const knownError = knownApiErrorResponse(error, {
+      'Worker name is required': 400,
+      'Employee must be selected from the company roster': 400,
+      'Active worker not found; use enrollment to restore a worker by employee ID': 400,
+      'Only admins may change worker identity or department': 400,
+      'Worker name already exists': 409,
+    }, [
+      /^Employee ID [^\r\n]+ already belongs to [^\r\n]+$/,
+      /^Employee ID [^\r\n]+ belongs to multiple workers; resolve the duplicate identities before enrollment$/,
+    ]);
+    if (knownError) return knownError;
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   } finally {
     if (storageIds.length > 0) {
       try {

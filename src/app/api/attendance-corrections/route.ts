@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { ConvexError } from 'convex/values';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse } from '@/lib/api-errors';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { api } from '../../../../convex/_generated/api';
@@ -107,9 +108,22 @@ export async function POST(req: NextRequest) {
     if (error instanceof ConvexError && error.data?.code === 'INVALID_CORRECTION_TIMESTAMP') {
       return NextResponse.json({ error: error.data.message }, { status: 400 });
     }
+    const knownError = knownApiErrorResponse(error, {
+      'Correction reason is required.': 400,
+      'requestId must be a nonempty string of at most 200 characters.': 400,
+      'Worker not found.': 400,
+      'originalAttendanceId is required when voiding an event.': 400,
+      'Original attendance event not found.': 400,
+      'Original attendance event belongs to a different worker.': 400,
+      'Original attendance event is not on the correction date.': 400,
+      'correctedTimestamp is required when adding an event.': 400,
+      'Correction requestId was already used with different details.': 409,
+      'This attendance event already has an active void; reverse that correction before voiding it again': 409,
+    });
+    if (knownError) return knownError;
     console.error('Attendance corrections POST error:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to create attendance correction' },
+      { error: 'Failed to create attendance correction' },
       { status: 500 },
     );
   }

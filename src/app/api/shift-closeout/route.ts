@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse } from '@/lib/api-errors';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
@@ -137,9 +138,17 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
+    const knownError = knownApiErrorResponse(error, {
+      'date must use YYYY-MM-DD format': 400,
+      'Reopen the completed closeout before changing notes.': 409,
+      'Only a completed closeout can be reopened.': 409,
+      'Closeout has blockers. Add an acknowledgement note before acknowledging blockers.': 400,
+      'Closeout has blockers. Add an acknowledgement note before completing.': 400,
+    });
+    if (knownError) return knownError;
     console.error('Shift closeout PATCH error:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to update shift closeout' },
+      { error: 'Failed to update shift closeout' },
       { status: 500 },
     );
   }
