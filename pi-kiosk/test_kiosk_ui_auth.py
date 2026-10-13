@@ -70,7 +70,7 @@ class KioskUiAuthTests(unittest.TestCase):
         )
         self.assertIn('snapshot.pop("admin", None)', app_source)
         self.assertIn('@app.route("/supervisor/unlock", methods=["POST"])', app_source)
-        self.assertIn('_supervisor_attempt_limiter.is_locked()', app_source)
+        self.assertIn('_supervisor_attempt_limiter.check_pin(', app_source)
         self.assertIn('"retry_after_seconds"', app_source)
         template_source = (KIOSK_DIR / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('target.matches("input, textarea, select")', template_source)
@@ -121,6 +121,22 @@ class KioskUiAuthTests(unittest.TestCase):
         now[0] += 301
         self.assertFalse(limiter.is_locked())
         limiter.record_success()
+        self.assertEqual(limiter.retry_after_seconds(), 0)
+
+    def test_pin_checks_preserve_lockout_and_reset_failures_after_success(self):
+        config.KIOSK_SUPERVISOR_PIN = "supervisor-only"
+        now = [100.0]
+        limiter = SupervisorAttemptLimiter(max_attempts=2, clock=lambda: now[0])
+
+        self.assertEqual(limiter.check_pin("wrong"), (False, False))
+        self.assertEqual(limiter.check_pin("supervisor-only"), (True, False))
+        self.assertEqual(limiter.check_pin("wrong"), (False, False))
+        self.assertEqual(limiter.check_pin("wrong"), (False, True))
+        self.assertEqual(limiter.check_pin("supervisor-only"), (False, True))
+        self.assertEqual(limiter.retry_after_seconds(), 300)
+
+        now[0] += 301
+        self.assertEqual(limiter.check_pin("supervisor-only"), (True, False))
         self.assertEqual(limiter.retry_after_seconds(), 0)
 
 
