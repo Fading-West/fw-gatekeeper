@@ -104,6 +104,8 @@ function normalizeResponse(payload: any): RecognitionAttemptsResponse {
 
   return {
     attempts,
+    truncated: payload?.truncated === true,
+    summary_limited: payload?.summary_limited === true,
     summary: {
       accepted: summary.accepted ?? computedSummary.accepted,
       rejected: summary.rejected ?? computedSummary.rejected,
@@ -111,7 +113,7 @@ function normalizeResponse(payload: any): RecognitionAttemptsResponse {
       near_miss: summary.near_miss ?? summary.nearMiss ?? computedSummary.near_miss,
       low_margin_accepted:
         summary.low_margin_accepted ?? summary.lowMarginAccepted ?? computedSummary.low_margin_accepted,
-      median_score: summary.median_score ?? summary.medianScore ?? computedSummary.median_score,
+      median_score: payload?.summary_limited ? null : summary.median_score ?? summary.medianScore ?? computedSummary.median_score,
       review_backlog: summary.review_backlog ?? summary.reviewBacklog ?? computedSummary.review_backlog,
       total: summary.total ?? computedSummary.total,
     },
@@ -167,6 +169,11 @@ export async function GET(req: NextRequest) {
       : null;
 
     const rawAttempts = Array.isArray(result) ? result : result?.attempts || result?.rows || [];
+    // During a staggered rollout the old backend returns only a capped array.
+    // Treat its counts as lower bounds instead of silently claiming completeness.
+    const requestedLimit = Number(searchParams.get('limit') || 100);
+    const displayLimit = !requestedLimit || !Number.isFinite(requestedLimit) ? 250 : Math.max(1, Math.min(1000, Math.floor(requestedLimit)));
+    const legacyLimited = Array.isArray(result) && rawAttempts.length >= displayLimit;
     let response = normalizeResponse(targetAttempt ? { attempts: [targetAttempt, ...rawAttempts] } : result);
     if (attemptId) {
       const deduped = new Map(response.attempts.map((attempt) => [attempt.id, attempt]));
@@ -175,6 +182,7 @@ export async function GET(req: NextRequest) {
     const decision = optionalString(searchParams.get('decision'));
     const confidenceBand = optionalString(searchParams.get('confidence_band'));
     response = {
+      ...response,
       attempts: response.attempts.filter((attempt) => {
         const decisionMatches =
           attemptId ||
@@ -198,7 +206,17 @@ export async function GET(req: NextRequest) {
       }),
       summary: response.summary,
     };
-    response.summary = summarize(response.attempts);
+    if (Array.isArray(result)) {
+      response.summary = summarize(response.attempts);
+      response.truncated = legacyLimited;
+      response.summary_limited = legacyLimited;
+      if (legacyLimited) response.summary.median_score = null;
+    }
+    if (attemptId) {
+      response.summary = summarize(response.attempts);
+      response.truncated = false;
+      response.summary_limited = false;
+    }
 
     return NextResponse.json(response);
   } catch (error) {

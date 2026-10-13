@@ -46,12 +46,13 @@ it.each([
   expect(response.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
   expect(response.summary.total).toBe(1);
 });
-it('keeps accepted aliases, missing review labels, score boundaries and returned-row summaries', async () => {
+it('keeps accepted aliases, missing review labels, score boundaries and full-selection summaries', async () => {
   const id = await test.run(ctx => ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-14T11:00:00', decision: 'accepted_manual', bestScore: 0.45, reviewedLabel: undefined }));
   const response = await get('decision=accepted&confidence_band=high&review_status=confirmed&limit=1');
   expect(response.attempts).toHaveLength(1);
   expect(response.attempts[0].id).toBe(id);
-  expect(response.summary.accepted).toBe(1);
+  expect(response.summary.accepted).toBe(151);
+  expect(response.truncated).toBe(true);
 });
 it('retrieves exact older attempts despite incompatible list filters', async () => {
   const id = await test.run(ctx => ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-14T08:00:00' }));
@@ -67,4 +68,61 @@ it.each(['confirmed', 'corrected', 'ignored'])('excludes %s near misses from rev
   const response = await get('decision=near_miss');
   expect(response.attempts).toHaveLength(2);
   expect(response.summary.review_backlog).toBe(1);
+});
+
+it('counts the older unreviewed attempt across a capped display, including refresh', async () => {
+  const id = await test.run(ctx => ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-14T08:00:00', reviewed: false, reviewedLabel: undefined }));
+  for (let refresh = 0; refresh < 2; refresh++) {
+    const response = await get('');
+    expect(response.attempts).toHaveLength(150);
+    expect(response.attempts.some((row: { id: string }) => row.id === id)).toBe(false);
+    expect(response.summary).toMatchObject({ total: 151, accepted: 151, review_backlog: 1 });
+    expect(response.truncated).toBe(true);
+    expect(response.summary_limited).toBe(false);
+  }
+  const unreviewed = await get('review_status=unreviewed');
+  expect(unreviewed.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
+  expect(unreviewed.summary.review_backlog).toBe(1);
+  expect(unreviewed.truncated).toBe(false);
+});
+
+it('does not report truncation when the full selection exactly fills the display', async () => {
+  const response = await get('');
+  expect(response.summary.total).toBe(150);
+  expect(response.truncated).toBe(false);
+  expect(response.summary_limited).toBe(false);
+});
+
+it('reports lower bounds and no median when the indexed read is capped', async () => {
+  const id = await test.run(async ctx => {
+    for (let i = 0; i < 850; i++) await ctx.db.insert('recognitionAttempts', base);
+    return ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-14T08:00:00', reviewed: false, reviewedLabel: undefined });
+  });
+  const response = await get('limit=1000');
+  expect(response.attempts).toHaveLength(1000);
+  expect(response.summary).toMatchObject({ total: 1000, accepted: 1000, review_backlog: 0, median_score: null });
+  expect(response.truncated).toBe(true);
+  expect(response.summary_limited).toBe(true);
+  const unreviewed = await get('review_status=unreviewed');
+  expect(unreviewed.attempts.map((row: { id: string }) => row.id)).toEqual([id]);
+  expect(unreviewed.summary_limited).toBe(false);
+});
+
+it('reports an incomplete selection even when neighboring-day rows consume the read bound', async () => {
+  await test.run(async ctx => {
+    for (let i = 0; i < 1001; i++) await ctx.db.insert('recognitionAttempts', { ...base, timestamp: '2026-09-15T10:00:00' });
+  });
+  const response = await get('');
+  expect(response.attempts).toHaveLength(0);
+  expect(response.summary.total).toBe(0);
+  expect(response.truncated).toBe(true);
+  expect(response.summary_limited).toBe(true);
+});
+
+it('warns about capped legacy array responses during a staggered rollout', async () => {
+  vi.mocked(convex.query).mockResolvedValueOnce(Array.from({ length: 150 }, (_, i) => ({ ...base, id: `legacy-${i}` })));
+  const response = await get('');
+  expect(response.summary).toMatchObject({ total: 150, review_backlog: 0, median_score: null });
+  expect(response.truncated).toBe(true);
+  expect(response.summary_limited).toBe(true);
 });

@@ -61,3 +61,25 @@ it('shows a failed request without claiming there were no attempts', async () =>
   expect(label(tree.toJSON())).toContain('Source unavailable');
   expect(label(tree.toJSON())).not.toContain('No recognition attempts match');
 });
+
+it('shows full-selection counts and warns that older attempts are hidden', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ ...payload('new', 'Worker'), summary: { accepted: 151, review_backlog: 1, total: 151 }, truncated: true, summary_limited: false }));
+  expect(label(tree.toJSON())).toContain('Review backlog1');
+  expect(label(tree.toJSON())).toContain('Showing 1 of 151 matching attempts. Results are capped');
+  expect(label(tree.toJSON())).toContain('Summary counts include all matching attempts.');
+  expect(label(tree.toJSON())).toContain('select Unreviewed');
+});
+
+it('labels incomplete counts as lower bounds and explains a zero backlog', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ ...payload('new', 'Worker'), summary: { accepted: 1000, review_backlog: 0, total: 1000, median_score: null }, truncated: true, summary_limited: true }));
+  expect(label(tree.toJSON())).toContain('Accepted1000+');
+  expect(label(tree.toJSON())).toContain('Review backlog0+');
+  expect(label(tree.toJSON())).toContain('0+ does not mean there are no unresolved attempts.');
+  expect(label(tree.toJSON())).toContain('Median score is unavailable');
+});
+
+it('keeps capped empty selections distinct from an exact empty selection', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!({ attempts: [], summary: { total: 0 }, truncated: true, summary_limited: true }));
+  expect(label(tree.toJSON())).toContain('No matching attempts were found within the capped results.');
+  expect(label(tree.toJSON())).not.toContain('No recognition attempts match these filters yet.');
+});

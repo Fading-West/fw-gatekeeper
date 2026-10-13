@@ -144,6 +144,7 @@ function RecognitionCalibrationLabContent() {
 
   const attempts = useMemo(() => payload?.attempts ?? [], [payload]);
   const summary = payload?.summary;
+  const countLabel = (count: number) => `${count}${payload?.summary_limited ? '+' : ''}`;
   const canOperate = canOperateRecognition(currentRole);
   const kiosks = useMemo(() => {
     const ids = attempts.flatMap((attempt) => (attempt.kiosk_id ? [attempt.kiosk_id] : []));
@@ -254,13 +255,13 @@ function RecognitionCalibrationLabContent() {
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
         {[
-          ['Accepted', summary?.accepted ?? 0, 'text-emerald-300'],
-          ['Rejected', summary?.rejected ?? 0, 'text-red-300'],
-          ['Unknown', summary?.unknown ?? 0, 'text-amber-300'],
-          ['Near miss', summary?.near_miss ?? 0, 'text-gold'],
-          ['Low-margin accepted', summary?.low_margin_accepted ?? 0, 'text-gold'],
+          ['Accepted', countLabel(summary?.accepted ?? 0), 'text-emerald-300'],
+          ['Rejected', countLabel(summary?.rejected ?? 0), 'text-red-300'],
+          ['Unknown', countLabel(summary?.unknown ?? 0), 'text-amber-300'],
+          ['Near miss', countLabel(summary?.near_miss ?? 0), 'text-gold'],
+          ['Low-margin accepted', countLabel(summary?.low_margin_accepted ?? 0), 'text-gold'],
           ['Median score', formatScore(summary?.median_score), 'text-slate-100'],
-          ['Review backlog', summary?.review_backlog ?? 0, 'text-blue-300'],
+          ['Review backlog', countLabel(summary?.review_backlog ?? 0), 'text-blue-300'],
         ].map(([label, value, tone]) => (
           <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
             <p className="text-xs text-slate-500">{label}</p>
@@ -268,6 +269,16 @@ function RecognitionCalibrationLabContent() {
           </div>
         ))}
       </section>
+
+      {payload?.truncated && (
+        <div role="status" className="rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-3 text-sm text-amber-200">
+          Showing {attempts.length} of {countLabel(summary?.total ?? attempts.length)} matching attempts. Results are capped; older evidence may be hidden.
+          {payload.summary_limited
+            ? ' Counts marked + are lower bounds, including the review backlog; 0+ does not mean there are no unresolved attempts. Median score is unavailable for this incomplete selection.'
+            : ' Summary counts include all matching attempts.'}
+          {' Narrow the date, kiosk, decision or confidence filters, or select Unreviewed to find unresolved evidence.'}
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-300">
@@ -285,7 +296,7 @@ function RecognitionCalibrationLabContent() {
         <div className="flex items-center justify-between gap-3 border-b border-navy-600/50 px-5 py-4">
           <div>
             <h2 className="font-display font-semibold text-slate-100">Recognition attempts</h2>
-            <p className="text-xs font-mono text-slate-500">{summary?.total ?? attempts.length} attempts in current view</p>
+            <p className="text-xs font-mono text-slate-500">{attempts.length} shown · {countLabel(summary?.total ?? attempts.length)} matching attempts</p>
           </div>
           {loading && <span className="text-xs text-slate-500">Loading…</span>}
         </div>
@@ -382,7 +393,9 @@ function RecognitionCalibrationLabContent() {
 
         {!loading && !error && attempts.length === 0 && (
           <div className="px-5 py-12 text-center text-sm text-slate-500">
-            No recognition attempts match these filters yet.
+            {payload?.summary_limited
+              ? 'No matching attempts were found within the capped results. Narrow the filters to check older evidence.'
+              : 'No recognition attempts match these filters yet.'}
           </div>
         )}
       </section>

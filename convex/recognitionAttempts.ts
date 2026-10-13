@@ -176,7 +176,7 @@ async function listRangeInternal(
     reviewed?: boolean;
     limit?: number;
   },
-  options: { applyLimit?: boolean } = {},
+  options: { applyLimit?: boolean; readLimit?: number } = {},
 ) {
   const kioskId = normalizeOptionalText(args.kioskId);
   const limit = clampLimit(args.limit);
@@ -210,7 +210,7 @@ async function listRangeInternal(
 
   const attempts = options.applyLimit === false
     ? await builder.order("desc").collect()
-    : await builder.order("desc").take(limit);
+    : await builder.order("desc").take(options.readLimit ?? limit);
   return attempts.map(serializeAttempt);
 }
 
@@ -226,10 +226,44 @@ export async function listRecognitionAttemptsByFactoryDate(
     reviewStatus?: string;
   },
 ) {
-  const rows = await listAllRecognitionAttemptsByFactoryDate(ctx, args);
+  return (await selectRecognitionAttemptsByFactoryDate(ctx, args)).attempts;
+}
+
+// Bound the conservative date-range read independently of the display limit.
+// The extra row detects an incomplete selection without an unbounded count.
+const SELECTION_READ_LIMIT = 1000;
+
+async function selectRecognitionAttemptsByFactoryDate(
+  ctx: any,
+  args: {
+    date: string;
+    kioskId?: string;
+    reviewed?: boolean;
+    limit?: number;
+    decision?: string;
+    confidenceBand?: string;
+    reviewStatus?: string;
+  },
+) {
+  const ranges = buildConservativeFactoryLocalTimestampRanges(args.date);
+  const rowsById = new Map<string, any>();
+  let summaryLimited = false;
+  for (const range of ranges) {
+    const rows = await listRangeInternal(ctx, { ...args, ...range }, { readLimit: SELECTION_READ_LIMIT + 1 });
+    if (rows.length > SELECTION_READ_LIMIT) summaryLimited = true;
+    for (const row of rows.slice(0, SELECTION_READ_LIMIT)) {
+      if (timestampBelongsToFactoryLocalDate(row.timestamp, args.date)) rowsById.set(String(row.id), row);
+    }
+  }
+  const timestampKey = createRecognitionTimestampSortKey();
+  const rows = Array.from(rowsById.values()).sort((a, b) => {
+    const aKey = timestampKey(a.timestamp);
+    const bKey = timestampKey(b.timestamp);
+    return aKey === bKey ? String(a.id).localeCompare(String(b.id)) : aKey < bKey ? 1 : -1;
+  });
   const limit = clampLimit(args.limit);
-  // Apply portal filters to the full date selection before imposing the display
-  // cap. Otherwise newer nonmatching scans hide older matching evidence.
+  // Apply portal filters to the bounded selection before imposing the display
+  // cap. Matches beyond the read bound are explicitly reported as incomplete.
   const matches = rows.filter((row) => {
     const decision = args.decision;
     const decisionMatches = !decision || decision === "all" || row.decision === decision ||
@@ -245,8 +279,23 @@ export async function listRecognitionAttemptsByFactoryDate(
     return decisionMatches && confidenceMatches && reviewMatches;
   });
   // Normalize only after filtering and sorting the original evidence instants.
-  const timestampKey = createRecognitionTimestampSortKey();
-  return matches.slice(0, limit).map(row => withFactoryLocalDisplayTimestamp(row, timestampKey));
+  const scores = matches.flatMap(row => typeof row.best_score === "number" ? [row.best_score] : []).sort((a, b) => a - b);
+  const midpoint = Math.floor(scores.length / 2);
+  return {
+    attempts: matches.slice(0, limit).map(row => withFactoryLocalDisplayTimestamp(row, timestampKey)),
+    summary: {
+      accepted: matches.filter(row => row.decision.startsWith("accepted")).length,
+      rejected: matches.filter(row => row.decision.startsWith("rejected")).length,
+      unknown: matches.filter(row => row.decision === "unknown").length,
+      near_miss: matches.filter(row => row.decision === "near_miss").length,
+      low_margin_accepted: matches.filter(row => row.decision.startsWith("accepted") && typeof row.score_margin === "number" && row.score_margin <= 0.08).length,
+      median_score: summaryLimited || !scores.length ? null : scores.length % 2 ? scores[midpoint] : (scores[midpoint - 1] + scores[midpoint]) / 2,
+      review_backlog: matches.filter(row => !row.reviewed || (row.reviewed_label != null && !["confirmed", "corrected", "ignored"].includes(row.reviewed_label))).length,
+      total: matches.length,
+    },
+    truncated: summaryLimited || matches.length > limit,
+    summary_limited: summaryLimited,
+  };
 }
 
 export async function listAllRecognitionAttemptsByFactoryDate(
@@ -405,37 +454,51 @@ export const listByDate = query({
     confidenceBand: v.optional(v.string()),
     reviewStatus: v.optional(v.string()),
   },
-  returns: v.array(v.object({
-    id: v.id("recognitionAttempts"),
-    timestamp: v.string(),
-    timestamp_utc: v.union(v.string(), v.null()),
-    kiosk_id: v.string(),
-    source_attempt_id: v.union(v.string(), v.null()),
-    face_detected: v.number(),
-    candidate_worker_id: v.union(v.string(), v.null()),
-    candidate_worker_name: v.union(v.string(), v.null()),
-    best_score: v.union(v.number(), v.null()),
-    second_best_score: v.union(v.number(), v.null()),
-    score_margin: v.union(v.number(), v.null()),
-    decision: v.string(),
-    threshold: v.number(),
-    liveness_confirmed: v.union(v.number(), v.null()),
-    model_version: v.union(v.string(), v.null()),
-    image_quality: v.union(v.number(), v.null()),
-    face_quality: v.union(v.number(), v.null()),
-    brightness: v.union(v.number(), v.null()),
-    blur: v.union(v.number(), v.null()),
-    reviewed: v.number(),
-    reviewed_label: v.union(v.string(), v.null()),
-    reviewed_note: v.union(v.string(), v.null()),
-    reviewed_at: v.union(v.string(), v.null()),
-    created_at: v.string(),
-    updated_at: v.union(v.string(), v.null()),
-  })),
+  returns: v.object({
+    attempts: v.array(v.object({
+      id: v.id("recognitionAttempts"),
+      timestamp: v.string(),
+      timestamp_utc: v.union(v.string(), v.null()),
+      kiosk_id: v.string(),
+      source_attempt_id: v.union(v.string(), v.null()),
+      face_detected: v.number(),
+      candidate_worker_id: v.union(v.string(), v.null()),
+      candidate_worker_name: v.union(v.string(), v.null()),
+      best_score: v.union(v.number(), v.null()),
+      second_best_score: v.union(v.number(), v.null()),
+      score_margin: v.union(v.number(), v.null()),
+      decision: v.string(),
+      threshold: v.number(),
+      liveness_confirmed: v.union(v.number(), v.null()),
+      model_version: v.union(v.string(), v.null()),
+      image_quality: v.union(v.number(), v.null()),
+      face_quality: v.union(v.number(), v.null()),
+      brightness: v.union(v.number(), v.null()),
+      blur: v.union(v.number(), v.null()),
+      reviewed: v.number(),
+      reviewed_label: v.union(v.string(), v.null()),
+      reviewed_note: v.union(v.string(), v.null()),
+      reviewed_at: v.union(v.string(), v.null()),
+      created_at: v.string(),
+      updated_at: v.union(v.string(), v.null()),
+    })),
+    summary: v.object({
+      accepted: v.number(),
+      rejected: v.number(),
+      unknown: v.number(),
+      near_miss: v.number(),
+      low_margin_accepted: v.number(),
+      median_score: v.union(v.number(), v.null()),
+      review_backlog: v.number(),
+      total: v.number(),
+    }),
+    truncated: v.boolean(),
+    summary_limited: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
     const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
-    return await listRecognitionAttemptsByFactoryDate(ctx, {
+    return await selectRecognitionAttemptsByFactoryDate(ctx, {
       date,
       kioskId: args.kioskId,
       reviewed: args.reviewed,
