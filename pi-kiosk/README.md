@@ -95,8 +95,8 @@ from the repository root using uv 0.12.13. Existing lock versions are retained
 when compatible; remove the corresponding lock first for an intentional full
 transitive refresh. Review all version/hash changes, validate a fresh server
 install, and provision one Bookworm kiosk before rollout. Installed kiosks pick
-up lock changes through `bash pi-kiosk/update.sh`, which fetches the code itself (see
-Maintenance in the root README). Code and its matching venv are staged at permanent
+up lock changes through the recovery launcher’s `update` command after the first
+bootstrap update (see Maintenance in the root README). The updater fetches the code itself. Code and its matching venv are staged at permanent
 paths; the launcher restores the committed release if a trial is interrupted.
 Restarting the service alone keeps the committed release.
 

@@ -405,25 +405,25 @@ If monitor doesn't wake up:
 ## Maintenance
 
 ### Update kiosk software
-Run `pi-kiosk/update.sh` as the account selected by `setup.sh` (`KIOSK_USER`, normally `pi`), without `sudo`. Start with a working kiosk. The updater fetches `origin/master` and stages its code in a permanent release directory. If either dependency lock changed, it builds a fresh venv with the same two hash-locked install commands as `setup.sh`; otherwise it reuses the existing venv. Neither running code nor dependencies are edited in place. Do not pull first.
+Run updates as the account selected by `setup.sh` (`KIOSK_USER`, normally `pi`), without `sudo`. Start with a working kiosk. Bootstrap the first release update using the fetched-script procedure below, including on a fresh install. For subsequent updates, use the recovery launcher’s `update` command; it selects the committed release’s updater even when the original checkout still contains an older in-place script. The updater fetches `origin/master` and stages its code in a permanent release directory. If either dependency lock changed, it builds a fresh venv with the same two hash-locked install commands as `setup.sh`; otherwise it reuses the existing venv. Neither running code nor dependencies are edited in place. Do not pull first.
 
-The updater installs a systemd launcher override, then signals the kiosk to restart through `Restart=always`. The watchdog stays enabled throughout. The recovery launcher is installed once and retained across app updates; changing its state protocol requires a separate migration. The launcher tries the candidate only while the updater is alive; a failed command, startup crash, SSH disconnect, forced kill, or reboot before commit selects the previous code and venv. The candidate is committed only after `/health` reports healthy camera and model continuously for 10 seconds (up to 5 minutes for startup). Check an actual scan on one kiosk before continuing the fleet rollout. If the kiosk uses a different local health port, set `KIOSK_HEALTH_URL` when invoking the updater; `KIOSK_UPDATE_TIMEOUT` can extend startup time on a slow SD card.
+The updater installs a systemd launcher override, then signals the kiosk to restart through `Restart=always`. The watchdog stays enabled throughout. The recovery launcher is installed once and retained across app updates; changing its state protocol requires a separate migration. The launcher tries the candidate only while the updater is alive; a failed command, startup crash, SSH disconnect, forced kill, or reboot before commit selects the previous code and venv. The candidate is committed only after `/health` identifies the candidate process and reports healthy camera and model continuously for 10 seconds, with fresh, advancing camera, detection and inference timestamps (up to 5 minutes for startup). Check an actual scan on one kiosk before continuing the fleet rollout. If the kiosk uses a different local health port, set `KIOSK_HEALTH_URL` when invoking the updater; `KIOSK_UPDATE_TIMEOUT` can extend startup time on a slow SD card.
 
-Device configuration and offline attendance data remain in the original `pi-kiosk` directory and are linked into each release. `config_local.py` supplies the service's server and kiosk ID. The source checkout stays at its original revision; `.git/kiosk-current.json` records the deployed commit and release directory. Use that directory for manual Python maintenance commands. Re-running `setup.sh` on a committed release installation is refused; use the updater instead. The updater verifies the service user, checkout/venv ownership, clean tracked files and ancestry, and refuses concurrent updates.
+The first migration preserves the running service’s command-line server, kiosk ID and camera overrides. Device configuration and offline attendance data remain in the original `pi-kiosk` directory and are linked into each release. `config_local.py` supplies device settings; preserved command-line overrides keep their existing precedence. Recognition models are cached by pinned digest; the legacy model is copied when its digest matches, and earlier models remain available for offline fallback. The source checkout stays at its original revision; `.git/kiosk-current.json` records the deployed commit and release directory. Use that directory for manual Python maintenance commands. Re-running `setup.sh` after the recovery launcher is installed is refused, including after an interrupted first migration; use the updater instead. The updater verifies the service user, checkout/venv ownership, clean tracked files and ancestry, and refuses concurrent updates.
 
-A changed lock needs space for a second venv and native builds: the preflight requires at least 2 GiB plus a 512 MiB OS/SQLite reserve (more for large installed environments). A build is aborted if the reserve is crossed. Unused releases are collected on subsequent runs and after success; active code and dependency directories are retained at their original paths, preserving absolute console-script shebangs. Backups left by an older updater (`.venv-before-update`) must be recovered before using this procedure.
+A changed lock needs space for a second venv and native builds: the preflight requires at least 2 GiB plus a 512 MiB OS/SQLite reserve (more for large installed environments). A build is aborted if the reserve is crossed; model downloads also preserve this reserve. Unused releases are collected on subsequent runs and after success; active code and dependency directories are retained at their original paths, preserving absolute console-script shebangs. Backups left by an older updater (`.venv-before-update`) must be recovered before using this procedure.
 
 ```bash
 ssh pi@fw-kiosk-1.local
 cd /opt/fw-gatekeeper
-bash pi-kiosk/update.sh
+python3 .git/kiosk-launch.py update "$PWD"
 ```
 
 Replace `pi` in the SSH commands with your `KIOSK_USER` if setup used another account. `setup.sh` makes that account own `/opt/fw-gatekeeper` and its virtual environment; the updater checks venv ownership and refuses root. It uses `sudo` only to install the systemd override and manage the service.
 
 Older instructions used `sudo git pull`, which can leave root-owned files. If the updater reports `Permission denied` or `insufficient permission`, restore setup's ownership once with `sudo chown -R pi:pi /opt/fw-gatekeeper` (use your `KIOSK_USER` and its group if different), then rerun the script.
 
-For an installation without this release-based updater, run the fetched script from a temporary file, leaving the installed code unchanged until its dependencies are ready. As the kiosk user, from `/opt/fw-gatekeeper`. If the original checkout has no `update.sh`, use this fetched procedure for subsequent updates too:
+For the first release update, run the fetched script from a temporary file, leaving the installed code unchanged until its dependencies are ready. As the kiosk user, from `/opt/fw-gatekeeper`:
 
 ```bash
 (
@@ -437,12 +437,12 @@ For an installation without this release-based updater, run the fetched script f
 ```
 
 ### Update all 4 kiosks at once
-From any machine on the same network, run the same procedure on each kiosk in turn. The loop stops at the first reported update failure; fix that kiosk before rerunning. Validate scanning on a pilot kiosk before running the loop, because the health gate cannot prove that a real worker scan succeeds.
+After bootstrapping every kiosk once as above, from any machine on the same network run the same procedure on each kiosk in turn. The loop stops at the first reported update failure; fix that kiosk before rerunning. Validate scanning on a pilot kiosk before running the loop, because the health gate cannot prove that a real worker scan succeeds.
 
 ```bash
 for host in fw-kiosk-1 fw-kiosk-2 fw-kiosk-3 fw-kiosk-4; do
   echo "Updating $host..."
-  ssh pi@$host.local "cd /opt/fw-gatekeeper && bash pi-kiosk/update.sh" \
+  ssh "pi@$host.local" 'cd /opt/fw-gatekeeper && python3 .git/kiosk-launch.py update "$PWD"' \
     || { echo "Update failed on $host; stopping."; break; }
 done
 ```

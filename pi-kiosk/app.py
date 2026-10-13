@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime
@@ -51,6 +52,9 @@ _status = {
 
 _health_lock = threading.Lock()
 _health = {
+    "last_camera_frame": None,
+    "last_detection": None,
+    "last_model_inference": None,
     "camera_ok": False,
     "model_ok": False,
     "liveness_available": False,
@@ -208,7 +212,7 @@ def health():
     """Truthful kiosk health: degraded whenever a scan-blocking subsystem is down."""
     snapshot = get_health_snapshot()
     degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
-    return jsonify({"status": "degraded" if degraded else "ok", **snapshot})
+    return jsonify({"status": "degraded" if degraded else "ok", **snapshot, "pid": os.getpid()})
 
 
 @app.route("/status")

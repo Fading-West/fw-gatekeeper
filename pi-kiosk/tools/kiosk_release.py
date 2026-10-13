@@ -78,7 +78,19 @@ def stop_child(child):
             child.wait()
 
 
+def save_arguments(repo, pid):
+    # Preserve the installed unit's server, kiosk ID and camera overrides on
+    # the first migration, including units predating config_local.py.
+    before = identity(pid)
+    command = Path(f"/proc/{pid}/cmdline").read_bytes().decode().rstrip("\0").split("\0")
+    script = next((i for i, value in enumerate(command) if Path(value).name == "main.py"), None)
+    if before is None or identity(pid) != before or script is None:
+        raise RuntimeError("Cannot identify the running kiosk's main.py arguments")
+    durable_write(repo / ".git/kiosk-arguments.json", command[script + 1:])
+
+
 def launch(repo, arguments):
+    arguments = read(repo / ".git/kiosk-arguments.json", arguments)
     child = None
     rejected = None
 
@@ -195,6 +207,7 @@ def healthy(repo):
     deadline = time.monotonic() + timeout
     stable_since = None
     previous_process = None
+    first_progress = None
     while time.monotonic() < deadline:
         running = read(repo / ".git/kiosk-running.json", {})
         process = running.get("process")
@@ -206,14 +219,23 @@ def healthy(repo):
             with urllib.request.urlopen(os.environ.get("KIOSK_HEALTH_URL", "http://localhost:5555/health"),
                                         timeout=2) as response:
                 snapshot = json.load(response)
-            ok = ok and snapshot.get("status") == "ok" and snapshot.get("camera_ok") is True and snapshot.get("model_ok") is True
+            progress = [snapshot.get(key) for key in
+                        ("last_camera_frame", "last_detection", "last_model_inference")]
+            now = time.monotonic()
+            ok = (ok and snapshot.get("pid") == child[0] and snapshot.get("status") == "ok"
+                  and snapshot.get("camera_ok") is True and snapshot.get("model_ok") is True
+                  and all(isinstance(value, (int, float)) and 0 <= now - value <= 10
+                          for value in progress))
         except (OSError, ValueError):
             ok = False
         if not ok or launch_identity != previous_process:
             stable_since = None
         if ok:
-            stable_since = stable_since or time.monotonic()
-            if time.monotonic() - stable_since >= stable_seconds:
+            if stable_since is None:
+                stable_since = time.monotonic()
+                first_progress = progress
+            if (time.monotonic() - stable_since >= stable_seconds
+                    and all(last > first for last, first in zip(progress, first_progress))):
                 return
         previous_process = launch_identity
         time.sleep(0.5)
@@ -259,8 +281,16 @@ def main():
         raise SystemExit(launch(repo, arguments))
     if command == "current":
         print(current(repo)["directory"])
+    elif command == "update":
+        if not (repo / ".git/kiosk-current.json").is_file():
+            raise SystemExit("Bootstrap the first release update with the fetched update.sh procedure.")
+        # The checkout may still contain the older in-place updater. Always
+        # invoke the implementation that passed the committed release's gate.
+        os.execvp("bash", ["bash", str(Path(current(repo)["directory"]) / "update.sh"), str(repo)])
     elif command == "revision":
         print(current(repo).get("revision", arguments[0]))
+    elif command == "arguments":
+        save_arguments(repo, int(arguments[0]))
     elif command == "prepare":
         prepare(repo, Path(arguments[0]), arguments[1], int(arguments[2]))
     elif command == "health":

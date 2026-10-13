@@ -65,7 +65,7 @@ fi
 # A release-based installation must be updated through its guarded updater.
 # Re-running provisioning would modify a venv in use and leave the service's
 # release override pointing at different code.
-if [ -f "$INSTALL_DIR/.git/kiosk-current.json" ] || [ -L "$INSTALL_DIR/pi-kiosk/venv" ]; then
+if [ -f "$INSTALL_DIR/.git/kiosk-launch.py" ] || [ -f "$INSTALL_DIR/.git/kiosk-current.json" ] || [ -L "$INSTALL_DIR/pi-kiosk/venv" ]; then
   echo "Existing release installation: use update.sh as $KIOSK_USER. Do not reprovision a running kiosk."
   exit 1
 fi

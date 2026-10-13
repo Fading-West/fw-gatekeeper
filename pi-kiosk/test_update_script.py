@@ -28,16 +28,22 @@ if version == "new" and os.environ.get("TEST_FAIL") == "crash":
     sys.exit(9)
 if version == "new" and os.environ.get("TEST_FAIL") == "slow":
     time.sleep(1)
+started = time.monotonic()
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         healthy = not (version == "new" and os.environ.get("TEST_FAIL") == "health")
         assert Path("config_local.py").read_text() == "device secret\\n"
         assert Path("data/attendance.db").read_text() == "offline scans\\n"
+        progress = (started if version == "new" and os.environ.get("TEST_FAIL") == "frozen"
+                    else time.monotonic())
         self.send_response(200)
         self.end_headers()
         self.wfile.write(json.dumps({"status": "ok" if healthy else "degraded",
                                     "camera_ok": healthy, "model_ok": healthy,
-                                    "version": version}).encode())
+                                    "version": version, "arguments": sys.argv[1:],
+                                    "pid": (1 if version == "new" and os.environ.get("TEST_FAIL") == "wrong-pid" else os.getpid()),
+                                    "last_camera_frame": progress, "last_detection": progress,
+                                    "last_model_inference": progress}).encode())
     def log_message(self, *args): pass
 http.server.HTTPServer(("127.0.0.1", int(os.environ["TEST_PORT"])), Handler).serve_forever()
 '''
@@ -143,7 +149,7 @@ state_path = pathlib.Path(os.environ["TEST_STATE"])
 state = json.loads(state_path.read_text())
 with open(os.environ["TEST_LOG"], "a") as log: log.write("systemctl " + " ".join(args) + "\\n")
 if args[0] == "show":
-    print("test-user")
+    print(state["pid"] if "--property=MainPID" in args else "test-user")
     sys.exit(0)
 if args[0] == "is-active":
     sys.exit(0 if state.get("pid") else 3)
@@ -274,9 +280,9 @@ state_path.write_text(json.dumps(state))
     def test_readmes_share_the_update_procedure(self):
         text = (REPO / "README.md").read_text()
         single, bulk = text.split("### Update kiosk software", 1)[1].split("### Update all 4 kiosks at once", 1)
-        for section in (single.split("For an installation", 1)[0], bulk.split("\n### ", 1)[0]):
+        for section in (single.split("For the first release update", 1)[0], bulk.split("\n### ", 1)[0]):
             commands = "".join(section.split("```")[1::2])
-            self.assertIn("bash pi-kiosk/update.sh", commands)
+            self.assertIn('python3 .git/kiosk-launch.py update "$PWD"', commands)
             self.assertNotIn("git pull", commands)
             self.assertNotIn("systemctl restart", commands)
 
@@ -309,11 +315,29 @@ state_path.write_text(json.dumps(state))
             self.assert_old()
 
     def test_failed_cutover_and_health_restore_code_and_dependencies(self):
-        for failure in ("install", "mv", "reload", "kill", "health", "crash"):
+        for failure in ("install", "mv", "reload", "kill", "health", "crash", "wrong-pid", "frozen"):
             with self.subTest(failure=failure):
                 result = self.run_update(failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assert_old()
+
+    def test_migration_preserves_installed_command_line_on_trial_and_fallback(self):
+        self.stop_service()
+        arguments = ["--server", "https://legacy.example/with space", "--kiosk-id", "legacy-exit", "--camera", "usb"]
+        self.original = subprocess.Popen([sys.executable, "main.py", *arguments], cwd=self.kiosk,
+                                         env=self.env, start_new_session=True,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.state.write_text(json.dumps({"pid": self.original.pid}))
+        self.wait_version("old")
+        self.assertEqual(self.snapshot()["arguments"], arguments)
+        result = self.run_update("health")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_old()
+        self.assertEqual(self.snapshot()["arguments"], arguments)
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_version("new")
+        self.assertEqual(self.snapshot()["arguments"], arguments)
 
     def test_slow_startup_is_allowed_and_checked(self):
         result = self.run_update("slow")
@@ -423,6 +447,31 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
                                               stdout=output, stderr=output, start_new_session=True)
         self.state.write_text(json.dumps({"pid": self.rebooted.pid}))
         self.wait_version("old")
+
+    def test_legacy_in_place_updater_is_not_used_after_bootstrap(self):
+        legacy = 'touch "$TEST_REPO/unsafe-in-place"; exit 91\n'
+        (self.kiosk / "update.sh").write_text(legacy)
+        self.git(self.repo, "config", "user.name", "Update test")
+        self.git(self.repo, "config", "user.email", "test@example.invalid")
+        self.git(self.repo, "commit", "-am", "legacy in-place updater")
+        self.old_head = self.git(self.repo, "rev-parse", "HEAD")
+        # The deploy target descends from the installed legacy revision and
+        # contains the new updater; the checkout itself must stay untouched.
+        self.git(self.upstream, "fetch", str(self.repo), "master")
+        self.git(self.upstream, "merge", "--no-edit", "FETCH_HEAD")
+        shutil.copy(KIOSK / "update.sh", self.upstream / "pi-kiosk/update.sh")
+        self.git(self.upstream, "commit", "-am", "release updater")
+        self.target = self.git(self.upstream, "rev-parse", "HEAD")
+        fetched = self.root / "bootstrap.sh"
+        shutil.copy(KIOSK / "update.sh", fetched)
+        result = self.run_update(script=fetched)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.kiosk / "update.sh").read_text(), legacy)
+        result = subprocess.run([sys.executable, str(self.repo / ".git/kiosk-launch.py"), "update", str(self.repo)],
+                                env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_version("new")
+        self.assertFalse((self.repo / "unsafe-in-place").exists())
 
     def test_bootstrap_uses_installed_clone(self):
         fetched = self.root / "bootstrap.sh"

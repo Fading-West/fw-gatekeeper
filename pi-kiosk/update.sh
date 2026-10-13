@@ -95,6 +95,9 @@ update_kiosk() {
     mv -f "$helper.next" "$helper"
     sync "$repo/.git"
   fi
+  if [ ! -f "$repo/.git/kiosk-arguments.json" ]; then
+    python3 "$helper" arguments "$repo" "$(systemctl show --property=MainPID --value fw-gatekeeper-kiosk)"
+  fi
   active=$(python3 "$helper" current "$repo")
   deployed=$(python3 "$helper" revision "$repo" "$old_head")
   git merge-base --is-ancestor "$deployed" "$target" || {
@@ -139,7 +142,7 @@ update_kiosk() {
   sync -f "$release"
   python3 "$helper" prepare "$repo" "$release/pi-kiosk" "$target" "$$"
 
-  # Migrates older setup units too. config_local.py supplies server/kiosk ID.
+  # Migrates older setup units too; the launcher retains their original arguments.
   # Publish a complete override atomically, leaving the base unit intact.
   override="$repo/.git/kiosk-unit.conf"
   cat > "$override" <<EOF
