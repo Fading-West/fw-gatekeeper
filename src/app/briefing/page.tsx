@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -53,10 +53,7 @@ function titleCase(value: string) {
 }
 
 function formatTime(value: string | null) {
-  if (!value) return 'No scan';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return formatFactoryLocalDateTime(value, 'No scan', { hour: 'numeric', minute: '2-digit' });
 }
 
 function formatGeneratedAt(value?: string) {

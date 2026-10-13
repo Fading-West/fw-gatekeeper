@@ -8,7 +8,11 @@ export function getLocalDateString(date = new Date()): string {
 export const DEFAULT_FACTORY_TIME_ZONE = 'America/Chicago';
 
 /** Format factory wall time without letting the viewer's DST rules alter it. */
-export function formatFactoryLocalDateTime(value: string | null | undefined, emptyLabel = '—'): string {
+export function formatFactoryLocalDateTime(
+  value: string | null | undefined,
+  emptyLabel = '—',
+  options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' },
+): string {
   if (!value) return emptyLabel;
   const timestamp = value.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T');
   const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp);
@@ -17,11 +21,8 @@ export function formatFactoryLocalDateTime(value: string | null | undefined, emp
   const date = new Date(hasOffset ? timestamp : `${timestamp}Z`);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString([], {
+    ...options,
     timeZone: hasOffset ? DEFAULT_FACTORY_TIME_ZONE : 'UTC',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
   });
 }
 
