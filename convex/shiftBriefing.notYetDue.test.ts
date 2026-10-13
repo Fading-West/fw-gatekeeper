@@ -195,4 +195,55 @@ describe('shift briefing does not mark workers missing before their shift starts
     vi.setSystemTime(new Date('2026-11-01T14:01:00Z')); // 08:01 CST
     expect(statusOf(await load(admin, '2026-11-01'), 'Avery')).toBe('missing');
   });
+
+  it('does not make a passed start not yet due again during the repeated DST hour', async () => {
+    at('2026-11-01T06:30:00Z'); // first 01:30, in CDT
+    const { admin } = await fixture([{ ...DAY_SHIFT, startTime: '01:30' }]);
+    const date = '2026-11-01';
+    expect(statusOf(await load(admin, date), 'Avery')).toBe('not_yet_due');
+
+    vi.setSystemTime(new Date('2026-11-01T06:31:00Z')); // first 01:31
+    expect(statusOf(await load(admin, date), 'Avery')).toBe('missing');
+    vi.setSystemTime(new Date('2026-11-01T07:10:00Z')); // repeated 01:10, in CST
+    expect(statusOf(await load(admin, date), 'Avery')).toBe('missing');
+    expect((await admin.query(api.shiftCloseouts.get, { date })).checklist.map((item: any) => item.id)).not.toContain('not_yet_due');
+  });
+
+  it('keeps a passed clock-out deadline due during the repeated DST hour', async () => {
+    at('2026-11-01T06:51:00Z'); // first 01:51, in CDT
+    const { t, admin, workers } = await fixture([{ ...DAY_SHIFT, startTime: '00:30', endTime: '01:50' }]);
+    const date = '2026-11-01';
+    await t.run(ctx => ctx.db.insert('attendance', { workerId: workers.Avery, eventType: 'clock_in', timestamp: `${date}T00:25:00`, synced: true }));
+    const missingClockOuts = async () => (await admin.query(api.shiftExceptions.summary, { date })).exceptions.filter((row: any) => row.type === 'missing_clock_out');
+    expect(await missingClockOuts()).toHaveLength(1);
+    vi.setSystemTime(new Date('2026-11-01T07:10:00Z')); // repeated 01:10, in CST
+    expect(await missingClockOuts()).toHaveLength(1);
+    expect((await admin.query(api.shiftCloseouts.get, { date })).summary.missing_clock_outs).toBe(1);
+  });
+
+  it('makes a skipped spring-forward start due when the factory clock jumps past it', async () => {
+    at('2026-03-08T07:59:59Z'); // 01:59:59 CST
+    const { admin } = await fixture([{ ...DAY_SHIFT, startTime: '02:30' }]);
+    const date = '2026-03-08';
+    expect(statusOf(await load(admin, date), 'Avery')).toBe('not_yet_due');
+    vi.setSystemTime(new Date('2026-03-08T08:00:00Z')); // 03:00:00 CDT
+    expect(statusOf(await load(admin, date), 'Avery')).toBe('missing');
+  });
+
+  it('allows closing a fully attended past day without acknowledging future shifts', async () => {
+    at('2026-09-04T05:05:00Z'); // 00:05 Central on the next factory day
+    const { t, admin, workers } = await fixture([DAY_SHIFT, SECOND_SHIFT]);
+    await t.run(async ctx => {
+      for (const [workerId, start, end] of [[workers.Avery, '07:55', '17:00'], [workers.Blake, '13:55', '22:00']]) {
+        await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${DATE}T${start}:00`, synced: true });
+        await ctx.db.insert('attendance', { workerId, eventType: 'clock_out', timestamp: `${DATE}T${end}:00`, synced: true });
+      }
+    });
+    const closeout = await admin.query(api.shiftCloseouts.get, { date: DATE });
+    expect(closeout.summary).toMatchObject({ expected: 2, present: 2, missing: 0, not_yet_due: 0 });
+    expect(closeout.blockers).toEqual([]);
+    expect(closeout.can_complete).toBe(true);
+    await admin.mutation(api.shiftCloseouts.save, { date: DATE, action: 'complete' });
+    expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).closeout?.status).toBe('completed');
+  });
 });

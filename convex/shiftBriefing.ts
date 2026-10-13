@@ -1,11 +1,11 @@
 import { isSupportedEncoding } from "../src/lib/encoding";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
-import { isSupportedScheduleTimeRange, scheduleTimeHasPassed, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 // not_yet_due: scheduled, no clock-in, and the factory clock has not reached
 // the scheduled start yet (same gate as shiftExceptions missing_arrival).
@@ -450,7 +450,7 @@ function buildHref(path: string, params: Record<string, string | null | undefine
 
 function getWorkerStatus(input: {
   date: string;
-  factoryNow: string;
+  hasScheduleTimePassed: (date: string, time: string) => boolean;
   schedule: any;
   firstIn: any | null;
   lastEvent: any | null;
@@ -458,7 +458,7 @@ function getWorkerStatus(input: {
   if (!input.firstIn) {
     // Mirror shiftExceptions: no missing arrival until the scheduled start has
     // passed on the factory clock (future dates and later shifts stay due later).
-    return scheduleTimeHasPassed(input.date, input.schedule?.startTime, input.factoryNow)
+    return input.hasScheduleTimePassed(input.date, input.schedule?.startTime)
       ? "missing"
       : "not_yet_due";
   }
@@ -471,9 +471,9 @@ function getWorkerStatus(input: {
 
 export async function buildShiftBriefing(ctx: any, date: string) {
     const dayOfWeek = getDayOfWeek(date);
-    // Same factory-local clock as buildShiftExceptions (Convex freezes Date
+    // Same clock as buildShiftExceptions (Convex freezes Date
     // within a query, so both builders see the same instant).
-    const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
+    const hasScheduleTimePassed = createScheduleTimeHasPassed(new Date().toISOString());
     const [workers, schedules, attendance, kiosks, exceptions, attendanceCorrections] = await Promise.all([
       ctx.db
         .query("workers")
@@ -529,10 +529,10 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       const events = eventsByWorker.get(workerId) || []; // Already chronological.
       const firstIn = events.find((event) => event.eventType === "clock_in") || null;
       const lastEvent = events[events.length - 1] || null;
-      const status = getWorkerStatus({ date, factoryNow, schedule, firstIn, lastEvent });
+      const status = getWorkerStatus({ date, hasScheduleTimePassed, schedule, firstIn, lastEvent });
       // Daily attendance survives clock-out; live coverage intentionally does not.
       if (firstIn) attended += 1;
-      if (getWorkerStatus({ date, factoryNow, schedule, firstIn, lastEvent: null }) === "late") arrivedLate += 1;
+      if (getWorkerStatus({ date, hasScheduleTimePassed, schedule, firstIn, lastEvent: null }) === "late") arrivedLate += 1;
       const department = normalizeText(worker.department) || "Unassigned";
       const departmentKey = `${department}:${schedule.name}:${schedule.startTime}:${schedule.endTime}`;
 

@@ -61,10 +61,10 @@ assert.match(briefing, /encodeURIComponent/, 'Shift briefing action links must e
 assert.match(briefing, /recognition_reviews:\s*recognitionReviews\.length/, 'Briefing summary should expose recognition review counts.');
 assert.match(scheduleTimes, /export function scheduleTimeHasPassed/, 'Schedule deadline gate must be shared from convex/scheduleTimes.ts.');
 assert.doesNotMatch(exceptions, /function scheduleTimeHasPassed/, 'Shift exceptions must reuse the shared schedule deadline gate instead of a private copy.');
-assert.match(exceptions, /scheduleTimeHasPassed\(date, schedule\.startTime, factoryNow\)/, 'Missing-arrival exceptions must stay gated on the scheduled start.');
-assert.match(briefing, /import \{[^}]*scheduleTimeHasPassed[^}]*\} from "\.\/scheduleTimes"/, 'Shift briefing must reuse the same schedule deadline gate as shift exceptions.');
-assert.match(briefing, /const factoryNow = getFactoryLocalTimestamp\(new Date\(\)\.toISOString\(\)\)!/, 'Shift briefing must evaluate worker status against the factory-local clock.');
-assert.match(briefing, /scheduleTimeHasPassed\(input\.date, input\.schedule\?\.startTime, input\.factoryNow\)[\s\S]*\? "missing"[\s\S]*: "not_yet_due"/, 'Unscanned workers must be not_yet_due, not missing, before their scheduled start.');
+assert.match(exceptions, /hasScheduleTimePassed\(date, schedule\.startTime\)/, 'Missing-arrival exceptions must stay gated on the scheduled start.');
+assert.match(briefing, /import \{[^}]*createScheduleTimeHasPassed[^}]*\} from "\.\/scheduleTimes"/, 'Shift briefing must reuse the same schedule deadline gate as shift exceptions.');
+assert.match(briefing, /const hasScheduleTimePassed = createScheduleTimeHasPassed\(new Date\(\)\.toISOString\(\)\)/, 'Shift briefing must preserve the current instant for factory schedule deadlines.');
+assert.match(briefing, /input\.hasScheduleTimePassed\(input\.date, input\.schedule\?\.startTime\)[\s\S]*\? "missing"[\s\S]*: "not_yet_due"/, 'Unscanned workers must be not_yet_due, not missing, before their scheduled start.');
 assert.match(briefing, /if \(status === "not_yet_due"\) notYetDue \+= 1/, 'Briefing summary must count not-yet-due workers separately from missing.');
 assert.match(briefing, /row\.status !== "covered" && row\.status !== "not_yet_due"/, 'Departments whose shift has not started must not raise coverage actions.');
 assert.match(briefing, /daily_attendance: \{[^}]*missing,[^}]*not_yet_due: notYetDue/, 'Daily attendance must apply the same not-yet-due gate to missing.');
