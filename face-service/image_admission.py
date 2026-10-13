@@ -5,8 +5,8 @@ has already read and parsed its JSON body. Three concurrent maximum-size
 /encode requests measured ~535 MiB in the service process, above Render's
 512 MB instance. Admit image requests by declared body size instead: portal
 captures (three 640px JPEGs, well under 1 MB) are never refused for one another,
-while a second maximum-size request is refused without its body being buffered
-or parsed. Actual received bytes enforce the same limit for chunked or
+while maximum-size requests run alone and additional work is refused without
+its body being buffered or parsed. Actual received bytes enforce the same limit for chunked or
 underdeclared bodies; no single body may exceed the budget. Authentication
 also happens before FastAPI reads JSON.
 """
@@ -22,10 +22,13 @@ from face_auth import FACE_SERVICE_KEY_HEADER, get_configured_face_service_key, 
 IMAGE_PATHS = frozenset({"/encode", "/match"})
 # One maximum /encode body (6 x 4,000,000 characters plus JSON) and ~8 MB more.
 IN_FLIGHT_BODY_BUDGET = 32 * 1024 * 1024
-# Match rosters contain at most 1001 x 512 numbers, checked before JSON object
-# allocation. Even short float spellings need room for the parsed roster, so
+# Trusted match callers send at most 1001 x 512 numbers. Even short float
+# spellings need room for the parsed roster, so
 # reserve at least half the budget rather than weighting only the wire bytes.
 MATCH_MIN_RESERVATION = 16 * 1024 * 1024
+# Photo strings can use four bytes per character in CPython (e.g. Unicode junk).
+# Leave parsing/decode headroom by running large enrollment bodies alone.
+ENCODE_EXCLUSIVE_THRESHOLD = 16 * 1024 * 1024
 MAX_REQUEST_BODY_BYTES = 6 * 4_000_000 + 64 * 1024
 
 
@@ -92,7 +95,12 @@ class ImageAdmissionMiddleware:
         minimum = min(self.budget, MATCH_MIN_RESERVATION) if path == "/match" else 0
         # Unknown framing returns body_limit; reserve the entire shared budget
         # until completion (also conservative for an exactly-at-limit body).
-        size = self.budget if declared == body_limit else max(declared, minimum)
+        def reservation(body_bytes):
+            if path == "/encode" and body_bytes > ENCODE_EXCLUSIVE_THRESHOLD:
+                return self.budget
+            return max(body_bytes, minimum)
+
+        size = self.budget if declared == body_limit else reservation(declared)
         with self._lock:
             admitted = self.in_flight + size <= self.budget
             if admitted:
@@ -114,7 +122,7 @@ class ImageAdmissionMiddleware:
                 # more bytes than Content-Length promised.
                 else:
                     with self._lock:
-                        extra = max(0, received - size)
+                        extra = max(0, reservation(received) - size)
                         if self.in_flight + extra > self.budget:
                             status = 503
                         else:

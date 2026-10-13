@@ -43,7 +43,6 @@ RUN mkdir -p /app/models && \
 COPY model_pinning.py ./
 COPY main.py face_auth.py enrollment_quality.py ./
 COPY face_detection.py image_admission.py ./
-COPY bounded_json.py ./
 
 EXPOSE 5557
 

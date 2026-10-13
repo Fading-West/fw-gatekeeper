@@ -11,4 +11,3 @@ requests==2.34.2
 # Native HOG crop parity (the image job also exercises the real ONNX model).
 cmake==3.31.6
 dlib==20.0.1
-ijson==3.4.0.post0

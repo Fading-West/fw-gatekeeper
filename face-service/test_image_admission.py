@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from starlette.exceptions import HTTPException
 
-from image_admission import (IN_FLIGHT_BODY_BUDGET, MATCH_MIN_RESERVATION,
+from image_admission import (ENCODE_EXCLUSIVE_THRESHOLD, IN_FLIGHT_BODY_BUDGET, MATCH_MIN_RESERVATION,
                              ImageAdmissionMiddleware, declared_body_size)
 from starlette.datastructures import Headers
 
@@ -70,22 +70,48 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         first = await self.hold(gate, held, request(size=MAX_ENCODE_BODY))
         try:
             self.assertTrue(await rejected(gate, request(size=MAX_ENCODE_BODY)))
+            self.assertTrue(await rejected(gate, request(size=PORTAL_BODY)))
             self.assertTrue(await rejected(gate, request("/match", size=MAX_ENCODE_BODY // 4)))
         finally:
             held.release.set()
             await first
         self.assertEqual(gate.in_flight, 0)
 
-    async def test_portal_sized_requests_run_concurrently_even_beside_a_maximum_request(self):
+    async def test_portal_sized_requests_run_concurrently(self):
         held = Held()
         gate = ImageAdmissionMiddleware(held)
-        tasks = [await self.hold(gate, held, request(size=MAX_ENCODE_BODY))]
+        tasks = []
         for _ in range(10):
             tasks.append(await self.hold(gate, held, request(size=PORTAL_BODY)))
         self.assertLessEqual(gate.in_flight, IN_FLIGHT_BODY_BUDGET)
         held.release.set()
         await asyncio.gather(*tasks)
         self.assertEqual(gate.in_flight, 0)
+
+    async def test_underdeclared_large_enrollment_upgrades_to_exclusive_reservation(self):
+        chunk = {"type": "http.request", "body": b"x" * (ENCODE_EXCLUSIVE_THRESHOLD + 1)}
+        for occupied in (False, True):
+            with self.subTest(occupied=occupied):
+                held = Held()
+                gate = ImageAdmissionMiddleware(held)
+                first = await self.hold(gate, held, request(size=PORTAL_BODY)) if occupied else None
+                async def read(scope, receive, send):
+                    await receive()
+                    self.assertEqual(gate.in_flight, IN_FLIGHT_BODY_BUDGET)
+                gate.app = read
+                try:
+                    if occupied:
+                        with self.assertRaises(HTTPException) as error:
+                            await gate(request(size=1), AsyncMock(return_value=chunk), AsyncMock())
+                        self.assertEqual(error.exception.status_code, 503)
+                        self.assertEqual(gate.in_flight, PORTAL_BODY)
+                    else:
+                        await gate(request(size=1), AsyncMock(return_value=chunk), AsyncMock())
+                finally:
+                    if first:
+                        held.release.set()
+                        await first
+                self.assertEqual(gate.in_flight, 0)
 
     async def test_unknown_body_size_counts_as_the_full_budget(self):
         for framing in ([], [(b"transfer-encoding", b"chunked")],
@@ -125,7 +151,7 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
                        AsyncMock(return_value={"type": "http.request", "body": b"invalid JSON"}), send)
             self.assertEqual(send.await_args_list[0].args[0]["status"], 401)
             self.assertEqual(inner.await_count, 1)
-            self.assertEqual(gate.in_flight, MAX_ENCODE_BODY)
+            self.assertEqual(gate.in_flight, IN_FLIGHT_BODY_BUDGET)
         finally:
             held.release.set()
             await first
@@ -289,13 +315,6 @@ class ImageAdmissionEndpointTests(unittest.TestCase):
         self.assertEqual(self.client.post("/encode", content=b"invalid JSON", headers={
             **headers, "content-type": "application/json"}).status_code, 422)
         self.assertEqual(self.client.post("/encode", json={"photos": []}, headers=headers).status_code, 422)
-        for body in (
-            b'{"photos":["a"],"ignored":"\\ud800"}',
-            b'{"ignored":' + b'[' * 40 + b'0' + b']' * 40 + b'}',
-        ):
-            self.assertEqual(self.client.post("/encode", content=body, headers={
-                **headers, "content-type": "application/json"}).status_code, 422)
-            self.assertEqual(self.gate.in_flight, 0)
         self.assertEqual(self.client.post("/encode", json={"photos": ["bad", "bad"]}, headers=headers).status_code, 422)
         with patch.object(self.main, "_inspect_enrollment_photo", side_effect=HTTPException(503, "unavailable")):
             self.assertEqual(self.client.post("/encode", json={"photos": ["a", "b"]}, headers=headers).status_code, 503)

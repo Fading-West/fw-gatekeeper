@@ -117,15 +117,23 @@ request and tests oversized chunked and unauthenticated bodies.
 
 A separate `/match` request with 15,500 512-d vectors (30.9 MiB body)
 peaked at **687 MiB**, demonstrating that raw-body accounting alone does not
-bound parsed numeric rosters. Round 1's 8 MiB limit was too small for the supported
-production roster; round 2 restores the 24,065,536-byte allowance and bounds the
-roster to 1,001 workers, each with at most 512 numbers. A streaming ijson pass
-checks array lengths, scalar types, nesting, key/string lengths and total events
-before FastAPI allocates objects. This also rejects hostile compact arrays before
-they expand. Each match reserves at least 16 MiB against the shared 32 MiB budget.
-Authentication/admission applies under an ASGI root path too. Refused uploads
-and body overflows respond without draining, so a slow client cannot indefinitely
-delay rejection or retain a rejected request's reservation.
+bound arbitrary parsed numeric rosters. That payload exceeds the supported
+1,001-worker roster and current body cap. Each match reserves at least 16 MiB
+against the shared 32 MiB budget. Authentication/admission applies under an
+ASGI root path too. Refused uploads and body overflows respond without draining,
+so a slow client cannot indefinitely delay rejection or retain a rejected
+request's reservation.
+
+Round 5 removes the custom structural preflight and ijson dependency. Subsequent
+reviews repeatedly found parser crashes, validation incompatibilities and a
+read-ahead OOM. The authenticated portal server constructs JSON from bounded
+photo strings; browsers and kiosks never receive the shared secret. Structurally
+hostile JSON therefore requires the secret holder to violate the trusted-caller
+contract. FastAPI now parses normally, with Pydantic validating the supported
+roster afterward. Compact or deeply nested hostile JSON from a secret holder
+can still exhaust memory; see the explicit trust assumption in the service
+README. Photo contents remain untrusted. The earlier rounds' evidence files
+record historical implementations, not the final parsing policy.
 
 The current portal/Convex callers use `/encode` and `/health`; neither calls
 `/match`. Both kiosk callers use local ONNX matching. Nevertheless, the match
@@ -141,21 +149,25 @@ JavaScript `JSON.stringify` produced **14,815,831 bytes** for the same payload
 (longest observed float spelling: 23 characters). Tests accept the Python body
 with Content-Length and chunked framing.
 
-The expanded HTTP check uses one uvicorn worker pinned to one core, real HOG and
-ONNX, a noisy near-limit 4 MP photo, 1,001-worker rosters with realistic long float
-spellings and compact `0.1` spellings, two admitted full rosters plus one refused
-roster, and matching beside four-photo enrollment. A locally rerun process peaked
-at **421.2 MiB** across all these workloads (the final rerun peaked at 411.9 MiB);
-statuses were the expected 200/503,
-413 for oversized bodies and 422 for hostile numeric arrays. Docker CI repeats
-the complete check under its 512 MiB hard limit and requires peak RSS <450 MiB.
+The final HTTP check uses one uvicorn worker pinned to one core, real HOG and
+ONNX, a noisy 4 MP JPEG padded with legal comment segments to 3,999,999
+characters, 1,001-worker rosters with realistic long float spellings and compact
+`0.1` spellings, two admitted full rosters plus one refused roster, and matching
+beside four-photo enrollment. Enrollment bodies above 16 MiB reserve the entire
+budget and run alone, including when actual bytes exceed the declared size.
+Separate local probes cover maximum-length Unicode photo strings, which the
+portal can forward. These remain untrusted photo contents and fail base64
+decoding with 422. They are recorded separately from the legitimate traffic
+CI workload. Docker CI repeats the complete check under its 512 MiB hard limit and requires peak RSS <450 MiB.
+Round 5's measurements and final review are recorded in
+`evidence/face-crop-parity/sol-review-round5.txt`.
 
 Overlap: PR #152 adds a 24,065,536-byte body cap and a 1,001-worker roster cap to
 `main.py`; these limits now agree. Its oversized-body-before-auth precedence
 differs: this PR intentionally authenticates first (401 for invalid credentials,
 503 without `Retry-After` for missing configuration), then checks declared/actual
-bytes and JSON structure. Keep a single admission/structure implementation when
-reconciling #152; its tests expecting pre-auth 413 or draining semantics require
+bytes, followed by normal JSON parsing/validation. Keep a single admission
+implementation when reconciling #152; its tests expecting pre-auth 413 or draining semantics require
 reconciliation. PR #149 adds `telemetry={"auto_configure": False}` to FastAPI
 construction and an OTEL startup CI test; those changes are independent of the
 crop/memory behavior and should be retained when resolving the shared-file edits.
