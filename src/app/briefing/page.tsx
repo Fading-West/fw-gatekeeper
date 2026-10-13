@@ -204,7 +204,9 @@ function getRoleSafeRiskHref(risk: ShiftTrustBriefRisk, role: PortalRole | undef
 
 function ShiftBriefingPageContent() {
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  // Keep this visit's default day stable so midnight cannot discard unsaved work.
+  const [initialDate] = useState(getFactoryLocalDateString);
+  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
   const queryDepartment = searchParams.get('department') || 'all';
   const queryStatus = validWorkerStatusParam(searchParams.get('status'));
   const currentRole = usePortalRole();
@@ -214,9 +216,12 @@ function ShiftBriefingPageContent() {
 
   useEffect(() => {
     setDate(queryDate);
+  }, [queryDate]);
+
+  useEffect(() => {
     setDepartment(queryDepartment);
     setStatus(queryStatus);
-  }, [queryDate, queryDepartment, queryStatus]);
+  }, [queryDepartment, queryStatus]);
 
   const loadBriefing = useCallback(async (signal: AbortSignal): Promise<ShiftBriefingResponse> => {
     const res = await fetch(`/api/shift-briefing?date=${date}`, { cache: 'no-store', signal });

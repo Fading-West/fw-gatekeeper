@@ -29,7 +29,9 @@ function LogPageContent() {
   const role = usePortalRole();
   const canReverse = role === 'admin' || role === 'enrollment';
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  // Keep this visit's default day stable so midnight cannot discard unsaved work.
+  const [initialDate] = useState(getFactoryLocalDateString);
+  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
   const queryWorkerId = searchParams.get('worker_id') || '';
   const queryAttendanceId = searchParams.get('attendance_id') || '';
   const [date, setDate] = useState(queryDate);

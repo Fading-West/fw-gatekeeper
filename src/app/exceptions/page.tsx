@@ -173,7 +173,9 @@ function exceptionRowId(key: string) {
 function ExceptionsPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  // Keep this visit's default day stable so midnight cannot discard unsaved work.
+  const [initialDate] = useState(getFactoryLocalDateString);
+  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
   const queryDepartment = searchParams.get('department') || 'all';
   const queryType = searchParams.get('type') || 'all';
   const querySeverity = validSeverityParam(searchParams.get('severity'));
@@ -200,11 +202,14 @@ function ExceptionsPageContent() {
 
   useEffect(() => {
     setDate(queryDate);
+  }, [queryDate]);
+
+  useEffect(() => {
     setDepartment(queryDepartment);
     setType(queryType);
     setSeverity(querySeverity);
     setStatus(queryStatus);
-  }, [queryDate, queryDepartment, querySeverity, queryStatus, queryType]);
+  }, [queryDepartment, querySeverity, queryStatus, queryType]);
 
   const loadExceptions = useCallback(async (signal: AbortSignal): Promise<ShiftExceptionsResponse> => {
     const res = await fetch(`/api/shift-exceptions?date=${date}`, { cache: 'no-store', signal });

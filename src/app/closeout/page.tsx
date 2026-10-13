@@ -161,7 +161,9 @@ function getCloseoutNextStep({
 function ShiftCloseoutPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  // Keep this visit's default day stable so midnight cannot discard unsaved work.
+  const [initialDate] = useState(getFactoryLocalDateString);
+  const queryDate = validDateParam(searchParams.get('date')) || initialDate;
   const currentRole = usePortalRole();
   const [date, setDate] = useState(queryDate);
   const [supervisorName, setSupervisorName] = useState('');
