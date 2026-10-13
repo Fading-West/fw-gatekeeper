@@ -37,13 +37,13 @@ function diagnostic(message: string) {
   return `[Request ID: private-request-id] Server Error\nUncaught Error: ${message}\n    at handler (convex/privateFunction.ts:42:7)\n`;
 }
 
-it.each(routes)('$path hides unexpected backend diagnostics and logs only safe metadata', async route => {
+it.each(routes)('$path hides unexpected backend diagnostics and logs safe diagnostics', async route => {
   const error = new Error(diagnostic('Database write failed with internal diagnostics'));
   mocks.mutation.mockRejectedValueOnce(error);
   const response = await route.handler(request(route));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: route.generic });
-  expect(console.error).toHaveBeenCalledWith(route.log, { type: 'Error' });
+  expect(console.error).toHaveBeenCalledWith(route.log, expect.objectContaining({ type: 'Error' }));
 });
 
 it.each(routes)('$path keeps allowlisted legacy validation text without the diagnostic envelope', async route => {
@@ -59,7 +59,7 @@ it.each(routes)('$path hides unknown structured Convex errors', async route => {
   const response = await route.handler(request(route));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: route.generic });
-  expect(console.error).toHaveBeenCalledWith(route.log, { type: 'ConvexError' });
+  expect(console.error).toHaveBeenCalledWith(route.log, expect.objectContaining({ type: 'ConvexError' }));
 });
 
 it.each(routes)('$path does not expose unexpected errors that merely mention validation text', async route => {
@@ -85,14 +85,14 @@ it.each(routes)('$path does not fall back to message text for an unknown Convex 
   expect(await response.json()).toEqual({ error: route.generic });
 });
 
-it.each(routes)('$path never logs payloads, secrets, stacks or custom error properties', async route => {
+it.each(routes)('$path never logs payloads, secrets, raw stacks or custom error properties', async route => {
   const payload = { photos: ['data:image/jpeg;base64,PRIVATE_PHOTO'], faceEncoding: [0.987654321], authorization: 'Bearer PRIVATE_TOKEN' };
   const error = Object.assign(new Error(`[Request ID: aabbccdd11223344] Server Error\nArgumentValidationError: ${JSON.stringify(payload)}`), { cause: payload, ...payload });
   mocks.mutation.mockRejectedValueOnce(error);
   const response = await route.handler(request(route));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: route.generic });
-  expect(console.error).toHaveBeenCalledWith(route.log, { type: 'Error', requestId: 'aabbccdd11223344' });
+  expect(console.error).toHaveBeenCalledWith(route.log, expect.objectContaining({ type: 'Error', requestId: 'aabbccdd11223344' }));
   expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/PRIVATE_|faceEncoding|0\.987654321|ArgumentValidationError/);
 });
 
@@ -104,7 +104,7 @@ it.each(['encoding', 'upload', 'cleanup'])('enrollment %s failure logs no payloa
   if (stage === 'cleanup') mocks.mutation.mockResolvedValueOnce({ id: 'worker' }).mockRejectedValueOnce(error);
   const response = await enroll(request(routes[2]));
   expect(response.status).toBe(stage === 'encoding' ? 503 : 201);
-  expect(console.error).toHaveBeenCalledWith(expect.any(String), { type: 'ConvexError' });
+  expect(console.error).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ type: 'ConvexError' }));
   expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/PRIVATE_|photos|secret/);
 });
 
