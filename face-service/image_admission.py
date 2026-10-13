@@ -12,6 +12,7 @@ also happens before FastAPI reads JSON.
 """
 import threading
 
+from starlette._utils import get_route_path
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
@@ -21,9 +22,11 @@ from face_auth import FACE_SERVICE_KEY_HEADER, get_configured_face_service_key, 
 IMAGE_PATHS = frozenset({"/encode", "/match"})
 # One maximum /encode body (6 x 4,000,000 characters plus JSON) and ~8 MB more.
 IN_FLIGHT_BODY_BUDGET = 32 * 1024 * 1024
-# JSON float vectors and matching arrays cost substantially more than base64
-# strings: a valid 30.9 MiB /match roster measured 687 MiB peak RSS.
-MATCH_BODY_WEIGHT = 4
+# Match rosters contain at most 1001 x 512 numbers, checked before JSON object
+# allocation. Even short float spellings need room for the parsed roster, so
+# reserve at least half the budget rather than weighting only the wire bytes.
+MATCH_MIN_RESERVATION = 16 * 1024 * 1024
+MAX_REQUEST_BODY_BYTES = 6 * 4_000_000 + 64 * 1024
 
 
 def declared_body_size(headers: Headers, budget: int) -> int:
@@ -52,11 +55,8 @@ def body_error(status):
 
 
 async def refuse(scope, receive, send, status):
-    # Drain without buffering, including after a partly consumed oversized body.
-    while True:
-        message = await receive()
-        if message["type"] != "http.request" or not message.get("more_body", False):
-            break
+    # Respond immediately. Uvicorn discards unread input after the response;
+    # draining first lets a slow/chunked client delay rejection indefinitely.
     error = body_error(status)
     response = JSONResponse({"detail": error.detail}, status_code=status, headers=error.headers)
     await response(scope, receive, send)
@@ -70,24 +70,29 @@ class ImageAdmissionMiddleware:
         self._lock = threading.Lock()
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] not in IMAGE_PATHS:
+        path = get_route_path(scope) if scope["type"] == "http" else None
+        if scope["type"] != "http" or scope["method"] != "POST" or path not in IMAGE_PATHS:
             await self.app(scope, receive, send)
             return
         headers = Headers(scope=scope)
         if not get_configured_face_service_key():
-            await refuse(scope, receive, send, 503)
+            await JSONResponse({"detail": "Face service authentication is not configured"},
+                               status_code=503)(scope, receive, send)
             return
         if not is_valid_face_service_key(headers.get(FACE_SERVICE_KEY_HEADER)):
             # FastAPI reads JSON before running endpoint dependencies. Reject here
             # so unauthenticated bodies are never buffered or parsed.
             await refuse(scope, receive, send, 401)
             return
-        weight = MATCH_BODY_WEIGHT if scope["path"] == "/match" else 1
-        body_limit = self.budget // weight
-        size = declared_body_size(headers, body_limit) * weight
-        if size > self.budget:
+        body_limit = min(self.budget, MAX_REQUEST_BODY_BYTES)
+        declared = declared_body_size(headers, body_limit)
+        if declared > body_limit:
             await refuse(scope, receive, send, 413)
             return
+        minimum = min(self.budget, MATCH_MIN_RESERVATION) if path == "/match" else 0
+        # Unknown framing returns body_limit; reserve the entire shared budget
+        # until completion (also conservative for an exactly-at-limit body).
+        size = self.budget if declared == body_limit else max(declared, minimum)
         with self._lock:
             admitted = self.in_flight + size <= self.budget
             if admitted:
@@ -109,18 +114,13 @@ class ImageAdmissionMiddleware:
                 # more bytes than Content-Length promised.
                 else:
                     with self._lock:
-                        extra = max(0, received * weight - size)
+                        extra = max(0, received - size)
                         if self.in_flight + extra > self.budget:
                             status = 503
                         else:
                             self.in_flight += extra
                             size += extra
                 if status is not None:
-                    if message.get("more_body", False):
-                        while True:
-                            remaining = await receive()
-                            if remaining["type"] != "http.request" or not remaining.get("more_body", False):
-                                break
                     # FastAPI propagates HTTPException from body reads instead
                     # of replacing it with a generic JSON parsing error.
                     raise body_error(status)

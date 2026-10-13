@@ -31,6 +31,7 @@ from model_pinning import REC_MODEL_URL, REC_MODEL_SHA256, ensure_pinned_model
 
 from face_detection import DETECTOR_VERSION, detect_faces_hog
 from image_admission import ImageAdmissionMiddleware
+from bounded_json import BoundedImageJsonRoute, MAX_MATCH_ENCODINGS, EMBEDDING_DIMENSIONS
 
 from enrollment_quality import (
     MIN_GOOD_PHOTOS,
@@ -58,6 +59,7 @@ async def service_lifespan(_app):
 
 
 app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
+app.router.route_class = BoundedImageJsonRoute
 # Inner to CORS: bound bodies of concurrent image requests before they are parsed.
 app.add_middleware(ImageAdmissionMiddleware)
 app.add_middleware(
@@ -144,11 +146,11 @@ class EncodeResponse(BaseModel):
 
 class WorkerEncoding(BaseModel):
     worker_id: str
-    encoding: list[float]
+    encoding: list[float] = Field(max_length=EMBEDDING_DIMENSIONS)
 
 class MatchRequest(BaseModel):
-    photo: str
-    encodings: list[WorkerEncoding]
+    photo: str = Field(max_length=4_000_000)
+    encodings: list[WorkerEncoding] = Field(max_length=MAX_MATCH_ENCODINGS)
 
 class MatchResult(BaseModel):
     worker_id: str

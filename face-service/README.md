@@ -146,14 +146,21 @@ ONNX uses one inference thread. Enrollment and match image work is serialized
 so concurrent requests do not hold multiple HOG pyramids/decoded arrays at once.
 Authenticated image requests are also admitted by declared body size (32 MiB in
 flight; `image_admission.py`). Actual received bytes are checked as well:
-bodies exceeding 32 MiB for `/encode` or 8 MiB for `/match` get 413, including chunked requests without a declared
+bodies exceeding 24,065,536 bytes get 413, including chunked requests without a declared
 length. Invalid credentials are rejected before JSON parsing. Excess concurrent requests get 503 with
 `Retry-After: 5`; normal portal captures are far below the budget.
-`/match` bodies reserve four times their byte size to account for parsed numeric
-rosters and matching arrays; the kiosk matches its roster locally and does not
-call this endpoint.
+`/match` accepts up to 1,001 workers with at most 512 numbers per vector and a
+four-million-character photo. Its reservation is the larger of its wire size
+and 16 MiB, allowing two compact full rosters at once. Unknown-length bodies
+reserve the entire budget. `bounded_json.py` uses hash-pinned ijson to check array
+sizes, scalar types, nesting, key/string lengths and total values before FastAPI
+allocates JSON objects. Invalid structures return 422. Rejections respond
+immediately without waiting for the rest of an upload. The kiosk matches its
+roster locally; the current portal calls only `/encode`.
 `scripts/check-face-service-memory.py` measures maximum and mixed-size concurrent
-requests, oversized chunked bodies and invalid credentials over HTTP in CI.
+requests, full 1,001-worker rosters with long and short float spellings, mixed
+matching/enrollment concurrency, oversized chunked bodies, invalid credentials
+and hostile numeric arrays over HTTP in CI, using one uvicorn worker on one core.
 The public health endpoint identifies this detector as
 `dlib-20.0.1-hog-half-upsample1-pad25-v1`; this is diagnostic metadata, not stored
 template versioning. No schema or kiosk pipeline changes are included.

@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 from starlette.exceptions import HTTPException
 
-from image_admission import IN_FLIGHT_BODY_BUDGET, ImageAdmissionMiddleware, declared_body_size
+from image_admission import (IN_FLIGHT_BODY_BUDGET, MATCH_MIN_RESERVATION,
+                             ImageAdmissionMiddleware, declared_body_size)
 from starlette.datastructures import Headers
 
 KEY = b"test-key"
@@ -35,7 +36,7 @@ class Held:
 
 
 async def rejected(gate, scope):
-    # The refused body is drained chunk by chunk and never reaches the endpoint.
+    # Rejections never wait for the refused body or reach the endpoint.
     chunks = [{"type": "http.request", "body": b"x" * 1024, "more_body": True}] * 3
     receive = AsyncMock(side_effect=chunks + [{"type": "http.request", "body": b"", "more_body": False}])
     send = AsyncMock()
@@ -45,7 +46,7 @@ async def rejected(gate, scope):
         await gate(scope, receive, send)
     finally:
         gate.app = calls
-    if receive.await_count != 4:
+    if receive.await_count != 0:
         return False
     start = send.await_args_list[0].args[0]
     return start["status"] == 503 and (b"retry-after", b"5") in start["headers"]
@@ -149,7 +150,7 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
             held.release.set()
             await first
         send = AsyncMock()
-        await gate(request("/match", size=3), AsyncMock(return_value={"type": "http.request"}), send)
+        await gate(request("/match", size=9), AsyncMock(return_value={"type": "http.request"}), send)
         self.assertEqual(send.await_args_list[0].args[0]["status"], 413)
         self.assertEqual(gate.in_flight, 0)
 
@@ -168,7 +169,7 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(HTTPException) as error:
                     await gate(request(size=size), receive, AsyncMock())
                 self.assertEqual(error.exception.status_code, 413)
-                self.assertEqual(receive.await_count, 3)
+                self.assertEqual(receive.await_count, 2)
                 self.assertEqual(gate.in_flight, 0)
 
     async def test_actual_bytes_cannot_exceed_concurrent_reservations(self):
@@ -206,6 +207,37 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(gate(request(size=1), receive, AsyncMock()))
         await entered.wait()
         self.assertEqual(gate.in_flight, 4)
+        release.set()
+        await task
+        self.assertEqual(gate.in_flight, 0)
+
+    async def test_compact_rosters_reserve_space_for_objects_and_release_on_cancel(self):
+        held = Held()
+        gate = ImageAdmissionMiddleware(held)
+        tasks = [await self.hold(gate, held, request("/match", size=2_100_000)) for _ in range(2)]
+        self.assertEqual(gate.in_flight, 2 * MATCH_MIN_RESERVATION)
+        self.assertTrue(await rejected(gate, request("/match", size=2_100_000)))
+        tasks[0].cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await tasks[0]
+        self.assertEqual(gate.in_flight, MATCH_MIN_RESERVATION)
+        tasks.append(await self.hold(gate, held, request("/match", size=12_000_000)))
+        held.release.set()
+        await asyncio.gather(*tasks[1:])
+        self.assertEqual(gate.in_flight, 0)
+
+    async def test_reservation_lasts_until_streamed_response_completes(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def stream(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            entered.set()
+            await release.wait()
+            await send({"type": "http.response.body", "body": b"done"})
+        gate = ImageAdmissionMiddleware(stream, budget=8)
+        task = asyncio.create_task(gate(request(size=8), AsyncMock(), AsyncMock()))
+        await entered.wait()
+        self.assertEqual(gate.in_flight, 8)
         release.set()
         await task
         self.assertEqual(gate.in_flight, 0)

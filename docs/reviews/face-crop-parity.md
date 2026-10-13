@@ -98,10 +98,10 @@ photos per request, one pinned core) peaked at **288 MiB** for one request,
 **424 MiB** for two concurrent requests and **498–535 MiB** for three, at or
 above the 512 MB instance (master's Haar service: 382/638/914 MiB). `image_admission.py` therefore
 admits authenticated `/encode` and `/match` requests by declared body size
-(32 MiB in flight, with a hard 32 MiB limit on each received body). Portal captures (three 640px JPEGs,
+(32 MiB in flight, with a hard 24,065,536-byte limit on each received body). Portal captures (three 640px JPEGs,
 ~45 KB each) are never refused for one another; a second maximum-size request
-gets 503 with `Retry-After`; its body is discarded chunk by chunk, never
-buffered or parsed. With admission, three
+gets 503 with `Retry-After`; the response completes immediately and uvicorn
+discards unread input. With admission, three
 concurrent maximum requests returned one 200 and two 503s and peaked at
 **303 MiB**; five concurrent portal-sized requests all returned 200 (184 MiB). CI runs
 `scripts/check-face-service-memory.py` in the built image under 512 MiB.
@@ -115,12 +115,50 @@ discards its decoded frame before releasing the image lock. The HTTP memory
 check additionally fills the budget with a maximum request plus a two-photo
 request and tests oversized chunked and unauthenticated bodies.
 
-A separate valid `/match` request with 15,500 512-d vectors (30.9 MiB body)
+A separate `/match` request with 15,500 512-d vectors (30.9 MiB body)
 peaked at **687 MiB**, demonstrating that raw-body accounting alone does not
-bound parsed numeric rosters. `/match` is now limited to 8 MiB and reserves
-four times its body size against the shared 32 MiB budget. The kiosk performs
-matching locally, so this does not limit its roster. CI also checks a near-limit
-HTTP matching roster and concurrent smaller matching requests.
+bound parsed numeric rosters. Round 1's 8 MiB limit was too small for the supported
+production roster; round 2 restores the 24,065,536-byte allowance and bounds the
+roster to 1,001 workers, each with at most 512 numbers. A streaming ijson pass
+checks array lengths, scalar types, nesting, key/string lengths and total events
+before FastAPI allocates objects. This also rejects hostile compact arrays before
+they expand. Each match reserves at least 16 MiB against the shared 32 MiB budget.
+Authentication/admission applies under an ASGI root path too. Refused uploads
+and body overflows respond without draining, so a slow client cannot indefinitely
+delay rejection or retain a rejected request's reservation.
+
+The current portal/Convex callers use `/encode` and `/health`; neither calls
+`/match`. Both kiosk callers use local ONNX matching. Nevertheless, the match
+contract must accommodate the roster allowed by `convex/workers.ts`: its identity
+scan permits 1,000 existing workers and one final insertion. A full roster has
+**512,512 numbers**. Normalized binary64 values serialized by JavaScript/Python
+can need roughly 20–25 characters each, plus separators and 1,001 IDs/row wrappers.
+A conservative 25-character spelling plus one comma per number, 128 bytes per
+row and a 4,000,000-character photo totals **17,453,440 bytes**, below the restored
+cap but above 8 MiB. A generated normalized-vector roster with 32-character IDs
+and the maximum photo measured **15,331,348 bytes** with Python JSON encoding.
+JavaScript `JSON.stringify` produced **14,815,831 bytes** for the same payload
+(longest observed float spelling: 23 characters). Tests accept the Python body
+with Content-Length and chunked framing.
+
+The expanded HTTP check uses one uvicorn worker pinned to one core, real HOG and
+ONNX, a noisy near-limit 4 MP photo, 1,001-worker rosters with realistic long float
+spellings and compact `0.1` spellings, two admitted full rosters plus one refused
+roster, and matching beside four-photo enrollment. A locally rerun process peaked
+at **421.2 MiB** across all these workloads (the final rerun peaked at 411.9 MiB);
+statuses were the expected 200/503,
+413 for oversized bodies and 422 for hostile numeric arrays. Docker CI repeats
+the complete check under its 512 MiB hard limit and requires peak RSS <450 MiB.
+
+Overlap: PR #152 adds a 24,065,536-byte body cap and a 1,001-worker roster cap to
+`main.py`; these limits now agree. Its oversized-body-before-auth precedence
+differs: this PR intentionally authenticates first (401 for invalid credentials,
+503 without `Retry-After` for missing configuration), then checks declared/actual
+bytes and JSON structure. Keep a single admission/structure implementation when
+reconciling #152; its tests expecting pre-auth 413 or draining semantics require
+reconciliation. PR #149 adds `telemetry={"auto_configure": False}` to FastAPI
+construction and an OTEL startup CI test; those changes are independent of the
+crop/memory behavior and should be retained when resolving the shared-file edits.
 
 CPU per photo on one host core: HOG at 640×480 57 ms, 1280×720 178 ms,
 2000×2000 880 ms. A real portal request (three 640×480 photos) used 1.4 s of

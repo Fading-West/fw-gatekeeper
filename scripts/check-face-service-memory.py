@@ -9,6 +9,7 @@ image under a 512 MiB container limit:
 """
 import argparse
 import base64
+import http.client
 import json
 import os
 from pathlib import Path
@@ -62,8 +63,11 @@ def main() -> int:
         port = probe.getsockname()[1]
     env = dict(os.environ, FACE_SERVICE_KEY=KEY, FACE_MODEL_DIR=str(Path(args.model).resolve().parent))
     server = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+        [sys.executable, "-m", "uvicorn", "main:app", "--workers", "1", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
         cwd=ROOT / "face-service", env=env,
+        # Match Render's one worker and avoid fast CI cores draining requests
+        # before the intended concurrency has reached the service.
+        preexec_fn=lambda: os.sched_setaffinity(0, {min(os.sched_getaffinity(0))}),
     )
     base = f"http://127.0.0.1:{port}"
 
@@ -71,16 +75,23 @@ def main() -> int:
         started = time.perf_counter()
         if payload is None:
             payload = body
-        req = urllib.request.Request(f"{base}{path}", data=payload, headers={
-            "content-type": "application/json", "x-face-service-key": key})
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=600)
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
-                resp.read()
-                status = resp.status
-        except urllib.error.HTTPError as exc:
-            status = exc.code
+            try:
+                connection.request("POST", path, body=payload, headers={
+                    "content-type": "application/json", "x-face-service-key": key})
+            except (BrokenPipeError, ConnectionResetError):
+                # Immediate rejection may stop an upload before it finishes.
+                # Read the already-sent HTTP response rather than losing its
+                # status in a client-side write error.
+                pass
+            resp = connection.getresponse()
+            resp.read()
+            status = resp.status
         except OSError:
             status = 0  # connection reset/refused: reported as a failure below
+        finally:
+            connection.close()
         return status, round(time.perf_counter() - started, 2)
 
     try:
@@ -129,29 +140,50 @@ def main() -> int:
         # The HTTP driver shares CI's container limit with the server. Release
         # enrollment payloads before constructing roster requests.
         body = smaller_body = b""
-        photo = ""
-        # Roster floats expand into Python objects and matching arrays. Use a
-        # compressed 4 MP photo to leave most of the body for valid 512-d rows.
-        frame = cv2.resize(cv2.imread(str(ROOT / "face-service/fixtures/synthetic-1.jpg")), (2000, 2000))
-        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if not ok:
-            raise RuntimeError("could not build matching photo")
-        prefix = json.dumps({"photo": base64.b64encode(jpeg).decode()})[:-1] + ',"encodings":['
-        del frame, jpeg
-        row = json.dumps({"worker_id": "worker", "encoding": [0.1] * 512}, separators=(",", ":"))
-        def matching_body(limit):
-            count = (limit - len(prefix) - 1024) // (len(row) + 1)
-            return (prefix + ",".join([row] * count) + "]}").encode()
-        matching = post(matching_body(8 * 1024 * 1024), path="/match")
-        half_match = matching_body(4 * 1024 * 1024)
+        vector = np.random.default_rng(165).normal(size=512)
+        vector = (vector / np.linalg.norm(vector)).tolist()
+        # Exactly the maximum production roster, with real JSON float lengths
+        # and a near-maximum noisy 4 MP photo. This exceeds the old 8 MiB cap.
+        def matching_body(encoding, matching_photo):
+            return json.dumps({"photo": matching_photo, "encodings": [
+                {"worker_id": str(i).zfill(32), "encoding": encoding} for i in range(1001)]}).encode()
+        full_match = matching_body(vector, photo)
+        # Legal whitespace fills the byte limit independently of object count.
+        padded = full_match + b" " * (24_065_536 - len(full_match))
+        matching = post(padded, path="/match")
+        del padded
         match_results = []
-        threads = [threading.Thread(target=lambda: match_results.append(post(half_match, path="/match"))) for _ in range(2)]
+        threads = [threading.Thread(target=lambda: match_results.append(post(full_match, path="/match"))) for _ in range(3)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
-        match_oversized = post(iter([b" " * 65536] * 129), path="/match")
-        print(f"Near-limit matching: {matching}; concurrent half-size rosters: {sorted(match_results)}; oversized: {match_oversized}")
+        # Fill the budget with parsed roster objects beside enrollment image work.
+        four_photos = json.dumps({"photos": [photo] * 4}).encode()
+        mixed_match_results = []
+        threads = [threading.Thread(target=lambda: mixed_match_results.append(post(full_match, path="/match"))),
+                   threading.Thread(target=lambda: mixed_match_results.append(post(four_photos)))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        del full_match, four_photos
+        compact = matching_body([0.1]*512, photo)
+        compact_results = []
+        threads = [threading.Thread(target=lambda: compact_results.append(post(compact, path="/match"))) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        del compact
+        match_oversized = post(iter([b" " * 65536] * 368), path="/match")
+        # Compact hostile arrays must be rejected before object allocation.
+        malicious = b'{"photo":"","encodings":[{"worker_id":"w","encoding":[' + b'0.1,'*6_000_000 + b'1]}]}'
+        malformed = post(malicious, path="/match")
+        del malicious
+        print(f"Matching body bytes: {len(matching_body(vector, photo)):,}; padded at byte limit: {matching}")
+        print(f"Three full rosters: {sorted(match_results)}; compact rosters: {sorted(compact_results)}")
+        print(f"Match + four-photo enrollment: {sorted(mixed_match_results)}; oversized: {match_oversized}; malformed: {malformed}")
         peak = kib(server.pid, "VmHWM") / 1024
         print(f"Three concurrent requests (status, seconds): {sorted(results)}; peak {peak:.1f} MiB")
     finally:
@@ -168,7 +200,10 @@ def main() -> int:
         failures.append(f"mixed concurrent statuses {mixed_results}")
     if oversized[0] != 413 or unauthorized[0] != 401:
         failures.append(f"streaming rejection statuses {oversized[0]}/{unauthorized[0]}")
-    if matching[0] != 200 or any(status != 200 for status, _ in match_results) or match_oversized[0] != 413:
+    if (matching[0] != 200 or sorted(status for status, _ in match_results) != [200, 200, 503]
+            or sorted(status for status, _ in compact_results) != [200, 200, 503]
+            or [status for status, _ in mixed_match_results] != [200, 200]
+            or match_oversized[0] != 413 or malformed[0] != 422):
         failures.append(f"matching statuses {matching}/{match_results}/{match_oversized}")
     if peak >= args.limit_mib:
         failures.append(f"peak {peak:.1f} MiB >= {args.limit_mib} MiB")
