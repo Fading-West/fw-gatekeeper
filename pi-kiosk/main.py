@@ -532,6 +532,8 @@ def run(args):
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
                 logger.error("Capture error: %s", e)
+                unknown_streak = 0
+                unknown_embedding = None
                 if camera_healthy:
                     camera_healthy = False
                     web_app.update_health(camera_ok=False, degraded_reason="camera_error")
@@ -613,7 +615,7 @@ def run(args):
                     box_label = None
                     box_color = GOLD
                     web_app.update_status(state="IDLE", message="Hold steady...",
-                                          worker_id=None, face_detected=True,
+                                          worker_id=None, face_detected=fresh.get("face_loc") is not None,
                                           known_workers=recognizer.known_count)
                     continue
 
@@ -753,6 +755,8 @@ def run(args):
                 web_app.update_health(degraded_reason=base_degraded_reason())
 
             if degraded_fault:
+                unknown_streak = 0
+                unknown_embedding = None
                 box_color = RED
                 box_label = None
                 _log_recognition_attempt(result, decision or "rejected_unknown")
@@ -766,7 +770,11 @@ def run(args):
             if name is None:
                 # Compare live faces, not the nearest (unmatched) roster worker.
                 embedding = result.get("face_embedding")
-                if unknown_embedding is not None and embedding is not None:
+                # A failed crop cannot establish continuity between two faces.
+                # Consecutive failed crops still get their own rejection streak.
+                if (unknown_embedding is None) != (embedding is None):
+                    unknown_streak = 0
+                elif unknown_embedding is not None:
                     if (
                         len(unknown_embedding) != len(embedding)
                         or cosine_sim(unknown_embedding, embedding) < config.RECOGNITION_MATCH_THRESHOLD
