@@ -290,12 +290,6 @@ def manual_clock():
 @app.route("/supervisor/unlock", methods=["POST"])
 @kiosk_ui_auth_required
 def supervisor_unlock():
-    if _supervisor_attempt_limiter.is_locked():
-        return jsonify({
-            "success": False,
-            "error": "Too many failed attempts. Try again later.",
-            "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
-        }), 429
     payload = request.get_json(silent=True)
     if payload is None:
         payload = {}
@@ -306,16 +300,15 @@ def supervisor_unlock():
         return jsonify({"success": False, "error": "Kiosk session changed. Refresh before unlocking."}), 409
     if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
         return jsonify({"success": False, "error": "Invalid unlock request"}), 400
-    if not has_valid_supervisor_credential(provided_pin=str(payload.get("pin", ""))):
-        locked = _supervisor_attempt_limiter.record_failure()
-        if locked:
-            return jsonify({
-                "success": False,
-                "error": "Too many failed attempts. Try again later.",
-                "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
-            }), 429
+    valid, locked = _supervisor_attempt_limiter.check_pin(str(payload.get("pin", "")))
+    if locked:
+        return jsonify({
+            "success": False,
+            "error": "Too many failed attempts. Try again later.",
+            "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
+        }), 429
+    if not valid:
         return jsonify({"success": False, "error": "Invalid supervisor passcode"}), 401
-    _supervisor_attempt_limiter.record_success()
     try:
         token = supervisor_session_token(unlock_request_id=operation)
     except ValueError:

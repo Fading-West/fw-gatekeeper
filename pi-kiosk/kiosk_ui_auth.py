@@ -66,16 +66,30 @@ class SupervisorAttemptLimiter:
 
     def record_failure(self) -> bool:
         with self._lock:
+            return self._record_failure(self.clock())
+
+    def _record_failure(self, now: float) -> bool:
+        if self._locked_until > now:
+            return True
+        self._prune(now)
+        self._failed_at.append(now)
+        if len(self._failed_at) >= self.max_attempts:
+            self._locked_until = now + self.lockout_seconds
+            self._failed_at.clear()
+            return True
+        return False
+
+    def check_pin(self, provided_pin: str) -> tuple[bool, bool]:
+        """Return (valid, locked) with verification and attempt updates atomic."""
+        with self._lock:
             now = self.clock()
             if self._locked_until > now:
-                return True
-            self._prune(now)
-            self._failed_at.append(now)
-            if len(self._failed_at) >= self.max_attempts:
-                self._locked_until = now + self.lockout_seconds
+                return False, True
+            if has_valid_supervisor_credential(provided_pin=provided_pin):
                 self._failed_at.clear()
-                return True
-            return False
+                self._locked_until = 0.0
+                return True, False
+            return False, self._record_failure(now)
 
     def record_success(self) -> None:
         with self._lock:
