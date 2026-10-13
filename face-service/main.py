@@ -375,7 +375,11 @@ def match(req: MatchRequest):
     try:
         with _image_lock:
             img = decode_image(req.photo)
-            emb = get_embedding(img)
+            try:
+                emb = get_embedding(img)
+            finally:
+                # Do not retain a full decoded frame while another request decodes.
+                del img
     except HTTPException:
         raise
     except Exception:

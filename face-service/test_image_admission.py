@@ -1,10 +1,14 @@
 """Admission must bound concurrent image bodies without refusing normal portal traffic."""
 import asyncio
 import os
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from image_admission import IN_FLIGHT_BODY_BUDGET, ImageAdmissionMiddleware
+from starlette.exceptions import HTTPException
+
+from image_admission import IN_FLIGHT_BODY_BUDGET, ImageAdmissionMiddleware, declared_body_size
+from starlette.datastructures import Headers
 
 KEY = b"test-key"
 MAX_ENCODE_BODY = 6 * 4_000_000 + 1024
@@ -65,7 +69,7 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
         first = await self.hold(gate, held, request(size=MAX_ENCODE_BODY))
         try:
             self.assertTrue(await rejected(gate, request(size=MAX_ENCODE_BODY)))
-            self.assertTrue(await rejected(gate, request("/match", size=MAX_ENCODE_BODY)))
+            self.assertTrue(await rejected(gate, request("/match", size=MAX_ENCODE_BODY // 4)))
         finally:
             held.release.set()
             await first
@@ -107,7 +111,7 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 await gate(request(size=MAX_ENCODE_BODY), AsyncMock(), AsyncMock())
             self.assertEqual(gate.in_flight, 0)
 
-    async def test_other_routes_and_invalid_credentials_pass_through(self):
+    async def test_other_routes_pass_through_and_invalid_credentials_never_reach_app(self):
         held = Held()
         gate = ImageAdmissionMiddleware(held)
         first = await self.hold(gate, held, request(size=MAX_ENCODE_BODY))
@@ -115,13 +119,148 @@ class ImageAdmissionTests(unittest.IsolatedAsyncioTestCase):
             inner = AsyncMock()
             gate.app = inner
             await gate({"type": "http", "method": "GET", "path": "/health", "headers": []}, AsyncMock(), AsyncMock())
-            # Endpoint authentication answers bad keys; they never reserve capacity.
-            await gate(request(size=MAX_ENCODE_BODY, key=b"wrong"), AsyncMock(), AsyncMock())
-            self.assertEqual(inner.await_count, 2)
+            send = AsyncMock()
+            await gate(request(size=MAX_ENCODE_BODY, key=b"wrong"),
+                       AsyncMock(return_value={"type": "http.request", "body": b"invalid JSON"}), send)
+            self.assertEqual(send.await_args_list[0].args[0]["status"], 401)
+            self.assertEqual(inner.await_count, 1)
             self.assertEqual(gate.in_flight, MAX_ENCODE_BODY)
         finally:
             held.release.set()
             await first
+
+    async def test_oversized_declared_body_is_refused_even_when_idle(self):
+        inner = AsyncMock()
+        gate = ImageAdmissionMiddleware(inner, budget=8)
+        send = AsyncMock()
+        await gate(request(size=9), AsyncMock(return_value={"type": "http.request"}), send)
+        self.assertEqual(send.await_args_list[0].args[0]["status"], 413)
+        inner.assert_not_awaited()
+        self.assertEqual(gate.in_flight, 0)
+
+    async def test_match_reserves_memory_for_parsed_roster_vectors(self):
+        held = Held()
+        gate = ImageAdmissionMiddleware(held, budget=8)
+        first = await self.hold(gate, held, request("/match", size=2))
+        self.assertEqual(gate.in_flight, 8)
+        try:
+            self.assertTrue(await rejected(gate, request(size=1)))
+        finally:
+            held.release.set()
+            await first
+        send = AsyncMock()
+        await gate(request("/match", size=3), AsyncMock(return_value={"type": "http.request"}), send)
+        self.assertEqual(send.await_args_list[0].args[0]["status"], 413)
+        self.assertEqual(gate.in_flight, 0)
+
+    async def test_actual_body_limit_covers_unknown_and_underdeclared_sizes(self):
+        async def read(scope, receive, send):
+            while (await receive()).get("more_body", False):
+                pass
+        for size in (None, 0, 1, 8):
+            with self.subTest(size=size):
+                gate = ImageAdmissionMiddleware(read, budget=8)
+                receive = AsyncMock(side_effect=[
+                    {"type": "http.request", "body": b"x" * 4, "more_body": True},
+                    {"type": "http.request", "body": b"x" * 5, "more_body": True},
+                    {"type": "http.request", "body": b"x" * 2},
+                ])
+                with self.assertRaises(HTTPException) as error:
+                    await gate(request(size=size), receive, AsyncMock())
+                self.assertEqual(error.exception.status_code, 413)
+                self.assertEqual(receive.await_count, 3)
+                self.assertEqual(gate.in_flight, 0)
+
+    async def test_actual_bytes_cannot_exceed_concurrent_reservations(self):
+        held = Held()
+        gate = ImageAdmissionMiddleware(held, budget=8)
+        first = await self.hold(gate, held, request(size=6))
+        async def read(scope, receive, send):
+            await receive()
+        gate.app = read
+        try:
+            with self.assertRaises(HTTPException) as error:
+                await gate(request(size=1), AsyncMock(return_value={
+                    "type": "http.request", "body": b"xxx"}), AsyncMock())
+            self.assertEqual(error.exception.status_code, 503)
+            self.assertEqual(error.exception.headers, {"Retry-After": "5"})
+            self.assertEqual(gate.in_flight, 6)
+        finally:
+            held.release.set()
+            await first
+        self.assertEqual(gate.in_flight, 0)
+
+    async def test_growing_reservation_is_fully_released_after_disconnect(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def read(scope, receive, send):
+            await receive()
+            entered.set()
+            await release.wait()
+            self.assertEqual((await receive())["type"], "http.disconnect")
+        gate = ImageAdmissionMiddleware(read, budget=8)
+        receive = AsyncMock(side_effect=[
+            {"type": "http.request", "body": b"xxxx", "more_body": True},
+            {"type": "http.disconnect"},
+        ])
+        task = asyncio.create_task(gate(request(size=1), receive, AsyncMock()))
+        await entered.wait()
+        self.assertEqual(gate.in_flight, 4)
+        release.set()
+        await task
+        self.assertEqual(gate.in_flight, 0)
+
+    def test_malformed_and_huge_lengths_do_not_raise(self):
+        for value in ("9" * 5000, "²", "-1", "bad", "0" * 5000 + "1"):
+            with self.subTest(value=value[:10]):
+                size = declared_body_size(Headers({"content-length": value}), 8)
+                self.assertIn(size, (1, 8, 9))
+
+
+class ImageAdmissionEndpointTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("FACE_MODEL_DIR", tempfile.mkdtemp(prefix="image-admission-"))
+        import main
+        cls.main = main
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.auth = patch.dict(os.environ, {"FACE_SERVICE_KEY": KEY.decode()})
+        self.auth.start()
+        self.addCleanup(self.auth.stop)
+        self.gate = ImageAdmissionMiddleware(self.main.app, budget=128)
+        # Avoid lifespan startup/model downloads; this exercises the real router.
+        self.client = TestClient(self.gate)
+
+    def test_auth_rejects_before_json_parsing_and_health_remains_available(self):
+        for path in ("/encode", "/match"):
+            response = self.client.post(path, content=b"invalid JSON")
+            self.assertEqual(response.status_code, 401)
+        with patch.dict(os.environ, {"FACE_SERVICE_KEY": ""}):
+            self.assertEqual(self.client.post("/encode", content=b"invalid JSON").status_code, 503)
+        self.assertEqual(self.client.get("/health").status_code, 200)
+        self.assertEqual(self.gate.in_flight, 0)
+
+    def test_chunked_body_overflow_is_413_and_next_request_is_admitted(self):
+        response = self.client.post("/encode", content=iter([b"x" * 64, b"x" * 65]),
+                                    headers={"x-face-service-key": KEY.decode()})
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertEqual(self.gate.in_flight, 0)
+        response = self.client.post("/match", json={"photo": "", "encodings": []},
+                                    headers={"x-face-service-key": KEY.decode()})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.gate.in_flight, 0)
+
+    def test_validation_decode_and_model_errors_release_capacity(self):
+        headers = {"x-face-service-key": KEY.decode()}
+        self.assertEqual(self.client.post("/encode", content=b"invalid JSON", headers={
+            **headers, "content-type": "application/json"}).status_code, 422)
+        self.assertEqual(self.client.post("/encode", json={"photos": []}, headers=headers).status_code, 422)
+        self.assertEqual(self.client.post("/encode", json={"photos": ["bad", "bad"]}, headers=headers).status_code, 422)
+        with patch.object(self.main, "_inspect_enrollment_photo", side_effect=HTTPException(503, "unavailable")):
+            self.assertEqual(self.client.post("/encode", json={"photos": ["a", "b"]}, headers=headers).status_code, 503)
+        self.assertEqual(self.gate.in_flight, 0)
 
 
 if __name__ == "__main__":

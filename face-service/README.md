@@ -145,10 +145,15 @@ To run that part locally, set `FACE_PARITY_MODEL` to the verified model file.
 ONNX uses one inference thread. Enrollment and match image work is serialized
 so concurrent requests do not hold multiple HOG pyramids/decoded arrays at once.
 Authenticated image requests are also admitted by declared body size (32 MiB in
-flight, always one when idle; `image_admission.py`), so waiting maximum-size
-bodies cannot exceed the 512 MB instance. Excess requests get 503 with
+flight; `image_admission.py`). Actual received bytes are checked as well:
+bodies exceeding 32 MiB for `/encode` or 8 MiB for `/match` get 413, including chunked requests without a declared
+length. Invalid credentials are rejected before JSON parsing. Excess concurrent requests get 503 with
 `Retry-After: 5`; normal portal captures are far below the budget.
-`scripts/check-face-service-memory.py` measures this over HTTP in CI.
+`/match` bodies reserve four times their byte size to account for parsed numeric
+rosters and matching arrays; the kiosk matches its roster locally and does not
+call this endpoint.
+`scripts/check-face-service-memory.py` measures maximum and mixed-size concurrent
+requests, oversized chunked bodies and invalid credentials over HTTP in CI.
 The public health endpoint identifies this detector as
 `dlib-20.0.1-hog-half-upsample1-pad25-v1`; this is diagnostic metadata, not stored
 template versioning. No schema or kiosk pipeline changes are included.

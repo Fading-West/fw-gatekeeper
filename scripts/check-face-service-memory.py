@@ -67,10 +67,12 @@ def main() -> int:
     )
     base = f"http://127.0.0.1:{port}"
 
-    def post() -> tuple[int, float]:
+    def post(payload=None, key=KEY, path="/encode") -> tuple[int, float]:
         started = time.perf_counter()
-        req = urllib.request.Request(f"{base}/encode", data=body, headers={
-            "content-type": "application/json", "x-face-service-key": KEY})
+        if payload is None:
+            payload = body
+        req = urllib.request.Request(f"{base}{path}", data=payload, headers={
+            "content-type": "application/json", "x-face-service-key": key})
         try:
             with urllib.request.urlopen(req, timeout=600) as resp:
                 resp.read()
@@ -107,6 +109,49 @@ def main() -> int:
             thread.start()
         for thread in threads:
             thread.join()
+        # Fill most of the remaining 32 MiB reservation beside a maximum
+        # request, rather than testing only rejected large requests.
+        smaller_body = json.dumps({"photos": [photo] * 2}).encode()
+        mixed_results = []
+        large = threading.Thread(target=lambda: mixed_results.append(post()))
+        large.start()
+        time.sleep(0.2)
+        small = threading.Thread(target=lambda: mixed_results.append(post(smaller_body)))
+        small.start()
+        large.join()
+        small.join()
+        print(f"Maximum + two-photo requests: {sorted(mixed_results)}")
+        # An iterable is sent with chunked framing and no Content-Length.
+        # Both paths must drain without buffering or parsing a 32 MiB+ body.
+        oversized = post(iter([b" " * 65536] * 513))
+        unauthorized = post(iter([b" " * 65536] * 513), key="wrong-key")
+        print(f"Oversized chunked request: {oversized}; unauthenticated: {unauthorized}")
+        # The HTTP driver shares CI's container limit with the server. Release
+        # enrollment payloads before constructing roster requests.
+        body = smaller_body = b""
+        photo = ""
+        # Roster floats expand into Python objects and matching arrays. Use a
+        # compressed 4 MP photo to leave most of the body for valid 512-d rows.
+        frame = cv2.resize(cv2.imread(str(ROOT / "face-service/fixtures/synthetic-1.jpg")), (2000, 2000))
+        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            raise RuntimeError("could not build matching photo")
+        prefix = json.dumps({"photo": base64.b64encode(jpeg).decode()})[:-1] + ',"encodings":['
+        del frame, jpeg
+        row = json.dumps({"worker_id": "worker", "encoding": [0.1] * 512}, separators=(",", ":"))
+        def matching_body(limit):
+            count = (limit - len(prefix) - 1024) // (len(row) + 1)
+            return (prefix + ",".join([row] * count) + "]}").encode()
+        matching = post(matching_body(8 * 1024 * 1024), path="/match")
+        half_match = matching_body(4 * 1024 * 1024)
+        match_results = []
+        threads = [threading.Thread(target=lambda: match_results.append(post(half_match, path="/match"))) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        match_oversized = post(iter([b" " * 65536] * 129), path="/match")
+        print(f"Near-limit matching: {matching}; concurrent half-size rosters: {sorted(match_results)}; oversized: {match_oversized}")
         peak = kib(server.pid, "VmHWM") / 1024
         print(f"Three concurrent requests (status, seconds): {sorted(results)}; peak {peak:.1f} MiB")
     finally:
@@ -119,6 +164,12 @@ def main() -> int:
         failures.append(f"single request returned {single[0]}")
     if not set(statuses) <= {200, 503} or 200 not in statuses:
         failures.append(f"concurrent statuses {statuses}")
+    if [status for status, _ in mixed_results] != [200, 200]:
+        failures.append(f"mixed concurrent statuses {mixed_results}")
+    if oversized[0] != 413 or unauthorized[0] != 401:
+        failures.append(f"streaming rejection statuses {oversized[0]}/{unauthorized[0]}")
+    if matching[0] != 200 or any(status != 200 for status, _ in match_results) or match_oversized[0] != 413:
+        failures.append(f"matching statuses {matching}/{match_results}/{match_oversized}")
     if peak >= args.limit_mib:
         failures.append(f"peak {peak:.1f} MiB >= {args.limit_mib} MiB")
     for failure in failures:

@@ -98,13 +98,29 @@ photos per request, one pinned core) peaked at **288 MiB** for one request,
 **424 MiB** for two concurrent requests and **498–535 MiB** for three, at or
 above the 512 MB instance (master's Haar service: 382/638/914 MiB). `image_admission.py` therefore
 admits authenticated `/encode` and `/match` requests by declared body size
-(32 MiB in flight; always one when idle). Portal captures (three 640px JPEGs,
+(32 MiB in flight, with a hard 32 MiB limit on each received body). Portal captures (three 640px JPEGs,
 ~45 KB each) are never refused for one another; a second maximum-size request
 gets 503 with `Retry-After`; its body is discarded chunk by chunk, never
 buffered or parsed. With admission, three
 concurrent maximum requests returned one 200 and two 503s and peaked at
 **303 MiB**; five concurrent portal-sized requests all returned 200 (184 MiB). CI runs
 `scripts/check-face-service-memory.py` in the built image under 512 MiB.
+
+Review hardened admission against chunked/unknown lengths and bodies larger than
+their declared length: actual bytes reserve capacity before being passed to the
+application, oversized bodies return 413, and all reservations are released on
+validation failure, decode/model errors, disconnect or cancellation. Invalid
+credentials are rejected before FastAPI buffers or parses JSON. `/match` also
+discards its decoded frame before releasing the image lock. The HTTP memory
+check additionally fills the budget with a maximum request plus a two-photo
+request and tests oversized chunked and unauthenticated bodies.
+
+A separate valid `/match` request with 15,500 512-d vectors (30.9 MiB body)
+peaked at **687 MiB**, demonstrating that raw-body accounting alone does not
+bound parsed numeric rosters. `/match` is now limited to 8 MiB and reserves
+four times its body size against the shared 32 MiB budget. The kiosk performs
+matching locally, so this does not limit its roster. CI also checks a near-limit
+HTTP matching roster and concurrent smaller matching requests.
 
 CPU per photo on one host core: HOG at 640×480 57 ms, 1280×720 178 ms,
 2000×2000 880 ms. A real portal request (three 640×480 photos) used 1.4 s of
