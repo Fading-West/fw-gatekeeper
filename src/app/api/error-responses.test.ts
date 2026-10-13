@@ -37,13 +37,13 @@ function diagnostic(message: string) {
   return `[Request ID: private-request-id] Server Error\nUncaught Error: ${message}\n    at handler (convex/privateFunction.ts:42:7)\n`;
 }
 
-it.each(routes)('$path hides unexpected backend diagnostics and logs the full error', async route => {
+it.each(routes)('$path hides unexpected backend diagnostics and logs only safe metadata', async route => {
   const error = new Error(diagnostic('Database write failed with internal diagnostics'));
   mocks.mutation.mockRejectedValueOnce(error);
   const response = await route.handler(request(route));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: route.generic });
-  expect(console.error).toHaveBeenCalledWith(route.log, error);
+  expect(console.error).toHaveBeenCalledWith(route.log, { type: 'Error' });
 });
 
 it.each(routes)('$path keeps allowlisted legacy validation text without the diagnostic envelope', async route => {
@@ -59,7 +59,7 @@ it.each(routes)('$path hides unknown structured Convex errors', async route => {
   const response = await route.handler(request(route));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: route.generic });
-  expect(console.error).toHaveBeenCalledWith(route.log, error);
+  expect(console.error).toHaveBeenCalledWith(route.log, { type: 'ConvexError' });
 });
 
 it.each(routes)('$path does not expose unexpected errors that merely mention validation text', async route => {
@@ -67,6 +67,45 @@ it.each(routes)('$path does not expose unexpected errors that merely mention val
   const response = await route.handler(request(route));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: route.generic });
+});
+
+it.each(routes)('$path does not unwrap validation text embedded in an unrelated multiline error', async route => {
+  mocks.mutation.mockRejectedValueOnce(new Error(`ArgumentValidationError: private payload\nUncaught Error: ${route.validation}\n    at internal.ts:42`));
+  const response = await route.handler(request(route));
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ error: route.generic });
+});
+
+it.each(routes)('$path does not fall back to message text for an unknown Convex data shape', async route => {
+  const error = new ConvexError({ code: 'UNEXPECTED_FAILURE', photos: ['private-photo'] });
+  error.message = route.validation;
+  mocks.mutation.mockRejectedValueOnce(error);
+  const response = await route.handler(request(route));
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ error: route.generic });
+});
+
+it.each(routes)('$path never logs payloads, secrets, stacks or custom error properties', async route => {
+  const payload = { photos: ['data:image/jpeg;base64,PRIVATE_PHOTO'], faceEncoding: [0.987654321], authorization: 'Bearer PRIVATE_TOKEN' };
+  const error = Object.assign(new Error(`[Request ID: aabbccdd11223344] Server Error\nArgumentValidationError: ${JSON.stringify(payload)}`), { cause: payload, ...payload });
+  mocks.mutation.mockRejectedValueOnce(error);
+  const response = await route.handler(request(route));
+  expect(response.status).toBe(500);
+  expect(await response.json()).toEqual({ error: route.generic });
+  expect(console.error).toHaveBeenCalledWith(route.log, { type: 'Error', requestId: 'aabbccdd11223344' });
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/PRIVATE_|faceEncoding|0\.987654321|ArgumentValidationError/);
+});
+
+it.each(['encoding', 'upload', 'cleanup'])('enrollment %s failure logs no payloads or secrets', async stage => {
+  const error = new ConvexError({ photos: ['data:image/jpeg;base64,PRIVATE_PHOTO'], secret: 'PRIVATE_TOKEN' });
+  mocks.mutation.mockResolvedValue({ id: 'worker' });
+  if (stage === 'encoding') vi.mocked(fetch).mockRejectedValueOnce(error);
+  if (stage === 'upload') mocks.action.mockRejectedValueOnce(error);
+  if (stage === 'cleanup') mocks.mutation.mockResolvedValueOnce({ id: 'worker' }).mockRejectedValueOnce(error);
+  const response = await enroll(request(routes[2]));
+  expect(response.status).toBe(stage === 'encoding' ? 503 : 201);
+  expect(console.error).toHaveBeenCalledWith(expect.any(String), { type: 'ConvexError' });
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/PRIVATE_|photos|secret/);
 });
 
 it.each([

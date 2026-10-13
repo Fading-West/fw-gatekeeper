@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 import { ConvexError } from 'convex/values';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
-import { knownApiErrorResponse } from '@/lib/api-errors';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { api } from '../../../../convex/_generated/api';
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
         warning: 'Attendance correction storage is waiting for the Convex functions to deploy.',
       });
     }
-    console.error('Attendance corrections GET error:', error);
+    logApiError('Attendance corrections GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch attendance corrections' }, { status: 500 });
   }
 }
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
       'This attendance event already has an active void; reverse that correction before voiding it again': 409,
     });
     if (knownError) return knownError;
-    console.error('Attendance corrections POST error:', error);
+    logApiError('Attendance corrections POST error:', error);
     return NextResponse.json(
       { error: 'Failed to create attendance correction' },
       { status: 500 },
@@ -156,7 +156,7 @@ export async function PATCH(req: NextRequest) {
     if (error instanceof Error && (error.message.includes('ArgumentValidationError') || error.message.includes('Expected ID for table "attendanceCorrections"'))) {
       return NextResponse.json({ error: 'Invalid correction ID.' }, { status: 400 });
     }
-    console.error('Attendance correction reversal failed:', error);
+    logApiError('Attendance correction reversal failed:', error);
     return NextResponse.json({ error: 'Failed to reverse correction' }, { status: 500 });
   }
 }

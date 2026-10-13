@@ -8,7 +8,7 @@ import { ConvexError } from 'convex/values';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
-import { knownApiErrorResponse } from '@/lib/api-errors';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { api } from '../../../../convex/_generated/api';
 import { getEncodingValidationMessage, isSupportedEncoding } from '@/lib/encoding';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -154,11 +154,16 @@ export async function POST(req: NextRequest) {
                 }
               : {}),
           },
-          { status: encodeRes.status === 422 ? 422 : 503 }
+          {
+            status: encodeRes.status === 422 ? 422 : 503,
+            ...(encodeRes.status === 503 && encodeRes.headers.get('Retry-After')
+              ? { headers: { 'Retry-After': encodeRes.headers.get('Retry-After')! } }
+              : {}),
+          }
         );
       }
     } catch (encodeErr) {
-      console.error('Face encoding failed:', encodeErr);
+      logApiError('Face encoding failed:', encodeErr);
       return NextResponse.json(
         { error: 'Face encoding service is unavailable. Worker was not created.' },
         { status: 503 }
@@ -184,7 +189,7 @@ export async function POST(req: NextRequest) {
         });
         storageIds.push(storageId);
       } catch (uploadErr) {
-        console.error('Failed to upload photo:', uploadErr);
+        logApiError('Failed to upload photo:', uploadErr);
       }
     }
 
@@ -226,7 +231,7 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    console.error('Enrollment error:', error);
+    logApiError('Enrollment error:', error);
     if (error instanceof ConvexError && error.data?.code === BIOMETRIC_CONSENT_ERROR_CODE) {
       return NextResponse.json({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE }, { status: 400 });
     }
@@ -249,7 +254,7 @@ export async function POST(req: NextRequest) {
         // A save that committed before a lost response has already consumed them.
         await convex.mutation(api.enrollmentPhotos.cleanup, { storageIds: storageIds as any });
       } catch (cleanupError) {
-        console.error('Enrollment photo cleanup deferred to expiry:', cleanupError);
+        logApiError('Enrollment photo cleanup deferred to expiry:', cleanupError);
       }
     }
   }
