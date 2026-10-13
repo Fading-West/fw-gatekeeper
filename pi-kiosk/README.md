@@ -95,7 +95,7 @@ from the repository root using uv 0.12.13. Existing lock versions are retained
 when compatible; remove the corresponding lock first for an intentional full
 transitive refresh. Review all version/hash changes, validate a fresh server
 install, and provision one Bookworm kiosk before rollout. Installed kiosks pick
-up lock changes only through `bash pi-kiosk/update.sh` after `git pull` (see
+up lock changes through `bash pi-kiosk/update.sh`, which fetches the code itself (see
 Maintenance in the root README); restarting the service alone keeps the old
 virtual environment.
 

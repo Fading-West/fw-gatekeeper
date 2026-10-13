@@ -405,26 +405,40 @@ If monitor doesn't wake up:
 ## Maintenance
 
 ### Update kiosk software
-Every kiosk update is the same two steps: pull the code, then run `pi-kiosk/update.sh`. The script installs the hash-locked dependencies with the same two commands as `setup.sh` (`requirements-build.lock`, then `requirements.lock`, into `/opt/fw-gatekeeper/pi-kiosk/venv`). It then restarts `fw-gatekeeper-kiosk`. If either install fails, it stops before the restart. It is safe to rerun. Do not restart the service after a pull without running it, or a dependency change leaves the kiosk crash-looping on a stale virtual environment.
+Run `pi-kiosk/update.sh` as the account selected by `setup.sh` (`KIOSK_USER`, normally `pi`), without `sudo`. It fetches `origin/master`, verifies a clean checkout and a fast-forward, and builds a fresh virtual environment with the same two hash-locked install commands as `setup.sh` (`requirements-build.lock`, then `requirements.lock`, with system site packages for the apt-managed camera libraries). The running code and virtual environment stay unchanged if either install fails. Do not pull first: the script must save the previous running commit for recovery.
 
-Run both steps as `pi`, without `sudo`: `setup.sh` makes `pi` own `/opt/fw-gatekeeper` and its virtual environment, and the script refuses to run as root. It calls `sudo` itself only for the restart.
+After installation succeeds, the script stops the watchdog timer and job, stops the kiosk, fast-forwards the code, switches the venv, and restarts the kiosk. If a cutover command fails, it restores the previous commit and venv and starts the previously active services. Concurrent updates and local tracked edits are refused. Device configuration and offline attendance data are preserved. Downloads/native builds need space for a second venv; the old venv is removed after a successful switch. Check scanning on one kiosk before continuing the fleet rollout. A power loss or forced kill during cutover requires manual recovery of `.venv-before-update` and the previous commit from the Git reflog; the script refuses to overwrite a leftover backup.
 
 ```bash
 ssh pi@fw-kiosk-1.local
 cd /opt/fw-gatekeeper
-git pull origin master
 bash pi-kiosk/update.sh
 ```
 
-Older instructions used `sudo git pull`, which leaves root-owned files in the checkout. If `git pull` then fails with `Permission denied` or `insufficient permission`, restore the ownership `setup.sh` sets once with `sudo chown -R pi:pi /opt/fw-gatekeeper`, then rerun both steps.
+Replace `pi` in the SSH commands with your `KIOSK_USER` if setup used another account. `setup.sh` makes that account own `/opt/fw-gatekeeper` and its virtual environment; the updater checks venv ownership and refuses root. It uses `sudo` only for service management.
+
+Older instructions used `sudo git pull`, which can leave root-owned files. If the updater reports `Permission denied` or `insufficient permission`, restore setup's ownership once with `sudo chown -R pi:pi /opt/fw-gatekeeper` (use your `KIOSK_USER` and its group if different), then rerun the script.
+
+For the first update from a version without `update.sh`, run the fetched script from a temporary file, leaving the installed code unchanged until its dependencies are ready. As the kiosk user, from `/opt/fw-gatekeeper`:
+
+```bash
+(
+  set -e
+  git fetch origin master
+  updater=$(mktemp)
+  trap 'rm -f "$updater"' EXIT
+  git show FETCH_HEAD:pi-kiosk/update.sh > "$updater"
+  bash "$updater" "$PWD"
+)
+```
 
 ### Update all 4 kiosks at once
-From any machine on the same network, run the same procedure on each kiosk in turn. The loop stops at the first kiosk that fails, so a bad dependency change cannot take down the whole fleet; fix that kiosk before rerunning.
+From any machine on the same network, run the same procedure on each kiosk in turn. The loop stops at the first reported update failure; fix that kiosk before rerunning. Validate scanning on a pilot kiosk before running the loop, because a successful systemd restart alone does not prove camera or recognition readiness.
 
 ```bash
 for host in fw-kiosk-1 fw-kiosk-2 fw-kiosk-3 fw-kiosk-4; do
   echo "Updating $host..."
-  ssh pi@$host.local "cd /opt/fw-gatekeeper && git pull origin master && bash pi-kiosk/update.sh" \
+  ssh pi@$host.local "cd /opt/fw-gatekeeper && bash pi-kiosk/update.sh" \
     || { echo "Update failed on $host; stopping."; break; }
 done
 ```
@@ -468,7 +482,7 @@ npx convex env list --prod --names-only   # verify every variable below is liste
 
 `JWT_PRIVATE_KEY` and `JWKS` already exist on the live production deployment. **Do not run `npx @convex-dev/auth --prod` against it.** That setup wizard is only for a brand-new production deployment where `npx convex env list --prod --names-only` lists neither variable. On a deployment that has them, it asks `Overwrite them?`. Answering yes replaces the signing key with two separate writes, so tokens signed with the old key stop verifying and signed-in users can be logged out. If the second write fails, the key and key set no longer match and nobody can sign in. Set the optional alerting and activity-feed variables with `npx convex env set --prod` as well; see [docs/alerting.md](docs/alerting.md) and [docs/activity-feed.md](docs/activity-feed.md).
 
-`--prod` selects the project's default production deployment; `--deployment modest-bat-146` names the deployment Render uses explicitly. Before the first `--prod` write, confirm in the Convex dashboard that the project's Production deployment is `modest-bat-146` (the URL in `render.yaml`). If it is not, use `--deployment modest-bat-146` in place of `--prod` in every command here. Without either flag, `npx convex env set`, `npx convex env list` and `npx convex run` target your personal **dev** deployment, which is only correct while developing with `npx convex dev`. A production variable set without the flag never reaches production: with `CONVEX_INGEST_KEY` missing there, `convex/http.ts` rejects every kiosk ingest request and logs `secured_ingest_auth_unconfigured`. From a local checkout, `npx convex deploy` pushes Convex functions to production; `npx convex dev` pushes them to your dev deployment.
+`--prod` selects the project's default production deployment; `--deployment modest-bat-146` names the deployment Render uses explicitly. Before the first `--prod` write, confirm in the Convex dashboard that the project's Production deployment is `modest-bat-146` (the URL in `render.yaml`). If it is not, use `--deployment modest-bat-146` in place of `--prod` in the `npx convex env` and `npx convex run` commands. The separate `@convex-dev/auth` wizard uses `--deployment-name <name>` for an explicit deployment; its flag names differ from the Convex CLI. Without either selection flag, `npx convex env set`, `npx convex env list` and `npx convex run` target your personal **dev** deployment, which is only correct while developing with `npx convex dev`. A production variable set without the flag never reaches production: with `CONVEX_INGEST_KEY` missing there, `convex/http.ts` rejects every kiosk ingest request and logs `secured_ingest_auth_unconfigured`. From a local checkout, `npx convex deploy` pushes Convex functions to production; `npx convex dev` pushes them to your dev deployment.
 
 | Variable | Value | Description |
 |----------|-------|-------------|

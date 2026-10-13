@@ -109,7 +109,9 @@ fi
 cd "$INSTALL_DIR/pi-kiosk"
 
 # Python virtual environment
-python3 -m venv venv --system-site-packages
+# update.sh uses a symlink to a permanently located release venv. Resolve it
+# when reprovisioning: Python's venv builder refuses a symlink as env_dir.
+python3 -m venv "$(readlink -f venv)" --system-site-packages
 # picamera2/libcamera remain apt-managed. No pip camera dependency or upgrade.
 # Hash-check the source-build tools first; isolated builds would fetch newer tools.
 ./venv/bin/python -m pip install --require-hashes -r requirements-build.lock
