@@ -11,7 +11,7 @@ npx convex env set ACTIVITY_FW_GATEWAY_TOKEN '<secret-manager-value>'
 npx convex env set ACTIVITY_FW_GATEWAY_ACCOUNT_ID '<existing-convex-user-id>'
 ```
 
-`ACTIVITY_FW_GATEWAY_ACCOUNT_ID` binds the activity credential to an existing Gateway source account. That account must have an active `portalMembers` row with the `admin` role. Existence, active status, and role are re-read on every request at the Convex database boundary. Removing the token, rotating it, disabling the account, or demoting it revokes access. If either variable or the mapping is absent, the integration stays disabled.
+`ACTIVITY_FW_GATEWAY_ACCOUNT_ID` binds the activity credential to an existing Gateway source account. That account must have an active `portalMembers` row with the `admin` role. Existence, active status, and role are re-read on every request at the Convex database boundary. Removing the token, rotating it, disabling the account, demoting it, or requiring a password change revokes access. After an admin password reset, the mapped member must rotate its password before the feed resumes. If either variable or the mapping is absent, the integration stays disabled.
 
 The Next.js service uses its existing `CONVEX_INGEST_URL` (or derives the `.convex.site` origin from `NEXT_PUBLIC_CONVEX_URL`) to reach the protected Convex HTTP action. Do not use a Convex deployment key, kiosk/ingest key, health token, browser cookie, or portal password for the activity token. Do not add either activity variable to `NEXT_PUBLIC_*` or commit its value.
 

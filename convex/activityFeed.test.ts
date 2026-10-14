@@ -80,6 +80,17 @@ afterEach(() => {
 });
 
 describe("Gateway activity HTTP endpoint", () => {
+  it("denies a mapped admin requiring password rotation with a distinguishable code", async () => {
+    const { t, sourceAccountId } = await setup();
+    await t.run(async ctx => {
+      const member = await ctx.db.query("portalMembers").withIndex("by_user", q => q.eq("userId", sourceAccountId)).unique();
+      await ctx.db.patch(member!._id, { mustChangePassword: true });
+    });
+    const response = await request(t);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "PASSWORD_CHANGE_REQUIRED" });
+  });
+
   it("rejects absent and invalid credentials and stays disabled without complete configuration", async () => {
     const { t } = await setup();
     expect((await t.fetch("/api/internal/activity", { method: "GET" })).status).toBe(401);

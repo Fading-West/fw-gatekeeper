@@ -98,7 +98,7 @@ export default function AccountsPage() {
     }
     if (existingMember) {
       const confirmed = window.confirm(
-        `Reset the password for ${normalizedEmail}? This will sign out any existing sessions for that user.`
+        `Reset the password for ${normalizedEmail}? This will sign out existing sessions and require a password change at the next sign-in.`
       );
       if (!confirmed) {
         return;
@@ -126,7 +126,7 @@ export default function AccountsPage() {
 
   async function copyCredentials() {
     if (!createdAccount) return;
-    const text = `FW Gatekeeper login\nhttps://fw-gatekeeper.onrender.com/login\n\nEmail: ${createdAccount.email}\nInitial password: ${createdAccount.password}`;
+    const text = `FW Gatekeeper login\nhttps://fw-gatekeeper.onrender.com/login\n\nEmail: ${createdAccount.email}\nTemporary password: ${createdAccount.password}\nChange this password after signing in.`;
     await navigator.clipboard.writeText(text);
     toast('Credentials copied');
   }
@@ -212,7 +212,7 @@ export default function AccountsPage() {
             </div>
 
             <div>
-              <label className="section-label mb-1.5 block">Initial password</label>
+              <label className="section-label mb-1.5 block">Temporary password</label>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -264,7 +264,8 @@ export default function AccountsPage() {
               <h2 className="font-display font-semibold text-emerald-300 mb-2">Account ready</h2>
               <div className="text-sm text-slate-300 space-y-1 font-mono">
                 <p>Email: {createdAccount.email}</p>
-                <p>Initial password: {createdAccount.password}</p>
+                <p>Temporary password: {createdAccount.password}</p>
+                <p>The member must change this password after signing in.</p>
                 <p>Role: {createdAccount.role}</p>
               </div>
             </div>

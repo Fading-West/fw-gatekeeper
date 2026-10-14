@@ -32,7 +32,7 @@ function AuthenticatedLogin() {
       await signIn('password', {
         flow: 'signIn',
         email: email.trim().toLowerCase(),
-        password: password.trim(),
+        password,
       });
       finishLogin();
     } catch (error) {
@@ -108,7 +108,7 @@ function AuthenticatedLogin() {
 
             <button
               type="submit"
-              disabled={convexLoading || !email.trim() || password.trim().length < 8}
+              disabled={convexLoading || !email.trim() || password.length < 8}
               className="btn-primary w-full py-3.5 text-base"
             >
               {convexLoading ? 'Authenticating...' : convexButtonLabel}
