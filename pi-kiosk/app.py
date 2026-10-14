@@ -59,6 +59,7 @@ _health = {
     "retryable_logs": 0,
     "rejected_logs": 0,
     "queued_attempts": 0,
+    "rejected_attempts": 0,
     "degraded_reason": None,
     "last_scan_at": None,
     "sync_online": None,  # None = sync disabled/unknown, True/False once known
