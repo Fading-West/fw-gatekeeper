@@ -10,6 +10,7 @@ from functools import wraps
 
 import cv2
 from flask import Flask, Response, jsonify, make_response, render_template, request
+from werkzeug.serving import ThreadedWSGIServer
 
 import config
 import database
@@ -66,7 +67,27 @@ _health = {
 }
 
 _server_thread = None
+_server_stopped = threading.Event()
 _supervisor_attempt_limiter = SupervisorAttemptLimiter()
+
+
+class _KioskServer(ThreadedWSGIServer):
+    # Finish attendance requests before process exit; SQLite commits happen
+    # synchronously in those handlers. Streaming requests must also wind down.
+    daemon_threads = False
+    # Bound stalled header/body reads and feed writes so a client cannot keep
+    # non-daemon request threads alive after server death. This limits socket
+    # inactivity only; synchronous attendance commits still finish normally.
+    request_timeout = 10.0
+
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(self.request_timeout)
+        return connection, address
+
+    def server_close(self):
+        _server_stopped.set()
+        super().server_close()
 
 
 def set_frame(frame):
@@ -115,7 +136,7 @@ def get_status_snapshot() -> dict:
 
 
 def _mjpeg_stream():
-    while True:
+    while not _server_stopped.is_set():
         with _frame_lock:
             frame = _current_frame
         if frame is not None:
@@ -323,21 +344,27 @@ def supervisor_lock():
 
 
 def start_server():
-    """Run Flask app in a background daemon thread."""
+    """Bind on the calling thread so startup failure exits the kiosk."""
     global _server_thread
     if _server_thread and _server_thread.is_alive():
         return _server_thread
 
+    _server_stopped.clear()
+    server = _KioskServer(get_kiosk_ui_host(), config.KIOSK_PORT, app)
+
     def _serve():
-        app.run(
-            host=get_kiosk_ui_host(),
-            port=config.KIOSK_PORT,
-            debug=False,
-            use_reloader=False,
-            threaded=True,
-        )
+        try:
+            server.serve_forever()
+        finally:
+            server.server_close()
 
     _server_thread = threading.Thread(target=_serve, daemon=True, name="kiosk-web")
     _server_thread.start()
     logger.info("Web UI started at http://%s:%d", get_kiosk_ui_host(), config.KIOSK_PORT)
     return _server_thread
+
+
+def check_server():
+    """Fail on the scanner thread, between writes, so systemd restarts us."""
+    if _server_stopped.is_set() or not _server_thread or not _server_thread.is_alive():
+        raise RuntimeError("Kiosk web server stopped; exiting for systemd restart")

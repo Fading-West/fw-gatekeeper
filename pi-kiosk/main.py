@@ -289,6 +289,7 @@ def run(args):
     camera_attempts = 0
     critical_logged = False
     while True:
+        web_app.check_server()
         try:
             camera.start()
             web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
@@ -515,6 +516,7 @@ def run(args):
     roster_fault = startup_degraded if startup_degraded in ("no_workers_synced", "encoding_mismatch") else None
     try:
         while True:
+            web_app.check_server()
             active_liveness = recognizer.liveness_checker
             if active_liveness is not liveness:
                 liveness = active_liveness
