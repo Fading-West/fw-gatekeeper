@@ -701,6 +701,7 @@
 
                 // Footer claims must match what the kiosk actually enforces.
                 const health = data.health || {};
+                document.querySelector('img[src="/feed"]').style.visibility = health.camera_ok === false ? "hidden" : "visible";
                 if (data.liveness_required && health.liveness_available) {
                     livenessNote.textContent = "Blink verification required before recognition";
                     livenessNote.style.color = "";
