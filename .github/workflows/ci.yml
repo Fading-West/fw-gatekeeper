@@ -26,9 +26,29 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: scripts/requirements-ci.txt
+          cache-dependency-path: |
+            face-service/requirements.lock
+            scripts/requirements-ci.txt
+            scripts/requirements-uv.txt
+      - name: Install the lockfile compiler
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r scripts/requirements-uv.txt
+      - name: Check the face-service lock is current
+        run: |
+          uv pip compile face-service/requirements.txt \
+            --python-version 3.11 --python-platform x86_64-manylinux_2_36 \
+            --generate-hashes --only-binary=:all: \
+            --custom-compile-command 'bash scripts/lock-python-dependencies.sh' \
+            --output-file face-service/requirements.lock --quiet
+          git diff --exit-code -- face-service/requirements.lock
       - run: npm ci
-      - run: python -m pip install -r scripts/requirements-ci.txt
+      - name: Install the production face-service runtime
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r face-service/requirements.lock
+      - name: Add Python test dependencies without changing locked runtime versions
+        # uv applies version constraints without enabling pip's implicit hash mode.
+        # Keep this separate from the hash-verified production install above.
+        run: uv pip install --python "$(command -v python)" -c face-service/requirements.lock -r scripts/requirements-ci.txt
       - run: npm run lint
       - run: npm test
       - run: npm run typecheck
