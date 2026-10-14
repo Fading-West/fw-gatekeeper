@@ -12,6 +12,7 @@ import { api } from '../../../../convex/_generated/api';
 import { getEncodingValidationMessage, isSupportedEncoding } from '@/lib/encoding';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 import { findEmployeeDirectoryById } from '@/lib/employee-directory';
 
 export async function POST(req: NextRequest) {
@@ -215,6 +216,7 @@ export async function POST(req: NextRequest) {
             consentAt,
           });
 
+    systemHealthCache.invalidate();
     return NextResponse.json(
       {
         id: workerId || (result as any).id,

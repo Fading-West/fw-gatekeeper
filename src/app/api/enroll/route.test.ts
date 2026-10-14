@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(), mutation: vi.fn(), action: vi.fn(), authorized: vi.fn(), fetch: vi.fn(),
@@ -28,6 +29,15 @@ it('stores only photo indexes used by the quality gate', async () => {
   expect(Buffer.from(mocks.action.mock.calls[1][1].photo).toString()).toBe('c');
   expect(mocks.fetch).toHaveBeenCalledTimes(1);
   expect(mocks.mutation.mock.calls.at(-1)?.[1]).toEqual({ storageIds: ['photo-b', 'photo-c'] });
+});
+it('invalidates health for every date after enrollment changes the ready worker count', async () => {
+  for (const date of ['2026-10-08', '2026-10-09']) {
+    systemHealthCache.set(date, { sync: { ready_worker_count: 0 } }, systemHealthCache.generation);
+  }
+  mocks.fetch.mockResolvedValueOnce(Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [1,2] }));
+  expect((await POST(request())).status).toBe(201);
+  expect(systemHealthCache.get('2026-10-08')).toBeUndefined();
+  expect(systemHealthCache.get('2026-10-09')).toBeUndefined();
 });
 it('rejects malformed photo arrays before calling the encoding service', async () => {
   expect((await POST(request([{}, {}, {}]))).status).toBe(400);
