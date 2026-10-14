@@ -20,6 +20,7 @@ type KioskDeviceHealth = {
   known_workers: number | null;
   queued_logs: number | null;
   queued_attempts: number | null;
+  rejected_attempts?: number | null;
   degraded_reason: string | null;
   last_scan_at: string | null;
   reported_at: string;
@@ -94,6 +95,7 @@ function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
   const issues: string[] = [];
   if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
   if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
+  if ((health.rejected_attempts ?? 0) > 0) issues.push(`${health.rejected_attempts} recognition record${health.rejected_attempts === 1 ? " needs" : "s need"} supervisor review`);
   if (health.degraded_reason && health.degraded_reason !== 'camera_error' && health.degraded_reason !== 'model_error') {
     issues.push(KIOSK_DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
   }

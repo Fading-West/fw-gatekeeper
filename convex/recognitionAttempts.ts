@@ -1,4 +1,5 @@
 import { getFactoryLocalDateKey } from "./localDate";
+import { isValidAttendanceTimestamp } from "./attendanceValidation";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -118,6 +119,10 @@ function normalizeAttempt(attempt: {
   reviewedNote?: string;
   reviewedAt?: string;
 }) {
+  const timestamp = attempt.timestamp.trim();
+  if (!isValidAttendanceTimestamp(timestamp) || !createRecognitionTimestampSortKey()(timestamp)) {
+    throw new ConvexError({ code: "INVALID_RECOGNITION_TIMESTAMP", message: "Recognition timestamp must identify a valid factory-local or offset instant" });
+  }
   const reviewed = false; // Kiosks supply evidence; only portal operators may review it.
   return {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),

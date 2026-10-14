@@ -103,6 +103,10 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof SecuredIngestError && error.status === 400 &&
+        ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.code || '')) {
+      return NextResponse.json({ error: error.detail || 'Invalid recognition evidence', code: error.code }, { status: 400 });
+    }
     if (error instanceof SecuredIngestError && error.status === 409) {
       return NextResponse.json({ error: 'Recognition attempt ID was reused with different evidence.', code: 'RECOGNITION_ATTEMPT_CONFLICT' }, { status: 409 });
     }
