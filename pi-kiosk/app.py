@@ -13,6 +13,7 @@ from flask import Flask, Response, jsonify, make_response, render_template, requ
 
 import config
 import database
+from kiosk_policy import require_kiosk_action_type, validate_kiosk_policy
 from kiosk_ui_auth import (
     KIOSK_UI_KEY_HEADER,
     KIOSK_UI_SESSION_COOKIE,
@@ -91,7 +92,13 @@ def update_health(**kwargs):
 
 def get_health_snapshot() -> dict:
     with _health_lock:
-        return dict(_health)
+        snapshot = dict(_health)
+    policy = validate_kiosk_policy(config)
+    snapshot["policy_ok"] = policy.valid
+    snapshot["policy_errors"] = list(policy.errors)
+    if not policy.valid:
+        snapshot["degraded_reason"] = "kiosk_policy_error"
+    return snapshot
 
 
 def get_status_snapshot() -> dict:
@@ -100,7 +107,7 @@ def get_status_snapshot() -> dict:
         data = dict(_status)
 
     data["health"] = get_health_snapshot()
-    data["liveness_required"] = bool(config.LIVENESS_REQUIRED)
+    data["liveness_required"] = config.LIVENESS_REQUIRED is True
     workers = database.list_workers()
     data["kiosk_id"] = config.KIOSK_ID
     data["kiosk_name"] = config.KIOSK_NAME
@@ -129,9 +136,10 @@ def _mjpeg_stream():
 
 
 def _manual_action_for_worker(worker_id: int) -> str:
-    if config.KIOSK_TYPE == "entry":
+    kiosk_type = require_kiosk_action_type(config)
+    if kiosk_type == "entry":
         return "clock_in"
-    if config.KIOSK_TYPE == "exit":
+    if kiosk_type == "exit":
         return "clock_out"
     last = database.get_last_action(worker_id)
     return "clock_out" if last == "clock_in" else "clock_in"
@@ -257,8 +265,13 @@ def manual_clock():
         return jsonify({"success": False, "error": "Worker not found"}), 404
 
     action = payload.get("action")
-    if action not in {"clock_in", "clock_out"}:
-        action = _manual_action_for_worker(worker["id"])
+    if action is not None and action not in ("clock_in", "clock_out"):
+        return jsonify({"success": False, "error": "Valid clock action is required"}), 400
+    if action is None:
+        try:
+            action = _manual_action_for_worker(worker["id"])
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 503
 
     log_id = database.log_attendance(
         worker_id=worker["id"],

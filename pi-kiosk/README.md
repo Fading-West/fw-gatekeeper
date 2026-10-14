@@ -2,6 +2,14 @@
 
 Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 
+Local policy overrides use the types documented in config.py. Unsupported kiosk
+action types, non-finite thresholds/timers, and invalid scan policy pause
+automatic attendance while the local UI, database, and sync queues remain
+available. /health reports policy_ok and the affected setting names in
+policy_errors; correct config_local.py and restart. Recognition-only faults
+permit supervised manual attendance. Invalid KIOSK_TYPE prevents inferred
+actions; an explicit validated supervisor clock_in/clock_out remains available.
+
 ## How It Works
 
 - `main.py` is the entry point (run by the `fw-gatekeeper-kiosk` systemd service).
