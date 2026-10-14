@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -29,6 +30,10 @@ from kiosk_ui_auth import (
 
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
+
+# Random per-process ID (not a secret). The kiosk page reloads when it changes,
+# so a service restart or update is picked up without a manual reload.
+BOOT_ID = secrets.token_hex(8)
 
 _frame_lock = threading.Lock()
 _current_frame = None
@@ -105,6 +110,7 @@ def get_status_snapshot() -> dict:
     data["kiosk_id"] = config.KIOSK_ID
     data["kiosk_name"] = config.KIOSK_NAME
     data["kiosk_type"] = config.KIOSK_TYPE
+    data["boot_id"] = BOOT_ID
     data["server_time"] = datetime.now().isoformat(timespec="seconds")
     data["admin"] = {
         "worker_count": len(workers),
@@ -114,7 +120,15 @@ def get_status_snapshot() -> dict:
     return data
 
 
-def _mjpeg_stream():
+# End a /feed stream that has sent nothing for this long. The server only
+# notices a disconnected client when a write fails, so a stream with no frames
+# (camera not up yet) would otherwise keep its thread looping forever, and the
+# kiosk page reconnects the feed repeatedly while no frame arrives.
+FEED_IDLE_TIMEOUT_SECONDS = 5.0
+
+
+def _mjpeg_stream(idle_timeout: float = FEED_IDLE_TIMEOUT_SECONDS):
+    last_sent = time.monotonic()
     while True:
         with _frame_lock:
             frame = _current_frame
@@ -125,6 +139,9 @@ def _mjpeg_stream():
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
                 )
+                last_sent = time.monotonic()
+        if time.monotonic() - last_sent >= idle_timeout:
+            return
         time.sleep(0.05)
 
 
@@ -187,7 +204,12 @@ def index():
                 secure=False,
             )
         except RuntimeError:
-            pass
+            # Without the cookie every protected call fails; the page shows
+            # "Kiosk reconnecting" and retries with a bounded reload backoff.
+            logger.warning(
+                "KIOSK_UI_KEY is not configured; kiosk UI session cookie not issued. "
+                "Rerun setup and restart the kiosk service."
+            )
     return response
 
 
