@@ -18,7 +18,7 @@ assert.match(exceptions, /export async function buildShiftExceptions/, 'Shift ex
 assert.match(briefing, /export const summary\s*=\s*query/, 'Shift briefing must expose a Convex summary query.');
 assert.match(briefing, /buildShiftExceptions/, 'Shift briefing should reuse the shift exception builder.');
 assert.match(briefing, /listEffectiveAttendanceByTimestampRange/, 'Shift briefing should compose effective attendance records server-side.');
-assert.match(briefing, /getScheduleForWorker/, 'Shift briefing should match workers to schedules.');
+assert.match(briefing, /resolveScheduleAssignment/, 'Shift briefing should share the unique/none/ambiguous schedule resolver.');
 assert.match(briefing, /departments/, 'Shift briefing response must include department coverage rows.');
 assert.match(briefing, /action_items/, 'Shift briefing response must include prioritized action items.');
 assert.match(briefing, /kiosks/, 'Shift briefing response must include kiosk trust data.');

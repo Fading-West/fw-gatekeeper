@@ -330,6 +330,18 @@ export interface ShiftBriefingResponse {
   };
   departments: ShiftBriefingDepartment[];
   workers: ShiftBriefingWorker[];
+  coverage_unavailable?: number;
+  schedule_assignment_warnings?: {
+    worker_id: string;
+    worker_name: string;
+    department: string;
+    kind: 'none' | 'ambiguous' | 'unsupported';
+    tier: 'department' | 'default' | null;
+    candidates: { id: string; name: string; start: string; end: string; days: string; department: string }[];
+    first_seen: string | null;
+    last_seen: string | null;
+    event_count: number;
+  }[];
   action_items: ShiftBriefingActionItem[];
   kiosks: {
     total: number;
