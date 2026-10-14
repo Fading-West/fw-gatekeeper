@@ -298,6 +298,22 @@ Flash → SSH → Connect hardware → Run setup script (with unique KIOSK_ID) �
 - **Workers** page to manage/deactivate employees
 - **Kiosks** page to monitor kiosk health
 
+The Log's **Export hours CSV** includes every worker with a punch on the selected
+factory date (America/Chicago). Completed intervals are counted on the clock-in
+date. A worker who only clocks out from yesterday's overnight shift still gets a
+row with `0.00` hours and a Note identifying the date where those hours are counted.
+The export reads only the selected date and its two neighboring dates, using
+actual elapsed time across DST changes.
+
+An orphan clock-out, repeated clock-in, unclosed interval (still clocked in), or
+interval longer than `MAX_PLAUSIBLE_SHIFT_HOURS` (16 hours, in
+`src/lib/attendance-hours.ts`) makes the entire worker row **needs review**. Its
+Hours field is blank and its existing Note field explains why hours are withheld;
+even completed partial intervals are withheld until the punches are corrected.
+The owner can tune the maximum to the factory's shift policy. If either neighboring
+date cannot be loaded, the export is cancelled. CSV columns and formula-injection
+protection are preserved.
+
 ### Monitor Display
 
 Each kiosk runs a local web UI (Flask on port 5555) displayed fullscreen via Firefox ESR in kiosk mode. The display shows:
