@@ -27,8 +27,12 @@ assert.doesNotMatch(workersPage, /href="\/enroll" className=\{`flex-1 text-cente
 assert.match(workersPage, /grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3/, 'Workers list should be responsive cards, not a cramped row list.');
 
 assert.match(enrollPage, /useSearchParams/, 'Enroll page must read worker_id from the URL.');
-assert.match(enrollPage, /\/api\/workers\?id=\$\{encodeURIComponent\(workerId\)\}/, 'Enroll page must fetch an existing worker by id for prefill.');
+assert.match(enrollPage, /\/api\/workers\?id=\$\{encodeURIComponent\(enrollmentWorkerId\)\}/, 'Direct links and directory-selected existing workers must fetch current identity by id before re-enrollment.');
 assert.match(enrollPage, /workerId: workerIdRef\.current/, 'Enroll submit payload must include the existing worker id when present.');
+assert.match(enrollPage, /const enrollmentWorkerId = selectedEmployee\?\.workerId \|\| workerId/, 'Directory selection and direct links must share the same existing-worker identity path.');
+assert.match(enrollPage, /expected_identity_revision: identityRevisionRef\.current/, 'Re-enrollment must submit the revision captured before photos.');
+assert.match(enrollRoute, /typeof expected_identity_revision !== 'string' \|\| expected_identity_revision !== expectedIdentityRevision/, 'Existing-worker enrollment must reject both missing and stale pre-capture revisions.');
+
 assert.match(enrollPage, /Employee ID Number[\s\S]*Department/, 'Enroll page must show Employee ID Number between Full Name and Department.');
 assert.match(enrollPage, /employeeId: employeeIdRef\.current\.trim\(\)/, 'Enroll submit payload must include the employee ID number.');
 assert.match(enrollPage, /setEmployeeId\(worker\.employee_id \|\| ''\)/, 'Re-enrollment prefill must load the existing employee ID number.');
@@ -40,10 +44,10 @@ assert.match(enrollPage, /No roster match\. Check the spelling or employee ID be
 assert.match(enrollPage, /currentRole === 'admin'[\s\S]*Employee not listed\? Add manually/, 'Only admins should receive the explicit off-roster manual entry path.');
 assert.match(enrollPage, /Roster progress[\s\S]*of \{directorySummary\.total\} enrolled[\s\S]*remaining/, 'Enrollment must show live roster progress and remaining count.');
 assert.match(enrollPage, /Already enrolled[\s\S]*Needs re-enrollment[\s\S]*Ready to enroll/, 'Roster results must clearly distinguish enrollment status.');
-assert.match(enrollPage, /disabled=\{!canEnroll \|\| cameraOpening \|\| !name\.trim\(\) \|\| \(!workerId && !selectedEmployee && !manualEntry\)\}/, 'Enrollment must require a roster selection unless an admin explicitly uses manual entry.');
+assert.match(enrollPage, /disabled=\{!canEnroll \|\| cameraOpening \|\| \(Boolean\(enrollmentWorkerId\) && !identityReady\) \|\| !name\.trim\(\) \|\| \(!workerId && !selectedEmployee && !manualEntry\)\}/, 'Enrollment must require a roster selection unless an admin explicitly uses manual entry.');
 assert.match(
   enrollPage,
-  /setResultMsg\([\s\S]*setStep\('done'\);[\s\S]*fetch\('\/api\/employee-directory\?status=not_enrolled'\)/,
+  /setResultMsg\([\s\S]*setStep\('done'\);[\s\S]*fetch\('\/api\/employee-directory\?status=not_enrolled'(?:,\s*\{[^}]*\})?\)/,
   'Enrollment must show success before the non-critical roster progress refresh completes.',
 );
 assert.match(employeeDirectory, /Camilo \(Kevin Rojas\) Pacheco/, 'Employee directory should retain roster aliases used for search.');

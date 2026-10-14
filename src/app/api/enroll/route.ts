@@ -4,7 +4,6 @@ import {
   isRecentBiometricConsent,
   isRecentBiometricConsentAge,
 } from "@/lib/biometric-consent";
-import { ConvexError } from 'convex/values';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
@@ -13,6 +12,8 @@ import { getEncodingValidationMessage, isSupportedEncoding } from '@/lib/encodin
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { findEmployeeDirectoryById } from '@/lib/employee-directory';
+import { workerIdentityRevision } from '@/lib/worker-revision';
+import { ConvexError } from 'convex/values';
 
 export async function POST(req: NextRequest) {
   const isAdminSession = await hasValidPortalSession(req, ['admin']);
@@ -23,13 +24,14 @@ export async function POST(req: NextRequest) {
   const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId, consent, consentAt: legacyConsentAt, consentAgeMs } = body as {
+    const { name, employeeId, department, photos, workerId, consent, consentAt: legacyConsentAt, consentAgeMs, expected_identity_revision } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
       consent?: boolean;
+      expected_identity_revision?: string;
       consentAt?: unknown;
       consentAgeMs?: unknown;
     };
@@ -57,12 +59,19 @@ export async function POST(req: NextRequest) {
     let employeeIdForSave = employeeId?.trim() || undefined;
     let departmentForSave = department?.trim() || undefined;
 
-    if (workerId && !isAdminSession) {
+    let expectedIdentityRevision: string | undefined;
+    if (workerId) {
       const existingForEnrollment = await convex.query(api.workers.get, { id: workerId as any });
       if (!existingForEnrollment) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      expectedIdentityRevision = existingForEnrollment.identity_revision ?? workerIdentityRevision({ name: existingForEnrollment.name, employeeId: existingForEnrollment.employee_id, department: existingForEnrollment.department });
+      if (typeof expected_identity_revision !== 'string' || expected_identity_revision !== expectedIdentityRevision) {
+        return NextResponse.json({ error: 'Worker identity changed. Reload enrollment before capturing new photos.', code: 'WORKER_IDENTITY_CONFLICT' }, { status: 409 });
+      }
+      if (!isAdminSession) {
       normalizedName = existingForEnrollment.name;
       employeeIdForSave = existingForEnrollment.employee_id || undefined;
       departmentForSave = existingForEnrollment.department || undefined;
+      }
     } else if (!isAdminSession) {
       const rosterEmployee = findEmployeeDirectoryById(employeeIdForSave);
       if (!rosterEmployee) {
@@ -191,9 +200,8 @@ export async function POST(req: NextRequest) {
     const result = workerId
       ? await convex.mutation(api.workers.update, {
           id: workerId as any,
-          name: normalizedName,
-          employeeId: employeeIdForSave,
-          department: departmentForSave,
+          expectedIdentityRevision,
+          ...(isAdminSession ? { name: normalizedName, employeeId: employeeIdForSave, department: departmentForSave } : {}),
           faceEncoding,
           photoStorageIds: storageIds.length > 0 ? storageIds as any : undefined,
           enrolledAt: now,
@@ -225,6 +233,9 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
+    if (error instanceof ConvexError && typeof error.data === 'object' && error.data?.code === 'WORKER_IDENTITY_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     console.error('Enrollment error:', error);
     if (error instanceof ConvexError && error.data?.code === BIOMETRIC_CONSENT_ERROR_CODE) {
       return NextResponse.json({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE }, { status: 400 });
