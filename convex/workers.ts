@@ -484,7 +484,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
   const page = await query.paginate({ cursor, numItems: 200 });
   const result = await Promise.all(page.page.map(async (w: any) => {
     let photoUrl: string | null = null;
-    if (w.photoStorageIds) {
+    if (w.active && w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
         const url = await ctx.storage.getUrl(sid);
         if (url) {
@@ -499,7 +499,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
       employee_id: w.employeeId || "",
       department: w.department,
       photo_url: photoUrl,
-      face_encoding: w.faceEncoding || null,
+      face_encoding: w.active ? w.faceEncoding || null : null,
       enrolled_at: w.enrolledAt,
       updated_at: w.updatedAt || w.enrolledAt,
       active: w.active ? 1 : 0,
