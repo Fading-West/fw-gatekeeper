@@ -2,6 +2,7 @@ import type { AttendanceWithWorker } from './types';
 import { createAttendanceClock } from './attendance-time';
 
 export interface HoursExportRow {
+  workerId: string; employeeId: string;
   name: string; department: string; firstIn: string; lastOut: string;
   hours: string; note: string; ambiguous: boolean;
 }
@@ -9,11 +10,12 @@ export interface HoursExportRow {
 export function buildHoursExportRows(events: AttendanceWithWorker[], boundaryEvents: AttendanceWithWorker[], date: string): HoursExportRow[] {
   const clock = createAttendanceClock();
   const startsOnSelectedDate = (timestamp: string) => timestamp.startsWith(date);
-  const byWorker = new Map<string, { name: string; department: string; events: AttendanceWithWorker[] }>();
+  const byWorker = new Map<string, { name: string; department: string; employeeId: string; events: AttendanceWithWorker[] }>();
   for (const event of [...events, ...boundaryEvents].sort(clock.compare)) {
     const entry = byWorker.get(event.worker_id) || {
       name: event.worker_name || event.worker_id,
       department: event.worker_department || '',
+      employeeId: event.worker_employee_id || '',
       events: [],
     };
     entry.events.push(event);
@@ -21,7 +23,7 @@ export function buildHoursExportRows(events: AttendanceWithWorker[], boundaryEve
   }
 
   const rows: HoursExportRow[] = [];
-  for (const entry of byWorker.values()) {
+  for (const [workerId, entry] of byWorker) {
     let totalMs = 0;
     let ambiguous = false;
     let firstIn: string | null = null;
@@ -54,6 +56,7 @@ export function buildHoursExportRows(events: AttendanceWithWorker[], boundaryEve
     if (!firstIn && !openIn && totalMs === 0) continue;
     const hours = totalMs > 0 ? (totalMs / 3_600_000).toFixed(2) : '0.00';
     rows.push({
+      workerId, employeeId: entry.employeeId,
       name: entry.name, department: entry.department, firstIn: firstIn || '',
       lastOut: lastOut || '', hours: ambiguous ? '' : hours, ambiguous,
       note: ambiguous ? 'needs review: next-day clock-in before clock-out; hours withheld' : openIn ? 'still clocked in' : '',

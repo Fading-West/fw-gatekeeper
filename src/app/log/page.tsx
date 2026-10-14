@@ -8,7 +8,7 @@ import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
 import { getFactoryLocalDateString } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
-import { csvField } from '@/lib/csv';
+import { buildAttendanceExportCSV, buildHoursExportCSV } from '@/lib/attendance-export';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 
@@ -168,11 +168,7 @@ function LogPageContent() {
   };
 
   const exportCSV = () => {
-    const header = 'Time,Worker,Department,Event,Kiosk,Source,Correction Reason,Note\n';
-    const rows = events.map((e) =>
-      [e.timestamp, e.worker_name, e.worker_department, e.event_type, e.kiosk_name || '', e.source || 'kiosk', e.correction_reason || '', e.note || ''].map(csvField).join(',')
-    ).join('\n');
-    downloadCSV(header + rows, `gatekeeper-${date}.csv`);
+    downloadCSV(buildAttendanceExportCSV(events), `gatekeeper-${date}.csv`);
   };
 
   const exportHoursCSV = async () => {
@@ -204,12 +200,7 @@ function LogPageContent() {
     if (hoursRows.some((row) => row.ambiguous)) {
       toast('Some workers need review: a next-day clock-in has no preceding clock-out. Their hours are blank in the CSV.', 'info');
     }
-    const rows = hoursRows.map((row) =>
-      [row.name, row.department, row.firstIn, row.lastOut, row.hours, row.note].map(csvField).join(',')
-    );
-
-    const header = 'Worker,Department,First In,Last Out,Hours,Note\n';
-    downloadCSV(header + rows.join('\n'), `gatekeeper-hours-${date}.csv`);
+    downloadCSV(buildHoursExportCSV(hoursRows), `gatekeeper-hours-${date}.csv`);
   };
 
   return (
@@ -223,6 +214,7 @@ function LogPageContent() {
             {events.length} effective events · {corrections.length} correction{corrections.length === 1 ? '' : 's'}
             {queryWorkerId ? ' · worker filtered' : ''}
           </p>
+          <p className="text-xs text-slate-400 mt-2">Exports include stable worker IDs. Employee IDs reflect the current roster.</p>
         </div>
         <div className="flex items-center gap-3">
           <input

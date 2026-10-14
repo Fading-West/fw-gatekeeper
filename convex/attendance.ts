@@ -157,6 +157,7 @@ export const list = query({
         synced: a.synced ? 1 : 0,
         worker_name: (worker as any)?.name || a.workerName || "",
         worker_department: (worker as any)?.department || "",
+        worker_employee_id: (worker as any)?.employeeId || null,
         kiosk_name: a.source === "correction" ? "Supervisor correction" : (kiosk as any)?.name || null,
         confidence: a.confidence || 0,
         liveness_confirmed: a.livenessConfirmed ? 1 : 0,
