@@ -129,6 +129,7 @@ export interface ShiftExceptionSuggestedResolution {
 }
 
 export interface ShiftException {
+  source_fingerprint: string;
   key: string;
   date: string;
   type: string;

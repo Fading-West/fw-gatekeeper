@@ -3,6 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { timestampBelongsToFactoryLocalDate } from "./localDate";
 import { isValidAttendanceTimestamp } from "./attendanceValidation";
+import { buildShiftExceptions } from "./shiftExceptions";
 
 const nullableString = v.union(v.string(), v.null());
 
@@ -113,6 +114,7 @@ export const create = mutation({
     correctedTimestamp: v.optional(v.string()),
     originalAttendanceId: v.optional(v.id("attendance")),
     relatedExceptionKey: v.optional(v.string()),
+    sourceFingerprint: v.optional(v.string()),
     reason: v.string(),
     supervisorName: v.optional(v.string()),
   },
@@ -137,6 +139,7 @@ export const create = mutation({
       correctedTimestamp: args.action === "void_event" ? undefined : correctedTimestamp,
       originalAttendanceId: args.originalAttendanceId,
       relatedExceptionKey: normalizeText(args.relatedExceptionKey),
+      sourceFingerprint: args.sourceFingerprint,
       reason,
       supervisorName: normalizeText(args.supervisorName),
     };
@@ -154,6 +157,18 @@ export const create = mutation({
     const worker = await ctx.db.get(args.workerId);
     if (!worker) {
       throw new Error("Worker not found.");
+    }
+
+    // Replays above keep their committed receipt after the source disappears.
+    // First commits must match current evidence in this same transaction.
+    if (evidence.relatedExceptionKey) {
+      const source = (await buildShiftExceptions(ctx, args.date))
+        .find(exception => exception.key === evidence.relatedExceptionKey);
+      if (!source || source.source_fingerprint !== args.sourceFingerprint || source.date !== args.date || source.worker_id !== args.workerId ||
+          !source.suggested_resolution.can_apply || source.suggested_resolution.action !== args.action ||
+          (args.action === "void_event" && source.attendance_id !== args.originalAttendanceId)) {
+        throw new ConvexError({ code: "CORRECTION_SOURCE_CONFLICT", message: "The source exception changed or is no longer correctable. Review the current exceptions before creating a new correction." });
+      }
     }
 
     if (args.action === "void_event") {

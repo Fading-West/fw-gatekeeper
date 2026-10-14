@@ -8,6 +8,8 @@ import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
+import { buildExceptionSourceFingerprint } from "./exceptionSourceFingerprint";
+
 const LOW_MARGIN_THRESHOLD = 0.08;
 
 type ExceptionStatus = "open" | "reviewed" | "ignored" | "resolved";
@@ -35,6 +37,7 @@ type SuggestedResolution = {
 };
 type ShiftException = {
   key: string;
+  source_fingerprint: string;
   date: string;
   type: string;
   severity: ExceptionSeverity;
@@ -326,9 +329,10 @@ function withReview(exception: ShiftException, review: any): ShiftException {
   };
 }
 
-function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution">): ShiftException {
+function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution" | "source_fingerprint">): ShiftException {
   const exception: Omit<ShiftException, "suggested_resolution"> = {
     ...input,
+    source_fingerprint: "", // Hydrated from effective source evidence below.
     status: "open",
     review_note: null,
     reviewed_at: null,
@@ -384,6 +388,8 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   ]);
 
   const reviewsByKey = new Map(reviews.map((review: any) => [review.exceptionKey, review]));
+  const schedulesByWorker = new Map<string, any>();
+  const recognitionFingerprints = new Map<string, string>();
   const eventsByWorker = new Map<string, any[]>();
   const exceptions: ShiftException[] = [];
 
@@ -396,6 +402,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   for (const worker of workers) {
     let schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
     const workerId = String(worker._id);
+    schedulesByWorker.set(workerId, schedule);
     const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const clockOuts = workerEvents.filter((event) => event.eventType === "clock_out");
@@ -596,6 +603,19 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       decision.startsWith("rejected");
     const attemptId = String(attempt.id || attempt._id);
     const key = `${date}:recognition_review:${attemptId}`;
+    const sourceFingerprint = buildExceptionSourceFingerprint({
+      date, type: "recognition_review", workerId: candidateWorkerId,
+      recognitionAttempt: {
+        id: attemptId, timestamp: attempt.timestamp, decision, kioskId, candidateWorkerId, scoreMargin,
+        bestScore: recognitionNumber(attempt, "best_score", "bestScore"),
+        secondBestScore: recognitionNumber(attempt, "second_best_score", "secondBestScore"),
+        threshold: recognitionNumber(attempt, "threshold", "threshold"),
+        modelVersion: recognitionText(attempt, "model_version", "modelVersion"),
+        livenessConfirmed: attempt.liveness_confirmed === 1 ? true : attempt.liveness_confirmed === 0 ? false
+          : typeof attempt.livenessConfirmed === "boolean" ? attempt.livenessConfirmed : null,
+      },
+    });
+    recognitionFingerprints.set(key, sourceFingerprint);
     const label = recognitionText(attempt, "reviewed_label", "reviewedLabel") || "confirmed";
     const completed = reviewed && ["confirmed", "corrected", "ignored"].includes(label);
     const attemptReviewedAt = recognitionText(attempt, "reviewed_at", "reviewedAt");
@@ -647,7 +667,14 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }));
   }
 
-  const hydrated = exceptions.map((exception) => withReview(exception, reviewsByKey.get(exception.key)));
+  const hydrated = exceptions.map((exception) => {
+    const source_fingerprint = recognitionFingerprints.get(exception.key) ?? buildExceptionSourceFingerprint({
+      date: exception.date, type: exception.type, workerId: exception.worker_id,
+      attendanceEvents: eventsByWorker.get(exception.worker_id || "") ?? [],
+      schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
+    });
+    return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
+  });
   hydrated.sort((a, b) => {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     const statusOrder = { open: 0, reviewed: 1, resolved: 2, ignored: 3 };
