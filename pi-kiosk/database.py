@@ -180,6 +180,12 @@ def init_db():
             value TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS manual_attendance_receipts (
+            request_id TEXT PRIMARY KEY,
+            request_json TEXT NOT NULL,
+            result_json TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS photo_cleanup_journal (
             path TEXT PRIMARY KEY,
             kind TEXT NOT NULL CHECK(kind IN ('published', 'retired'))
@@ -695,6 +701,7 @@ def log_attendance(
     timestamp: Optional[str] = None,
     note: Optional[str] = None,
     server_worker_id: Optional[str] = None,
+    _commit: bool = True,
 ) -> int:
     """Create a gatekeeper log entry and return log id.
 
@@ -726,7 +733,8 @@ def log_attendance(
             server_worker_id,
         ),
     )
-    conn.commit()
+    if _commit:
+        conn.commit()
     log_id = int(cursor.lastrowid)
     logger.info(
         "Gatekeeper logged: worker=%s action=%s confidence=%.3f live=%s",
@@ -736,6 +744,49 @@ def log_attendance(
         liveness_confirmed,
     )
     return log_id
+
+
+class ManualAttendancePolicyError(ValueError):
+    """The configured kiosk action cannot be inferred safely."""
+
+
+def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=None, action=None,
+                             action_for_worker=None) -> dict:
+    """Commit the current worker, toggle, attendance and replay receipt together."""
+    request_json = json.dumps({"worker_id": worker_id, "name": worker_name, "action": action}, sort_keys=True)
+    conn = _get_conn()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        receipt = conn.execute("SELECT request_json, result_json FROM manual_attendance_receipts WHERE request_id = ?", (request_id,)).fetchone()
+        if receipt:
+            if receipt["request_json"] != request_json:
+                raise ValueError("A manual request ID cannot be reused for another action")
+            return json.loads(receipt["result_json"])
+        worker = get_worker_by_id(worker_id) if worker_id is not None else get_worker_by_name(worker_name)
+        if worker is None:
+            raise LookupError("Worker not found")
+        if action is None:
+            if action_for_worker is not None:
+                try:
+                    action = action_for_worker(worker["id"])
+                except ValueError as exc:
+                    raise ManualAttendancePolicyError(str(exc)) from exc
+            elif config.KIOSK_TYPE == "entry":
+                action = "clock_in"
+            elif config.KIOSK_TYPE == "exit":
+                action = "clock_out"
+            else:
+                action = "clock_out" if get_last_action(worker["id"]) == "clock_in" else "clock_in"
+        log_id = log_attendance(
+            worker_id=worker["id"], worker_name=worker["name"], action=action,
+            liveness_confirmed=False, confidence=1.0, note="manual_clock",
+            server_worker_id=worker.get("server_id"), _commit=False,
+        )
+        result = {"success": True, "log_id": log_id, "worker_name": worker["name"],
+                  "worker_id": worker["employee_id"] or str(worker["id"]), "action": action}
+        conn.execute("INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)",
+                     (request_id, request_json, json.dumps(result)))
+        return result
 
 
 def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_encoding=None, **fields):
