@@ -59,7 +59,7 @@ class Camera:
             except Exception as e:
                 if self._mode == "pi":
                     raise RuntimeError(f"Pi Camera failed: {e}")
-                logger.info(f"Pi Camera not available ({e}), trying USB...")
+                logger.info("Pi Camera not available (error=%s), trying USB...", type(e).__name__)
 
         self._cam = cv2.VideoCapture(config.CAMERA_INDEX)
         self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
@@ -162,7 +162,7 @@ def _log_recognition_attempt(result, decision):
         _write_recognition_attempt(result, decision)
     except Exception as e:
         # Telemetry writes must never take the scan loop down.
-        logger.error("Failed to log recognition attempt (%s): %s", decision, e)
+        logger.error("Failed to log recognition attempt (error=%s)", type(e).__name__)
 
 
 def _write_recognition_attempt(result, decision):
@@ -195,21 +195,21 @@ def run(args):
     except RuntimeError as exc:
         sync_enabled = False
         logger.critical(
-            "%s Server synchronization is disabled; local attendance and recognition records will remain queued.",
-            exc,
+            "Server synchronization is disabled; configure KIOSK_API_KEY. Local records will remain queued (error=%s).",
+            type(exc).__name__,
         )
 
     try:
         require_kiosk_ui_key()
     except RuntimeError as exc:
         logger.critical(
-            "%s Protected kiosk web routes will remain unavailable; face scanning and local logging will continue.",
-            exc,
+            "Protected kiosk web routes are unavailable; configure KIOSK_UI_KEY. Face scanning and local logging will continue (error=%s).",
+            type(exc).__name__,
         )
 
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    os.makedirs(config.FACES_DIR, exist_ok=True)
-    os.makedirs(config.MODEL_DIR, exist_ok=True)
+    for directory in (config.DATA_DIR, config.FACES_DIR, config.MODEL_DIR):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
     database.init_db()
 
     # Download and load the MobileFaceNet model, but continue booting if it
@@ -298,7 +298,7 @@ def run(args):
         except RuntimeError as e:
             camera.stop()
             camera_attempts += 1
-            logger.error("Camera error during startup (attempt %d): %s", camera_attempts, e)
+            logger.error("Camera error during startup (attempt=%d error=%s)", camera_attempts, type(e).__name__)
             if camera_attempts >= 10 and not critical_logged:
                 logger.critical("Camera failed to initialize after %d attempts; continuing to retry every 30 seconds", camera_attempts)
                 critical_logged = True
@@ -356,7 +356,7 @@ def run(args):
                 try:
                     embedding = embed_face(bgr_frame, face_loc)
                 except Exception as e:
-                    logger.error("ONNX encoding error: %s", e)
+                    logger.error("ONNX encoding error (error=%s)", type(e).__name__)
                     embedding_history.clear()
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_model_error")
                     continue
@@ -405,7 +405,7 @@ def run(args):
                     if len(scores) > 1:
                         second_score = scores[1][0]
                     conf = best_sim
-                    logger.info("Match: sim=%.3f name=%s window=%d", conf, known_names[best_idx], len(embedding_history))
+                    logger.info("Match: sim=%.3f local_id=%d window=%d", conf, known_ids[best_idx], len(embedding_history))
                     if frame_accepted:
                         matched = known_names[best_idx]
 
@@ -445,7 +445,7 @@ def run(args):
                 }
 
             except Exception as e:
-                logger.error("Detection error: %s", e, exc_info=True)
+                logger.error("Detection error (error=%s)", type(e).__name__)
                 embedding_history.clear()
                 current_result[0] = None
 
@@ -482,7 +482,7 @@ def run(args):
             _log_recognition_attempt(result, "accepted")
         except Exception as e:
             # A busy/locked SQLite must never take the kiosk down.
-            logger.error("Failed to record attendance for %s: %s", display_name, e, exc_info=True)
+            logger.error("Failed to record attendance (local_id=%d error=%s)", worker_id, type(e).__name__)
             web_app.update_status(state="ERROR", message="Could not record scan - please try again",
                                   worker_name=display_name, worker_id=display_id, face_detected=True,
                                   confidence=confidence, known_workers=recognizer.known_count)
@@ -504,8 +504,8 @@ def run(args):
                               confidence=confidence, face_detected=True,
                               liveness_confirmed=liveness_confirmed,
                               known_workers=recognizer.known_count)
-        logger.info("%s: %s id=%s (confidence: %.2f, liveness=%s)",
-                    action.replace("_", " ").title(), display_name, display_id or "n/a",
+        logger.info("%s: local_id=%d (confidence: %.2f, liveness=%s)",
+                    action.replace("_", " ").title(), worker_id,
                     confidence, liveness_confirmed)
         return True
 
@@ -529,7 +529,7 @@ def run(args):
             try:
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
-                logger.error("Capture error: %s", e)
+                logger.error("Capture error (error=%s)", type(e).__name__)
                 if camera_healthy:
                     camera_healthy = False
                     web_app.update_health(camera_ok=False, degraded_reason="camera_error")
@@ -625,7 +625,7 @@ def run(args):
                         try:
                             emb = embed_face(check_frame, check_loc)
                         except Exception as e:
-                            logger.warning("Blink-frame embedding failed: %s", e)
+                            logger.warning("Blink-frame embedding failed (error=%s)", type(e).__name__)
                             return False
                         if (
                             emb is None

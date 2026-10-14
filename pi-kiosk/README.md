@@ -64,6 +64,13 @@ Setup fails immediately if `KIOSK_API_KEY`, `KIOSK_UI_KEY`, or
 (imported by `config.py`, never committed), installs the systemd service and
 watchdog timer, and configures the Firefox kiosk display autostart.
 
+An existing `pi-kiosk/data` symlink may point to a dedicated data directory
+on a mounted USB drive. Its resolved target must be owned by the kiosk user
+(the login user, or `KIOSK_USER`). Setup checks this before changing packages,
+configuration or services; mount the drive or correct the directory ownership
+if validation fails. It tightens files and directories in the resolved target
+without following nested symlinks.
+
 By default setup **skips** the 97MB dlib shape predictor used for blink
 liveness. To install it, rerun setup with `ENABLE_LIVENESS=1`, then set
 `LIVENESS_REQUIRED = True` in `config_local.py`.

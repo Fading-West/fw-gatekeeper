@@ -71,6 +71,31 @@ if platform.machine() != "aarch64" or sys.version_info[:2] != (3, 11):
     raise SystemExit("Use Raspberry Pi OS Bookworm (64-bit), Python 3.11, for this dependency lock.")
 PYTHON_TARGET
 
+# Validate relocated data before package, config or service changes. Operators
+# may keep a dedicated data directory on a USB drive via a symlink.
+resolve_data_root() {
+  DATA_ROOT="$INSTALL_DIR/pi-kiosk/data"
+  local target owner kiosk_uid
+  # A parent directory can relocate the store too (for example pi-kiosk).
+  # Resolve missing paths for fresh installs, then require an existing,
+  # kiosk-owned target whenever any component redirects the data path.
+  target=$(realpath -m -- "$DATA_ROOT")
+  if [ -L "$DATA_ROOT" ] || [ "$target" != "$DATA_ROOT" ]; then
+    if ! target=$(realpath -e -- "$DATA_ROOT") || [ ! -d "$target" ]; then
+      echo "❌ Data symlink target is unavailable. Mount its drive or repair the link, then rerun setup."
+      return 1
+    fi
+    owner=$(stat -c %u -- "$target")
+    kiosk_uid=$(id -u "$KIOSK_USER")
+    if [ "$owner" != "$kiosk_uid" ] || [ "$target" = / ]; then
+      echo "❌ Data symlink must point to a dedicated directory owned by $KIOSK_USER. Review the target, set its owner, then rerun setup."
+      return 1
+    fi
+    DATA_ROOT="$target"
+  fi
+}
+resolve_data_root
+
 # ─── 1. System Update ──────────────────────────────────────────
 echo "[1/7] Updating system packages..."
 apt-get update -qq
@@ -164,6 +189,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User=$KIOSK_USER
+UMask=0077
 WorkingDirectory=$INSTALL_DIR/pi-kiosk
 ExecStart=$INSTALL_DIR/pi-kiosk/venv/bin/python main.py \\
   --server $SERVER_URL \\
@@ -273,7 +299,66 @@ fi
 
 # ─── 8. Permissions & Cleanup ──────────────────────────────────
 echo "[8/8] Setting permissions..."
-chown -R "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
+chown -hRP "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
+# Tighten pre-upgrade databases, sidecars, photos and directories too.
+resolve_data_root
+# Keep directory/file descriptors open: find -P followed by pathname-based
+# chmod still follows a symlink swapped in after find has checked a file.
+python3 - "$DATA_ROOT" "$KIOSK_USER" <<'PRIVATE_DATA'
+import errno
+import grp
+import os
+import pwd
+import stat
+import sys
+
+root, user = sys.argv[1:]
+account = pwd.getpwnam(user)
+group_id = grp.getgrnam(user).gr_gid
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+# DATA_ROOT is canonical. Open every component without following symlinks,
+# so replacing an ancestor after validation cannot redirect this traversal.
+root_fd = os.open('/', directory_flags)
+try:
+    components = [part for part in root.split('/') if part]
+    if not components:
+        raise SystemExit('Refusing to change permissions on the filesystem root.')
+    for part in components:
+        next_fd = os.open(part, directory_flags, dir_fd=root_fd)
+        os.close(root_fd)
+        root_fd = next_fd
+    if os.fstat(root_fd).st_uid != account.pw_uid:
+        raise SystemExit('Data directory ownership changed; rerun setup after repairing it.')
+
+    def tighten(fd):
+        metadata = os.fstat(fd)
+        if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+            return
+        os.fchown(fd, account.pw_uid, group_id)
+        os.fchmod(fd, stat.S_IMODE(metadata.st_mode) & ~0o077)
+        if not stat.S_ISDIR(metadata.st_mode):
+            return
+        for name in os.listdir(fd):
+            try:
+                entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if not (stat.S_ISDIR(entry.st_mode) or stat.S_ISREG(entry.st_mode)):
+                    continue
+                child_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            except OSError as error:
+                # Concurrent deletion or replacement by a symlink is harmless.
+                if error.errno in (errno.ENOENT, errno.ELOOP, errno.ENOTDIR):
+                    continue
+                raise
+            try:
+                tighten(child_fd)
+            finally:
+                os.close(child_fd)
+
+    tighten(root_fd)
+finally:
+    os.close(root_fd)
+PRIVATE_DATA
 
 # Disable console screen blanking so the kiosk display never goes dark
 CMDLINE="$BOOT_DIR/cmdline.txt"
