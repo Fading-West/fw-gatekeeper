@@ -64,6 +64,7 @@ function buildChecklist(input: {
   recognitionReviews: any[];
   kioskWarnings: number;
   unavailableWorkers: number;
+  notYetDueWorkers: number;
   acknowledgedBlockers: boolean;
 }) {
   const criticalClear = input.criticalExceptions.length === 0 || input.acknowledgedBlockers;
@@ -94,6 +95,17 @@ function buildChecklist(input: {
       href: "/schedules",
       proof: proof(input.unavailableWorkers, "workers with unsupported schedules", "/schedules", false),
       description: `${input.unavailableWorkers} workers are excluded from attendance totals until their unsupported schedules are fixed.`,
+    }] : []),
+    // The signed snapshot has no not-yet-due field, so signing before a shift
+    // starts needs an acknowledgement note to explain the expected/present gap.
+    ...(input.notYetDueWorkers > 0 ? [{
+      id: "not_yet_due",
+      label: "Shifts not yet started acknowledged",
+      status: input.acknowledgedBlockers ? "clear" : "blocked",
+      count: input.notYetDueWorkers,
+      href: `/briefing?date=${input.date}`,
+      proof: proof(input.notYetDueWorkers, "scheduled workers not yet due", `/briefing?date=${input.date}`, false),
+      description: `${plural(input.notYetDueWorkers, "scheduled worker")} ${input.notYetDueWorkers === 1 ? "has" : "have"} not reached shift start; the signed record will not count them as present or missing.`,
     }] : []),
     {
       id: "critical_exceptions",
@@ -152,6 +164,7 @@ function buildSuggestedNote(input: {
     present: number;
     late: number;
     missing: number;
+    not_yet_due: number;
     open_exceptions: number;
     critical_exceptions: number;
     missing_clock_outs: number;
@@ -166,6 +179,8 @@ function buildSuggestedNote(input: {
     `${input.summary.present} present`,
     `${input.summary.late} late`,
     `${input.summary.missing} missing`,
+    // Closeout before a shift starts: keep expected = present + missing + not yet due.
+    ...(input.summary.not_yet_due > 0 ? [`${input.summary.not_yet_due} not yet due`] : []),
     `${input.summary.open_exceptions} open exceptions`,
     `${input.summary.critical_exceptions} critical exceptions`,
     `${input.summary.missing_clock_outs} missing clock-outs`,
@@ -192,6 +207,7 @@ function buildCloseoutDraft(input: {
     present: number;
     late: number;
     missing: number;
+    not_yet_due: number;
     open_exceptions: number;
     critical_exceptions: number;
     missing_clock_outs: number;
@@ -229,7 +245,7 @@ function buildCloseoutDraft(input: {
     buildDraftSection(
       "attendance_summary",
       "Attendance summary",
-      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.`,
+      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.${input.summary.not_yet_due > 0 ? ` ${plural(input.summary.not_yet_due, "scheduled worker")} ${input.summary.not_yet_due === 1 ? "is" : "are"} not yet due because their shift has not started.` : ""}`,
       [
         {
           label: "briefing attendance evidence",
@@ -332,6 +348,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     recognitionReviews,
     kioskWarnings,
     unavailableWorkers: briefing.coverage_unavailable,
+    notYetDueWorkers: briefing.daily_attendance.not_yet_due,
     acknowledgedBlockers,
   });
   const sourceBlockers = buildChecklist({
@@ -342,6 +359,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     recognitionReviews,
     kioskWarnings,
     unavailableWorkers: briefing.coverage_unavailable,
+    notYetDueWorkers: briefing.daily_attendance.not_yet_due,
     acknowledgedBlockers: false,
   }).filter((item) => item.status === "blocked");
   const blockers = checklist.filter((item) => item.status === "blocked");
@@ -351,6 +369,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     present: briefing.daily_attendance.present,
     late: briefing.daily_attendance.late,
     missing: briefing.daily_attendance.missing,
+    not_yet_due: briefing.daily_attendance.not_yet_due,
     open_exceptions: openExceptions.length,
     critical_exceptions: criticalExceptions.length,
     missing_clock_outs: missingClockOuts.length,
@@ -459,6 +478,7 @@ export const save = mutation({
     const nextNotes = notes || (hasNotesArg ? undefined : normalizeText(existing?.notes));
     const hasSourceBlockers = Boolean(
       current.checklist.some((item) => item.id === "schedule_coverage" && item.count > 0) ||
+      current.summary.not_yet_due ||
       current.summary.critical_exceptions ||
       current.summary.missing_clock_outs ||
       current.summary.recognition_reviews ||

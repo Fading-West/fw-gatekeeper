@@ -4,9 +4,9 @@ import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { getFactoryLocalDateKey } from "./localDate";
 
-import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -85,13 +85,6 @@ function getMinutesFromTimestamp(timestamp?: string | null): number | null {
   const match = timestamp.match(/T(\d{2}):(\d{2})/);
   if (!match) return null;
   return Number(match[1]) * 60 + Number(match[2]);
-}
-
-// Compare both the day and scheduled deadline with the factory clock. A
-// worker's last scan cannot tell us whether the shift has finished yet.
-function scheduleTimeHasPassed(date: string, time: string, now: string) {
-  if (getMinutesFromTime(time) === null) return false;
-  return now > `${date}T${time}:00`;
 }
 
 function formatTime(value?: string | null) {
@@ -365,7 +358,7 @@ function summarize(exceptions: ShiftException[]) {
 
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
-  const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
+  const hasScheduleTimePassed = createScheduleTimeHasPassed(new Date().toISOString());
   const [workers, attendance, schedules, reviews, recognitionAttempts] = await Promise.all([
     ctx.db
       .query("workers")
@@ -426,7 +419,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       schedule = null;
     }
 
-    if (schedule && !firstIn && scheduleTimeHasPassed(date, schedule.startTime, factoryNow)) {
+    if (schedule && !firstIn && hasScheduleTimePassed(date, schedule.startTime)) {
       const key = `${date}:missing_arrival:${workerId}`;
       exceptions.push(createException({
         key,
@@ -484,7 +477,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
 
     if (schedule && lastEvent?.eventType === "clock_in") {
-      const shouldFlagMissingClockOut = scheduleTimeHasPassed(date, schedule.endTime, factoryNow);
+      const shouldFlagMissingClockOut = hasScheduleTimePassed(date, schedule.endTime);
       if (shouldFlagMissingClockOut) {
         const key = `${date}:missing_clock_out:${workerId}`;
         exceptions.push(createException({

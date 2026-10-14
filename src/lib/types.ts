@@ -215,8 +215,9 @@ export interface ShiftExceptionsResponse {
   warning?: string;
 }
 
-export type WorkerCoverageStatus = 'present' | 'late' | 'missing' | 'clocked_out' | 'still_clocked_in';
-export type DepartmentCoverageStatus = 'covered' | 'short' | 'critical' | 'unscheduled';
+// not_yet_due: scheduled with no clock-in before the scheduled start has passed.
+export type WorkerCoverageStatus = 'present' | 'late' | 'missing' | 'not_yet_due' | 'clocked_out' | 'still_clocked_in';
+export type DepartmentCoverageStatus = 'covered' | 'short' | 'critical' | 'not_yet_due' | 'unscheduled';
 export type ShiftBriefingActionPriority = 'critical' | 'warning' | 'info';
 export type ShiftBriefingKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
@@ -229,6 +230,8 @@ export interface ShiftBriefingDepartment {
   present: number;
   late: number;
   missing: number;
+  // Optional while an older Convex deployment may omit it.
+  not_yet_due?: number;
   clocked_out: number;
   status: DepartmentCoverageStatus;
 }
@@ -280,6 +283,7 @@ export interface ShiftTrustBriefSourceCounts {
   present: number;
   late: number;
   missing: number;
+  not_yet_due?: number;
   open_exceptions: number;
   critical_exceptions: number;
   recognition_reviews: number;
@@ -321,6 +325,7 @@ export interface ShiftBriefingResponse {
     present: number;
     late: number;
     missing: number;
+    not_yet_due?: number;
     clocked_out: number;
     departments: number;
     open_exceptions: number;
@@ -404,6 +409,7 @@ export interface ShiftCloseoutDraftSection {
 export interface ShiftCloseoutDraft {
   generated_at: string;
   source_counts: ShiftCloseoutSnapshot & {
+    not_yet_due?: number;
     missing_clock_outs: number;
     recognition_reviews: number;
     attendance_corrections: number;
@@ -421,6 +427,8 @@ export interface ShiftCloseoutResponse {
   generated_at: string;
   closeout: ShiftCloseoutRecord | null;
   summary: ShiftCloseoutSnapshot & {
+    // Live only (not in the signed snapshot); optional for older deployments.
+    not_yet_due?: number;
     missing_clock_outs: number;
     recognition_reviews: number;
     attendance_corrections: number;
