@@ -2,6 +2,7 @@
 import { convexTest } from 'convex-test';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { api } from '../../../../convex/_generated/api';
 import schema from '../../../../convex/schema';
 import convex from '@/lib/convex';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -33,7 +34,8 @@ async function setup(blocked = false) {
   // Match Convex HTTP serialization: undefined fields disappear on the wire.
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+    // PATCH uses a generated reference, not the HTTP client's future references.
+    return actor.mutation(ref as typeof api.shiftCloseouts.save, JSON.parse(JSON.stringify(args)));
   });
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
     method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, ...fields }),
