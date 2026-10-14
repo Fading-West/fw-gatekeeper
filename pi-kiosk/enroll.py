@@ -25,6 +25,7 @@ from flask import Flask, Response, jsonify
 import config
 import database
 from embeddings import embed_face, model_ready, normalize_embedding
+from enrollment_samples import competing_faces, samples_agree
 from liveness import LivenessChecker
 from kiosk_ui_auth import get_enroll_preview_host
 
@@ -142,12 +143,18 @@ def _largest_face(locations: list[tuple[int, int, int, int]]) -> tuple[int, int,
     return max(locations, key=lambda loc: (loc[2] - loc[0]) * (loc[1] - loc[3]))
 
 
+class CompetingEnrollmentFaces(ValueError):
+    """The operator must isolate one enrollment subject before capture."""
+
+
 def _detect_primary_face(frame) -> Optional[tuple[int, int, int, int]]:
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     small_rgb = cv2.resize(rgb, (0, 0), fx=0.5, fy=0.5)
     small_locations = face_recognition.face_locations(small_rgb, model="hog")
     if not small_locations:
         return None
+    if competing_faces(small_locations):
+        raise CompetingEnrollmentFaces("Only one worker may be in the enrollment frame")
     top, right, bottom, left = _largest_face(small_locations)
     return int(top * 2), int(right * 2), int(bottom * 2), int(left * 2)
 
@@ -199,9 +206,13 @@ def add_worker(name: str):
                 continue
 
             display = frame.copy()
-            face_location = _detect_primary_face(frame)
-
             message = "Step into frame"
+            try:
+                face_location = _detect_primary_face(frame)
+            except CompetingEnrollmentFaces:
+                face_location = None
+                liveness.reset()
+                message = "More than one face: keep only the enrolled worker in frame"
             live = False
 
             if face_location is not None:
@@ -216,6 +227,11 @@ def add_worker(name: str):
                     except Exception as exc:
                         print(f"Encoding failed: {exc}")
                         encoding = None
+                    if encoding is not None and not samples_agree(encodings + [encoding]):
+                        encoding = None
+                        liveness.reset()
+                        live = False
+                        message = "Samples do not match: retake with the same worker, or cancel to start again"
                     if encoding is not None:
                         capture_index = len(encodings) + 1
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -227,7 +243,7 @@ def add_worker(name: str):
                         liveness.reset()
                         live = False
                         last_capture = time.monotonic()
-                    else:
+                    elif not message.startswith("Samples do not match"):
                         message = "Face encoding failed, keep looking at camera"
 
             cv2.rectangle(display, (0, 0), (display.shape[1], 90), (10, 10, 10), -1)
@@ -272,6 +288,9 @@ def add_worker(name: str):
         print("Enrollment failed before all required captures were collected.")
         return 1
 
+    if not samples_agree(encodings):
+        print("Enrollment samples do not identify one consistent worker; retake them.")
+        return 1
     average_encoding = normalize_embedding(np.mean(np.vstack(encodings), axis=0))
     worker_id = database.add_worker(
         name=worker_name,
