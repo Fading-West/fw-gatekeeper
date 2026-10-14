@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 import onnxruntime as ort
@@ -49,7 +50,7 @@ SERVICE_VERSION = "3.1-quality-gate"
 @asynccontextmanager
 async def service_lifespan(_app):
     # Initialize once at startup, outside health requests. A slow or failed
-    # model load leaves the cheap read-only endpoint available and degraded.
+    # model load leaves /health live and /ready unavailable until recovery.
     if get_configured_face_service_key():
         threading.Thread(target=_warm_recognition_model, name="face-model-warmup", daemon=True).start()
     yield
@@ -265,6 +266,14 @@ def health():
         "min_pairwise_similarity": MIN_PAIRWISE_SIMILARITY,
         "min_good_photos": MIN_GOOD_PHOTOS,
     }
+
+
+@app.get("/ready")
+def ready():
+    # Render must only route traffic once authentication and the model are ready.
+    # Reuse the cheap state snapshot without waiting for or triggering model load.
+    body = health()
+    return JSONResponse(content=body, status_code=200 if body["status"] == "ok" else 503)
 
 
 def _inspect_enrollment_photo(index: int, photo: str) -> tuple[PhotoResult, Optional[np.ndarray]]:
