@@ -128,15 +128,6 @@ def _mjpeg_stream():
         time.sleep(0.05)
 
 
-def _manual_action_for_worker(worker_id: int) -> str:
-    if config.KIOSK_TYPE == "entry":
-        return "clock_in"
-    if config.KIOSK_TYPE == "exit":
-        return "clock_out"
-    last = database.get_last_action(worker_id)
-    return "clock_out" if last == "clock_in" else "clock_in"
-
-
 def _is_loopback_request() -> bool:
     return request.remote_addr in {"127.0.0.1", "::1"}
 
@@ -258,7 +249,7 @@ def manual_clock():
 
     action = payload.get("action")
     if action not in {"clock_in", "clock_out"}:
-        action = _manual_action_for_worker(worker["id"])
+        action = None
 
     log_id = database.log_attendance(
         worker_id=worker["id"],
@@ -269,6 +260,7 @@ def manual_clock():
         note="manual_clock",
         server_worker_id=worker.get("server_id"),
     )
+    action = database.get_attendance_action(log_id)
     action_label = "Clocked in" if action == "clock_in" else "Clocked out"
     update_status(
         state="CLOCKED_IN",
