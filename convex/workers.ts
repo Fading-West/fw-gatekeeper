@@ -516,11 +516,3 @@ export const listForSyncFromHttp = internalQuery({
   returns: v.object({ workers: workerSyncResult, isDone: v.boolean(), continueCursor: v.string() }),
   handler: listWorkersForSync,
 });
-
-export const generateUploadUrl = mutation({
-  args: {},
-  handler: async (ctx) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
-    return await ctx.storage.generateUploadUrl();
-  },
-});
