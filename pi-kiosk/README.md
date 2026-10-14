@@ -31,6 +31,10 @@ Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
   and the display asks the worker to contact a supervisor. The camera, UI, and
   offline queue sync keep running. Model loading is retried every 30 seconds;
   installing the predictor restores scanning without restarting the kiosk.
+- Local web controls start before recognition model initialization. A missing
+  or offline model blocks automatic recognition with a supervisor fallback;
+  one background loader retries every 30 seconds while the camera and queued
+  attendance sync remain available. Recognition resumes after initialization.
 - Supervisor controls (manual clock-in/out) are behind a separate PIN
   (`KIOSK_SUPERVISOR_PIN`) with a five-minute session and attempt lockout.
 
