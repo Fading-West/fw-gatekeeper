@@ -20,7 +20,7 @@ import face_recognition as fr
 import config
 import database
 from embeddings import embed_face, model_ready as recognition_model_ready
-from matching import FreshFaceMatcher
+from matching import FreshFaceMatcher, has_minimum_margin
 from recognition import FaceRecognizer
 from sync import SyncWorker
 from sync_auth import require_kiosk_api_key
@@ -372,6 +372,7 @@ def run(args):
                 conf = 0.0
                 best_idx = None
                 second_score = None
+                ambiguous = False
 
                 if known_encs:
                     cand_dim = len(embedding)
@@ -402,6 +403,7 @@ def run(args):
                         embedding, compatible, known_ids, known_server_ids, frame_ts,
                     )
                     best_sim, best_idx = scores[0]
+                    ambiguous = not has_minimum_margin(scores, config.RECOGNITION_MIN_MARGIN)
                     if len(scores) > 1:
                         second_score = scores[1][0]
                     conf = best_sim
@@ -419,8 +421,11 @@ def run(args):
                     np.array(known_encs[best_idx], copy=True) if best_idx is not None else None
                 )
                 decision = "accepted" if matched else "rejected_unknown"
+                if ambiguous:
+                    decision = "rejected_ambiguous"
                 if (
                     matched is None
+                    and not ambiguous
                     and best_idx is not None
                     and conf >= config.RECOGNITION_MATCH_THRESHOLD - config.RECOGNITION_NEAR_MISS_MARGIN
                 ):
@@ -605,14 +610,23 @@ def run(args):
 
                 if identity_changed:
                     pending_clock[0] = None
-                    _log_recognition_attempt(pending["result"], "rejected_liveness_identity_change")
+                    ambiguous = fresh.get("decision") == "rejected_ambiguous"
+                    _log_recognition_attempt(
+                        fresh if ambiguous else pending["result"],
+                        "rejected_ambiguous" if ambiguous else "rejected_liveness_identity_change",
+                    )
                     liveness.reset()
                     box_loc = None
                     box_label = None
                     box_color = GOLD
-                    web_app.update_status(state="IDLE", message="Hold steady...",
-                                          worker_id=None, face_detected=True,
+                    web_app.update_status(state="NOT_RECOGNIZED" if ambiguous else "IDLE",
+                                          message="Please try again or ask your supervisor" if ambiguous else "Hold steady...",
+                                          worker_id=None, worker_name=None, action=None,
+                                          confidence=0.0, liveness_confirmed=False, ear=0.0,
+                                          face_detected=True,
                                           known_workers=recognizer.known_count)
+                    if ambiguous:
+                        display_until[0] = now + config.DISPLAY_TIME_SEC
                     continue
 
                 if not pending["blink_confirmed"]:
@@ -633,7 +647,22 @@ def run(args):
                             or len(pending["encoding"]) != len(emb)
                         ):
                             return False
-                        return cosine_sim(pending["encoding"], emb) >= config.RECOGNITION_MATCH_THRESHOLD
+                        encs, ids, _, server_ids = recognizer.snapshot_known_faces()
+                        compatible = [(i, enc) for i, enc in enumerate(encs) if len(enc) == len(emb)]
+                        try:
+                            scores, approved = FreshFaceMatcher(1, config.RECOGNITION_MATCH_THRESHOLD).match(
+                                emb, compatible, ids, server_ids, now,
+                            )
+                        except ValueError:
+                            return False
+                        if not approved:
+                            return False
+                        best_idx = scores[0][1]
+                        return (
+                            ids[best_idx] == pending["worker_id"]
+                            and server_ids.get(ids[best_idx]) == pending["server_worker_id"]
+                            and np.array_equal(encs[best_idx], pending["encoding"])
+                        )
 
                     blink_ok = (
                         recognizer.liveness_policy.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
@@ -702,12 +731,15 @@ def run(args):
                 web_app.update_health(degraded_reason=expected_roster_fault or base_degraded_reason())
 
             if result is None:
-                if box_loc is not None:
+                if box_loc is not None or display_until[0] > 0:
                     unknown_streak = 0
                     box_loc = None
                     box_label = None
+                    display_until[0] = 0.0
                     web_app.update_status(state="IDLE", message="Step toward camera",
-                                          worker_id=None, face_detected=False, known_workers=recognizer.known_count)
+                                          worker_id=None, worker_name=None, action=None,
+                                          confidence=0.0, liveness_confirmed=False, ear=0.0,
+                                          face_detected=False, known_workers=recognizer.known_count)
                 time.sleep(0.05)
                 continue
 
@@ -769,7 +801,8 @@ def run(args):
                 else:
                     unknown_streak = 0
                     _log_recognition_attempt(result, decision or "rejected_unknown")
-                    web_app.update_status(state="NOT_RECOGNIZED", message="Face not recognized",
+                    web_app.update_status(state="NOT_RECOGNIZED",
+                                          message="Please try again or ask your supervisor" if decision == "rejected_ambiguous" else "Face not recognized",
                                           worker_id=None, face_detected=True, confidence=confidence,
                                           known_workers=recognizer.known_count)
                     display_until[0] = now + config.DISPLAY_TIME_SEC
