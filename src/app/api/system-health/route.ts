@@ -6,6 +6,7 @@ import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
+import { getKioskDegradedReasons } from '@/lib/kiosk-health-reasons';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
@@ -94,8 +95,10 @@ function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
   const issues: string[] = [];
   if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
   if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
-  if (health.degraded_reason && health.degraded_reason !== 'camera_error' && health.degraded_reason !== 'model_error') {
-    issues.push(KIOSK_DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
+  for (const reason of getKioskDegradedReasons(health.degraded_reason)) {
+    if ((reason === 'camera_error' && health.camera_ok === false) ||
+        (reason === 'model_error' && health.model_ok === false)) continue;
+    issues.push(KIOSK_DEGRADED_REASON_LABELS[reason] ?? `degraded (${reason})`);
   }
   if ((health.queued_logs ?? 0) > 0) {
     issues.push(`${health.queued_logs} attendance record${health.queued_logs === 1 ? '' : 's'} queued on-device`);

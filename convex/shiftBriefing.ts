@@ -2,6 +2,7 @@ import { isSupportedEncoding } from "../src/lib/encoding";
 import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
+import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
@@ -175,7 +176,7 @@ const SCAN_BLOCKING_DEGRADED_REASONS = new Set([
 function hasScanBlockingDeviceFault(health: any): boolean {
   if (!health) return false;
   if (health.cameraOk === false || health.modelOk === false) return true;
-  return typeof health.degradedReason === "string" && SCAN_BLOCKING_DEGRADED_REASONS.has(health.degradedReason);
+  return getKioskDegradedReasons(health.degradedReason).some(reason => SCAN_BLOCKING_DEGRADED_REASONS.has(reason));
 }
 
 function buildShiftTrustBrief(input: {

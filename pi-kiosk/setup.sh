@@ -152,12 +152,24 @@ KIOSK_SUPERVISOR_PIN="$KIOSK_SUPERVISOR_PIN" ./venv/bin/python tools/update_loca
 # ─── 6. Systemd Services ───────────────────────────────────────
 echo "[6/8] Installing systemd services..."
 
+# The upstream waiter defaults to TimeoutStartSec=infinity. Bound it before
+# enabling: time-sync.target must release the offline kiosk after 30 seconds.
+mkdir -p /etc/systemd/system/systemd-time-wait-sync.service.d
+cat > /etc/systemd/system/systemd-time-wait-sync.service.d/fw-gatekeeper-timeout.conf << 'EOF'
+[Service]
+TimeoutStartSec=30s
+EOF
+systemctl daemon-reload
+if systemctl cat systemd-time-wait-sync.service >/dev/null 2>&1; then
+  systemctl enable systemd-time-wait-sync.service
+fi
+
 # Main kiosk service (face scanner + Flask web UI)
 cat > /etc/systemd/system/fw-gatekeeper-kiosk.service << EOF
 [Unit]
 Description=FW Gatekeeper Kiosk ($KIOSK_NAME)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 # Restart forever: never rate-limit restarts of the door scanner.
 StartLimitIntervalSec=0
 
