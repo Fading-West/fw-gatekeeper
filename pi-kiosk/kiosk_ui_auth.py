@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import os
+import secrets
 import threading
 import time
 from typing import Callable, Optional
@@ -19,6 +20,18 @@ SUPERVISOR_SESSION_TTL_SECONDS = 5 * 60
 SUPERVISOR_MAX_FAILED_ATTEMPTS = 5
 SUPERVISOR_FAILURE_WINDOW_SECONDS = 60
 SUPERVISOR_LOCKOUT_SECONDS = 5 * 60
+_supervisor_sessions: dict[str, int] = {}
+_supervisor_unlocks: dict[str, str] = {}
+# Retain cancelled operations until restart: an arbitrarily delayed request
+# must never mint a new credential after its lock has been acknowledged.
+_cancelled_supervisor_unlocks: set[str] = set()
+_supervisor_boot_nonce = secrets.token_hex(16)
+_supervisor_session_lock = threading.Lock()
+
+
+def get_supervisor_boot_nonce() -> str:
+    """Public process generation; it is not an authorization credential."""
+    return _supervisor_boot_nonce
 
 
 class SupervisorAttemptLimiter:
@@ -111,13 +124,48 @@ def kiosk_ui_session_token(key: Optional[str] = None) -> str:
     return hmac.new(configured_key.encode("utf-8"), _SESSION_CONTEXT, hashlib.sha256).hexdigest()
 
 
-def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int] = None) -> str:
+def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int] = None,
+                             unlock_request_id: Optional[str] = None) -> str:
     configured_pin = (pin or require_supervisor_pin()).strip()
     ui_key = require_kiosk_ui_key()
     issued = int(time.time() if issued_at is None else issued_at)
     signing_key = f"{ui_key}:{configured_pin}".encode("utf-8")
-    signature = hmac.new(signing_key, _SUPERVISOR_CONTEXT + str(issued).encode("ascii"), hashlib.sha256).hexdigest()
-    return f"{issued}.{signature}"
+    nonce = secrets.token_hex(16)
+    message = f"{issued}.{nonce}"
+    signature = hmac.new(signing_key, _SUPERVISOR_CONTEXT + message.encode("ascii"), hashlib.sha256).hexdigest()
+    token = f"{message}.{signature}"
+    with _supervisor_session_lock:
+        now = int(time.time())
+        expired = [value for value, timestamp in _supervisor_sessions.items()
+                   if now - timestamp > SUPERVISOR_SESSION_TTL_SECONDS]
+        for value in expired:
+            del _supervisor_sessions[value]
+        for operation, value in list(_supervisor_unlocks.items()):
+            if value not in _supervisor_sessions:
+                del _supervisor_unlocks[operation]
+        if unlock_request_id:
+            if unlock_request_id in _cancelled_supervisor_unlocks:
+                raise ValueError("Supervisor unlock was cancelled")
+            existing = _supervisor_unlocks.get(unlock_request_id)
+            if existing:
+                return existing
+            _supervisor_unlocks[unlock_request_id] = token
+        _supervisor_sessions[token] = issued
+    return token
+
+
+def revoke_supervisor_session(session_token: Optional[str], unlock_request_id: Optional[str] = None) -> None:
+    """Lock this session on the server; separate unlocked sessions keep working.
+
+    Sessions are deliberately process-local: a service restart requires a new
+    unlock and cannot revive a token revoked before the restart.
+    """
+    with _supervisor_session_lock:
+        _supervisor_sessions.pop(session_token or "", None)
+        if unlock_request_id:
+            _cancelled_supervisor_unlocks.add(unlock_request_id)
+            token = _supervisor_unlocks.pop(unlock_request_id, None)
+            _supervisor_sessions.pop(token or "", None)
 
 
 def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_token: Optional[str] = None) -> bool:
@@ -131,16 +179,25 @@ def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_
     candidate_session = (session_token or "").strip()
     if not candidate_session:
         return False
+    with _supervisor_session_lock:
+        if candidate_session not in _supervisor_sessions:
+            return False
     try:
-        issued_raw, provided_signature = candidate_session.split(".", 1)
+        issued_raw, nonce, provided_signature = candidate_session.split(".")
         issued_at = int(issued_raw)
     except (TypeError, ValueError):
         return False
     age_seconds = int(time.time()) - issued_at
     if age_seconds < -30 or age_seconds > SUPERVISOR_SESSION_TTL_SECONDS:
         return False
-    expected_signature = supervisor_session_token(configured_pin, issued_at).split(".", 1)[1]
-    return hmac.compare_digest(provided_signature, expected_signature)
+    try:
+        signing_key = f"{require_kiosk_ui_key()}:{configured_pin}".encode("utf-8")
+    except RuntimeError:
+        return False
+    message = f"{issued_raw}.{nonce}".encode("ascii")
+    expected_signature = hmac.new(signing_key, _SUPERVISOR_CONTEXT + message, hashlib.sha256).hexdigest()
+    with _supervisor_session_lock:
+        return candidate_session in _supervisor_sessions and hmac.compare_digest(provided_signature, expected_signature)
 
 
 def has_valid_kiosk_ui_credential(
