@@ -62,6 +62,9 @@ _health = {
     "degraded_reason": None,
     "last_scan_at": None,
     "sync_online": None,  # None = sync disabled/unknown, True/False once known
+    "sync_auth_ok": None,
+    "sync_auth_faults": [],
+    "sync_auth_phases": {},
     "last_sync_at": None,
 }
 
@@ -207,7 +210,8 @@ def video_feed_alias():
 def health():
     """Truthful kiosk health: degraded whenever a scan-blocking subsystem is down."""
     snapshot = get_health_snapshot()
-    degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+    degraded = (not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+                or snapshot.get("sync_auth_ok") is False)
     return jsonify({"status": "degraded" if degraded else "ok", **snapshot})
 
 
