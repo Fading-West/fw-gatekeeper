@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AttendanceBacklogPendingError, ingestAttendanceBacklog } from '@/lib/attendance-backlog';
 import { unauthorizedApiResponse } from '@/lib/auth';
-import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId, KioskClaimMismatchError } from '@/lib/kiosk-device-auth';
 import { ConvexError } from 'convex/values';
 import { SecuredIngestError } from '@/lib/convex-ingest';
 import { validateAttendanceEvent } from '../../../../../convex/attendanceValidation';
@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     }
     const claims = [...kioskClaims(body), ...events.flatMap((event: unknown) =>
       event && typeof event === 'object' && !Array.isArray(event) ? kioskClaims(event as Record<string, unknown>) : [])];
-    const identity = await authenticateKiosk(req, claims);
+    const identity = await authenticateKiosk(req, claims, { batchClaims: kioskClaims(body) });
     if (!identity) return unauthorizedApiResponse();
 
     const mapped = events.map((value: unknown) => {
@@ -48,6 +48,9 @@ export async function POST(req: NextRequest) {
     console.info('next_secured_ingest_attendance', { received: mapped.length, synced: result.synced });
     return NextResponse.json(result);
   } catch (error) {
+    if (error instanceof KioskClaimMismatchError) {
+      return NextResponse.json({ error: error.message, code: 'KIOSK_CLAIM_MISMATCH' }, { status: 403 });
+    }
     if (error instanceof ConvexError) return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 400 });
     if (error instanceof SecuredIngestError && error.status === 400 && error.code === 'INVALID_ATTENDANCE') {
       return NextResponse.json({ error: error.detail || 'Invalid attendance', code: error.code }, { status: 400 });

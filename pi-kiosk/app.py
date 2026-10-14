@@ -59,6 +59,7 @@ _health = {
     "retryable_logs": 0,
     "rejected_logs": 0,
     "queued_attempts": 0,
+    "rejected_attempts": 0,
     "degraded_reason": None,
     "last_scan_at": None,
     "sync_online": None,  # None = sync disabled/unknown, True/False once known
@@ -205,9 +206,10 @@ def video_feed_alias():
 
 @app.route("/health")
 def health():
-    """Truthful kiosk health: degraded whenever a scan-blocking subsystem is down."""
+    """Report scanner faults and quarantined evidence needing operator recovery."""
     snapshot = get_health_snapshot()
-    degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+    degraded = (not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+                or bool(snapshot["rejected_logs"]) or bool(snapshot["rejected_attempts"]))
     return jsonify({"status": "degraded" if degraded else "ok", **snapshot})
 
 

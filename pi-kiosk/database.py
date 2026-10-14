@@ -198,6 +198,18 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_active_rejection
             ON attendance_rejections(log_id) WHERE released_at IS NULL;
 
+        CREATE TABLE IF NOT EXISTS recognition_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            original_attempt_json TEXT NOT NULL,
+            rejected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            released_at TEXT,
+            release_note TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_recognition_active_rejection
+            ON recognition_rejections(attempt_id) WHERE released_at IS NULL;
+
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
@@ -806,22 +818,33 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     return logs
 
 
-def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0) -> list[dict]:
+def _kiosk_queue_filter(current_kiosk_only: Optional[bool]) -> tuple[str, tuple]:
+    if current_kiosk_only is None:
+        return "", ()
+    comparison = "=" if current_kiosk_only else "!="
+    # Match the server's case/whitespace alias normalization; empty legacy
+    # claims retain the existing current-KIOSK_ID fallback behavior.
+    return (f"AND LOWER(TRIM(COALESCE(NULLIF(kiosk_id, ''), ?))) {comparison} LOWER(TRIM(?))",
+            (config.KIOSK_ID, config.KIOSK_ID))
+
+
+def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0, current_kiosk_only: Optional[bool] = None) -> list[dict]:
     """Return unsynced gatekeeper logs for optional server sync."""
     conn = _get_conn()
+    claim_filter, claim_args = _kiosk_queue_filter(current_kiosk_only)
     rows = conn.execute(
-        """
+        f"""
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note,
                server_worker_id
         FROM attendance_log
-        WHERE synced = 0 AND id > ? AND NOT EXISTS (
+        WHERE synced = 0 AND id > ? {claim_filter} AND NOT EXISTS (
             SELECT 1 FROM attendance_rejections r
             WHERE r.log_id = attendance_log.id AND r.released_at IS NULL
         )
         ORDER BY id ASC
         LIMIT ?
         """,
-        (int(after_id), max(1, int(limit)) if limit is not None else -1),
+        (int(after_id), *claim_args, max(1, int(limit)) if limit is not None else -1),
     ).fetchall()
     logs = []
     for row in rows:
@@ -904,13 +927,57 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
         if result.rowcount != 1:
             raise ValueError(f"Active rejection {rejection_id} does not exist")
+        conn.execute("DELETE FROM sync_state WHERE key IN ('attendance_current_scan_after', 'attendance_scan_after')")
 
 
 def count_unsynced_recognition_attempts() -> int:
     """Count recognition telemetry rows still waiting to sync."""
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0").fetchone()
+    row = conn.execute("""SELECT
+        (SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0) +
+        (SELECT COUNT(*) FROM recognition_rejections r
+         LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+         WHERE r.released_at IS NULL AND a.id IS NULL)""").fetchone()
     return int(row[0]) if row else 0
+
+
+def count_rejected_attempts() -> int:
+    return int(_get_conn().execute(
+        "SELECT COUNT(*) FROM recognition_rejections WHERE released_at IS NULL"
+    ).fetchone()[0])
+
+
+def reject_recognition_attempt(attempt_id: int, reason: str) -> None:
+    conn = _get_conn()
+    with conn:
+        row = conn.execute("SELECT * FROM recognition_attempts WHERE id = ? AND synced = 0", (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unsynced recognition attempt {attempt_id} does not exist")
+        conn.execute("""INSERT INTO recognition_rejections (attempt_id, reason, original_attempt_json)
+            VALUES (?, ?, ?)""", (attempt_id, reason[:2000], json.dumps(dict(row), default=str)))
+
+
+def list_recognition_rejections() -> list[dict]:
+    return [dict(row) for row in _get_conn().execute("""SELECT r.*, a.synced, a.kiosk_id, a.timestamp
+        FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+        WHERE r.released_at IS NULL ORDER BY r.id""")]
+
+
+def retry_recognition_rejection(rejection_id: int, note: str) -> None:
+    if not note.strip():
+        raise ValueError("A reason for retry is required")
+    conn = _get_conn()
+    with conn:
+        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id
+            FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+            WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
+        if rejection is None:
+            raise ValueError(f"Active recognition rejection {rejection_id} does not exist")
+        if rejection["existing_attempt_id"] is None:
+            raise ValueError("Recognition attempt is missing; restore the original evidence before retry")
+        conn.execute("""UPDATE recognition_rejections SET released_at = datetime('now'), release_note = ?
+            WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
+        conn.execute("DELETE FROM sync_state WHERE key IN ('recognition_current_scan_after', 'recognition_scan_after')")
 
 
 def _optional_float(value) -> Optional[float]:
@@ -985,21 +1052,25 @@ def log_recognition_attempt(
     return attempt_id
 
 
-def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
+def get_unsynced_recognition_attempts(limit: int = 100, after_id: int = 0, current_kiosk_only: Optional[bool] = None) -> list[dict]:
     """Return unsynced recognition telemetry rows without any face image data."""
     conn = _get_conn()
+    claim_filter, claim_args = _kiosk_queue_filter(current_kiosk_only)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             id, timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
             best_score, second_best_score, score_margin, decision, threshold,
             liveness_confirmed, model_version, source_attempt_id, legacy_source_attempt_id, candidate_server_worker_id
         FROM recognition_attempts
-        WHERE synced = 0
+        WHERE synced = 0 AND id > ? {claim_filter} AND NOT EXISTS (
+            SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL
+        )
         ORDER BY id ASC
         LIMIT ?
         """,
-        (int(limit),),
+        (int(after_id), *claim_args, int(limit)),
     ).fetchall()
     # Legacy queued attempts may have reached the server before an acknowledgement
     # was lost. Keep their old identity as a migration alias, but persist a UUID

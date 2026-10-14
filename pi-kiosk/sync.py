@@ -136,6 +136,29 @@ def _rejection_reason(response) -> Optional[str]:
     return reason if reason.startswith(legacy_prefixes) or reason == "workerId must identify an existing worker" else None
 
 
+class KioskCredentialDenied(Exception):
+    """An invalid/revoked credential must stop all evidence uploads this cycle."""
+
+
+def _claim_mismatch(response) -> bool:
+    if response.status_code != 403:
+        return False
+    try:
+        body = response.json()
+    except (ValueError, requests.RequestException):
+        return False
+    return isinstance(body, dict) and body.get("code") == "KIOSK_CLAIM_MISMATCH"
+
+
+def _claim_groups(rows: list[dict]) -> list[list[dict]]:
+    """Never mix captured kiosk claims in a request or rewrite their identity."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        claim = row.get("kiosk_id") or config.KIOSK_ID
+        groups.setdefault(claim, []).append(row)
+    return list(groups.values())
+
+
 def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int], deadline: float) -> bool:
     """Split validated rejections, retaining every unresolved event for retry.
 
@@ -159,6 +182,14 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
     if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
         database.mark_synced(log_ids)
         logger.info("Synced %d gatekeeper logs to server", len(log_ids))
+        return True
+    if response.status_code == 401:
+        raise KioskCredentialDenied("Attendance credential/configuration rejected; all uploads halted")
+    if _claim_mismatch(response):
+        for log_id in log_ids:
+            database.reject_attendance(log_id, "KIOSK_CLAIM_MISMATCH: captured kiosk claim is not authorized by current credential")
+        logger.error("Quarantined %d attendance logs with captured kiosk claim %r; review attendance_rejections.py list",
+                     len(log_ids), payload[0].get("kiosk_id"))
         return True
     reason = _rejection_reason(response)
     if reason:
@@ -193,57 +224,97 @@ def _attendance_acknowledged(response, submitted: int) -> bool:
     return type(count) is int and 0 <= count <= submitted
 
 
-def sync_attendance() -> bool:
-    """Drain bounded, acknowledged pages; retain every failed or unmapped row."""
-    # Persist the scan position so many unmapped rows cannot starve later
-    # attendance. Wrap at the end, revisiting unresolved rows on later cycles.
-    cursor = int(database.get_sync_state("attendance_scan_after") or 0)
+def sync_attendance(*, halt_on_unauthorized: bool = False) -> bool:
+    try:
+        return _sync_attendance()
+    except KioskCredentialDenied as exc:
+        logger.error("%s", exc)
+        if halt_on_unauthorized:
+            raise
+        return False
+
+
+def _sync_attendance() -> bool:
+    """Drain current claims first, then historical claims, with separate cursors."""
     orphans: list[dict] = []
     examined = 0
     request_budget = [ATTENDANCE_REQUESTS_PER_CYCLE]
     deadline = time.monotonic() + ATTENDANCE_CYCLE_SECONDS
-    for _ in range(ATTENDANCE_PAGES_PER_CYCLE):
-        logs = database.get_unsynced_logs(limit=ATTENDANCE_BATCH_SIZE, after_id=cursor)
-        if not logs:
-            database.set_sync_state("attendance_scan_after", "0")
-            break
-        examined += len(logs)
-        payload_logs = []
-        synced_log_ids = []
-        for log in logs:
-            server_id = _resolve_log_server_id(log)
-            if not server_id:
-                orphans.append(log)
-                continue
-            payload_logs.append({
-                "worker_id": server_id,
-                "worker_name": log.get("worker_name"),
-                "event_type": log.get("event_type") or log.get("action"),
-                "action": log.get("action"),
-                "timestamp": log.get("timestamp"),
-                "idempotency_key": _build_idempotency_key(log, server_id),
-                "liveness_confirmed": log.get("liveness_confirmed"),
-                "confidence": log.get("confidence"),
-                "kiosk_id": log.get("kiosk_id") or config.KIOSK_ID,
-                "note": log.get("note"),
-            })
-            synced_log_ids.append(int(log["id"]))
-        if payload_logs:
-            if not _upload_attendance(synced_log_ids, payload_logs, request_budget, deadline):
-                _track_orphans(orphans, examined)
-                return False
-        cursor = int(logs[-1]["id"])
-        database.set_sync_state("attendance_scan_after", str(cursor))
+    for current_only, cursor_key in ((True, "attendance_current_scan_after"), (False, "attendance_scan_after")):
+        cursor = int(database.get_sync_state(cursor_key) or 0)
+        for _ in range(ATTENDANCE_PAGES_PER_CYCLE):
+            logs = database.get_unsynced_logs(limit=ATTENDANCE_BATCH_SIZE, after_id=cursor, current_kiosk_only=current_only)
+            if not logs:
+                database.set_sync_state(cursor_key, "0")
+                break
+            examined += len(logs)
+            for group in _claim_groups(logs):
+                payload_logs = []
+                synced_log_ids = []
+                for log in group:
+                    server_id = _resolve_log_server_id(log)
+                    if not server_id:
+                        orphans.append(log)
+                        continue
+                    payload_logs.append({
+                        "worker_id": server_id,
+                        "worker_name": log.get("worker_name"),
+                        "event_type": log.get("event_type") or log.get("action"),
+                        "action": log.get("action"),
+                        "timestamp": log.get("timestamp"),
+                        "idempotency_key": _build_idempotency_key(log, server_id),
+                        "liveness_confirmed": log.get("liveness_confirmed"),
+                        "confidence": log.get("confidence"),
+                        "kiosk_id": log.get("kiosk_id") or config.KIOSK_ID,
+                        "note": log.get("note"),
+                    })
+                    synced_log_ids.append(int(log["id"]))
+                if payload_logs:
+                    if not _upload_attendance(synced_log_ids, payload_logs, request_budget, deadline):
+                        _track_orphans(orphans, examined)
+                        return False
+            cursor = int(logs[-1]["id"])
+            database.set_sync_state(cursor_key, str(cursor))
     _track_orphans(orphans, examined)
     return database.count_unsynced_logs() == 0
 
 
-def sync_recognition_attempts() -> bool:
-    """POST unsynced recognition calibration attempts to server."""
-    attempts = database.get_unsynced_recognition_attempts()
-    if not attempts:
-        return True
+def sync_recognition_attempts(*, halt_on_unauthorized: bool = False) -> bool:
+    try:
+        return _sync_recognition_attempts()
+    except KioskCredentialDenied as exc:
+        logger.error("%s", exc)
+        if halt_on_unauthorized:
+            raise
+        return False
 
+
+def _sync_recognition_attempts() -> bool:
+    """Keep current telemetry independent of any size historical backlog."""
+    budget = [ATTENDANCE_REQUESTS_PER_CYCLE]
+    deadline = time.monotonic() + ATTENDANCE_CYCLE_SECONDS
+    for current_only, cursor_key in ((True, "recognition_current_scan_after"), (False, "recognition_scan_after")):
+        cursor = int(database.get_sync_state(cursor_key) or 0)
+        for _ in range(ATTENDANCE_PAGES_PER_CYCLE):
+            attempts = database.get_unsynced_recognition_attempts(
+                limit=ATTENDANCE_BATCH_SIZE, after_id=cursor, current_kiosk_only=current_only)
+            if not attempts:
+                database.set_sync_state(cursor_key, "0")
+                break
+            for group in _claim_groups(attempts):
+                if not _upload_recognition_attempts(group, budget, deadline):
+                    return False
+            cursor = int(attempts[-1]["id"])
+            database.set_sync_state(cursor_key, str(cursor))
+    return database.count_unsynced_recognition_attempts() == 0
+
+
+def _upload_recognition_attempts(attempts: list[dict], budget: list[int], deadline: float) -> bool:
+    remaining = deadline - time.monotonic()
+    if budget[0] <= 0 or remaining <= 0:
+        logger.warning("Recognition upload limit reached; remaining rows stay queued")
+        return False
+    budget[0] -= 1
     payload_attempts = []
     synced_attempt_ids = []
     for attempt in attempts:
@@ -282,13 +353,21 @@ def sync_recognition_attempts() -> bool:
             f"{config.SERVER_URL}{config.RECOGNITION_ATTEMPTS_ENDPOINT}",
             json={"kiosk_id": config.KIOSK_ID, "attempts": payload_attempts},
             headers=_auth_headers(),
-            timeout=15,
+            timeout=min(15, remaining),
         )
         if 200 <= r.status_code < 300:
             database.mark_recognition_attempts_synced(synced_attempt_ids)
             logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
             return True
 
+        if r.status_code == 401:
+            raise KioskCredentialDenied("Recognition credential/configuration rejected; all uploads halted")
+        if _claim_mismatch(r):
+            for attempt_id in synced_attempt_ids:
+                database.reject_recognition_attempt(attempt_id, "KIOSK_CLAIM_MISMATCH: captured kiosk claim is not authorized by current credential")
+            logger.error("Quarantined %d recognition attempts with captured kiosk claim %r; review recognition_rejections.py list",
+                         len(synced_attempt_ids), payload_attempts[0]["kioskId"])
+            return True
         logger.warning(
             "Recognition attempt sync failed with status=%d body=%s",
             r.status_code,
@@ -314,10 +393,15 @@ def _health_params(health: Optional[dict]) -> dict:
     for key in ("degraded_reason", "last_scan_at"):
         if health.get(key):
             params[key] = str(health[key])
+    rejected_logs = int(health.get("rejected_logs") or 0)
+    rejected_attempts = int(health.get("rejected_attempts") or 0)
+    if rejected_logs or rejected_attempts:
+        quarantine_reason = f"upload_quarantine: {rejected_logs} attendance, {rejected_attempts} recognition"
+        params["degraded_reason"] = "; ".join(filter(None, [params.get("degraded_reason"), quarantine_reason]))
     return params
 
 
-def sync_workers(health: Optional[dict] = None) -> bool:
+def sync_workers(health: Optional[dict] = None, *, halt_on_unauthorized: bool = False) -> bool:
     """Download new/updated workers from server. Returns True on success."""
     if database.has_workers_missing_employee_id():
         # Existing kiosk databases created before employee_id support need one full
@@ -336,6 +420,8 @@ def sync_workers(health: Optional[dict] = None) -> bool:
             headers=_auth_headers(),
             timeout=15,
         )
+        if r.status_code == 401 and halt_on_unauthorized:
+            raise KioskCredentialDenied("Roster credential/configuration rejected; all uploads halted")
         if r.status_code != 200:
             logger.warning("Server returned %d during worker sync", r.status_code)
             return False
@@ -513,7 +599,7 @@ def sync_workers(health: Optional[dict] = None) -> bool:
         return False
 
 
-def acknowledge_applied_roster() -> bool:
+def acknowledge_applied_roster(*, halt_on_unauthorized: bool = False) -> bool:
     """Called only after this process successfully reloads persisted faces."""
     raw = database.get_sync_state("roster_pending_receipt")
     if not raw:
@@ -525,6 +611,8 @@ def acknowledge_applied_roster() -> bool:
             json={"kiosk_id": config.KIOSK_ID, "roster_receipt": pending["receipt"]},
             headers=_auth_headers(), timeout=15,
         )
+        if response.status_code == 401 and halt_on_unauthorized:
+            raise KioskCredentialDenied("Roster acknowledgement credential rejected; all uploads halted")
         if response.status_code != 200:
             logger.warning("Roster acknowledgement failed with status=%d", response.status_code)
             return False
@@ -609,8 +697,10 @@ class SyncWorker:
                 retryable_logs = database.count_retryable_logs()
                 rejected_logs = database.count_rejected_logs()
                 queued_attempts = database.count_unsynced_recognition_attempts()
+                rejected_attempts = database.count_rejected_attempts()
                 self._report(queued_logs=queued_logs, retryable_logs=retryable_logs,
-                             rejected_logs=rejected_logs, queued_attempts=queued_attempts)
+                             rejected_logs=rejected_logs, queued_attempts=queued_attempts,
+                             rejected_attempts=rejected_attempts)
 
                 self.server_online = check_server()
                 self._report(sync_online=self.server_online)
@@ -622,11 +712,13 @@ class SyncWorker:
                                 **self._health_provider(),
                                 "queued_logs": queued_logs,
                                 "queued_attempts": queued_attempts,
+                                "rejected_logs": rejected_logs,
+                                "rejected_attempts": rejected_attempts,
                             }
                         except Exception as e:
                             logger.debug("Health provider failed: %s", e)
                     try:
-                        workers_synced = sync_workers(health=health)
+                        workers_synced = sync_workers(health=health, halt_on_unauthorized=True)
                     finally:
                         # A failed response can still have committed earlier roster
                         # changes, including deactivations. Publish those changes
@@ -634,16 +726,17 @@ class SyncWorker:
                         if self._recognizer:
                             self._recognizer.reload_faces()
                     if workers_synced and database.get_sync_state("roster_pending_receipt"):
-                        workers_synced = bool(self._recognizer) and acknowledge_applied_roster()
+                        workers_synced = bool(self._recognizer) and acknowledge_applied_roster(halt_on_unauthorized=True)
                     if workers_synced:
                         self._report(last_sync_at=datetime.now().isoformat(timespec="seconds"))
-                    sync_attendance()
-                    sync_recognition_attempts()
+                    sync_attendance(halt_on_unauthorized=True)
+                    sync_recognition_attempts(halt_on_unauthorized=True)
                     self._report(
                         queued_logs=database.count_unsynced_logs(),
                         retryable_logs=database.count_retryable_logs(),
                         rejected_logs=database.count_rejected_logs(),
                         queued_attempts=database.count_unsynced_recognition_attempts(),
+                        rejected_attempts=database.count_rejected_attempts(),
                     )
                 else:
                     logger.debug("Server offline, skipping sync")

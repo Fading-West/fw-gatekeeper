@@ -155,8 +155,9 @@ original row snapshot in `attendance_rejections`. Other events continue syncing.
 Rejected events remain in the `queued_logs` health count, while `rejected_logs`
 and `retryable_logs` distinguish paused evidence from uploads that can drain.
 The kiosk displays Needs attention for rejected records. They do not retry until
-an operator reviews them. Authentication, network, and server failures remain
-in the normal retry queue.
+an operator reviews them. Invalid credentials, network, and server failures
+remain in the normal retry queue. Explicit kiosk claim mismatches are handled
+as described below.
 
 On the kiosk, make a SQLite backup, then inspect active rejections:
 
@@ -184,6 +185,82 @@ the kiosk records a new rejection; do not delete the evidence to clear an alert.
 If an attendance row was deleted, `list` still shows its rejection and original
 snapshot. `retry` refuses to release it until the row is restored from a backup
 or the snapshot under supervisor review.
+
+### Queued events after changing KIOSK_ID
+
+Each row keeps the kiosk identity captured when it was recorded. Changing
+`KIOSK_ID` does not change old evidence. Attendance and recognition uploads scan
+rows matching the current `KIOSK_ID` first, then upload historical rows in
+separate batches grouped by their captured claim. Authorized aliases remain
+accepted and keep their original spelling and retry identities.
+
+The portal validates the credential and current batch claim before checking
+all event claims. An invalid/revoked credential or unauthorized current
+`KIOSK_ID` returns 401 and halts the sync cycle without quarantining evidence.
+An authenticated batch containing unauthorized event claims returns **403 with
+`code: KIOSK_CLAIM_MISMATCH`**, before any events are written. This explicit
+server denial quarantines that claim's rows immediately; repeated retries
+cannot authorize that identity. Other 403 responses remain retryable. A newer
+kiosk talking to an older portal still uploads current rows first, but retains
+historical 401s in the retry queue until the portal is upgraded. Older kiosks
+keep retrying the new 403 as they did the previous 401.
+
+Quarantined rows are never marked synced or automatically re-attributed.
+Attendance uses `attendance_rejections`; recognition uses local SQLite
+`recognition_rejections`, with the original row snapshot, reason, timestamp,
+and eventual release note. They survive restart. Kiosk `/health` exposes
+`rejected_logs` and `rejected_attempts`, and queued totals still include this
+unsent evidence. The kiosk shows Needs attention, logs name the captured
+claim, and the next roster health report includes `upload_quarantine` in the
+portal's existing degraded reason field. A queue with quarantined rows is not
+fully synced, even while newer rows continue uploading.
+
+Operator recovery:
+
+1. Stop scanning/syncing and back up SQLite before reviewing evidence:
+
+   ```bash
+   sudo systemctl stop fw-gatekeeper-kiosk
+   cd /opt/fw-gatekeeper/pi-kiosk
+   sqlite3 data/attendance.db ".backup data/attendance.db.claim-review.bak"
+   python3 attendance_rejections.py list
+   python3 recognition_rejections.py list
+   ```
+
+2. Inspect the reason and `original_log_json` / `original_attempt_json`.
+   Independently verify which real kiosk recorded each event. A default
+   `kiosk-1` claim is not proof of ownership. Do not bulk replace `kiosk_id`,
+   mark rejected rows synced, or delete them to clear the alert. If ownership
+   cannot be established, retain the quarantine and escalate to the portal
+   administrator for evidence review.
+
+3. For evidence belonging to the original real kiosk, use an authorized
+   maintenance environment (or temporarily configure this stopped kiosk)
+   with that kiosk's existing valid credential and `KIOSK_ID`. Keep scanning
+   disabled during recovery. Release only reviewed rejection IDs, with an
+   operator note, and run uploads manually using the configured environment:
+
+   ```bash
+   python3 attendance_rejections.py retry 1 --note "Verified original kiosk ownership; restored its authorized credential"
+   python3 recognition_rejections.py retry 2 --note "Verified original kiosk ownership; restored its authorized credential"
+   python3 -c 'import database, sync; database.init_db(); print("Attendance drained:", sync.sync_attendance(halt_on_unauthorized=True)); print("Recognition drained:", sync.sync_recognition_attempts(halt_on_unauthorized=True))'
+   ```
+
+   Use rejection IDs from the corresponding `list`, not row IDs. If a portal
+   administrator can safely restore an original alias for the **same** real
+   kiosk, that also allows retry under its credential. Never assign another
+   real kiosk's alias to this kiosk just to make old events upload. If a default
+   claim was erroneous, keep the evidence quarantined pending an explicit,
+   audited administrative correction; this upload path does not rename it.
+
+4. Inspect the lists and logs again. A denial creates a new quarantine rather
+   than losing evidence. Release history and original snapshots remain in
+   SQLite after success; recognition source IDs and captured claims stay
+   unchanged. Restore the normal current kiosk configuration before restarting
+   `sudo systemctl start fw-gatekeeper-kiosk`. A missing original row cannot
+   be released until its evidence is restored from backup under operator review.
+
+No Convex schema changes are required. The new rejection table is local only.
 
 ### Stranded attendance rows
 
