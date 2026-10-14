@@ -960,7 +960,7 @@ export default function Dashboard() {
                       <h3 className="mt-2 font-display text-base font-semibold text-slate-100">{exception.title}</h3>
                       <p className="mt-1 text-sm leading-5 text-slate-400">{exception.description}</p>
                     </div>
-                    <span className="text-xs font-mono text-slate-600 shrink-0">{formatRelativeTime(exception.last_seen || exception.first_seen)}</span>
+                    <span className="text-xs font-mono text-slate-600 shrink-0">{formatRelativeTime(exception.last_seen_utc || exception.first_seen_utc || exception.last_seen || exception.first_seen)}</span>
                   </div>
                   <div className="mt-3 rounded-xl border border-navy-600/50 bg-navy-950/45 p-3">
                     <p className="text-[11px] uppercase tracking-wider text-slate-500">Suggested resolution</p>
