@@ -140,9 +140,10 @@ def largest_face(face_locations):
     return max(face_locations, key=lambda loc: (loc[2] - loc[0]) * (loc[1] - loc[3]))
 
 
-def _empty_recognition_result(face_loc, decision="rejected_unknown"):
+def _empty_recognition_result(face_loc, decision="rejected_unknown", frame_ts=None):
     return {
         "face_loc": face_loc,
+        "frame_ts": frame_ts,
         "name": None,
         "confidence": 0.0,
         "candidate_worker_id": None,
@@ -344,7 +345,9 @@ def run(args):
 
                 if not locs:
                     embedding_history.clear()
-                    current_result[0] = None
+                    # None also means "inference has not finished". Publish
+                    # the observed dropout so pending blink state is cancelled.
+                    current_result[0] = _empty_recognition_result(None, frame_ts=frame_ts)
                     continue
 
                 # Scale to full resolution
@@ -611,7 +614,7 @@ def run(args):
                     box_label = None
                     box_color = GOLD
                     web_app.update_status(state="IDLE", message="Hold steady...",
-                                          worker_id=None, face_detected=True,
+                                          worker_id=None, face_detected=fresh.get("face_loc") is not None,
                                           known_workers=recognizer.known_count)
                     continue
 
@@ -635,10 +638,8 @@ def run(args):
                             return False
                         return cosine_sim(pending["encoding"], emb) >= config.RECOGNITION_MATCH_THRESHOLD
 
-                    blink_ok = (
-                        recognizer.liveness_policy.update(bgr_frame, box_loc, frame_check=_frame_matches_pending)
-                        if box_loc is not None
-                        else False
+                    blink_ok = recognizer.liveness_policy.update(
+                        bgr_frame, box_loc, frame_check=_frame_matches_pending,
                     )
                     if blink_ok:
                         # Identity-bound blink complete - now require a fresh
@@ -688,6 +689,8 @@ def run(args):
             result = current_result[0]
             if result is not None:
                 current_result[0] = None
+                if result.get("face_loc") is None:
+                    result = None
 
             # Roster degradation tracks sync state alone - it must not wait
             # for someone to scan, in either direction.
