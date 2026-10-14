@@ -285,6 +285,17 @@ def sync_recognition_attempts() -> bool:
             timeout=15,
         )
         if 200 <= r.status_code < 300:
+            try:
+                acknowledgement = r.json()
+            except (ValueError, TypeError):
+                acknowledgement = None
+            ingested = acknowledgement.get("ingested") if isinstance(acknowledgement, dict) else None
+            skipped = acknowledgement.get("skipped") if isinstance(acknowledgement, dict) else None
+            if (type(ingested) is not int or type(skipped) is not int
+                    or ingested < 0 or skipped < 0
+                    or ingested + skipped != len(synced_attempt_ids)):
+                logger.warning("Recognition sync acknowledgement incomplete; retaining %d attempts", len(synced_attempt_ids))
+                return False
             database.mark_recognition_attempts_synced(synced_attempt_ids)
             logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
             return True
