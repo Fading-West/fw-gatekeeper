@@ -32,6 +32,8 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
 }
 
 export async function GET(req: NextRequest) {
+  // Preserve arrival order even when credential checks complete out of order.
+  const lastSync = new Date().toISOString();
   const requestedId = req.nextUrl.searchParams.get('kiosk_id');
   const admin = await hasValidPortalSession(req, ['admin']);
   const identity = admin ? null : await authenticateKiosk(req, [requestedId]);
@@ -45,7 +47,6 @@ export async function GET(req: NextRequest) {
 
   if (!kioskId) return NextResponse.json({ error: 'kiosk_id required' }, { status: 400 });
 
-  const lastSync = new Date().toISOString();
   try {
     const result = await updateKioskLastSync(kioskId, lastSync, parseKioskHealth(req.nextUrl.searchParams));
     if (!result.updated) {
