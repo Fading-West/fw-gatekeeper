@@ -497,6 +497,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     let attended = 0;
     let arrivedLate = 0;
     let unavailableWorkers = 0;
+    const coverageEvidence: Array<[string, string, string, string]> = [];
 
     for (const worker of workers) {
       const schedule = getScheduleForWorker(worker, schedules, dayOfWeek);
@@ -504,6 +505,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       // Do not fall back to another schedule when the assigned schedule is invalid.
       if (!isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
         unavailableWorkers += 1;
+        coverageEvidence.push([String(worker._id), String(schedule._id), schedule.startTime, schedule.endTime]);
         continue;
       }
 
@@ -723,6 +725,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       summary,
       daily_attendance: { expected, present: attended, late: arrivedLate, missing },
       coverage_unavailable: unavailableWorkers,
+      coverage_evidence: coverageEvidence.sort((a, b) => a[0].localeCompare(b[0])),
       departments: departmentRows,
       workers: workerRows,
       action_items: actionItems,

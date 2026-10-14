@@ -8,6 +8,7 @@ export const closeoutFields = {
     supervisorName: v.optional(v.string()),
     notes: v.optional(v.string()),
     acknowledgedBlockers: v.boolean(),
+    acknowledgedBlockerEvidence: v.optional(v.string()),
     expected: v.float64(),
     present: v.float64(),
     late: v.float64(),
