@@ -12,15 +12,18 @@ export async function hasCurrentPortalSession(ctx: QueryCtx | MutationCtx, userI
   if (!identity || identity.subject.split('|', 1)[0] !== userId) return false;
   const member = await ctx.db.query('portalMembers')
     .withIndex('by_user', (q) => q.eq('userId', userId)).unique();
-  if (member?.sessionRevokedAt === undefined) return true;
   const separator = identity.subject.indexOf('|');
-  // Once an account has been disabled, only a newly created live session
-  // can authorize it after reactivation. Old JWTs outlive session deletion.
-  if (separator < 0) return false;
-  const session = await ctx.db.get(identity.subject.slice(separator + 1) as Id<"authSessions">);
+  // Preserve bare-user identities only for accounts without a revocation cutoff.
+  // Convex Auth JWTs include a session ID: always validate that session, even
+  // before the account's first disable/reset. Sign-out deletes the session but
+  // an already-issued JWT can remain cryptographically valid until it expires.
+  if (separator < 0) return member?.sessionRevokedAt === undefined;
+  const sessionId = ctx.db.normalizeId('authSessions', identity.subject.slice(separator + 1));
+  if (!sessionId) return false;
+  const session = await ctx.db.get(sessionId);
   return session?.userId === userId
     && session.expirationTime > Date.now()
-    && session._creationTime > member.sessionRevokedAt;
+    && (member?.sessionRevokedAt === undefined || session._creationTime > member.sessionRevokedAt);
 }
 
 export async function assertPortalRole(
