@@ -128,6 +128,69 @@ def _migrate_worker_identity(conn: sqlite3.Connection):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workers_server_id ON workers(server_id) WHERE server_id IS NOT NULL AND server_id != ''")
 
 
+def _migrate_original_workers(conn: sqlite3.Connection):
+    """Upgrade the original JSON face_encoding workers table in place.
+
+    That schema has face_encoding TEXT NOT NULL and no enrolled_at. SQLite
+    cannot ADD a column with an expression default to a populated table, and
+    the legacy NOT NULL column rejects every current insert, so convert the
+    encodings, backfill enrolled_at, and drop face_encoding in one savepoint.
+    Local ids and all other columns are kept.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)")}
+    if "face_encoding" not in columns:
+        return
+    conn.execute("SAVEPOINT migrate_original_workers")
+    try:
+        if "encoding_blob" not in columns:
+            conn.execute("ALTER TABLE workers ADD COLUMN encoding_blob BLOB")
+        if "enrolled_at" not in columns:
+            conn.execute("ALTER TABLE workers ADD COLUMN enrolled_at TEXT")
+            created = "created_at, " if "created_at" in columns else ""
+            conn.execute(f"UPDATE workers SET enrolled_at = COALESCE({created}datetime('now'))")
+        rows = conn.execute(
+            "SELECT id, face_encoding FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
+        ).fetchall()
+        for row in rows:
+            try:
+                converted = _serialize_encoding(np.array(json.loads(row["face_encoding"]), dtype=np.float64))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                logger.warning("Worker %s has an unreadable legacy face encoding; re-enroll them", row["id"])
+                continue
+            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
+        conn.execute("ALTER TABLE workers DROP COLUMN face_encoding")
+        conn.execute("RELEASE SAVEPOINT migrate_original_workers")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_original_workers")
+        conn.execute("RELEASE SAVEPOINT migrate_original_workers")
+        raise
+    logger.info("Migrated original workers table (face_encoding -> encoding_blob)")
+
+
+def _migrate_attendance_action(conn: sqlite3.Connection):
+    """Rename the original event column, preserving its values and constraint."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)")}
+    if "event_type" not in columns:
+        return
+    # The old upgrader added action DEFAULT 'clock_in', then copied only into
+    # empty actions. Its default masked every original clock_out. event_type
+    # remains the source of truth: the legacy NOT NULL constraint prevented
+    # current writers (which only supply action) from adding any new rows.
+    # Remove that faulty duplicate and rename the source, so future inserts
+    # satisfy the original NOT NULL/CHECK constraint too. Keep both DDL steps
+    # atomic, including when startup has no pending DML transaction.
+    conn.execute("SAVEPOINT migrate_attendance_action")
+    try:
+        if "action" in columns:
+            conn.execute("ALTER TABLE attendance_log DROP COLUMN action")
+        conn.execute("ALTER TABLE attendance_log RENAME COLUMN event_type TO action")
+        conn.execute("RELEASE SAVEPOINT migrate_attendance_action")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_attendance_action")
+        conn.execute("RELEASE SAVEPOINT migrate_attendance_action")
+        raise
+
+
 def init_db():
     """Create and migrate required tables."""
     conn = _get_conn()
@@ -206,41 +269,29 @@ def init_db():
     )
 
     # Migration support for previous schema versions.
+    _migrate_original_workers(conn)
     _ensure_column(conn, "workers", "encoding_blob", "encoding_blob BLOB")
     _ensure_column(conn, "workers", "employee_id", "employee_id TEXT")
     _ensure_column(conn, "workers", "enrolled_at", "enrolled_at TEXT DEFAULT (datetime('now'))")
     _ensure_column(conn, "workers", "photo_count", "photo_count INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "workers", "photo_paths", "photo_paths TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(conn, "workers", "server_id", "server_id TEXT")
-    worker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)").fetchall()}
-    if "face_encoding" in worker_columns:
-        rows = conn.execute(
-            "SELECT id, face_encoding, encoding_blob FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
-        ).fetchall()
-        for row in rows:
-            old_value = row["face_encoding"]
-            if old_value is None:
-                continue
-            try:
-                converted = _serialize_encoding(np.array(json.loads(old_value), dtype=np.float64))
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
 
     _migrate_worker_identity(conn)
 
-    _ensure_column(
-        conn,
-        "attendance_log",
-        "action",
-        "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
-    )
     _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
     _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "attendance_log", "note", "note TEXT")
     _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
+    _migrate_attendance_action(conn)
+    _ensure_column(
+        conn,
+        "attendance_log",
+        "action",
+        "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
@@ -286,11 +337,6 @@ def init_db():
     _ensure_column(conn, "recognition_attempts", "source_attempt_id", "source_attempt_id TEXT")
     _ensure_column(conn, "recognition_attempts", "legacy_source_attempt_id", "legacy_source_attempt_id TEXT")
     _ensure_column(conn, "recognition_attempts", "candidate_server_worker_id", "candidate_server_worker_id TEXT")
-
-    # Copy old attendance event_type to action if needed.
-    attendance_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)").fetchall()}
-    if "event_type" in attendance_columns:
-        conn.execute("UPDATE attendance_log SET action = event_type WHERE action IS NULL OR action = ''")
 
     # Rows written before server_worker_id existed still resolve through the
     # workers table today; freeze that mapping now so a later deactivation
