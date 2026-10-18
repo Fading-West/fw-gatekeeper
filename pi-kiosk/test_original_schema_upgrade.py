@@ -109,6 +109,47 @@ class OriginalSchemaUpgradeTests(unittest.TestCase):
                            "CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'")
         self.assert_upgrade()
 
+    def test_database_upgraded_while_workers_were_empty_recovers(self):
+        # With no workers, older releases upgraded "successfully": they added
+        # every current column, the faulty action default and the delete
+        # trigger, but kept both legacy NOT NULL columns.
+        self.legacy_change("""
+            DELETE FROM workers;
+            ALTER TABLE workers ADD COLUMN encoding_blob BLOB;
+            ALTER TABLE workers ADD COLUMN employee_id TEXT;
+            ALTER TABLE workers ADD COLUMN enrolled_at TEXT DEFAULT (datetime('now'));
+            ALTER TABLE workers ADD COLUMN photo_count INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE workers ADD COLUMN photo_paths TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE workers ADD COLUMN server_id TEXT;
+            ALTER TABLE attendance_log ADD COLUMN action TEXT
+                CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in';
+            ALTER TABLE attendance_log ADD COLUMN server_worker_id TEXT;
+            CREATE TRIGGER attendance_keep_server_id_before_worker_delete
+            BEFORE DELETE ON workers FOR EACH ROW
+            WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
+            BEGIN
+                UPDATE attendance_log SET server_worker_id = OLD.server_id
+                WHERE worker_id = OLD.id AND synced = 0
+                  AND (server_worker_id IS NULL OR server_worker_id = '');
+            END;
+        """)
+        database.init_db()
+        self.close_database()
+        database.init_db()
+        conn = database._get_conn()
+        self.assertEqual([row[0] for row in conn.execute(
+            "SELECT action FROM attendance_log ORDER BY id")], ["clock_in", "clock_out"])
+        self.assertNotIn("face_encoding", {row["name"] for row in conn.execute("PRAGMA table_info(workers)")})
+        worker = database.add_worker("Taylor", NEW_ENCODING, server_id=SERVER_ID)
+        self.assertGreater(worker, 5, "Never reuse a deleted local worker id")
+        log_id = database.log_attendance(worker, "Taylor", "clock_in")
+        # The reinstalled delete trigger still freezes a missing snapshot.
+        conn.execute("UPDATE attendance_log SET server_worker_id = NULL WHERE id = ?", (log_id,))
+        conn.commit()
+        database.remove_worker_by_server_id(SERVER_ID)
+        self.assertEqual(conn.execute("SELECT server_worker_id FROM attendance_log WHERE id = ?",
+                                      (log_id,)).fetchone()[0], SERVER_ID)
+
     def test_failed_worker_upgrade_rolls_back_and_retries(self):
         with mock.patch.object(database, "_serialize_encoding", side_effect=RuntimeError("power loss")):
             with self.assertRaises(RuntimeError):
