@@ -4,6 +4,7 @@ import { internalAction, internalMutation } from "./_generated/server";
 
 const DEFAULT_SITE_URL = "https://fw-gatekeeper.onrender.com";
 const CLAIM_MS = 60_000;
+const RETRY_DELAY_MS = 60_000;
 
 export function readPeopleAlertConfig(env: Record<string, string | undefined>) {
   const apiKey = env.RESEND_API_KEY?.trim();
@@ -32,10 +33,11 @@ export const claimPending = internalMutation({
   returns: claimedEvent,
   handler: async (ctx) => {
     const now = Date.now();
-    const rows = await ctx.db.query("peopleAlertEvents")
-      .withIndex("by_delivered", (q) => q.eq("delivered", false))
-      .take(100);
-    const event = rows.find((row) => !row.claimedUntil || row.claimedUntil <= now);
+    // Unclaimed rows (undefined sorts before numbers) and expired claims are
+    // eligible. Apply eligibility in the index so deferred rows cannot hide work.
+    const event = await ctx.db.query("peopleAlertEvents")
+      .withIndex("by_delivered_and_claimed_until", (q) => q.eq("delivered", false).lte("claimedUntil", now))
+      .first();
     if (!event) return null;
     await ctx.db.patch(event._id, { claimedUntil: now + CLAIM_MS });
     return {
@@ -56,7 +58,7 @@ export const finishDelivery = internalMutation({
     if (!event || event.delivered) return null;
     await ctx.db.patch(args.id, args.delivered
       ? { delivered: true, deliveredAt: new Date().toISOString(), claimedUntil: undefined }
-      : { claimedUntil: undefined });
+      : { claimedUntil: Date.now() + RETRY_DELAY_MS });
     return null;
   },
 });
@@ -130,8 +132,9 @@ export const deliverPending = internalAction({
         }
       }
       await ctx.runMutation(internal.peopleAlerts.finishDelivery, { id: event.id, delivered: accepted });
-      if (!accepted) break;
-      delivered++;
+      // A rejected event remains pending with a retry delay; later events can
+      // still be delivered within this run's existing 20-attempt budget.
+      if (accepted) delivered++;
     }
     return { delivered, configured: true };
   },

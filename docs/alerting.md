@@ -8,6 +8,10 @@ retries pending events after provider failures or missing configuration. Updatin
 worker, re-enrolling an existing worker, resetting a portal password, and changing a
 portal role do not create a new alert. Existing people are not backfilled.
 
+Each run attempts at most 20 eligible events. A failed event stays pending and becomes
+eligible again after one minute, while the run continues to later events. Claimed or
+deferred events do not block other pending alerts.
+
 Set `RESEND_API_KEY`, `ALERT_EMAIL_FROM`, and `PEOPLE_ALERT_EMAIL_TO` on the **Convex
 production deployment** to receive email. `PEOPLE_ALERT_EMAIL_TO` accepts a
 comma-separated list. Set

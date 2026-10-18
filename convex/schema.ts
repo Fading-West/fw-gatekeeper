@@ -86,7 +86,7 @@ export default defineSchema({
     delivered: v.boolean(),
     deliveredAt: v.optional(v.string()),
     claimedUntil: v.optional(v.number()),
-  }).index("by_delivered", ["delivered"]),
+  }).index("by_delivered_and_claimed_until", ["delivered", "claimedUntil"]),
 
   attendance: defineTable({
     workerId: v.string(),
