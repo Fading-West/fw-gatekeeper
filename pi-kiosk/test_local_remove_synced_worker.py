@@ -209,5 +209,47 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
             self.assertEqual(journal, 0)
 
 
+    def test_cli_cleanup_leaves_sync_in_flight_downloads_and_unrelated_entries_alone(self):
+        capture = self._local_alex_with_capture()
+        # Sync journals a download as 'published' before its worker row commits.
+        in_flight = self.faces / "srv-1-download.jpg"
+        in_flight.write_bytes(b"sync download in progress")
+        database.record_photo_cleanup([in_flight], "published")
+        with tempfile.TemporaryDirectory() as other:
+            stuck = Path(other) / "legacy.jpg"
+            stuck.write_bytes(b"needs manual cleanup")
+            database.record_photo_cleanup([stuck], "retired")
+            with mock.patch("builtins.print"):
+                self.assertEqual(enroll.remove_worker("Alex"), 0)
+            self.assertFalse(capture.exists())
+            self.assertTrue(in_flight.exists())
+            self.assertTrue(stuck.exists())
+            journal = {row["path"] for row in database._get_conn().execute("SELECT path FROM photo_cleanup_journal")}
+            self.assertEqual(journal, {str(in_flight), str(stuck)})
+
+    def test_unknown_name_does_not_claim_another_workers_pending_cleanup(self):
+        folder = self.faces / "Bob"
+        folder.mkdir()
+        pending = folder / "capture_1.jpg"
+        pending.write_bytes(b"owed by an earlier removal of Bob")
+        database.record_photo_cleanup([pending], "retired")
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Nobody"), 1)
+        self.assertTrue(pending.exists())
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Bob"), 0)
+        self.assertFalse(pending.exists())
+
+    def test_name_without_a_capture_folder_never_removes_the_photo_root(self):
+        keep = self.faces / "other-worker.jpg"
+        keep.write_bytes(b"another worker's photo")
+        database.add_worker("Other", ENCODING, photo_paths=[str(keep)])
+        database.add_worker("!!!", ENCODING)
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("!!!"), 0)
+        self.assertTrue(keep.exists())
+        self.assertIsNone(database.get_worker_by_name("!!!"))
+
+
 if __name__ == "__main__":
     unittest.main()

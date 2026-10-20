@@ -301,21 +301,24 @@ def list_workers():
     return 0
 
 
-def _finish_photo_cleanup(photo_paths=(), folder: Optional[Path] = None) -> bool:
-    """Drain journaled photo cleanup, then best-effort files the journal cannot own."""
+def _capture_folder(name: str) -> Optional[Path]:
+    """The local enrollment folder for name, never the photo root itself."""
+    folder = Path(config.FACES_DIR) / _safe_name(name)
+    return None if folder.resolve() == Path(config.FACES_DIR).resolve() else folder
+
+
+def _finish_photo_cleanup(journaled: list[str], unjournaled=(), folder: Optional[Path] = None) -> bool:
+    """Finish this removal's own cleanup; sync's in-flight entries are not ours."""
     try:
-        database.recover_photo_cleanup()
+        database.recover_photo_cleanup(journaled)
     except (OSError, ValueError) as exc:
         print("Photo cleanup is pending; the next roster sync or rerunning this command "
               f"will finish it: {exc}")
         return False
     complete = True
-    for photo_path in photo_paths:
-        path = Path(photo_path)
-        if database.is_journaled_photo_path(path):
-            continue
+    for photo_path in unjournaled:
         try:
-            path.unlink(missing_ok=True)
+            Path(photo_path).unlink(missing_ok=True)
         except OSError as exc:
             print(f"Could not delete photo outside {config.PHOTO_DIR}; remove it manually: {exc}")
             complete = False
@@ -330,11 +333,15 @@ def remove_worker(name: str):
     if worker is None:
         # A removal whose photo cleanup failed or was interrupted already
         # deleted the row; rerunning the command finishes that cleanup.
-        if database.count_pending_photo_cleanup() and _finish_photo_cleanup():
-            print(f"Worker not found: {name}. Finished pending photo cleanup.")
-            return 0
-        print(f"Worker not found: {name}")
-        return 1
+        folder = _capture_folder(name)
+        pending = database.pending_retired_photo_cleanup(folder) if folder is not None else []
+        if not pending:
+            print(f"Worker not found: {name}")
+            return 1
+        if not _finish_photo_cleanup(pending):
+            return 1
+        print(f"Worker not found: {name}. Finished pending photo cleanup.")
+        return 0
     if worker.get("server_id"):
         print(database.PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
         return 1
@@ -351,8 +358,9 @@ def remove_worker(name: str):
         return 1
 
     print(f"Removed worker: {worker['name']}")
-    folder = Path(config.FACES_DIR) / _safe_name(worker["name"])
-    return 0 if _finish_photo_cleanup(photo_paths, folder) else 1
+    journaled = [path for path in photo_paths if database.is_journaled_photo_path(path)]
+    unjournaled = [path for path in photo_paths if path not in journaled]
+    return 0 if _finish_photo_cleanup(journaled, unjournaled, _capture_folder(worker["name"])) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

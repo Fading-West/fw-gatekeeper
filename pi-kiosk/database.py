@@ -466,6 +466,16 @@ def count_pending_photo_cleanup() -> int:
     return int(conn.execute("SELECT COUNT(*) FROM photo_cleanup_journal").fetchone()[0])
 
 
+def pending_retired_photo_cleanup(folder: Path) -> list[str]:
+    """Retired journal entries for files under folder (a local worker's capture folder)."""
+    conn = _get_conn()
+    root = Path(folder).resolve()
+    return [
+        row["path"] for row in conn.execute("SELECT path FROM photo_cleanup_journal WHERE kind = 'retired' ORDER BY path")
+        if Path(row["path"]).resolve().is_relative_to(root)
+    ]
+
+
 def remove_worker(name: str) -> bool:
     """Remove a local-only worker by name (see remove_local_worker)."""
     return remove_local_worker(name) is not None
@@ -541,8 +551,12 @@ def record_photo_cleanup(paths: list[Path], kind: str) -> None:
     conn.commit()
 
 
-def recover_photo_cleanup() -> None:
-    """Remove only journaled, unreferenced files; unknown files stay untouched."""
+def recover_photo_cleanup(paths: Optional[list[str]] = None) -> None:
+    """Remove only journaled, unreferenced files; unknown files stay untouched.
+
+    paths limits recovery to those journal entries. Processes other than the
+    sync thread must pass the retired paths they own: an unreferenced
+    'published' entry is sync's in-flight download, not an orphan."""
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
     references = {
@@ -551,6 +565,9 @@ def recover_photo_cleanup() -> None:
         for path in json.loads(row["photo_paths"] or "[]")
     }
     journal = conn.execute("SELECT path, kind FROM photo_cleanup_journal ORDER BY path").fetchall()
+    if paths is not None:
+        owned = {str(path) for path in paths}
+        journal = [entry for entry in journal if entry["path"] in owned]
     first_error = None
     for entry in journal:
         path = Path(entry["path"])
