@@ -218,7 +218,8 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const id = optionalString(body.id);
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
