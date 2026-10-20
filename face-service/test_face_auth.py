@@ -16,6 +16,14 @@ class FaceServiceAuthTests(unittest.TestCase):
             self.assertFalse(is_valid_face_service_key("wrong-key"))
             self.assertTrue(is_valid_face_service_key("expected-key"))
 
+    def test_non_ascii_keys_are_rejected_without_raising(self):
+        with patch.dict(os.environ, {"FACE_SERVICE_KEY": "expected-key"}, clear=True):
+            self.assertFalse(is_valid_face_service_key("\u00e9"))
+            self.assertFalse(is_valid_face_service_key("\u0661\u0662\u0663\u0664"))
+        with patch.dict(os.environ, {"FACE_SERVICE_KEY": "cl\u00e9-locale"}, clear=True):
+            self.assertTrue(is_valid_face_service_key("cl\u00e9-locale"))
+            self.assertFalse(is_valid_face_service_key("expected-key"))
+
     def test_cors_origins_are_normalized_and_wildcards_are_rejected(self):
         with patch.dict(
             os.environ,
