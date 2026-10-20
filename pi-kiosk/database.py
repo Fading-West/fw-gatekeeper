@@ -375,39 +375,43 @@ def add_worker(
     enrolled_at = enrolled_at or datetime.now().isoformat(timespec="seconds")
     normalized_employee_id = employee_id.strip() if isinstance(employee_id, str) else ""
 
-    row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
-    stored_server_id = server_id
-    if row:
-        worker_id = int(row["id"])
-        stored_server_id = server_id if server_id is not None else row["server_id"]
-        conn.execute(
-            """
-            UPDATE workers
-            SET name = ?, employee_id = ?, encoding_blob = ?, enrolled_at = ?, photo_count = ?, photo_paths = ?, server_id = ?
-            WHERE id = ?
-            """,
-            (
-                normalized_name,
-                normalized_employee_id,
-                payload_blob,
-                enrolled_at,
-                len(photo_paths),
-                photo_paths_json,
-                stored_server_id,
-                worker_id,
-            ),
-        )
-    else:
-        cursor = conn.execute(
-            """
-            INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (normalized_name, normalized_employee_id, payload_blob, enrolled_at, len(photo_paths), photo_paths_json, server_id),
-        )
-        worker_id = int(cursor.lastrowid)
+    # Resolve and write the row in one write transaction: a local removal
+    # committed between the lookup and the UPDATE would otherwise make the
+    # UPDATE match nothing and silently drop a synced worker.
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
+        stored_server_id = server_id
+        if row:
+            worker_id = int(row["id"])
+            stored_server_id = server_id if server_id is not None else row["server_id"]
+            conn.execute(
+                """
+                UPDATE workers
+                SET name = ?, employee_id = ?, encoding_blob = ?, enrolled_at = ?, photo_count = ?, photo_paths = ?, server_id = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_name,
+                    normalized_employee_id,
+                    payload_blob,
+                    enrolled_at,
+                    len(photo_paths),
+                    photo_paths_json,
+                    stored_server_id,
+                    worker_id,
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (normalized_name, normalized_employee_id, payload_blob, enrolled_at, len(photo_paths), photo_paths_json, server_id),
+            )
+            worker_id = int(cursor.lastrowid)
 
-    conn.commit()
     logger.info("Saved worker: %s (id=%d, server_id=%s)", normalized_name, worker_id, stored_server_id)
     return worker_id
 
@@ -418,22 +422,33 @@ PORTAL_MANAGED_WORKER_MESSAGE = (
 )
 
 
-def remove_worker(name: str) -> bool:
-    """Remove a worker by case-insensitive name.
+def remove_local_worker(name: str) -> Optional[list[str]]:
+    """Remove a local-only worker by case-insensitive name.
 
-    The attendance_keep_server_id_before_worker_delete trigger snapshots the
-    worker's server id onto queued attendance rows before the row goes."""
+    Returns the deleted row's photo paths, or None when no worker matches.
+    Portal-managed rows raise ValueError: roster receipts only resend changed
+    workers, so a synced worker deleted here would stay missing while the
+    kiosk certifies the roster. The ownership check and the DELETE share one
+    write transaction, so a concurrent roster sync cannot adopt the row in
+    between. The attendance_keep_server_id_before_worker_delete trigger
+    snapshots the worker's server id onto queued attendance rows."""
     conn = _get_conn()
-    worker = get_worker_by_name(name)
-    if worker is None:
-        return False
-    if worker.get("server_id"):
-        # Roster receipts only resend changed workers, so a synced worker
-        # deleted here would stay missing while the kiosk certifies the roster.
-        raise ValueError(PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
-    cursor = conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
-    conn.commit()
-    return cursor.rowcount > 0
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        worker = get_worker_by_name(name)
+        if worker is None:
+            return None
+        cursor = conn.execute(
+            "DELETE FROM workers WHERE id = ? AND (server_id IS NULL OR server_id = '')", (worker["id"],)
+        )
+        if worker.get("server_id") or cursor.rowcount != 1:
+            raise ValueError(PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
+    return worker["photo_paths"]
+
+
+def remove_worker(name: str) -> bool:
+    """Remove a local-only worker by name (see remove_local_worker)."""
+    return remove_local_worker(name) is not None
 
 
 def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:

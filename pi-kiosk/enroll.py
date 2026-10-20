@@ -311,7 +311,18 @@ def remove_worker(name: str):
         print(database.PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
         return 1
 
-    for photo_path in worker.get("photo_paths", []):
+    # Delete the row first: the ownership check is only final inside the
+    # removal transaction, and a roster sync may adopt the row before then.
+    try:
+        photo_paths = database.remove_local_worker(worker["name"])
+    except ValueError as exc:
+        print(exc)
+        return 1
+    if photo_paths is None:
+        print(f"Failed to remove worker: {worker['name']}")
+        return 1
+
+    for photo_path in photo_paths:
         path = Path(photo_path)
         if path.exists():
             path.unlink()
@@ -320,12 +331,8 @@ def remove_worker(name: str):
     if folder.exists() and folder.is_dir():
         shutil.rmtree(folder, ignore_errors=True)
 
-    if database.remove_worker(worker["name"]):
-        print(f"Removed worker: {worker['name']}")
-        return 0
-
-    print(f"Failed to remove worker: {worker['name']}")
-    return 1
+    print(f"Removed worker: {worker['name']}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

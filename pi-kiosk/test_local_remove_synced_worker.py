@@ -2,6 +2,7 @@
 """A portal-managed worker cannot be removed locally behind the roster receipt."""
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -65,6 +66,63 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
         database.add_worker("Local Only", ENCODING)
         self.assertTrue(database.remove_worker("Local Only"))
         self.assertIsNone(database.get_worker_by_name("Local Only"))
+
+
+    def _race_adoption_on_lookup(self, call_number, photo_paths=()):
+        """Adopt local Alex as portal-Alex from another connection at one name lookup.
+
+        Lookup 1 is the CLI preflight; lookup 2 is the removal's ownership
+        check. The adopter uses its own thread-local SQLite connection, like
+        the background roster sync, and is given a bounded head start."""
+        lookup = database.get_worker_by_name
+        calls, errors = [], []
+
+        def adopt():
+            try:
+                database.add_worker("Alex", ENCODING, server_id="portal-Alex", employee_id="E1",
+                                    photo_paths=list(photo_paths))
+            except Exception as exc:  # pragma: no cover - surfaced by the assertions
+                errors.append(exc)
+            finally:
+                database._get_conn().close()
+                database._local.conn = None
+
+        adopter = threading.Thread(target=adopt)
+
+        def lookup_then_adopt(name):
+            worker = lookup(name)
+            calls.append(name)
+            if len(calls) == call_number:
+                adopter.start()
+                adopter.join(timeout=1.0)
+            return worker
+
+        return mock.patch.object(database, "get_worker_by_name", side_effect=lookup_then_adopt), adopter, errors
+
+    def test_roster_adoption_during_removal_never_deletes_the_portal_worker(self):
+        database.add_worker("Alex", ENCODING)
+        patch, adopter, errors = self._race_adoption_on_lookup(2)
+        with patch, mock.patch("builtins.print"):
+            enroll.remove_worker("Alex")
+        adopter.join(timeout=10)
+        self.assertFalse(adopter.is_alive())
+        self.assertEqual(errors, [])
+        # Whichever side wins, the portal-managed worker must survive.
+        rows = database._get_conn().execute("SELECT server_id FROM workers").fetchall()
+        self.assertEqual([row["server_id"] for row in rows], ["portal-Alex"])
+
+    def test_roster_adoption_after_cli_preflight_keeps_the_worker_and_photos(self):
+        photo = self.faces / "alex-local.jpg"
+        photo.write_bytes(b"local thumbnail")
+        database.add_worker("Alex", ENCODING, photo_paths=[str(photo)])
+        patch, adopter, errors = self._race_adoption_on_lookup(1, photo_paths=[str(photo)])
+        with patch, mock.patch("builtins.print") as printed:
+            self.assertEqual(enroll.remove_worker("Alex"), 1)
+        adopter.join(timeout=10)
+        self.assertEqual(errors, [])
+        self.assertIn("deactivate", " ".join(str(call) for call in printed.call_args_list).lower())
+        self.assertEqual(database.get_worker_by_name("Alex")["server_id"], "portal-Alex")
+        self.assertTrue(photo.exists())
 
 
 if __name__ == "__main__":
