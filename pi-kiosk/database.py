@@ -412,6 +412,12 @@ def add_worker(
     return worker_id
 
 
+PORTAL_MANAGED_WORKER_MESSAGE = (
+    "{name} is managed by the Gatekeeper portal. Deactivate or purge the worker "
+    "in the portal; the kiosk removes them on its next roster sync."
+)
+
+
 def remove_worker(name: str) -> bool:
     """Remove a worker by case-insensitive name.
 
@@ -421,6 +427,10 @@ def remove_worker(name: str) -> bool:
     worker = get_worker_by_name(name)
     if worker is None:
         return False
+    if worker.get("server_id"):
+        # Roster receipts only resend changed workers, so a synced worker
+        # deleted here would stay missing while the kiosk certifies the roster.
+        raise ValueError(PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
     cursor = conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
     conn.commit()
     return cursor.rowcount > 0

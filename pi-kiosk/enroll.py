@@ -307,6 +307,9 @@ def remove_worker(name: str):
     if worker is None:
         print(f"Worker not found: {name}")
         return 1
+    if worker.get("server_id"):
+        print(database.PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
+        return 1
 
     for photo_path in worker.get("photo_paths", []):
         path = Path(photo_path)
@@ -334,7 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list", help="List enrolled workers")
 
-    remove_parser = subparsers.add_parser("remove", help="Remove a worker")
+    remove_parser = subparsers.add_parser("remove", help="Remove a local-only worker (portal workers are removed by roster sync)")
     remove_parser.add_argument("name", type=str, help="Worker full name")
 
     return parser
