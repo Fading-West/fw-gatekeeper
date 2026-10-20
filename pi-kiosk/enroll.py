@@ -301,10 +301,38 @@ def list_workers():
     return 0
 
 
+def _finish_photo_cleanup(photo_paths=(), folder: Optional[Path] = None) -> bool:
+    """Drain journaled photo cleanup, then best-effort files the journal cannot own."""
+    try:
+        database.recover_photo_cleanup()
+    except (OSError, ValueError) as exc:
+        print("Photo cleanup is pending; the next roster sync or rerunning this command "
+              f"will finish it: {exc}")
+        return False
+    complete = True
+    for photo_path in photo_paths:
+        path = Path(photo_path)
+        if database.is_journaled_photo_path(path):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"Could not delete photo outside {config.PHOTO_DIR}; remove it manually: {exc}")
+            complete = False
+    if folder is not None and folder.exists() and folder.is_dir():
+        shutil.rmtree(folder, ignore_errors=True)
+    return complete
+
+
 def remove_worker(name: str):
     database.init_db()
     worker = database.get_worker_by_name(name)
     if worker is None:
+        # A removal whose photo cleanup failed or was interrupted already
+        # deleted the row; rerunning the command finishes that cleanup.
+        if database.count_pending_photo_cleanup() and _finish_photo_cleanup():
+            print(f"Worker not found: {name}. Finished pending photo cleanup.")
+            return 0
         print(f"Worker not found: {name}")
         return 1
     if worker.get("server_id"):
@@ -312,7 +340,7 @@ def remove_worker(name: str):
         return 1
 
     # Delete the row first: the ownership check is only final inside the
-    # removal transaction, and a roster sync may adopt the row before then.
+    # removal transaction, which also journals the photos it releases.
     try:
         photo_paths = database.remove_local_worker(worker["name"])
     except ValueError as exc:
@@ -322,17 +350,9 @@ def remove_worker(name: str):
         print(f"Failed to remove worker: {worker['name']}")
         return 1
 
-    for photo_path in photo_paths:
-        path = Path(photo_path)
-        if path.exists():
-            path.unlink()
-
-    folder = Path(config.FACES_DIR) / _safe_name(worker["name"])
-    if folder.exists() and folder.is_dir():
-        shutil.rmtree(folder, ignore_errors=True)
-
     print(f"Removed worker: {worker['name']}")
-    return 0
+    folder = Path(config.FACES_DIR) / _safe_name(worker["name"])
+    return 0 if _finish_photo_cleanup(photo_paths, folder) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

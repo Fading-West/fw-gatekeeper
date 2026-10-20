@@ -125,5 +125,89 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
         self.assertTrue(photo.exists())
 
 
+    def _local_alex_with_capture(self):
+        folder = self.faces / enroll._safe_name("Alex")
+        folder.mkdir()
+        capture = folder / "capture_1.jpg"
+        capture.write_bytes(b"local capture")
+        database.add_worker("Alex", ENCODING, photo_paths=[str(capture)])
+        return capture
+
+    @staticmethod
+    def _unlink_fails_for(target):
+        original = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if Path(path).resolve() == target.resolve():
+                raise PermissionError("read-only disk")
+            return original(path, *args, **kwargs)
+        return mock.patch.object(Path, "unlink", unlink)
+
+    def test_failed_photo_cleanup_is_finished_by_retrying_the_removal(self):
+        capture = self._local_alex_with_capture()
+        with self._unlink_fails_for(capture), mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Alex"), 1)
+            self.assertIsNone(database.get_worker_by_name("Alex"))
+            # Retrying while the filesystem still fails keeps the cleanup owed.
+            self.assertEqual(enroll.remove_worker("Alex"), 1)
+            self.assertEqual(enroll.remove_worker("Alex"), 1)
+        self.assertTrue(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 1)
+
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(enroll.remove_worker("Alex"), 0)
+        self.assertIn("finished pending photo cleanup", " ".join(str(call) for call in printed.call_args_list).lower())
+        self.assertFalse(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 0)
+        self.assertEqual(database.list_unreferenced_photo_files(), [])
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Alex"), 1)  # nothing left to finish
+
+    def test_cleanup_interrupted_after_the_delete_commits_is_finished_by_the_next_roster_sync(self):
+        capture = self._local_alex_with_capture()
+        with mock.patch.object(database, "recover_photo_cleanup", side_effect=KeyboardInterrupt), \
+                mock.patch("builtins.print"), self.assertRaises(KeyboardInterrupt):
+            enroll.remove_worker("Alex")
+        # Simulate the process dying here and the kiosk restarting.
+        self._close_db()
+        database.init_db()
+        self.assertIsNone(database.get_worker_by_name("Alex"))
+        self.assertTrue(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 1)
+
+        posted, _ = self.cycle(receipts.roster([]), post=lambda *a, **kw: receipts.ack())
+        self.assertEqual(posted.call_count, 1)
+        self.assertFalse(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 0)
+
+    def test_roster_receipt_waits_for_failed_removal_cleanup_then_acknowledges(self):
+        capture = self._local_alex_with_capture()
+        with self._unlink_fails_for(capture):
+            with mock.patch("builtins.print"):
+                self.assertEqual(enroll.remove_worker("Alex"), 1)
+            posted, _ = self.cycle(receipts.roster([]), post=lambda *a, **kw: receipts.ack())
+        posted.assert_not_called()
+        self.assertTrue(capture.exists())
+        self.assertIsNone(database.get_sync_state("last_roster_applied_at"))
+
+        posted, _ = self.cycle(receipts.roster([]), post=lambda *a, **kw: receipts.ack())
+        self.assertEqual(posted.call_count, 1)
+        self.assertFalse(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 0)
+
+    def test_photos_outside_the_photo_root_are_not_journaled(self):
+        with tempfile.TemporaryDirectory() as other:
+            outside = Path(other) / "legacy.jpg"
+            outside.write_bytes(b"legacy capture")
+            database.add_worker("Alex", ENCODING, photo_paths=[str(outside)])
+            with mock.patch("builtins.print"):
+                self.assertEqual(enroll.remove_worker("Alex"), 0)
+            self.assertFalse(outside.exists())
+            # recover_photo_cleanup refuses paths outside PHOTO_DIR, so
+            # journaling one would block roster receipts indefinitely.
+            journal = database._get_conn().execute("SELECT COUNT(*) FROM photo_cleanup_journal").fetchone()[0]
+            self.assertEqual(journal, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

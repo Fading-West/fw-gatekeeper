@@ -443,7 +443,27 @@ def remove_local_worker(name: str) -> Optional[list[str]]:
         )
         if worker.get("server_id") or cursor.rowcount != 1:
             raise ValueError(PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
+        # Persist cleanup ownership in the same transaction as the delete, so
+        # a failed unlink or a crash before cleanup is finished by
+        # recover_photo_cleanup (every roster sync, or rerunning the removal)
+        # instead of leaving an unreferenced file that blocks roster receipts.
+        conn.executemany(
+            "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, 'retired')",
+            ((path,) for path in worker["photo_paths"] if is_journaled_photo_path(path)),
+        )
     return worker["photo_paths"]
+
+
+def is_journaled_photo_path(path) -> bool:
+    """Only files under PHOTO_DIR can be journaled; recover_photo_cleanup refuses others."""
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    candidate = Path(path).resolve()
+    return candidate != photo_root and candidate.is_relative_to(photo_root)
+
+
+def count_pending_photo_cleanup() -> int:
+    conn = _get_conn()
+    return int(conn.execute("SELECT COUNT(*) FROM photo_cleanup_journal").fetchone()[0])
 
 
 def remove_worker(name: str) -> bool:
