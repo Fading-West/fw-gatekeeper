@@ -125,12 +125,12 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
         self.assertTrue(photo.exists())
 
 
-    def _local_alex_with_capture(self):
-        folder = self.faces / enroll._safe_name("Alex")
-        folder.mkdir()
+    def _local_alex_with_capture(self, name="Alex"):
+        folder = self.faces / enroll._safe_name(name)
+        folder.mkdir(exist_ok=True)
         capture = folder / "capture_1.jpg"
         capture.write_bytes(b"local capture")
-        database.add_worker("Alex", ENCODING, photo_paths=[str(capture)])
+        database.add_worker(name, ENCODING, photo_paths=[str(capture)])
         return capture
 
     @staticmethod
@@ -228,17 +228,47 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
             self.assertEqual(journal, {str(in_flight), str(stuck)})
 
     def test_unknown_name_does_not_claim_another_workers_pending_cleanup(self):
-        folder = self.faces / "Bob"
-        folder.mkdir()
-        pending = folder / "capture_1.jpg"
-        pending.write_bytes(b"owed by an earlier removal of Bob")
-        database.record_photo_cleanup([pending], "retired")
+        pending = self._local_alex_with_capture("Bob")
+        with self._unlink_fails_for(pending), mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Bob"), 1)
         with mock.patch("builtins.print"):
             self.assertEqual(enroll.remove_worker("Nobody"), 1)
         self.assertTrue(pending.exists())
         with mock.patch("builtins.print"):
             self.assertEqual(enroll.remove_worker("Bob"), 0)
         self.assertFalse(pending.exists())
+
+    def test_ownerless_journal_entries_are_left_to_roster_sync(self):
+        # Entries journaled without an owner (sync's own, or a database from
+        # before owners were recorded) are never claimed by name.
+        folder = self.faces / "Bob"
+        folder.mkdir()
+        legacy = folder / "capture_1.jpg"
+        legacy.write_bytes(b"retired before owners were recorded")
+        database.record_photo_cleanup([legacy], "retired")
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Bob"), 1)
+        self.assertTrue(legacy.exists())
+        posted, _ = self.cycle(receipts.roster([]), post=lambda *a, **kw: receipts.ack())
+        self.assertEqual(posted.call_count, 1)
+        self.assertFalse(legacy.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 0)
+
+    def test_existing_journal_table_gains_owner_columns_and_keeps_rows(self):
+        conn = database._get_conn()
+        conn.executescript("""
+            DROP TABLE photo_cleanup_journal;
+            CREATE TABLE photo_cleanup_journal (
+                path TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK(kind IN ('published', 'retired'))
+            );
+            INSERT INTO photo_cleanup_journal (path, kind) VALUES ('/old/published.jpg', 'published');
+        """)
+        database.init_db()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(photo_cleanup_journal)")}
+        self.assertTrue({"owner_worker_id", "owner_name", "owner_folder"} <= columns)
+        rows = [tuple(row) for row in conn.execute("SELECT path, kind, owner_name FROM photo_cleanup_journal")]
+        self.assertEqual(rows, [("/old/published.jpg", "published", None)])
 
     def test_name_without_a_capture_folder_never_removes_the_photo_root(self):
         keep = self.faces / "other-worker.jpg"
@@ -249,6 +279,31 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
             self.assertEqual(enroll.remove_worker("!!!"), 0)
         self.assertTrue(keep.exists())
         self.assertIsNone(database.get_worker_by_name("!!!"))
+
+    def test_retry_with_the_same_case_insensitive_name_finishes_cleanup(self):
+        capture = self._local_alex_with_capture()
+        with self._unlink_fails_for(capture), mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("alex"), 1)
+        self.assertTrue(capture.exists())
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("alex"), 0)
+        self.assertFalse(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 0)
+
+    def test_unknown_name_with_the_same_sanitized_folder_does_not_consume_cleanup(self):
+        capture = self._local_alex_with_capture("Alex!")
+        with self._unlink_fails_for(capture), mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Alex!"), 1)
+        # "Alex" sanitizes to the same capture folder but names no removed worker.
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(enroll.remove_worker("Alex"), 1)
+        self.assertIn("worker not found: alex", " ".join(str(call) for call in printed.call_args_list).lower())
+        self.assertTrue(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 1)
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("alex!"), 0)
+        self.assertFalse(capture.exists())
+        self.assertEqual(database.count_pending_photo_cleanup(), 0)
 
 
 if __name__ == "__main__":

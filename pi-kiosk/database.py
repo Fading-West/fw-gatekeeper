@@ -236,6 +236,10 @@ def init_db():
         "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
     )
     _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
+    # Which removed local worker owns a retired photo; NULL for sync's entries.
+    _ensure_column(conn, "photo_cleanup_journal", "owner_worker_id", "owner_worker_id INTEGER")
+    _ensure_column(conn, "photo_cleanup_journal", "owner_name", "owner_name TEXT")
+    _ensure_column(conn, "photo_cleanup_journal", "owner_folder", "owner_folder TEXT")
     _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
     _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
@@ -422,7 +426,7 @@ PORTAL_MANAGED_WORKER_MESSAGE = (
 )
 
 
-def remove_local_worker(name: str) -> Optional[list[str]]:
+def remove_local_worker(name: str, owner_folder: Optional[str] = None) -> Optional[list[str]]:
     """Remove a local-only worker by case-insensitive name.
 
     Returns the deleted row's photo paths, or None when no worker matches.
@@ -447,9 +451,13 @@ def remove_local_worker(name: str) -> Optional[list[str]]:
         # a failed unlink or a crash before cleanup is finished by
         # recover_photo_cleanup (every roster sync, or rerunning the removal)
         # instead of leaving an unreferenced file that blocks roster receipts.
+        # The owner identity lets a rerun of the removal find this cleanup by
+        # the same case-insensitive name lookup, never by a sanitized folder.
         conn.executemany(
-            "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, 'retired')",
-            ((path,) for path in worker["photo_paths"] if is_journaled_photo_path(path)),
+            "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind, owner_worker_id, owner_name, owner_folder) "
+            "VALUES (?, 'retired', ?, ?, ?)",
+            ((path, worker["id"], worker["name"], owner_folder)
+             for path in worker["photo_paths"] if is_journaled_photo_path(path)),
         )
     return worker["photo_paths"]
 
@@ -466,14 +474,18 @@ def count_pending_photo_cleanup() -> int:
     return int(conn.execute("SELECT COUNT(*) FROM photo_cleanup_journal").fetchone()[0])
 
 
-def pending_retired_photo_cleanup(folder: Path) -> list[str]:
-    """Retired journal entries for files under folder (a local worker's capture folder)."""
+def pending_removed_worker_cleanup(name: str) -> tuple[list[str], list[str]]:
+    """Retired photos and capture folders owed by removed local workers named name.
+
+    Matches the stored owner name the way get_worker_by_name matches workers.
+    Entries without an owner (sync's own) are left to sync's recovery."""
     conn = _get_conn()
-    root = Path(folder).resolve()
-    return [
-        row["path"] for row in conn.execute("SELECT path FROM photo_cleanup_journal WHERE kind = 'retired' ORDER BY path")
-        if Path(row["path"]).resolve().is_relative_to(root)
-    ]
+    rows = conn.execute(
+        "SELECT path, owner_folder FROM photo_cleanup_journal "
+        "WHERE kind = 'retired' AND owner_name = ? COLLATE NOCASE ORDER BY path",
+        (name.strip(),),
+    ).fetchall()
+    return [row["path"] for row in rows], sorted({row["owner_folder"] for row in rows if row["owner_folder"]})
 
 
 def remove_worker(name: str) -> bool:

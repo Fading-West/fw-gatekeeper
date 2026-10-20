@@ -332,14 +332,21 @@ def remove_worker(name: str):
     worker = database.get_worker_by_name(name)
     if worker is None:
         # A removal whose photo cleanup failed or was interrupted already
-        # deleted the row; rerunning the command finishes that cleanup.
-        folder = _capture_folder(name)
-        pending = database.pending_retired_photo_cleanup(folder) if folder is not None else []
+        # deleted the row; rerunning it finishes the cleanup that removal
+        # journaled for the same (case-insensitive) worker name.
+        pending, folders = database.pending_removed_worker_cleanup(name)
         if not pending:
             print(f"Worker not found: {name}")
             return 1
         if not _finish_photo_cleanup(pending):
             return 1
+        for folder in folders:
+            # Another worker's name may sanitize to the same folder: only
+            # remove it once nothing is left in it.
+            try:
+                Path(folder).rmdir()
+            except OSError:
+                pass
         print(f"Worker not found: {name}. Finished pending photo cleanup.")
         return 0
     if worker.get("server_id"):
@@ -348,8 +355,9 @@ def remove_worker(name: str):
 
     # Delete the row first: the ownership check is only final inside the
     # removal transaction, which also journals the photos it releases.
+    folder = _capture_folder(worker["name"])
     try:
-        photo_paths = database.remove_local_worker(worker["name"])
+        photo_paths = database.remove_local_worker(worker["name"], str(folder) if folder is not None else None)
     except ValueError as exc:
         print(exc)
         return 1
@@ -360,7 +368,7 @@ def remove_worker(name: str):
     print(f"Removed worker: {worker['name']}")
     journaled = [path for path in photo_paths if database.is_journaled_photo_path(path)]
     unjournaled = [path for path in photo_paths if path not in journaled]
-    return 0 if _finish_photo_cleanup(journaled, unjournaled, _capture_folder(worker["name"])) else 1
+    return 0 if _finish_photo_cleanup(journaled, unjournaled, folder) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
