@@ -14,6 +14,7 @@ import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { api } from '../../../../convex/_generated/api';
 
 const LOW_MARGIN_THRESHOLD = 0.08;
+const REVIEW_STATUSES: RecognitionReviewStatus[] = ['confirmed', 'corrected', 'ignored', 'unreviewed'];
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -223,6 +224,9 @@ export async function PATCH(req: NextRequest) {
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
     const reviewStatus = optionalString(body.review_status) || optionalString(body.reviewStatus) || 'confirmed';
+    if (!REVIEW_STATUSES.includes(reviewStatus as RecognitionReviewStatus)) {
+      return NextResponse.json({ error: `review_status must be one of ${REVIEW_STATUSES.join(', ')}` }, { status: 400 });
+    }
     const result = await convex.mutation((api as any).recognitionAttempts.updateReview, {
       id: id as any,
       reviewed: reviewStatus !== 'unreviewed',
