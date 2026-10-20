@@ -12,6 +12,7 @@ import { createLocalIsoTimestamp } from '@/lib/date';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 import {
   AttendanceCorrectionAction,
   ShiftException,
@@ -231,12 +232,12 @@ function ExceptionsPageContent() {
   const exceptions = payload?.exceptions ?? [];
   const departments = useMemo(() => {
     const values = exceptions.flatMap((exception) => (exception.department ? [exception.department] : []));
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [exceptions]);
+    return filterOptions(values, department);
+  }, [department, exceptions]);
   const types = useMemo(() => {
     const values = exceptions.map((exception) => exception.type);
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [exceptions]);
+    return filterOptions(values, type);
+  }, [exceptions, type]);
 
   const filtered = useMemo(() => {
     return exceptions.filter((exception) => {

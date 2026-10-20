@@ -9,6 +9,7 @@ import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 import {
   DepartmentCoverageStatus,
   ShiftBriefingActionItem,
@@ -231,8 +232,8 @@ function ShiftBriefingPageContent() {
 
   const departments = useMemo(() => {
     const values = payload?.departments.map((row) => row.department) || [];
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [payload]);
+    return filterOptions(values, department);
+  }, [department, payload]);
 
   const filteredDepartments = useMemo(() => {
     const rows = payload?.departments || [];
