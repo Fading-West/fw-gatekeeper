@@ -151,9 +151,14 @@ export default function WorkersPage() {
     setDepartment(w.department);
   };
 
-  const enrolledCount = workers.filter(hasFaceEncoding).length;
-  const invalidFaceCount = workers.filter((worker) => getEncodingStatus(worker) === 'invalid').length;
-  const missingFaceCount = workers.filter((worker) => getEncodingStatus(worker) === 'missing').length;
+  // Inactive workers are excluded from kiosk recognition, so they never count
+  // toward readiness or enrollment; the inactive view summarizes retained data.
+  const inactiveView = canEdit && showInactive;
+  const activeWorkers = workers.filter((worker) => Boolean(worker.active));
+  const enrolledCount = activeWorkers.filter(hasFaceEncoding).length;
+  const invalidFaceCount = activeWorkers.filter((worker) => getEncodingStatus(worker) === 'invalid').length;
+  const missingFaceCount = activeWorkers.filter((worker) => getEncodingStatus(worker) === 'missing').length;
+  const retainedFaceCount = workers.filter((worker) => !worker.active && getEncodingStatus(worker) !== 'missing').length;
   const departments = Array.from(new Set(workers.map((worker) => worker.department).filter(Boolean))).sort();
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredWorkers = workers
@@ -174,7 +179,9 @@ export default function WorkersPage() {
             Worker <span className="text-gold">Management</span>
           </h1>
           <p className="text-sm text-slate-500 mt-1 font-mono">
-            {workers.length} registered workers · {enrolledCount} face enrolled · {missingFaceCount} needs enrollment · {invalidFaceCount} invalid
+            {inactiveView
+              ? `${workers.length} inactive workers · ${retainedFaceCount} with retained face data · excluded from kiosk recognition`
+              : `${workers.length} registered workers · ${enrolledCount} face enrolled · ${missingFaceCount} needs enrollment · ${invalidFaceCount} invalid`}
           </p>
           {canEdit && <p className="text-xs text-slate-400 mt-2">
             {kioskPurgeStatus
@@ -209,6 +216,16 @@ export default function WorkersPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-8">
+        {inactiveView ? (
+        <div className="glass-card p-4">
+          <p className="section-label">Retained face data</p>
+          <div className="mt-2 flex items-end gap-2">
+            <span className={`text-3xl font-display font-bold ${retainedFaceCount > 0 ? 'text-amber-400' : 'text-slate-500'}`}>{retainedFaceCount}</span>
+            <span className="pb-1 text-sm text-slate-500">inactive workers</span>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">Inactive workers are excluded from kiosk recognition. Purge retained face data below.</p>
+        </div>
+        ) : (<>
         <div className="glass-card p-4">
           <p className="section-label">Recognition ready</p>
           <div className="mt-2 flex items-end gap-2">
@@ -233,6 +250,7 @@ export default function WorkersPage() {
           </div>
           <p className="mt-2 text-xs text-slate-500">Needs re-enrollment before kiosk recognition is reliable.</p>
         </div>
+        </>)}
         <div className="glass-card p-4 border-l-4 border-gold/70">
           <p className="section-label">Canonical workflow</p>
           <h2 className="mt-2 font-display font-semibold text-gold">Adding a new person?</h2>
