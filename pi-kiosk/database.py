@@ -245,7 +245,8 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_server_worker ON attendance_log(server_worker_id)")
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
-    # server id onto that worker's queued attendance rows.
+    # server id onto that worker's attendance rows. Synced rows need it too:
+    # a restored worker gets a new local id and finds earlier events by it.
     # Replace the trigger on startup: the event's original identity is
     # immutable, so deletion only fills missing snapshots on legacy rows. A savepoint
     # keeps DROP + CREATE atomic even when init_db is called with no pending
@@ -260,7 +261,7 @@ def init_db():
             WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
             BEGIN
                 UPDATE attendance_log SET server_worker_id = OLD.server_id
-                WHERE worker_id = OLD.id AND synced = 0
+                WHERE worker_id = OLD.id
                   AND (server_worker_id IS NULL OR server_worker_id = '');
             END
             """
@@ -305,11 +306,13 @@ def init_db():
 
 
 def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
-    """Copy workers.server_id onto queued attendance rows that have no snapshot yet.
+    """Copy workers.server_id onto attendance rows that have no snapshot yet.
 
-    Only unsynced rows matter: synced rows never need the mapping again, so
-    this stays cheap no matter how much history the kiosk holds. Returns the
-    number of rows updated.
+    Queued rows need it to upload; synced rows need it so a worker restored
+    under a new local id keeps their clock direction and debounce. Local ids
+    are AUTOINCREMENT and never reused, so the mapping is the same person.
+    Once filled, rows are skipped on later startups. Returns the number of
+    rows updated.
     """
     cursor = conn.execute(
         """
@@ -317,8 +320,7 @@ def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
         SET server_worker_id = (
             SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
         )
-        WHERE synced = 0
-          AND (server_worker_id IS NULL OR server_worker_id = '')
+        WHERE (server_worker_id IS NULL OR server_worker_id = '')
           AND EXISTS (
             SELECT 1 FROM workers
             WHERE workers.id = attendance_log.worker_id
