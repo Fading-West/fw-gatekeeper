@@ -28,7 +28,7 @@ beforeEach(async () => {
   attemptId = ids.attemptId;
   admin = test.withIdentity({ subject: ids.userId });
   vi.mocked(convex.query).mockImplementation((name, args = {}) => admin.query(name, args));
-  vi.mocked(convex.mutation).mockImplementation((name, args = {}) => admin.mutation(name, args));
+  vi.mocked(convex.mutation).mockImplementation(((name: any, args: any = {}) => admin.mutation(name, args)) as any);
 });
 
 function patch(body: unknown) {
