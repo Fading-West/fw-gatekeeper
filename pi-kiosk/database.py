@@ -242,6 +242,7 @@ def init_db():
     _ensure_column(conn, "attendance_log", "note", "note TEXT")
     _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_server_worker ON attendance_log(server_worker_id)")
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
     # server id onto that worker's queued attendance rows.
@@ -755,17 +756,32 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
         return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
 
 
+def _worker_attendance_filter(conn, worker_id: int) -> tuple[str, tuple]:
+    """Match a worker's attendance across local ids.
+
+    Roster sync deletes a deactivated or purged worker's row, and restoring
+    them inserts a new local id for the same Convex id. Their earlier events
+    keep that Convex id in server_worker_id.
+    """
+    row = conn.execute("SELECT server_id FROM workers WHERE id = ?", (int(worker_id),)).fetchone()
+    server_id = row["server_id"] if row else None
+    if server_id:
+        return "(worker_id = ? OR server_worker_id = ?)", (int(worker_id), server_id)
+    return "worker_id = ?", (int(worker_id),)
+
+
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
+    worker_filter, params = _worker_attendance_filter(conn, worker_id)
     row = conn.execute(
-        """
+        f"""
         SELECT id FROM attendance_log
-        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
+        WHERE {worker_filter} AND attendance_epoch(timestamp) >= ?
         LIMIT 1
         """,
-        (worker_id, threshold),
+        (*params, threshold),
     ).fetchone()
     return row is not None
 
@@ -773,10 +789,11 @@ def was_recently_clocked(worker_id: int, minutes: int) -> bool:
 def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
     conn = _get_conn()
+    worker_filter, params = _worker_attendance_filter(conn, worker_id)
     row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
+        f"""SELECT action FROM attendance_log WHERE {worker_filter}
         ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
-        (worker_id,),
+        params,
     ).fetchone()
     return row["action"] if row else None
 
