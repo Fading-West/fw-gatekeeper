@@ -613,7 +613,8 @@ function ExceptionsPageContent() {
                           {exception.links.recognition_lab && (
                             <Link href={exception.links.recognition_lab} className="text-xs text-gold hover:text-gold-light">Recognition Lab</Link>
                           )}
-                          {exception.links.kiosk && (
+                          {/* /kiosks is admin-only; the proxy sends other roles back to the dashboard. */}
+                          {exception.links.kiosk && currentRole === 'admin' && (
                             <Link href={exception.links.kiosk} className="text-xs text-gold hover:text-gold-light">Kiosks</Link>
                           )}
                         </div>
