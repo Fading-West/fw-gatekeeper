@@ -477,7 +477,7 @@ export const updateReview = mutation({
     if (args.reviewedLabel !== undefined) {
       const label = normalizeOptionalText(args.reviewedLabel);
       // Reads treat any other label as unreviewed, which would hide a "reviewed" attempt.
-      if (label !== undefined && !REVIEW_LABELS.includes(label)) {
+      if (label === undefined || !REVIEW_LABELS.includes(label)) {
         throw new ConvexError(`reviewedLabel must be one of ${REVIEW_LABELS.join(", ")}`);
       }
       updates.reviewedLabel = label;

@@ -223,7 +223,9 @@ export async function PATCH(req: NextRequest) {
     const id = optionalString(body.id);
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-    const reviewStatus = optionalString(body.review_status) || optionalString(body.reviewStatus) || 'confirmed';
+    // Only an omitted status defaults to confirmed; a supplied non-string or blank value is rejected.
+    const suppliedStatus: unknown = body.review_status !== undefined ? body.review_status : body.reviewStatus;
+    const reviewStatus = suppliedStatus === undefined ? 'confirmed' : typeof suppliedStatus === 'string' ? suppliedStatus.trim() : '';
     if (!REVIEW_STATUSES.includes(reviewStatus as RecognitionReviewStatus)) {
       return NextResponse.json({ error: `review_status must be one of ${REVIEW_STATUSES.join(', ')}` }, { status: 400 });
     }

@@ -64,3 +64,23 @@ it('rejects unknown labels sent directly to the Convex mutation', async () => {
   const stored = await test.run(ctx => ctx.db.get(attemptId as any)) as { reviewed: boolean };
   expect(stored.reviewed).toBe(false);
 });
+
+const malformedStatuses: unknown[] = [42, false, null, [], {}, '', '   '];
+it.each(['review_status', 'reviewStatus'].flatMap(field => malformedStatuses.map(value => ({ field, value }))))(
+  'rejects malformed $field $value without changing the stored review', async ({ field, value }) => {
+    const before = await test.run(ctx => ctx.db.get(attemptId as any));
+    const response = await patch({ id: attemptId, [field]: value });
+    expect(response.status).toBe(400);
+    expect(await test.run(ctx => ctx.db.get(attemptId as any))).toEqual(before);
+    expect(await reviewStatus()).toBe('unreviewed');
+  });
+
+it('still confirms an attempt when the review status is omitted', async () => {
+  expect((await patch({ id: attemptId })).status).toBe(200);
+  expect(await reviewStatus()).toBe('confirmed');
+});
+
+it.each(['', '   '])('rejects blank label %j sent directly to the Convex mutation', async label => {
+  await expect(admin.mutation(api.recognitionAttempts.updateReview, { id: attemptId as any, reviewedLabel: label }))
+    .rejects.toThrow('reviewedLabel must be one of');
+});
