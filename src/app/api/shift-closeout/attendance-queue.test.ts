@@ -123,3 +123,40 @@ describe('portal ahead of an older backend', () => {
     expect(convex.query).not.toHaveBeenCalled();
   });
 });
+
+it('recovers a lost completion receipt after a later reopen when reads lack queue evidence', async () => {
+  const t = convexTest(schema, modules);
+  const userId = await t.run(async ctx => {
+    const id = await ctx.db.insert('users', { email: 'closeout-replay@example.test' });
+    await ctx.db.insert('portalMembers', { userId: id, role: 'admin', active: true, createdAt: date });
+    return id;
+  });
+  const actor = t.withIdentity({ subject: userId });
+  vi.mocked(convex.mutation).mockImplementation((...call) => {
+    const [ref, args = {}] = call;
+    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+  });
+  // Simulate a backend that predates queue evidence: reads omit the field.
+  vi.mocked(convex.query).mockImplementation(async (...call) => {
+    const [ref, args = {}] = call;
+    const { attendance_queue: _omitted, ...rest } = await actor.query(ref, JSON.parse(JSON.stringify(args)));
+    return rest;
+  });
+  const send = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, ...fields }),
+  }));
+  // The original completion committed but its response was lost.
+  const original = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'lost-response', expectedRevision: null, notes: 'Signed' });
+  await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'later-reopen', expectedRevision: original.revision });
+  const replay = await send({ action: 'complete', request_id: 'lost-response', expected_revision: null, notes: 'Signed' });
+  expect(replay.status).toBe(200);
+  expect(await replay.json()).toEqual(original);
+  // A fresh signature at the current revision is still refused.
+  const fresh = await send({ action: 'complete', request_id: 'fresh-signoff', expected_revision: original.revision + 1, notes: 'Signed again' });
+  expect(fresh.status).toBe(503);
+  // A stale new request can only fail the revision check.
+  const stale = await send({ action: 'complete', request_id: 'stale-signoff', expected_revision: original.revision, notes: 'Stale' });
+  expect(stale.status).toBe(409);
+  expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toHaveLength(2);
+  expect((await t.run(ctx => ctx.db.query('shiftCloseouts').collect()))[0].status).toBe('reopened');
+});
