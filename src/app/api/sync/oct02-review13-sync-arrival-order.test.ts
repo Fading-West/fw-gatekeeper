@@ -11,10 +11,10 @@ afterEach(()=>vi.useRealTimers());
 const req=(ok:boolean)=>new NextRequest(`https://synthetic.test/api/sync?kiosk_id=synthetic-kiosk&camera_ok=${ok?1:0}`);
 it('orders concurrent health observations by route arrival even when older authentication finishes last',async()=>{
  const firstArrival=Date.parse('2026-10-02T12:00:00Z');vi.setSystemTime(firstArrival);
- let resolveOld!:(value:boolean)=>void;const oldAuth=new Promise<boolean>(resolve=>{resolveOld=resolve;});mocks.portal.mockReturnValueOnce(oldAuth);
- const older=GET(req(false));expect(mocks.portal).toHaveBeenCalledOnce();
+ let resolveOld!:(value:{documentId:string})=>void;const oldAuth=new Promise<{documentId:string}>(resolve=>{resolveOld=resolve;});mocks.authenticate.mockReturnValueOnce(oldAuth);
+ const older=GET(req(false));expect(mocks.authenticate).toHaveBeenCalledOnce();
  vi.setSystemTime(firstArrival+1000);expect((await GET(req(true))).status).toBe(200);
- vi.setSystemTime(firstArrival+2000);resolveOld(false);expect((await older).status).toBe(200);
+ vi.setSystemTime(firstArrival+2000);resolveOld({documentId:'synthetic-kiosk'});expect((await older).status).toBe(200);
  const newerCall=mocks.update.mock.calls.find(call=>call[2]?.cameraOk===true)!;
  const olderCall=mocks.update.mock.calls.find(call=>call[2]?.cameraOk===false)!;
  expect(Date.parse(olderCall[1])).toBe(firstArrival);
