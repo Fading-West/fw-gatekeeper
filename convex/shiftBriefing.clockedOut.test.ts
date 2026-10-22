@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from './_generated/api';
 import schema from './schema';
 
@@ -25,6 +25,12 @@ async function fixture(scans: Array<[string, 'clock_in' | 'clock_out']>) {
 const coverageActions = (briefing: any) => briefing.action_items.filter((item: any) => item.id.startsWith('coverage:'));
 
 describe('department coverage after workers clock out', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Default to after the selected shift; mid-shift cases override this clock.
+    vi.setSystemTime(new Date('2026-09-01T22:30:00.000Z'));
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
