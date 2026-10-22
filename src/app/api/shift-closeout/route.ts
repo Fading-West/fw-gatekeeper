@@ -83,11 +83,13 @@ async function mayCompleteWithoutQueueGate(date: string, expectedRevision: numbe
     if (queue && typeof queue === 'object' && Number.isSafeInteger(queue.affected_kiosks) && Array.isArray(queue.kiosks)) return true;
     const closeout = current?.closeout;
     if (!closeout) return false;
-    // Completing a completed record is a no-op receipt (#132). Revisions only
-    // grow, so an older expected revision can only replay its receipt or
-    // fail the revision check; it cannot sign.
+    // Revisions only grow, so a null or older expected revision can only
+    // replay its receipt or fail the revision check. Completing the completed
+    // revision that was read is a no-op receipt (#132); if it is reopened
+    // first, the revision check fails. Any other revision could sign.
     const currentRevision = Number.isSafeInteger(closeout.revision) ? closeout.revision : 0;
-    return closeout.status === 'completed' || expectedRevision === null || expectedRevision < currentRevision;
+    return expectedRevision === null || expectedRevision < currentRevision ||
+      (closeout.status === 'completed' && expectedRevision === currentRevision);
   } catch (error) {
     logApiError('Shift closeout queue evidence check failed:', error);
     return false;

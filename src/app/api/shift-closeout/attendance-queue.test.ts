@@ -105,8 +105,19 @@ describe('portal ahead of an older backend', () => {
     expect(convex.mutation).not.toHaveBeenCalled();
   });
 
+  it('refuses a completed-record request whose revision is ahead of the read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(convex.query).mockResolvedValue({ date, closeout: { status: 'completed', revision: 1 } });
+    const response = await PATCH(new NextRequest('https://example.test/api/shift-closeout', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ date, request_id: 'ahead', expected_revision: 2, action: 'complete', notes: 'No review' }),
+    }));
+    expect(response.status).toBe(503);
+    expect(convex.mutation).not.toHaveBeenCalled();
+  });
+
   it('still recovers the receipt of an already completed record', async () => {
-    vi.mocked(convex.query).mockResolvedValue({ date, closeout: { status: 'completed' } });
+    vi.mocked(convex.query).mockResolvedValue({ date, closeout: { status: 'completed', revision: 0 } });
     vi.mocked(convex.mutation).mockResolvedValue({ id: 'closeout', status: 'completed', revision: 1, requestId: 'mixed-version', actorUserId: 'user' });
     expect((await complete()).status).toBe(200);
     expect(convex.mutation).toHaveBeenCalledOnce();
@@ -154,6 +165,13 @@ it('recovers a lost completion receipt after a later reopen when reads lack queu
   // A fresh signature at the current revision is still refused.
   const fresh = await send({ action: 'complete', request_id: 'fresh-signoff', expected_revision: original.revision + 1, notes: 'Signed again' });
   expect(fresh.status).toBe(503);
+  // A reopen racing the gate's read cannot let a request at the new
+  // revision sign: the gate saw completed revision 1, the record is now 2.
+  const raced = await actor.query(api.shiftCloseouts.get, { date });
+  expect(raced.closeout?.status).toBe('reopened');
+  vi.mocked(convex.query).mockResolvedValueOnce({ date, closeout: { status: 'completed', revision: original.revision } });
+  const racing = await send({ action: 'complete', request_id: 'racing-signoff', expected_revision: original.revision + 1, notes: 'Raced' });
+  expect(racing.status).toBe(503);
   // A stale new request can only fail the revision check.
   const stale = await send({ action: 'complete', request_id: 'stale-signoff', expected_revision: original.revision, notes: 'Stale' });
   expect(stale.status).toBe(409);
