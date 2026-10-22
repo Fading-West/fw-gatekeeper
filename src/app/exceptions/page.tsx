@@ -483,7 +483,7 @@ function ExceptionsPageContent() {
         ].map(([label, value, tone]) => (
           <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
             <p className="text-xs text-slate-500">{label}</p>
-            <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+            <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
           </div>
         ))}
       </section>
@@ -548,7 +548,7 @@ function ExceptionsPageContent() {
 
       {loading && !payload ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading shift exceptions...</div>
-      ) : filtered.length === 0 ? (
+      ) : error ? null : filtered.length === 0 ? (
         <div className="glass-card p-8 text-center">
           <h2 className="font-display text-xl text-slate-100">No exceptions in this view</h2>
           <p className="mt-2 text-sm text-slate-400">Adjust filters or pick another date to inspect the daily breakdown sheet.</p>

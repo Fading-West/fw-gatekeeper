@@ -281,7 +281,7 @@ function ShiftBriefingPageContent() {
   const trustBrief = payload?.shift_trust_brief;
   const sourceCounts = trustBrief?.source_counts;
   const riskLabel = !payload
-    ? 'Loading briefing'
+    ? (error ? 'Briefing unavailable' : 'Loading briefing')
     : summary?.expected === 0
       ? 'No scheduled coverage'
       : summary?.critical_actions
@@ -360,7 +360,7 @@ function ShiftBriefingPageContent() {
           ].map(([label, value, tone]) => (
             <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
               <p className="text-xs text-slate-500">{label}</p>
-              <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+              <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
             </div>
           ))}
         </div>
@@ -498,7 +498,7 @@ function ShiftBriefingPageContent() {
           </div>
           {loading && !payload ? (
             <div className="glass-card p-6 text-sm text-slate-400">Loading coverage briefing...</div>
-          ) : filteredDepartments.length ? (
+          ) : error ? null : filteredDepartments.length ? (
             filteredDepartments.map((row) => (
               <article key={`${row.department}-${row.schedule_name}-${row.scheduled_start}`} className="glass-card-hover p-5 space-y-4">
                 <div className="flex items-start justify-between gap-3">
@@ -543,7 +543,9 @@ function ShiftBriefingPageContent() {
             <h2 className="font-display font-semibold text-slate-100">First actions</h2>
             <span className="text-xs font-mono text-slate-500">{payload?.action_items.length ?? 0} items</span>
           </div>
-          {payload?.action_items.length ? (
+          {loading && !payload ? (
+            <div className="glass-card p-6 text-sm text-slate-400">Loading first actions...</div>
+          ) : error ? null : payload?.action_items.length ? (
             <div className="space-y-3">
               {payload.action_items.slice(0, 10).map((item) => {
                 const canOperateAction = canOperateBriefingAction(currentRole, item.href);
@@ -614,7 +616,7 @@ function ShiftBriefingPageContent() {
               ))}
             </tbody>
           </table>
-          {filteredWorkers.length === 0 && (
+          {payload && filteredWorkers.length === 0 && (
             <div className="p-6 text-sm text-slate-400">No workers match the selected briefing filters.</div>
           )}
         </div>
@@ -642,7 +644,7 @@ function ShiftBriefingPageContent() {
             ].map(([label, value, tone]) => (
               <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
                 <p className="text-xs text-slate-500">{label}</p>
-                <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+                <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
               </div>
             ))}
           </div>
