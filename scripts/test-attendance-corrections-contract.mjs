@@ -18,6 +18,8 @@ const exceptionsPage = read('src/app/exceptions/page.tsx');
 const logPage = read('src/app/log/page.tsx');
 const attendanceTable = read('src/components/AttendanceTable.tsx');
 const closeoutPage = read('src/app/closeout/page.tsx');
+const directDialog = read('src/components/AttendanceCorrectionDialog.tsx');
+const directCorrection = read('src/lib/direct-correction.ts');
 const middleware = read('src/proxy.ts');
 const types = read('src/lib/types.ts');
 const packageJson = read('package.json');
@@ -86,6 +88,16 @@ assert.match(logPage, /targetAttendanceId=\{queryAttendanceId\}/, 'Activity log 
 assert.match(attendanceTable, /function attendanceRowId/, 'Attendance table should expose stable row ids for source links.');
 assert.match(attendanceTable, /targetAttendanceId === e\.id/, 'Attendance table should detect targeted source rows.');
 assert.match(attendanceTable, /id=\{attendanceRowId\(e\.id\)\}/, 'Attendance rows should have stable ids for direct-link scrolling.');
+// Direct corrections from the Activity Log (structural only; behavior is in vitest).
+assert.doesNotMatch(directDialog, /related_exception_key|relatedExceptionKey/, 'Direct corrections must not send an exception key.');
+assert.doesNotMatch(directCorrection, /related_exception_key|relatedExceptionKey/, 'Direct correction requests must not carry an exception key.');
+assert.match(directDialog, /fetch\('\/api\/attendance-corrections',\s*\{\s*method: 'POST'/, 'Direct corrections must use the audited correction API.');
+assert.match(directDialog, /Retry same save/, 'Uncertain direct saves must offer only an identical retry.');
+assert.match(logPage, /const canReverse = role === 'admin' \|\| role === 'enrollment';[\s\S]*const canCorrect = canReverse;/, 'Activity log corrections must be gated to admin and enrollment.');
+assert.match(logPage, /renderRowAction=\{canCorrect \? renderRowAction : undefined\}/, 'Viewers must not get row correction controls.');
+assert.match(logPage, /\{canCorrect && \(\s*<button[\s\S]*Add missing punch/, 'Add missing punch must be role gated.');
+assert.match(logPage, /Direct \(no exception\)/, 'Correction history must mark direct corrections.');
+assert.match(attendanceTable, /renderRowAction\?: \(event: AttendanceWithWorker\) => ReactNode/, 'Row actions must stay optional for other table callers.');
 assert.match(closeoutPage, /Attendance corrections/, 'Closeout export must include correction context.');
 assert.match(types, /interface AttendanceCorrection/, 'Shared types must define AttendanceCorrection.');
 assert.match(types, /attendance_corrections:\s*number/, 'Shared closeout summary must include correction count.');
