@@ -99,6 +99,16 @@ function canOperateCloseout(role: PortalRole | undefined) {
   return role === 'admin' || role === 'enrollment';
 }
 
+// /kiosks is admin-only; the proxy sends other roles back to the dashboard.
+// The briefing shows the same kiosk trust signals to every role.
+function isKioskHref(href: string) {
+  return href === '/kiosks' || href.startsWith('/kiosks?');
+}
+
+function roleSafeHref(href: string, role: PortalRole | undefined, date: string) {
+  return role !== 'admin' && isKioskHref(href) ? `/briefing?date=${date}` : href;
+}
+
 function getCloseoutNextStep({
   payload,
   completed,
@@ -353,7 +363,7 @@ function ShiftCloseoutPageContent() {
                 </div>
               </div>
               {nextStep.href ? (
-                <Link href={nextStep.href} className="btn-primary shrink-0 self-start text-xs md:self-auto">
+                <Link href={roleSafeHref(nextStep.href, currentRole, date)} className="btn-primary shrink-0 self-start text-xs md:self-auto">
                   {nextStep.cta}
                 </Link>
               ) : (
@@ -384,7 +394,7 @@ function ShiftCloseoutPageContent() {
                       <p className="text-sm text-slate-400 mt-2 leading-6">{item.description}</p>
                       {item.proof && (
                         <Link
-                          href={item.proof.href}
+                          href={roleSafeHref(item.proof.href, currentRole, date)}
                           className="mt-3 inline-flex flex-wrap items-center gap-2 rounded border border-navy-600/50 bg-navy-950/35 px-3 py-2 text-xs text-slate-300 hover:border-gold/30 hover:text-gold"
                         >
                           <span className="font-mono text-slate-500">Proof</span>
@@ -396,7 +406,7 @@ function ShiftCloseoutPageContent() {
                           )}
                         </Link>
                       )}
-                      <Link href={item.href} className="mt-3 inline-flex text-xs font-semibold text-gold hover:text-gold-light">
+                      <Link href={roleSafeHref(item.href, currentRole, date)} className="mt-3 inline-flex text-xs font-semibold text-gold hover:text-gold-light">
                         Open source view →
                       </Link>
                     </div>
@@ -464,7 +474,7 @@ function ShiftCloseoutPageContent() {
                           {section.source_links.map((link) => (
                             <Link
                               key={`${section.id}:${link.label}:${link.href}`}
-                              href={link.href}
+                              href={roleSafeHref(link.href, currentRole, date)}
                               className="rounded border border-navy-600/60 bg-navy-950/35 px-2.5 py-1 text-[11px] text-slate-300 hover:border-gold/30 hover:text-gold"
                             >
                               {link.count ? `${link.count} ` : ''}{link.label}{link.exact ? ' - exact' : ''}
@@ -573,7 +583,7 @@ function ShiftCloseoutPageContent() {
                 { label: 'Exceptions', href: `/exceptions?date=${date}` },
                 { label: 'Kiosks', href: '/kiosks' },
                 { label: 'Recognition Lab', href: `/calibration/recognition?date=${date}` },
-              ]).map((link) => (
+              ]).filter((link) => currentRole === 'admin' || !isKioskHref(link.href)).map((link) => (
                 <Link key={link.href} href={link.href} className="rounded-xl border border-navy-600/50 bg-navy-900/35 px-4 py-3 text-sm text-slate-300 hover:text-gold hover:border-gold/25 transition-all">
                   {link.label}
                 </Link>
