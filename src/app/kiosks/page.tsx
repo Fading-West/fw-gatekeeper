@@ -109,6 +109,7 @@ export default function KiosksPage() {
 
   const fetchReadiness = useCallback(async () => {
     const requestId = ++readinessRequestRef.current;
+    setHealth(null);
     setLoading(true);
     setError('');
     try {

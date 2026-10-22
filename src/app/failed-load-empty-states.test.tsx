@@ -50,7 +50,7 @@ const pages = [
       warnings: [],
     }),
   },
-];
+] as const;
 
 let tree: ReactTestRenderer | undefined;
 
@@ -139,9 +139,10 @@ it.each(pages.filter(({ name }) => name !== 'Kiosks'))('$name treats a deploymen
   expect(tileValues()).not.toContain('0');
 });
 
-it('does not claim an empty fleet after registering a kiosk when the readiness refresh fails', async () => {
+it.each(['success', 'error'])('does not claim an empty fleet while registration refresh is pending, then handles %s', async (outcome) => {
   let healthRequests = 0;
   let registered = false;
+  let settleRefresh!: (response: unknown) => void;
   const kiosks = pages[2];
   vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
     if (url === '/api/kiosks' && options?.method === 'POST') {
@@ -152,8 +153,8 @@ it('does not claim an empty fleet after registering a kiosk when the readiness r
     if (!url.startsWith('/api/system-health')) throw new Error(`Unexpected request ${url}`);
     healthRequests += 1;
     return healthRequests === 1
-      ? { ok: true, json: async () => kiosks.emptyPayload(null) }
-      : { ok: false, json: async () => ({ error: 'Refresh outage' }) };
+      ? { ok: true, json: async () => kiosks.emptyPayload() }
+      : new Promise(resolve => { settleRefresh = resolve; });
   }));
   await act(async () => { tree = create(<KiosksPage />); });
   expect(pageText()).toContain('No kiosks are registered yet');
@@ -163,8 +164,30 @@ it('does not claim an empty fleet after registering a kiosk when the readiness r
   await act(async () => button('Register Kiosk').props.onClick());
   expect(registered).toBe(true);
   expect(healthRequests).toBe(2);
-  expect(pageText()).toContain('Refresh outage');
-  expect(pageText()).toContain('Kiosk readiness unavailable');
+  expect(pageText()).toContain(kiosks.loadingText);
   for (const claim of kiosks.emptyText) expect(pageText()).not.toContain(claim);
   expect(tileValues()).not.toContain('0');
+  await act(async () => settleRefresh(outcome === 'error'
+    ? { ok: false, json: async () => ({ error: 'Refresh outage' }) }
+    : { ok: true, json: async () => ({
+      ...kiosks.emptyPayload(),
+      kiosks: {
+        ...kiosks.emptyPayload().kiosks,
+        total: 1,
+        counts: { online: 0, stale: 0, offline: 0, never_synced: 1 },
+        rows: [{ id: 'new-kiosk', name: 'New Kiosk', kiosk_id: 'new-kiosk', type: 'entry', location: '', last_sync: null, roster_applied_at: null, purge_pending: false, status: 'never_synced', expected_worker_count: 0, last_attendance_upload: null }],
+      },
+    }) }));
+  expect(pageText()).not.toContain(kiosks.loadingText);
+  if (outcome === 'error') {
+    expect(pageText()).toContain('Refresh outage');
+    expect(pageText()).toContain('Kiosk readiness unavailable');
+    expect(tileValues()).not.toContain('0');
+  } else {
+    expect(pageText()).toContain('New Kiosk');
+    expect(pageText()).toContain('1 devices');
+    expect(tree!.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+  }
+  expect(pageText()).not.toContain('No kiosks registered');
+  expect(pageText()).not.toContain('No kiosks are registered yet');
 });
