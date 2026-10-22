@@ -53,6 +53,9 @@ type ShiftException = {
   scheduled_end: string | null;
   event_count: number;
   attendance_id?: string | null;
+  // Effective identities include synthetic corrections even when no raw scan can be voided.
+  source_event_ids?: string[];
+  source_evidence?: string;
   review_note: string | null;
   reviewed_at: string | null;
   suggested_resolution: SuggestedResolution;
@@ -363,6 +366,10 @@ function summarize(exceptions: ShiftException[]) {
   };
 }
 
+function attendanceSourceEvidence(events: any[]) {
+  return JSON.stringify(events.map(event => [String(event._id), event.eventType, event.timestamp, event.kioskId ?? null]));
+}
+
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
   const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
@@ -475,6 +482,8 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           scheduled_end: schedule.endTime,
           event_count: clockIns.length,
           attendance_id: String(firstIn._id).startsWith("correction:") ? null : String(firstIn._id),
+          source_event_ids: clockIns.map((event) => String(event._id)),
+          source_evidence: attendanceSourceEvidence(clockIns),
           links: {
             ...baseLinks,
             activity_log: getActivityLogHref(date, workerId, String(firstIn._id).startsWith("correction:") ? null : String(firstIn._id)),
@@ -506,6 +515,8 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           scheduled_end: schedule.endTime,
           event_count: workerEvents.length,
           attendance_id: String(lastEvent._id).startsWith("correction:") ? null : String(lastEvent._id),
+          source_event_ids: workerEvents.map((event) => String(event._id)),
+          source_evidence: attendanceSourceEvidence(workerEvents),
           links: {
             ...baseLinks,
             activity_log: getActivityLogHref(date, workerId, String(lastEvent._id).startsWith("correction:") ? null : String(lastEvent._id)),
@@ -546,6 +557,8 @@ export async function buildShiftExceptions(ctx: any, date: string) {
         scheduled_end: schedule?.endTime || null,
         event_count: workerEvents.length,
         attendance_id: String(event._id).startsWith("correction:") ? null : String(event._id),
+        source_event_ids: [previous, event].filter(Boolean).map((source) => String(source._id)),
+        source_evidence: attendanceSourceEvidence([previous, event].filter(Boolean)),
         links: {
           ...baseLinks,
           activity_log: getActivityLogHref(date, workerId, String(event._id).startsWith("correction:") ? null : String(event._id)),
@@ -635,6 +648,12 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       scheduled_end: null,
       event_count: 1,
       attendance_id: null,
+      source_evidence: JSON.stringify([attemptId, decision, candidateWorkerId, scoreMargin,
+        recognitionNumber(attempt, "best_score", "bestScore"),
+        recognitionNumber(attempt, "second_best_score", "secondBestScore"),
+        recognitionNumber(attempt, "threshold", "threshold"),
+        recognitionText(attempt, "model_version", "modelVersion"),
+        attempt.liveness_confirmed ?? attempt.livenessConfirmed ?? null]),
       links: {
         activity_log: getActivityLogHref(date, candidateWorkerId),
         recognition_lab: buildHref("/calibration/recognition", {

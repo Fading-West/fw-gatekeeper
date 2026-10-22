@@ -360,11 +360,13 @@ export interface ShiftCloseoutSnapshot {
 
 export interface ShiftCloseoutRecord {
   id: string;
+  revision?: number;
   date: string;
   status: ShiftCloseoutStatus;
   supervisor_name: string | null;
   notes: string;
   acknowledged_blockers: boolean;
+  acknowledgement_stale?: boolean;
   completed_at: string | null;
   reopened_at: string | null;
   updated_at: string;
@@ -419,6 +421,7 @@ export interface ShiftCloseoutDraft {
 export interface ShiftCloseoutResponse {
   date: string;
   generated_at: string;
+  blocker_evidence?: string;
   closeout: ShiftCloseoutRecord | null;
   summary: ShiftCloseoutSnapshot & {
     missing_clock_outs: number;
