@@ -56,3 +56,26 @@ it('keeps the Kiosks links for admins', async () => {
   const hrefs = await renderAs('admin');
   expect(hrefs.filter((href) => href === '/kiosks').length).toBeGreaterThanOrEqual(4);
 });
+
+const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
+
+async function exportedText() {
+  let exported!: Blob;
+  vi.stubGlobal('URL', { createObjectURL: (blob: Blob) => { exported = blob; return 'blob:test'; }, revokeObjectURL: vi.fn() });
+  vi.stubGlobal('document', { createElement: () => ({ click: vi.fn() }) });
+  const exportButton = tree.root.findAllByType('button').find((node) => label(node) === 'Export')!;
+  await act(async () => exportButton.props.onClick());
+  return exported.text();
+}
+
+it.each(['enrollment', 'viewer'])('exports the briefing source view instead of the Kiosks page for %s users', async (currentRole) => {
+  await renderAs(currentRole);
+  const text = await exportedText();
+  expect(text).toContain('Proof: 1 kiosk trust warnings (source view: /briefing?date=2026-09-10).');
+  expect(text).not.toContain('/kiosks');
+});
+
+it('keeps the Kiosks source view in admin exports', async () => {
+  await renderAs('admin');
+  expect(await exportedText()).toContain('Proof: 1 kiosk trust warnings (source view: /kiosks).');
+});

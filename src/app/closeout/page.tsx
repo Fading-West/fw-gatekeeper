@@ -44,14 +44,14 @@ function formatDateTime(value: string | null | undefined) {
   });
 }
 
-function checklistExportLine(item: ShiftCloseoutChecklistItem) {
+function checklistExportLine(item: ShiftCloseoutChecklistItem, role: PortalRole | undefined, date: string) {
   const proof = item.proof
-    ? ` Proof: ${item.proof.count} ${item.proof.label} (${item.proof.exact ? 'exact source' : 'source view'}: ${item.proof.href}).`
+    ? ` Proof: ${item.proof.count} ${item.proof.label} (${item.proof.exact ? 'exact source' : 'source view'}: ${roleSafeHref(item.proof.href, role, date)}).`
     : '';
   return `- ${item.label}: ${item.status} (${item.count}) - ${item.description}${proof}`;
 }
 
-function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string) {
+function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string, role: PortalRole | undefined) {
   const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
@@ -70,7 +70,7 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
     '',
     'Current checklist',
-    ...payload.checklist.map(checklistExportLine),
+    ...payload.checklist.map((item) => checklistExportLine(item, role, payload.date)),
     '',
     'Current closeout draft',
     payload.closeout_draft?.narrative || 'No closeout draft available.',
@@ -309,7 +309,7 @@ function ShiftCloseoutPageContent() {
           <button type="button" onClick={() => dataReady && window.print()} disabled={!dataReady} className="btn-secondary">
             Print
           </button>
-          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes)} className="btn-primary" disabled={!dataReady}>
+          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes, currentRole)} className="btn-primary" disabled={!dataReady}>
             Export
           </button>
         </div>
