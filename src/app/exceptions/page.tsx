@@ -216,6 +216,7 @@ function ExceptionsPageContent() {
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load exceptions');
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    if (body.backend_unavailable) throw new Error(body.warning || 'Shift exception storage is waiting for deployment.');
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchExceptions } = useSelectedData(date, loadExceptions);

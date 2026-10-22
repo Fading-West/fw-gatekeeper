@@ -9,7 +9,7 @@ vi.mock('next/link', () => ({ default: ({ children }: { children: React.ReactNod
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'admin' }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 
-type Mode = 'pending' | 'error' | 'empty';
+type Mode = 'pending' | 'error' | 'empty' | 'fallback';
 
 const pages = [
   {
@@ -73,7 +73,9 @@ function stubFetch(endpoint: string, mode: Mode, emptyPayload: (date: string | n
     if (mode === 'pending') return new Promise(() => {});
     if (mode === 'error') return { ok: false, json: async () => ({ error: 'Synthetic outage' }) };
     const date = new URL(url, 'http://localhost').searchParams.get('date');
-    return { ok: true, json: async () => emptyPayload(date) };
+    return { ok: true, json: async () => mode === 'fallback'
+      ? { ...(emptyPayload(date) as object), backend_unavailable: true, warning: 'Waiting for Convex deployment' }
+      : emptyPayload(date) };
   }));
 }
 
@@ -125,4 +127,44 @@ describe.each(pages)('$name', ({ name, Page, endpoint, loadingText, emptyText, e
     for (const claim of expected) expect(text).toContain(claim);
     expect(tileValues().every((value) => value === '0')).toBe(true);
   });
+});
+
+// These routes use a 200 fallback payload when their Convex function is absent.
+it.each(pages.filter(({ name }) => name !== 'Kiosks'))('$name treats a deployment fallback as unavailable', async ({ Page, endpoint, emptyPayload, emptyText }) => {
+  stubFetch(endpoint, 'fallback', emptyPayload);
+  await act(async () => { tree = create(<Page />); });
+  expect(pageText()).toContain('Waiting for Convex deployment');
+  for (const claim of emptyText) expect(pageText()).not.toContain(claim);
+  expect(tileValues().length).toBeGreaterThan(0);
+  expect(tileValues()).not.toContain('0');
+});
+
+it('does not claim an empty fleet after registering a kiosk when the readiness refresh fails', async () => {
+  let healthRequests = 0;
+  let registered = false;
+  const kiosks = pages[2];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/kiosks' && options?.method === 'POST') {
+      registered = true;
+      return { ok: true, json: async () => ({ id: 'new-kiosk' }) };
+    }
+    if (url === '/api/kiosks') return { ok: true, json: async () => [] };
+    if (!url.startsWith('/api/system-health')) throw new Error(`Unexpected request ${url}`);
+    healthRequests += 1;
+    return healthRequests === 1
+      ? { ok: true, json: async () => kiosks.emptyPayload(null) }
+      : { ok: false, json: async () => ({ error: 'Refresh outage' }) };
+  }));
+  await act(async () => { tree = create(<KiosksPage />); });
+  expect(pageText()).toContain('No kiosks are registered yet');
+  const button = (label: string) => tree!.root.findAllByType('button').find(node => node.children.join('') === label)!;
+  await act(async () => button('Add Kiosk').props.onClick());
+  await act(async () => tree!.root.findByProps({ placeholder: 'e.g. Main Entrance Kiosk' }).props.onChange({ target: { value: 'New Kiosk' } }));
+  await act(async () => button('Register Kiosk').props.onClick());
+  expect(registered).toBe(true);
+  expect(healthRequests).toBe(2);
+  expect(pageText()).toContain('Refresh outage');
+  expect(pageText()).toContain('Kiosk readiness unavailable');
+  for (const claim of kiosks.emptyText) expect(pageText()).not.toContain(claim);
+  expect(tileValues()).not.toContain('0');
 });

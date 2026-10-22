@@ -118,7 +118,10 @@ export default function KiosksPage() {
       if (requestId === readinessRequestRef.current) setHealth(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load kiosk readiness';
-      if (requestId === readinessRequestRef.current) setError(message);
+      if (requestId === readinessRequestRef.current) {
+        setHealth(null);
+        setError(message);
+      }
     } finally {
       if (requestId === readinessRequestRef.current) setLoading(false);
     }

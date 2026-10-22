@@ -223,6 +223,7 @@ function ShiftBriefingPageContent() {
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load shift briefing');
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    if (body.backend_unavailable) throw new Error(body.warning || 'Shift briefing is waiting for deployment.');
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchBriefing } = useSelectedData(date, loadBriefing);
