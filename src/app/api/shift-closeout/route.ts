@@ -164,6 +164,9 @@ export async function PATCH(req: NextRequest) {
       'date must use YYYY-MM-DD format': 400,
       'Reopen the completed closeout before changing notes.': 409,
       'Only a completed closeout can be reopened.': 409,
+      // Plain-text messages from deployments that predate structured codes.
+      'Closeout has blockers. Add an acknowledgement note before acknowledging blockers.': 400,
+      'Closeout has blockers. Add an acknowledgement note before completing.': 400,
     });
     if (knownError) return knownError;
     logApiError('Shift closeout PATCH error:', error);
