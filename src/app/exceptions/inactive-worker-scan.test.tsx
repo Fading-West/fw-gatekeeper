@@ -3,9 +3,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import ExceptionsPage from './page';
 
 const role = vi.hoisted(() => ({ current: 'admin' }));
+const toast = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-03') }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => role.current }));
-vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
+vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast }) }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
 
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
@@ -27,6 +28,7 @@ afterEach(async () => {
   if (tree) await act(async () => tree.unmount());
   vi.unstubAllGlobals();
   role.current = 'admin';
+  toast.mockReset();
 });
 
 async function render(fetchImpl: (url: string, init?: RequestInit) => Promise<any>) {
@@ -69,4 +71,23 @@ it('keeps the existing honest error state when the fetch fails', async () => {
   const page = await render(async () => ({ ok: false, status: 500, json: async () => ({ error: 'Shift exceptions are unavailable' }) }));
   expect(tree.root.findAll((node) => node.props?.role === 'alert').length).toBeGreaterThan(0);
   expect(page.text()).not.toContain('Deactivated worker scan');
+});
+
+it('reports a refused review honestly and leaves the exception open for a retry', async () => {
+  let patches = 0;
+  const page = await render(async (_url, init) => {
+    if (init?.method === 'PATCH') {
+      patches += 1;
+      return { ok: false, status: 403, json: async () => ({ error: 'Insufficient permissions' }) };
+    }
+    return { ok: true, json: async () => payload };
+  });
+  const reviewed = () => tree.root.findAllByType('button').find((node) => label(node) === 'Reviewed')!;
+  await act(async () => reviewed().props.onClick());
+  expect(toast).toHaveBeenCalledWith('Insufficient permissions', 'error');
+  expect(toast).not.toHaveBeenCalledWith('Exception marked Reviewed');
+  expect(page.text()).toContain('Alex Removed scanned after being deactivated');
+  expect(reviewed().props.disabled).toBe(false);
+  await act(async () => reviewed().props.onClick());
+  expect(patches).toBe(2);
 });
