@@ -53,4 +53,5 @@ assert.ok(convexHttp.indexOf('deviceIssues += 1') < incompleteTelemetryCheck, 'K
 assert.ok(convexHttp.indexOf('queuedRecords +=') < incompleteTelemetryCheck, 'Known queued records must be counted before incomplete telemetry is skipped');
 assert.doesNotMatch(convexHttp.slice(convexHttp.indexOf('const publicKioskHealth')), /checkedAtMs:\s*v\./, 'Public callers must not supply the health evaluation clock');
 
+assert.match(kiosksPage, /Attendance not yet uploaded/, 'Kiosks page should show retained attendance queue observations with their observation time.');
 console.log('Kiosk readiness page contract passed');

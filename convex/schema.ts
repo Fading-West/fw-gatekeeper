@@ -21,6 +21,23 @@ export const closeoutFields = {
     reopenedAt: v.optional(v.string()),
     createdAt: v.string(),
     updatedAt: v.string(),
+    // Kiosk attendance queue observations captured when the record was signed.
+    // Absent on records signed before this evidence existed.
+    attendanceQueueEvidence: v.optional(v.object({
+      capturedAt: v.string(),
+      affectedKiosks: v.number(),
+      pendingRecords: v.number(),
+      unknownKiosks: v.number(),
+      omittedKiosks: v.number(),
+      kiosks: v.array(v.object({
+        id: v.string(),
+        name: v.string(),
+        kioskId: v.union(v.string(), v.null()),
+        status: v.union(v.literal("pending"), v.literal("clear"), v.literal("unknown")),
+        lastValidCount: v.union(v.number(), v.null()),
+        observedAt: v.union(v.string(), v.null()),
+      })),
+    })),
 };
 
 export default defineSchema({
@@ -234,6 +251,13 @@ export default defineSchema({
       degradedReason: v.optional(v.string()),
       lastScanAt: v.optional(v.string()),
       reportedAt: v.string(),
+    })),
+    // Last valid attendance queue count accepted from this kiosk. Unknown
+    // reports keep the count and its server observation time.
+    attendanceQueue: v.optional(v.object({
+      lastValidCount: v.number(),
+      observedAt: v.string(),
+      latest: v.union(v.literal("reported"), v.literal("unknown")),
     })),
     credentialHash: v.optional(v.string()),
     credentialIssuedAt: v.optional(v.string()),

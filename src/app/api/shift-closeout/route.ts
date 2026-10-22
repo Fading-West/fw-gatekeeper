@@ -31,6 +31,8 @@ function emptyResponse(date: string) {
     date,
     generated_at: generatedAt,
     closeout: null,
+    // Unavailable, never an empty (clear) queue.
+    attendance_queue: null,
     summary: {
       expected: 0,
       present: 0,

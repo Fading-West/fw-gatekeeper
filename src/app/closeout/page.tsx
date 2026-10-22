@@ -7,6 +7,7 @@ import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { FactoryDatePage } from '@/components/FactoryDatePage';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
+import { AttendanceQueueEvidencePanel, attendanceQueueExportLines } from '@/components/AttendanceQueueEvidence';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useCloseoutActor } from '@/hooks/useCloseoutActor';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -53,8 +54,16 @@ function checklistExportLine(item: ShiftCloseoutChecklistItem) {
   return `- ${item.label}: ${item.status} (${item.count}) - ${item.description}${proof}`;
 }
 
+const SIGNED_QUEUE_MISSING = 'Not recorded: this closeout was signed before attendance queue evidence was captured.';
+const CURRENT_QUEUE_MISSING = 'Current attendance queue evidence is unavailable. Do not treat the queue as clear.';
+
+function currentAttendanceQueue(payload: ShiftCloseoutResponse | null) {
+  return payload && !payload.backend_unavailable ? payload.attendance_queue : null;
+}
+
 function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string) {
-  const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
+  const signed = payload.closeout?.status === 'completed';
+  const summary = signed && payload.closeout ? payload.closeout.snapshot : payload.summary;
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
     `Status: ${payload.closeout?.status || 'open'}`,
@@ -70,6 +79,14 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     `Critical exceptions: ${summary.critical_exceptions}`,
     `Kiosk warnings: ${summary.kiosk_warnings}`,
     `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
+    '',
+    ...(signed ? [
+      'Signed attendance queue evidence',
+      ...attendanceQueueExportLines(payload.closeout?.signed_attendance_queue, SIGNED_QUEUE_MISSING),
+      '',
+    ] : []),
+    'Current attendance queue observations',
+    ...attendanceQueueExportLines(currentAttendanceQueue(payload), CURRENT_QUEUE_MISSING),
     '',
     'Current checklist',
     ...payload.checklist.map(checklistExportLine),
@@ -475,6 +492,18 @@ function ShiftCloseoutPageContent() {
             </div>
           ) : (
             <div className="glass-card p-6 text-sm text-slate-400">No checklist is available for this date yet.</div>
+          )}
+          {payload && (
+            <section className="glass-card p-5 space-y-3" aria-label="Attendance queue evidence">
+              <div>
+                <h2 className="font-display font-semibold text-slate-100">Attendance queue evidence</h2>
+                <p className="text-sm text-slate-400 mt-2 leading-6">Kiosk-reported attendance not yet uploaded. Signed evidence is kept separately from current observations.</p>
+              </div>
+              {completed && (
+                <AttendanceQueueEvidencePanel title="Signed with this closeout" evidence={payload.closeout?.signed_attendance_queue} missing={SIGNED_QUEUE_MISSING} testId="signed-attendance-queue" />
+              )}
+              <AttendanceQueueEvidencePanel title="Current observation" evidence={currentAttendanceQueue(payload)} missing={CURRENT_QUEUE_MISSING} testId="current-attendance-queue" />
+            </section>
           )}
         </div>
 

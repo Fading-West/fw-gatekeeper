@@ -144,4 +144,6 @@ assert.match(types, /shift_trust_brief: ShiftTrustBrief;/, 'ShiftBriefingRespons
 
 assert.match(packageJson, /"test:shift-briefing":\s*"node scripts\/test-shift-briefing-contract\.mjs"/, 'package.json must expose test:shift-briefing.');
 
+assert.match(briefing, /kiosk_warnings: warningKiosks\.length/, 'Each kiosk with any warning reason should count once in kiosk warnings.');
+assert.match(briefing, /attendance_queue: attendanceQueue,/, 'Briefing kiosks should expose fleet-wide attendance queue evidence.');
 console.log('Shift briefing contract passed');

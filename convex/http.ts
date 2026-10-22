@@ -5,6 +5,7 @@ import { httpRouter } from 'convex/server';
 import { auth } from './auth';
 import { internal } from './_generated/api';
 import { httpAction } from './_generated/server';
+import { parseQueueCount } from '../src/lib/attendance-queue';
 
 const http = httpRouter();
 auth.addHttpRoutes(http);
@@ -180,8 +181,9 @@ function sanitizeKioskHealth(raw: unknown) {
     modelOk: asBool(source.modelOk),
     livenessAvailable: asBool(source.livenessAvailable),
     knownWorkers: asCount(source.knownWorkers),
-    queuedLogs: asCount(source.queuedLogs),
-    queuedAttempts: asCount(source.queuedAttempts),
+    // Never coerce null, booleans, blanks or fractions into an empty queue.
+    queuedLogs: parseQueueCount(source.queuedLogs),
+    queuedAttempts: parseQueueCount(source.queuedAttempts),
     degradedReason: asText(source.degradedReason),
     lastScanAt: asText(source.lastScanAt),
     reportedAt: new Date().toISOString(),
