@@ -76,6 +76,18 @@ function emptyResponse(date: string) {
   };
 }
 
+async function supportsQueueEvidence(date: string) {
+  try {
+    const current = await convex.query((api as any).shiftCloseouts.get, { date });
+    const queue = current?.attendance_queue;
+    return current?.closeout?.status === 'completed' ||
+      Boolean(queue && typeof queue === 'object' && Number.isSafeInteger(queue.affected_kiosks) && Array.isArray(queue.kiosks));
+  } catch (error) {
+    logApiError('Shift closeout queue evidence check failed:', error);
+    return false;
+  }
+}
+
 export async function GET(req: NextRequest) {
   if (!(await hasValidPortalSession(req, ['admin', 'enrollment', 'viewer']))) {
     return unauthorizedApiResponse();
@@ -136,6 +148,14 @@ export async function PATCH(req: NextRequest) {
     }
     if (acknowledgedBlockers !== undefined && typeof acknowledgedBlockers !== 'boolean') {
       return NextResponse.json({ error: 'acknowledged blockers must be a boolean' }, { status: 400 });
+    }
+
+    // A backend that predates attendance queue evidence would sign without
+    // requiring acknowledgement of unsynced attendance. Refuse new signoffs
+    // there; a retry against an already-completed record recovers its receipt
+    // without writing a new signature.
+    if (action === 'complete' && !(await supportsQueueEvidence(date))) {
+      return NextResponse.json({ error: 'Closeout signoff is unavailable until the backend reports attendance queue evidence. Deploy the current Convex functions, then retry.', code: 'CLOSEOUT_QUEUE_EVIDENCE_UNAVAILABLE' }, { status: 503 });
     }
 
     const result = await convex.mutation((api as any).shiftCloseouts.save, {

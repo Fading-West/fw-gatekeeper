@@ -9,7 +9,7 @@ vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => actor.id })
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
-const payload = (date: string, notes: string) => ({ date, closeout: { status: 'open', notes }, summary: {}, checklist: [], blockers: [], action_links: [], can_complete: true });
+const payload = (date: string, notes: string) => ({ date, closeout: { status: 'open', notes }, summary: {}, checklist: [], blockers: [], action_links: [], attendance_queue: { affected_kiosks: 0, kiosks: [] }, can_complete: true });
 const response = (data: unknown) => ({ ok: true, json: async () => data });
 let tree: ReactTestRenderer;
 let requests: Map<string, (data: unknown) => void>;

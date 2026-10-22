@@ -64,5 +64,9 @@ attendance evidence**. It is not proof of data loss or a scanner failure.
 ## Deployment
 
 Deploy the Convex schema and functions before the portal. The new fields are
-optional, so no data migration is needed. Physical offline and reconnect
+optional, so no data migration is needed. If the portal reaches a backend that
+does not report attendance queue evidence, it refuses new signoffs.
+`PATCH /api/shift-closeout` returns 503 `CLOSEOUT_QUEUE_EVIDENCE_UNAVAILABLE`,
+and the Closeout page disables completion. Notes can still be saved, and a
+retry against an already completed record still recovers its receipt. Physical offline and reconnect
 behavior must be confirmed on a Pi pilot.

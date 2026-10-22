@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
 import { NextRequest } from 'next/server';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import schema from '../../../../convex/schema';
 import { api } from '../../../../convex/_generated/api';
 import convex from '@/lib/convex';
@@ -30,8 +30,15 @@ async function setup() {
     return userId;
   });
   const actor = t.withIdentity({ subject: userId });
-  vi.mocked(convex.mutation).mockImplementation((ref, args = {}) => actor.mutation(ref as never, JSON.parse(JSON.stringify(args))));
-  vi.mocked(convex.query).mockImplementation((ref, args = {}) => actor.query(ref as never, JSON.parse(JSON.stringify(args))));
+  // Match Convex HTTP serialization: undefined fields disappear on the wire.
+  vi.mocked(convex.mutation).mockImplementation((...call) => {
+    const [ref, args = {}] = call;
+    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+  });
+  vi.mocked(convex.query).mockImplementation((...call) => {
+    const [ref, args = {}] = call;
+    return actor.query(ref, JSON.parse(JSON.stringify(args)));
+  });
   let request = 0;
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
     method: 'PATCH', headers: { 'content-type': 'application/json' },
@@ -77,4 +84,42 @@ it('does not hide a backend failure as an empty queue', async () => {
   const response = await GET(new NextRequest(`https://example.test/api/shift-closeout?date=${date}`));
   expect(response.status).toBe(500);
   expect(await response.json()).toEqual({ error: 'Failed to fetch shift closeout' });
+});
+
+describe('portal ahead of an older backend', () => {
+  const complete = () => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ date, request_id: 'mixed-version', expected_revision: null, action: 'complete', notes: 'No review' }),
+  }));
+
+  it.each([
+    ['omits queue evidence', async () => ({ date, closeout: null, can_complete: true })],
+    ['returns a malformed queue', async () => ({ date, closeout: null, can_complete: true, attendance_queue: { affected_kiosks: '0' } })],
+    ['cannot be read', async () => { throw new Error('Could not find public function for shiftCloseouts:get'); }],
+  ])('refuses a new signoff when the backend %s', async (_label, read) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(convex.query).mockImplementation(read as never);
+    const response = await complete();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'CLOSEOUT_QUEUE_EVIDENCE_UNAVAILABLE' });
+    expect(convex.mutation).not.toHaveBeenCalled();
+  });
+
+  it('still recovers the receipt of an already completed record', async () => {
+    vi.mocked(convex.query).mockResolvedValue({ date, closeout: { status: 'completed' } });
+    vi.mocked(convex.mutation).mockResolvedValue({ id: 'closeout', status: 'completed', revision: 1, requestId: 'mixed-version', actorUserId: 'user' });
+    expect((await complete()).status).toBe(200);
+    expect(convex.mutation).toHaveBeenCalledOnce();
+  });
+
+  it('does not gate saving notes', async () => {
+    vi.mocked(convex.query).mockResolvedValue({ date, closeout: null });
+    vi.mocked(convex.mutation).mockResolvedValue({ id: 'closeout', status: 'open', revision: 1, requestId: 'mixed-save', actorUserId: 'user' });
+    const response = await PATCH(new NextRequest('https://example.test/api/shift-closeout', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ date, request_id: 'mixed-save', expected_revision: null, action: 'save', notes: 'Draft' }),
+    }));
+    expect(response.status).toBe(200);
+    expect(convex.query).not.toHaveBeenCalled();
+  });
 });

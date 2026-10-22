@@ -238,7 +238,10 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.recognition_reviews || 0) +
     Number(payload?.summary.kiosk_warnings || 0) +
     Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0);
-  const canComplete = Boolean(payload && (
+  // Without queue evidence the backend cannot enforce acknowledgement of
+  // unsynced attendance, so signoff stays disabled (the API also refuses).
+  const queueEvidenceMissing = Boolean(payload && !completed && !currentAttendanceQueue(payload));
+  const canComplete = Boolean(payload && !queueEvidenceMissing && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
       : payload.can_complete
@@ -284,6 +287,10 @@ function ShiftCloseoutPageContent() {
     if (!dataReady || mutationPendingRef.current || selectedPendingAction || !actorId) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can update shift closeout.', 'error');
+      return;
+    }
+    if (action === 'complete' && queueEvidenceMissing) {
+      toast('Closeout signoff is unavailable until attendance queue evidence loads.', 'error');
       return;
     }
     if (action === 'complete' && !canComplete) {
@@ -630,6 +637,9 @@ function ShiftCloseoutPageContent() {
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
+            {queueEvidenceMissing && (
+              <p role="alert" data-testid="queue-evidence-signoff-blocked" className="text-sm text-amber-300">Signoff is unavailable until the backend reports attendance queue evidence.</p>
+            )}
             {payload?.closeout?.acknowledgement_stale && !completed && (
               <p role="alert" className="text-sm text-amber-300">The blockers changed since the saved acknowledgement. Review and acknowledge the current evidence.</p>
             )}

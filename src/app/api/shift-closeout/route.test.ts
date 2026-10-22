@@ -8,7 +8,7 @@ import convex from '@/lib/convex';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { PATCH } from './route';
 
-vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn() } }));
+vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn(), query: vi.fn() } }));
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
 const modules = import.meta.glob('../../../../convex/**/*.ts');
 const date = '2026-09-10';
@@ -37,6 +37,10 @@ async function setup(blocked = false) {
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
     return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+  });
+  vi.mocked(convex.query).mockImplementation((...call) => {
+    const [ref, args = {}] = call;
+    return actor.query(ref, JSON.parse(JSON.stringify(args)));
   });
   let request = 0;
   const patch = async (fields: Record<string, unknown>) => {

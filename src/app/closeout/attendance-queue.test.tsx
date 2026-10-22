@@ -72,3 +72,11 @@ it('describes unknown reports with their retained observation', () => {
   expect(describeAttendanceQueue({ status: 'unknown', last_valid_count: null, observed_at: null, caveat: false })).toBe('Queue count not reported');
   expect(describeAttendanceQueue(undefined)).toBe('Not reported by this backend');
 });
+
+it('disables signoff while the backend does not report queue evidence', async () => {
+  serve({ closeout: null, can_complete: true });
+  await act(async () => { tree = create(<CloseoutPage />); });
+  const complete = tree.root.findAllByType('button').find(node => label(node) === 'Complete closeout')!;
+  expect(complete.props.disabled).toBe(true);
+  expect(label(tree.root.findByProps({ 'data-testid': 'queue-evidence-signoff-blocked' }))).toContain('Signoff is unavailable');
+});
