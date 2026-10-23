@@ -31,6 +31,8 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
 }
 
 export async function GET(req: NextRequest) {
+  // Preserve arrival order even when credential checks complete out of order.
+  const lastSync = new Date().toISOString();
   const requestedId = req.nextUrl.searchParams.get('kiosk_id');
   // Portal sessions cannot authorize device heartbeats or biometric downloads.
   const identity = await authenticateKiosk(req, [requestedId]);
@@ -42,7 +44,6 @@ export async function GET(req: NextRequest) {
   const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
   const receiptProtocol = hasDeviceKeyFormat(req) && req.nextUrl.searchParams.get('roster_receipt') === '1';
 
-  const lastSync = new Date().toISOString();
   try {
     const result = await updateKioskLastSync(kioskId, lastSync, parseKioskHealth(req.nextUrl.searchParams));
     if (!result.updated) {

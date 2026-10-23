@@ -1,0 +1,70 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+ ❯ review06-norm-extremes.test.ts (1 test | 1 failed) 12ms
+   × rejects finite extreme templates whose Python squared norm is zero or infinite 10ms
+ ❯ review13-future-repair.test.ts (1 test | 1 failed) 61ms
+   × repairs an invalid future legacy watermark with a valid heartbeat and preserves ordering afterward 60ms
+ ❯ review09-large-bucket.test.ts (1 test | 1 failed) 83ms
+   × acknowledges exact legacy retries behind more than 500 historical duplicates without deleting records 81ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review06-norm-extremes.test.ts > rejects finite extreme templates whose Python squared norm is zero or infinite
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ review06-norm-extremes.test.ts:4:129
+      2| import {isSupportedEncoding} from '../worktrees/06-nonzero-face-templa…
+      3| it('rejects finite extreme templates whose Python squared norm is zero…
+      4|  for(const magnitude of [1e308,1e-300]){const vector=Array(512).fill(0…
+       |                                                                                                                                 ^
+      5|  expect(isSupportedEncoding(Array(512).fill(.1))).toBe(true);
+      6| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  review09-large-bucket.test.ts > acknowledges exact legacy retries behind more than 500 historical duplicates without deleting records
+Error: Recognition retry lookup exceeds safe limit
+ ❯ ingestAttemptBatch ../worktrees/09-legacy-recognition-replay/convex/recognitionAttempts.ts:355:39
+
+ ❯ invokeFunction ../fw-gatekeeper-task/node_modules/convex/src/server/impl/registration_impl.ts:90:13
+ ❯ invokeMutation ../fw-gatekeeper-task/node_modules/convex/src/server/impl/registration_impl.ts:70:17
+ ❯ runMutationWithHandler ../fw-gatekeeper-task/node_modules/convex-test/dist/index.js:1499:31
+ ❯ Object.mutationFromPath ../fw-gatekeeper-task/node_modules/convex-test/dist/index.js:1603:32
+ ❯ mutation ../fw-gatekeeper-task/node_modules/convex-test/dist/index.js:1649:20
+ ❯ review09-large-bucket.test.ts:11:9
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  review13-future-repair.test.ts > repairs an invalid future legacy watermark with a valid heartbeat and preserves ordering afterward
+AssertionError: expected { _creationTime: 1790926620103, …(8) } to match object { …(2) }
+(8 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "health": {
+-     "cameraOk": true,
++     "cameraOk": false,
+    },
+-   "lastSync": "2026-10-02T07:37:00.100Z",
++   "lastSync": "2099-01-01T00:00:00Z",
+  }
+
+ ❯ review13-future-repair.test.ts:11:43
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  3 failed (3)
+   Start at  02:36:59
+   Duration  661ms (transform 339ms, setup 0ms, import 825ms, tests 155ms, environment 0ms)
