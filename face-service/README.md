@@ -96,7 +96,7 @@ with `photos` and `disagreeing_pairs`, and the enrollment page lists them under 
 | --- | --- | --- |
 | `MIN_PAIRWISE_SIMILARITY` | `0.6` | Minimum cosine similarity between every pair of used enrollment embeddings |
 | `MIN_GOOD_PHOTOS` | `2` | Minimum consistent photos: `2` or `3`. The portal captures three photos, so other values fail at startup. |
-| `FACE_MODEL_DIR` | `/app/models` | Where the recognition model is stored/downloaded |
+| `FACE_MODEL_DIR` | `/app/models` | Model directory; the Docker image includes a read-only, verified model here |
 
 Both thresholds are read at startup, so they can be tuned on the deployment without a
 rebuild. `GET /health` echoes the active values.
@@ -104,10 +104,21 @@ rebuild. `GET /health` echoes the active values.
 ## Reproducible production install
 
 The Docker image installs `requirements.lock` with SHA-256 verification. It locks
-all 26 runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
+all runtime packages for CPython 3.11, Linux x86_64; `requirements.txt` is the
 editable direct-dependency input. The image and OS packages remain separately
 maintained. On another OS, use the development inputs below instead of this
 platform-specific production lock.
+
+The Python base image is pinned to a multi-architecture digest; Dependabot checks
+for Docker updates weekly. Apt packages still resolve from Debian's live package
+repositories, so this does not make the entire build byte-for-byte reproducible.
+
+The container runs as UID/GID 10001. `/app` and its baked model are root-owned and
+read-only to that user. Normal inference only reads the verified model and processes
+images in memory. A missing or corrupt baked model makes recognition unavailable;
+rebuild the image to restore it. Python bytecode writes are disabled. Runtime caches
+can use the writable `/home/face-service` home (`XDG_CACHE_HOME` points to its `.cache`
+directory), and temporary files can use `/tmp`.
 
 Regenerate both server and Pi locks with uv 0.12.13, from the repository root:
 
@@ -120,6 +131,33 @@ bash scripts/lock-python-dependencies.sh
 Review the generated diff, install into a fresh Python 3.11 environment with
 `pip install --require-hashes --only-binary=:all: -r requirements.lock`, run the
 face-service tests, and load the pinned ONNX model before rollout.
+
+CI installs uv 0.12.13 from the SHA-256-verified wheel pinned in
+`scripts/requirements-uv.txt` to recompile the face-service lock with the same options as
+`scripts/lock-python-dependencies.sh` and rejects any diff. Dependency-update PRs
+must commit the regenerated lock alongside `requirements.txt`.
+
+To update the uv compiler pin:
+
+1. Read `https://pypi.org/pypi/uv/<version>/json` for the chosen version and select
+   the `urls` entry for its Python 3, Linux x86_64 manylinux wheel. The current
+   artifact is `uv-0.12.13-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`.
+   Download that entry's `url`, run `sha256sum` on the wheel, and confirm it matches
+   the entry's `digests.sha256` before copying the hash.
+2. Update the version, hash, and artifact comment in `scripts/requirements-uv.txt`,
+   the version guard in `scripts/lock-python-dependencies.sh`, and the compiler
+   version references in this README and `pi-kiosk/README.md` together.
+3. Install the new compiler with CI's
+   `python -m pip install --require-hashes --only-binary=:all: -r scripts/requirements-uv.txt`,
+   run `bash scripts/lock-python-dependencies.sh`, and review all generated lock
+   diffs. Require both CI jobs to pass before merging the compiler update.
+
+The shared Python test environment installs the production lock with hash
+verification, then adds `scripts/requirements-ci.txt` using uv with the lock as
+version constraints. These additions provide `httpx2` for FastAPI's TestClient
+and Flask/Requests for the kiosk tests; shared runtime versions stay locked.
+The installs are separate because pip enables hash checking when it sees hashes
+in constraints, which would reject the unhashed test dependencies.
 
 ## Development run
 

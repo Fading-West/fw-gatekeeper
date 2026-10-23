@@ -15,6 +15,8 @@ services:
         value: https://modest-bat-146.convex.cloud
       - key: CONVEX_INGEST_URL
         value: https://modest-bat-146.convex.site
+      # Must equal CONVEX_INGEST_KEY on the production Convex deployment:
+      #   npx convex env set --prod CONVEX_INGEST_KEY <value>
       - key: CONVEX_INGEST_KEY
         sync: false
       - key: KIOSK_API_KEY
