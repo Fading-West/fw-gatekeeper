@@ -234,7 +234,10 @@ else:
             self.assertEqual(self.encode(["a", "b", "c"], headers={"x-face-service-key": "wrong"}).status_code, 401)
 
         def test_health_reports_recognition_model_only(self):
-            body = self.client.get("/health").json()
+            with patch.object(main, "_rec_session", None):
+                self.assertEqual(self.client.get("/health").json()["status"], "degraded")
+            with patch.object(main, "_rec_session", object()), patch.object(main, "_rec_failed", False):
+                body = self.client.get("/health").json()
             self.assertEqual(body["status"], "ok")
             self.assertEqual(body["version"], "3.1-quality-gate")
             self.assertIn("rec_exists", body)

@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/01-recognition-review-authority
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:52:29
+   Duration  374ms (transform 71ms, setup 0ms, import 172ms, tests 42ms, environment 0ms)

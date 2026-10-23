@@ -24,7 +24,9 @@ The dashboard HTTP worker responses expose readiness metadata (`has_face_encodin
 
 ## How consent is captured
 
-Before photo capture can start, the enrolling operator must confirm a required checkbox stating that the worker has been told a facial template will be stored for attendance and has agreed. The enrollment API rejects requests without this acknowledgement (HTTP 400). The Convex mutations also require consent confirmation for every template or photo write. The server records its receipt time as `consentAt`, the authenticated operator as `consentRecordedBy`, and an immutable audit row on every enrollment; it does not trust a client-supplied time as the receipt time. Re-enrollment deletes superseded cloud photos unless another worker still references them (see the legacy reference check below).
+Before photo capture can start, the enrolling operator must confirm a required checkbox stating that the worker has been told a facial template will be stored for attendance and has agreed. The page records both monotonic and wall-clock times at acknowledgement. If their elapsed durations disagree by more than two seconds (allowing small timer jitter and gradual clock slewing), the age is uncertain and the page clears the acknowledgement and requires confirmation again. System sleep when the monotonic clock pauses and wall-clock corrections can cause such disagreement, including when they occur together. Otherwise, the page uses the larger elapsed duration; a static wall-clock offset cancels out. The page checks freshness before capture and submission and also clears expired consent.
+
+The enrollment API rejects missing consent or an invalid elapsed age, including ages over ten minutes (HTTP 400), and derives the acknowledgement time as `consentAt` by subtracting that age from its own server clock. It uses the reported elapsed age rather than a browser-supplied absolute timestamp and rechecks freshness after encoding. Direct calls to the public Convex mutations (`workers.create`, `createFromRoster`, and `update`) by authorized admin or enrollment operators must supply `consentAt` for every template or photo write. Convex validates this supplied timestamp against its freshness window (no more than ten minutes old or one minute ahead of its server clock). For both API enrollment and direct Convex biometric writes, the validated `consentAt`, authenticated operator as `consentRecordedBy`, and an immutable audit row attributing the write to that operator are recorded. Re-enrollment deletes superseded cloud photos unless another worker still references them (see the legacy reference check below).
 
 ## How long it is kept
 
@@ -47,7 +49,7 @@ This protects new uploads through the enrollment API. It does not identify or re
 
 ### Deployment order
 
-Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations, and updated worker mutations to Convex before deploying the portal enrollment route that calls them. Keep the portal's automatic Render deployment skipped until the backend deployment is verified. Existing worker photo references remain compatible; cleanup never deletes untracked storage IDs.
+Deploy the `pendingEnrollmentPhotos` schema, `enrollmentPhotos` action/mutations, and updated worker mutations to the production Convex deployment (`npx convex deploy`) before deploying the portal enrollment route that calls them. Keep the portal's automatic Render deployment skipped until the backend deployment is verified. Existing worker photo references remain compatible; cleanup never deletes untracked storage IDs.
 
 ## How to purge a worker's face data
 

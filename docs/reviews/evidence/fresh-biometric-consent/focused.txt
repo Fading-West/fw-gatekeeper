@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/03-fresh-biometric-consent
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:49:41
+   Duration  410ms (transform 78ms, setup 0ms, import 198ms, tests 48ms, environment 0ms)

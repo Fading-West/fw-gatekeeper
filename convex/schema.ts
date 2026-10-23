@@ -173,6 +173,7 @@ export default defineSchema({
     .index("by_kiosk_timestamp", ["kioskId", "timestamp"])
     .index("by_reviewed_timestamp", ["reviewed", "timestamp"])
     .index("by_kiosk_reviewed_timestamp", ["kioskId", "reviewed", "timestamp"])
+    .index("by_kiosk_timestamp_candidate_decision", ["kioskId", "timestamp", "candidateWorkerId", "decision"])
     .index("by_source_attempt_id", ["sourceAttemptId"])
     .index("by_legacy_source_attempt_id", ["legacySourceAttemptId"]),
 

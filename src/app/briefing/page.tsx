@@ -1,9 +1,12 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
+import { FactoryDatePage } from '@/components/FactoryDatePage';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
+import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 import {
@@ -65,12 +68,6 @@ function formatGeneratedAt(value?: string) {
   return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function escapeCsv(value: unknown) {
-  const text = String(value ?? '');
-  if (!/[",\n]/.test(text)) return text;
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 function briefingCsv(
   date: string,
   workers: ShiftBriefingWorker[],
@@ -112,7 +109,7 @@ function briefingCsv(
   const sections = actionRows.length
     ? [workerHeaders, ...workerRows, [], ['Action Items'], actionHeaders, ...actionRows]
     : [workerHeaders, ...workerRows];
-  return sections.map((row) => row.map(escapeCsv).join(',')).join('\n');
+  return sections.map((row) => row.map(csvField).join(',')).join('\n');
 }
 
 function departmentRisk(row: ShiftBriefingDepartment) {
@@ -209,19 +206,17 @@ function getRoleSafeRiskHref(risk: ShiftTrustBriefRisk, role: PortalRole | undef
 
 function ShiftBriefingPageContent() {
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  const { date, setDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')));
   const queryDepartment = searchParams.get('department') || 'all';
   const queryStatus = validWorkerStatusParam(searchParams.get('status'));
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
   const [department, setDepartment] = useState(queryDepartment);
   const [status, setStatus] = useState<WorkerCoverageStatus | 'all'>(queryStatus);
 
   useEffect(() => {
-    setDate(queryDate);
     setDepartment(queryDepartment);
     setStatus(queryStatus);
-  }, [queryDate, queryDepartment, queryStatus]);
+  }, [queryDepartment, queryStatus]);
 
   const loadBriefing = useCallback(async (signal: AbortSignal): Promise<ShiftBriefingResponse> => {
     const res = await fetch(`/api/shift-briefing?date=${date}`, { cache: 'no-store', signal });
@@ -323,6 +318,8 @@ function ShiftBriefingPageContent() {
           </button>
         </div>
       </div>
+
+      {newDay && <FactoryDayNotice date={date} today={today} />}
 
       <section className="glass-card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -673,8 +670,8 @@ function ShiftBriefingPageContent() {
 
 export default function ShiftBriefingPage() {
   return (
-    <Suspense fallback={null}>
+    <FactoryDatePage>
       <ShiftBriefingPageContent />
-    </Suspense>
+    </FactoryDatePage>
   );
 }

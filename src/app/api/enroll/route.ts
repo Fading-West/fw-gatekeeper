@@ -1,10 +1,19 @@
+import {
+  BIOMETRIC_CONSENT_ERROR_CODE,
+  BIOMETRIC_CONSENT_ERROR_MESSAGE,
+  isRecentBiometricConsent,
+  isRecentBiometricConsentAge,
+} from "@/lib/biometric-consent";
+import { ConvexError } from 'convex/values';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { api } from '../../../../convex/_generated/api';
 import { getEncodingValidationMessage, isSupportedEncoding } from '@/lib/encoding';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 import { findEmployeeDirectoryById } from '@/lib/employee-directory';
 
 export async function POST(req: NextRequest) {
@@ -16,23 +25,35 @@ export async function POST(req: NextRequest) {
   const storageIds: string[] = [];
   try {
     const body = await req.json().catch(() => ({}));
-    const { name, employeeId, department, photos, workerId, consent } = body as {
+    const { name, employeeId, department, photos, workerId, consent, consentAt: legacyConsentAt, consentAgeMs } = body as {
       name?: string;
       employeeId?: string;
       department?: string;
       photos?: string[];
       workerId?: string;
       consent?: boolean;
+      consentAt?: unknown;
+      consentAgeMs?: unknown;
     };
 
     // Biometric consent must be acknowledged on every enrollment and
     // re-enrollment before any photo is processed. See RETENTION.md.
-    if (consent !== true) {
+    if (consentAgeMs === undefined && (consent !== undefined || legacyConsentAt !== undefined)) {
       return NextResponse.json(
-        { error: 'Biometric consent must be confirmed before enrolling a face.' },
+        { error: 'This enrollment page is out of date. Reload the page and confirm consent again.' },
         { status: 400 },
       );
     }
+    if (consent !== true || !isRecentBiometricConsentAge(consentAgeMs)) {
+      return NextResponse.json(
+        { error: BIOMETRIC_CONSENT_ERROR_MESSAGE },
+        { status: 400 },
+      );
+    }
+
+    // Trust the server clock, not the operator machine's wall-clock time.
+    // Preserve elapsed consent age across encoding and photo uploads.
+    const consentAt = new Date(Date.now() - consentAgeMs).toISOString();
 
     let normalizedName = name?.trim();
     let employeeIdForSave = employeeId?.trim() || undefined;
@@ -134,11 +155,16 @@ export async function POST(req: NextRequest) {
                 }
               : {}),
           },
-          { status: encodeRes.status === 422 ? 422 : 503 }
+          {
+            status: encodeRes.status === 422 ? 422 : 503,
+            ...(encodeRes.status === 503 && encodeRes.headers.get('Retry-After')
+              ? { headers: { 'Retry-After': encodeRes.headers.get('Retry-After')! } }
+              : {}),
+          }
         );
       }
     } catch (encodeErr) {
-      console.error('Face encoding failed:', encodeErr);
+      logApiError('Face encoding failed:', encodeErr);
       return NextResponse.json(
         { error: 'Face encoding service is unavailable. Worker was not created.' },
         { status: 503 }
@@ -147,6 +173,10 @@ export async function POST(req: NextRequest) {
 
     if (!isSupportedEncoding(faceEncoding)) {
       return NextResponse.json({ error: getEncodingValidationMessage('Face encoding') }, { status: 422 });
+    }
+
+    if (!isRecentBiometricConsent(consentAt)) {
+      return NextResponse.json({ error: 'Consent expired during encoding. Confirm biometric consent again.' }, { status: 400 });
     }
 
     // Store only frames the quality gate used for the reference encoding.
@@ -160,12 +190,11 @@ export async function POST(req: NextRequest) {
         });
         storageIds.push(storageId);
       } catch (uploadErr) {
-        console.error('Failed to upload photo:', uploadErr);
+        logApiError('Failed to upload photo:', uploadErr);
       }
     }
 
     const now = new Date().toISOString();
-    const consentAt = now;
     const result = workerId
       ? await convex.mutation(api.workers.update, {
           id: workerId as any,
@@ -193,6 +222,7 @@ export async function POST(req: NextRequest) {
             consentAt,
           });
 
+    systemHealthCache.invalidate();
     return NextResponse.json(
       {
         id: workerId || (result as any).id,
@@ -203,9 +233,22 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
-    console.error('Enrollment error:', error);
-    const message = error instanceof Error ? error.message : 'Internal server error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    logApiError('Enrollment error:', error);
+    if (error instanceof ConvexError && error.data?.code === BIOMETRIC_CONSENT_ERROR_CODE) {
+      return NextResponse.json({ error: BIOMETRIC_CONSENT_ERROR_MESSAGE }, { status: 400 });
+    }
+    const knownError = knownApiErrorResponse(error, {
+      'Worker name is required': 400,
+      'Employee must be selected from the company roster': 400,
+      'Active worker not found; use enrollment to restore a worker by employee ID': 400,
+      'Only admins may change worker identity or department': 400,
+      'Worker name already exists': 409,
+    }, [
+      /^Employee ID [^\r\n]+ already belongs to [^\r\n]+$/,
+      /^Employee ID [^\r\n]+ belongs to multiple workers; resolve the duplicate identities before enrollment$/,
+    ]);
+    if (knownError) return knownError;
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   } finally {
     if (storageIds.length > 0) {
       try {
@@ -213,7 +256,7 @@ export async function POST(req: NextRequest) {
         // A save that committed before a lost response has already consumed them.
         await convex.mutation(api.enrollmentPhotos.cleanup, { storageIds: storageIds as any });
       } catch (cleanupError) {
-        console.error('Enrollment photo cleanup deferred to expiry:', cleanupError);
+        logApiError('Enrollment photo cleanup deferred to expiry:', cleanupError);
       }
     }
   }

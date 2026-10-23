@@ -35,7 +35,7 @@ assert.doesNotMatch(attempts, /export const bulkIngest\s*=\s*mutation/, 'Recogni
 assert.match(attempts, /export const listByDate\s*=\s*query/, 'Recognition attempts must expose listByDate query.');
 assert.match(attempts, /export const getById\s*=\s*query/, 'Recognition attempts must expose exact attempt lookup for source handoffs.');
 assert.match(attempts, /export const updateReview\s*=\s*mutation/, 'Recognition attempts must expose updateReview mutation.');
-assert.match(attempts, /const reviewed = attempt\.reviewed \?\? false/, 'Bulk ingest should default attempts to unreviewed.');
+assert.match(attempts, /const reviewed = false/, 'Bulk ingest should default attempts to unreviewed.');
 assert.match(attempts, /bestScore[\s\S]*secondBestScore[\s\S]*bestScore - attempt\.secondBestScore/, 'Bulk ingest should derive scoreMargin from best and second-best scores.');
 assert.match(attempts, /by_source_attempt_id/, 'Bulk ingest should support sourceAttemptId idempotency.');
 assert.match(attempts, /timestampBelongsToFactoryLocalDate\(attempt\.timestamp,\s*args\.date\)/, 'Exact recognition attempt lookups should stay scoped to the requested factory day.');

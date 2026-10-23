@@ -6,7 +6,7 @@ import schema from './schema';
 import type { Id } from './_generated/dataModel';
 const modules = import.meta.glob('./**/*.ts');
 const faceEncoding = Array.from({ length: 512 }, () => 0.1);
-const consentAt = '2026-09-01T12:00:00Z';
+const consentAt = new Date().toISOString();
 
 async function setup() {
   const t = convexTest(schema, modules);

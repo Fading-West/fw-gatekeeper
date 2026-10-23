@@ -1,0 +1,29 @@
+FFF
+======================================================================
+FAIL: test_attendance_history_requires_supervisor_then_relocks (__main__.LockedAttendancePrivacyTests.test_attendance_history_requires_supervisor_then_relocks) (route='/log')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/05-kiosk-attendance-privacy/pi-kiosk/test_oct02_kiosk_attendance_privacy.py", line 100, in test_attendance_history_requires_supervisor_then_relocks
+    self.assertEqual(response.status_code, 401)
+AssertionError: 200 != 401
+
+======================================================================
+FAIL: test_attendance_history_requires_supervisor_then_relocks (__main__.LockedAttendancePrivacyTests.test_attendance_history_requires_supervisor_then_relocks) (route='/today')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/05-kiosk-attendance-privacy/pi-kiosk/test_oct02_kiosk_attendance_privacy.py", line 100, in test_attendance_history_requires_supervisor_then_relocks
+    self.assertEqual(response.status_code, 401)
+AssertionError: 200 != 401
+
+======================================================================
+FAIL: test_attendance_history_requires_supervisor_then_relocks (__main__.LockedAttendancePrivacyTests.test_attendance_history_requires_supervisor_then_relocks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/05-kiosk-attendance-privacy/pi-kiosk/test_oct02_kiosk_attendance_privacy.py", line 107, in test_attendance_history_requires_supervisor_then_relocks
+    self.assertEqual(client.get(route, headers=headers).status_code, 401)
+AssertionError: 200 != 401
+
+----------------------------------------------------------------------
+Ran 1 test in 0.016s
+
+FAILED (failures=3)

@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
@@ -88,7 +89,7 @@ export async function GET(req: NextRequest) {
     if (isMissingConvexFunction(error)) {
       return NextResponse.json(emptyResponse(date));
     }
-    console.error('Shift closeout GET error:', error);
+    logApiError('Shift closeout GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch shift closeout' }, { status: 500 });
   }
 }
@@ -99,7 +100,10 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'JSON object required' }, { status: 400 });
+    }
     const date = optionalString(body.date);
     const action = optionalString(body.action) || 'save';
 
@@ -113,19 +117,38 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'action must be save, complete, or reopen' }, { status: 400 });
     }
 
+    // Empty strings explicitly clear fields; omitted fields preserve saved values.
+    const supervisorName = body.supervisor_name !== undefined ? body.supervisor_name : body.supervisorName;
+    const acknowledgedBlockers = body.acknowledged_blockers !== undefined ? body.acknowledged_blockers : body.acknowledgedBlockers;
+    if ((supervisorName !== undefined && typeof supervisorName !== 'string') ||
+        (body.notes !== undefined && typeof body.notes !== 'string')) {
+      return NextResponse.json({ error: 'supervisor name and notes must be strings' }, { status: 400 });
+    }
+    if (acknowledgedBlockers !== undefined && typeof acknowledgedBlockers !== 'boolean') {
+      return NextResponse.json({ error: 'acknowledged blockers must be a boolean' }, { status: 400 });
+    }
+
     const result = await convex.mutation((api as any).shiftCloseouts.save, {
       date,
       action,
-      supervisorName: optionalString(body.supervisor_name) || optionalString(body.supervisorName),
-      notes: optionalString(body.notes),
-      acknowledgedBlockers: Boolean(body.acknowledged_blockers ?? body.acknowledgedBlockers),
+      supervisorName: supervisorName?.trim(),
+      notes: body.notes?.trim(),
+      acknowledgedBlockers,
     });
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
-    console.error('Shift closeout PATCH error:', error);
+    const knownError = knownApiErrorResponse(error, {
+      'date must use YYYY-MM-DD format': 400,
+      'Reopen the completed closeout before changing notes.': 409,
+      'Only a completed closeout can be reopened.': 409,
+      'Closeout has blockers. Add an acknowledgement note before acknowledging blockers.': 400,
+      'Closeout has blockers. Add an acknowledgement note before completing.': 400,
+    });
+    if (knownError) return knownError;
+    logApiError('Shift closeout PATCH error:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to update shift closeout' },
+      { error: 'Failed to update shift closeout' },
       { status: 500 },
     );
   }

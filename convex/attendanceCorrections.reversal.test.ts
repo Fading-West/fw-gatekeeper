@@ -57,11 +57,16 @@ describe('attendance correction reversal', () => {
     expect(await t.run((ctx) => ctx.db.get(added.id))).toMatchObject({ reason: 'Missed scan', actorUserId: adminId });
   });
 
-  it('restores a raw event only after its last active void is reversed', async () => {
-    const { admin, workerId, rawId } = await setup();
+  it('restores a legacy multiply-voided raw event only after its last active void is reversed', async () => {
+    const { t, admin, workerId, rawId } = await setup();
     const args = { date, workerId, action: 'void_event' as const, originalAttendanceId: rawId, reason: 'Duplicate' };
     const first = await admin.mutation(api.attendanceCorrections.create, { ...args, requestId: 'void-1' });
-    const second = await admin.mutation(api.attendanceCorrections.create, { ...args, requestId: 'void-2' });
+    // Older versions allowed overlapping voids. Preserve their reversal behavior.
+    const second = await t.run(async ctx => {
+      const original = (await ctx.db.get(first.id))!;
+      const fields = { date: original.date, workerId: original.workerId, action: original.action, originalAttendanceId: original.originalAttendanceId, reason: original.reason, actorUserId: original.actorUserId, createdAt: original.createdAt, updatedAt: original.updatedAt };
+      return { id: await ctx.db.insert('attendanceCorrections', { ...fields, requestId: 'void-2' }) };
+    });
     expect(await admin.query(api.attendance.list, { date })).toHaveLength(0);
     await admin.mutation(api.attendanceCorrections.reverse, { correctionId: first.id, requestId: 'reverse-void-1', reason: 'First void invalid' });
     expect(await admin.query(api.attendance.list, { date })).toHaveLength(0);

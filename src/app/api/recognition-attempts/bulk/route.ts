@@ -34,7 +34,7 @@ function normalizeAttempt(raw: any, kioskId: string) {
       optionalString(raw.id),
     legacySourceAttemptId: optionalString(raw.legacy_source_attempt_id) || optionalString(raw.legacySourceAttemptId),
     kioskId,
-    timestamp: optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt) || new Date().toISOString(),
+    timestamp: (optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt))!,
     faceDetected:
       optionalBoolean(raw.face_detected) ??
       optionalBoolean(raw.faceDetected) ??
@@ -89,6 +89,10 @@ export async function POST(req: NextRequest) {
       attempt && typeof attempt === 'object' && !Array.isArray(attempt) ? kioskClaims(attempt as Record<string, unknown>) : [])];
     const identity = await authenticateKiosk(req, claims);
     if (!identity) return unauthorizedApiResponse();
+
+    if (attempts.some((raw: any) => !(optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt)))) {
+      return NextResponse.json({ error: 'Each recognition attempt requires its captured timestamp for safe retry.', code: 'INVALID_RECOGNITION_TIMESTAMP' }, { status: 400 });
+    }
 
     const mapped = attempts.map((attempt: any) => normalizeAttempt(attempt, kioskEvidenceId(identity, attempt, body)));
     const result = await ingestRecognitionAttemptBatch(mapped);

@@ -1,5 +1,6 @@
 'use client';
 
+import { biometricConsentAgeMs, isRecentBiometricConsentAge, type BiometricConsentStart } from "@/lib/biometric-consent";
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -47,6 +48,10 @@ function EnrollPageContent() {
   const currentRole = usePortalRole();
   const router = useRouter();
   const canEnroll = currentRole === 'admin' || currentRole === 'enrollment';
+  const accessRef = useRef(canEnroll);
+  accessRef.current = canEnroll;
+  const accessGenerationRef = useRef(0);
+  const enrollmentRequestRef = useRef<AbortController | null>(null);
   const searchParams = useSearchParams();
   const workerId = searchParams.get('worker_id') || '';
   const [step, setStep] = useState<Step>('name');
@@ -69,6 +74,11 @@ function EnrollPageContent() {
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const consentRef = useRef(consentConfirmed);
+  const previewReadyRef = useRef(cameraReady);
+  consentRef.current = consentConfirmed;
+  previewReadyRef.current = cameraReady;
+  const [consentStartedAt, setConsentStartedAt] = useState<BiometricConsentStart | null>(null);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [photoIssues, setPhotoIssues] = useState<string[]>([]);
@@ -88,7 +98,7 @@ function EnrollPageContent() {
   workerIdRef.current = selectedEmployee?.workerId || workerId;
 
   useEffect(() => {
-    if (workerId) {
+    if (workerId || !canEnroll) {
       setSuggestions([]);
       return;
     }
@@ -103,6 +113,7 @@ function EnrollPageContent() {
         });
         if (!res.ok) throw new Error('Roster unavailable');
         const body = await res.json();
+        if (controller.signal.aborted || !accessRef.current) return;
         setSuggestions(Array.isArray(body?.suggestions) ? body.suggestions : []);
         if (body?.summary) setDirectorySummary(body.summary);
       } catch {
@@ -115,10 +126,11 @@ function EnrollPageContent() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [name, statusFilter, workerId]);
+  }, [name, statusFilter, workerId, canEnroll]);
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
     setConsentConfirmed(false);
+    setConsentStartedAt(null);
     setName(employee.name);
     setEmployeeId(employee.employeeId);
     setDepartment(employee.department);
@@ -130,6 +142,7 @@ function EnrollPageContent() {
 
   const handleNameChange = (value: string) => {
     setConsentConfirmed(false);
+    setConsentStartedAt(null);
     if (selectedEmployee && value !== selectedEmployee.name) {
       if (employeeId === selectedEmployee.employeeId) setEmployeeId('');
       if (department === selectedEmployee.department) setDepartment('');
@@ -176,13 +189,43 @@ function EnrollPageContent() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      accessGenerationRef.current += 1;
+      enrollmentRequestRef.current?.abort();
       stopCamera();
     };
   }, [stopCamera]);
 
   useEffect(() => {
+    // Revocation is a capture boundary, even if membership is unresolved after
+    // having been authorized. A regrant always starts with an empty session.
+    accessGenerationRef.current += 1;
+    if (canEnroll) return;
+    stopCamera();
+    enrollmentRequestRef.current?.abort();
+    enrollmentRequestRef.current = null;
+    setCameraOpening(false);
+    setCameraReady(false);
     setConsentConfirmed(false);
-    if (!workerId) return;
+    setConsentStartedAt(null);
+    setPhotos([]);
+    setCaptureCount(0);
+    setSelectedEmployee(null);
+    setSuggestions([]);
+    setDirectorySummary(null);
+    setCompletionSummary(null);
+    setName('');
+    setEmployeeId('');
+    setDepartment('');
+    setErrorMsg('');
+    setPhotoIssues([]);
+    setResultMsg('');
+    setStep('name');
+  }, [canEnroll, stopCamera]);
+
+  useEffect(() => {
+    setConsentConfirmed(false);
+    setConsentStartedAt(null);
+    if (!workerId || !canEnroll) return;
     let cancelled = false;
     async function loadWorker() {
       try {
@@ -201,11 +244,12 @@ function EnrollPageContent() {
     }
     loadWorker();
     return () => { cancelled = true; };
-  }, [workerId]);
+  }, [workerId, canEnroll]);
 
   const startCamera = async () => {
-    if (!canEnroll || cameraOpeningRef.current) return;
+    if (!accessRef.current || cameraOpeningRef.current) return;
     setConsentConfirmed(false);
+    setConsentStartedAt(null);
     cameraOpeningRef.current = true;
     setCameraOpening(true);
     setCameraReady(false);
@@ -214,14 +258,14 @@ function EnrollPageContent() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
       });
-      if (!mountedRef.current || request !== cameraRequestRef.current) {
+      if (!mountedRef.current || !accessRef.current || request !== cameraRequestRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
       streamRef.current = stream;
       setStep('camera');
     } catch {
-      if (!mountedRef.current || request !== cameraRequestRef.current) return;
+      if (!mountedRef.current || !accessRef.current || request !== cameraRequestRef.current) return;
       setErrorMsg('Camera access denied. Please allow camera permissions and try again.');
       setStep('error');
     } finally {
@@ -241,6 +285,7 @@ function EnrollPageContent() {
   }, [step]);
 
   const captureFrame = useCallback((): string | null => {
+    if (!accessRef.current) return null;
     const video = videoRef.current;
     if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
     const canvas = document.createElement('canvas');
@@ -255,10 +300,22 @@ function EnrollPageContent() {
   const submitEnrollmentRef = useRef<(photos: string[]) => Promise<void>>(null!);
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
+    if (!accessRef.current) return;
+    const generation = accessGenerationRef.current;
+    const controller = new AbortController();
+    enrollmentRequestRef.current = controller;
+    const isCurrent = () => mountedRef.current && accessRef.current
+      && generation === accessGenerationRef.current && !controller.signal.aborted;
     try {
-      if (!consentConfirmed) throw new Error('Confirm biometric consent for this worker before enrolling.');
+      const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
+      if (!consentConfirmed || !isRecentBiometricConsentAge(consentAgeMs)) {
+        setConsentConfirmed(false);
+        setConsentStartedAt(null);
+        throw new Error('Consent expired or is missing. Confirm biometric consent again before enrolling.');
+      }
       const res = await fetch('/api/enroll', {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: nameRef.current.trim(),
@@ -267,49 +324,71 @@ function EnrollPageContent() {
           workerId: workerIdRef.current,
           photos: capturedPhotos,
           consent: consentConfirmed,
+          consentAgeMs,
         }),
       });
 
       if (!res.ok) {
         const data = await res.json();
+        if (!isCurrent()) return;
         setPhotoIssues(describePhotoIssues(data.photos, data.disagreeing_pairs));
         throw new Error(data.error || 'Enrollment failed');
       }
 
       const result = await res.json();
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       stopCamera();
       setResultMsg(`Face encoding saved. ${result.photosCount} photos captured.`);
       setStep('done');
       try {
-        const progressRes = await fetch('/api/employee-directory?status=not_enrolled');
+        const progressRes = await fetch('/api/employee-directory?status=not_enrolled', { signal: controller.signal });
         const progressBody = progressRes.ok ? await progressRes.json() : null;
-        if (mountedRef.current && progressBody?.summary) setCompletionSummary(progressBody.summary);
+        if (isCurrent() && progressBody?.summary) setCompletionSummary(progressBody.summary);
       } catch {
         // Enrollment succeeded; progress copy can gracefully omit fresh totals.
       }
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       stopCamera();
       setErrorMsg(err instanceof Error ? err.message : 'Enrollment failed');
       setStep('error');
+    } finally {
+      if (enrollmentRequestRef.current === controller) enrollmentRequestRef.current = null;
     }
   };
 
   submitEnrollmentRef.current = submitEnrollment;
 
+  const captureAccessGeneration = accessGenerationRef.current;
+  const capturePreviewGeneration = cameraRequestRef.current;
   const startCapturing = useCallback(() => {
-    if (!consentConfirmed) return;
-    if (!cameraReady || captureTimerRef.current) return;
+    if (!mountedRef.current || !accessRef.current || !consentRef.current) return;
+    if (captureAccessGeneration !== accessGenerationRef.current
+      || capturePreviewGeneration !== cameraRequestRef.current) return;
+    if (!previewReadyRef.current || !streamRef.current || captureTimerRef.current) return;
+    const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
+    if (!isRecentBiometricConsentAge(consentAgeMs)) {
+      setConsentConfirmed(false);
+      setConsentStartedAt(null);
+      stopCamera();
+      setErrorMsg('Consent expired. Confirm biometric consent again before enrolling.');
+      setStep('error');
+      return;
+    }
     setStep('capturing');
     setCaptureCount(0);
     setPhotos([]);
 
+    const generation = accessGenerationRef.current;
     const captured: string[] = [];
     let count = 0;
     let attempts = 0;
 
     const doCapture = () => {
+      if (!mountedRef.current || !accessRef.current || generation !== accessGenerationRef.current) {
+        captured.length = 0;
+        return;
+      }
       attempts += 1;
       let frame: string | null = null;
       try { frame = captureFrame(); } catch { /* Retry a transient video frame failure. */ }
@@ -337,7 +416,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [cameraReady, captureFrame, consentConfirmed, stopCamera]);
+  }, [captureAccessGeneration, capturePreviewGeneration, captureFrame, consentStartedAt, stopCamera]);
 
   const enrollNext = () => {
     stopCamera();
@@ -354,6 +433,7 @@ function EnrollPageContent() {
     setErrorMsg('');
     setResultMsg('');
     setConsentConfirmed(false);
+    setConsentStartedAt(null);
     setPhotoIssues([]);
     setCompletionSummary(null);
     setStatusFilter('remaining');
@@ -659,7 +739,7 @@ function EnrollPageContent() {
               id="biometric-consent"
               type="checkbox"
               checked={consentConfirmed}
-              onChange={(event) => setConsentConfirmed(event.target.checked)}
+              onChange={(event) => { setConsentConfirmed(event.target.checked); setConsentStartedAt(event.target.checked ? { monotonicMs: performance.now(), wallMs: Date.now() } : null); }}
               className="mt-1 h-4 w-4 shrink-0 accent-gold"
               required
             />

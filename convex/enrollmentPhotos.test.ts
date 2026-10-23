@@ -6,7 +6,7 @@ import schema from './schema';
 import type { Id } from './_generated/dataModel';
 const modules = import.meta.glob('./**/*.ts');
 const encoding = Array(512).fill(0.1);
-const consentAt = '2026-09-15T12:00:00Z';
+const consentAt = new Date().toISOString();
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -24,7 +24,7 @@ async function setup() {
   const viewer = t.withIdentity({ subject: viewerId });
   const upload = () => owner.action(api.enrollmentPhotos.upload, { photo: new TextEncoder().encode('photo').buffer });
   const create = (photoStorageIds: Awaited<ReturnType<typeof upload>>[]) => owner.mutation(api.workers.create, {
-    name: 'Photo Worker', faceEncoding: encoding, consentAt, photoStorageIds,
+    name: 'Photo Worker', faceEncoding: encoding, consentAt: new Date().toISOString(), photoStorageIds,
   });
   return { t, owner, other, viewer, upload, create };
 }

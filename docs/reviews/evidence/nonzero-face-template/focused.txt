@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/06-nonzero-face-template
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:50:21
+   Duration  412ms (transform 76ms, setup 0ms, import 204ms, tests 45ms, environment 0ms)

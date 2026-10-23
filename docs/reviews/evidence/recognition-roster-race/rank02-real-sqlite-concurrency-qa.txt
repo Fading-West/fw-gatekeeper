@@ -1,0 +1,6 @@
+test_concurrent_roster_delete_waits_until_verified_scan_commits (__main__.RosterTransactionQA.test_concurrent_roster_delete_waits_until_verified_scan_commits) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.081s
+
+OK
