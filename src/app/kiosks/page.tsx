@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '@/components/Toast';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 
 type KioskReadinessStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
@@ -330,7 +331,7 @@ export default function KiosksPage() {
                     </div>
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className="text-xs text-slate-500">Last attendance upload</p>
-                      <p className="text-slate-200 mt-1">{formatTimestamp(kiosk.last_attendance_upload)}</p>
+                      <p className="text-slate-200 mt-1">{formatFactoryLocalDateTime(kiosk.last_attendance_upload, 'No data yet')}</p>
                     </div>
                   </div>
                   {(kiosk.device_issues?.length || 0) > 0 && (

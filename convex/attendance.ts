@@ -8,6 +8,7 @@ import { createActiveKioskResolver } from "./kioskLookup";
 import {
   buildConservativeFactoryLocalTimestampRanges,
   getFactoryLocalTimestamp,
+  listFactoryLocalDateKeys,
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
@@ -31,6 +32,18 @@ function compareAttendance(a: any, b: any) {
   return left < right ? -1 : left > right ? 1 : String(a._id).localeCompare(String(b._id));
 }
 
+async function scanAttendanceByTimestamp(ctx: any, range: { startTimestamp: string; endTimestamp: string }, workerId?: string) {
+  const query = workerId
+    ? ctx.db
+        .query("attendance")
+        .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp))
+        .filter((q: any) => q.eq(q.field("workerId"), workerId))
+    : ctx.db
+        .query("attendance")
+        .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp));
+  return await query.collect();
+}
+
 export async function listAttendanceByTimestampRange(
   ctx: any,
   date: string,
@@ -39,15 +52,7 @@ export async function listAttendanceByTimestampRange(
   const rowsById = new Map<string, any>();
   const sortKey = createRecognitionTimestampSortKey();
   for (const range of buildConservativeFactoryLocalTimestampRanges(date)) {
-    const query = workerId
-      ? ctx.db
-          .query("attendance")
-          .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp))
-          .filter((q: any) => q.eq(q.field("workerId"), workerId))
-      : ctx.db
-          .query("attendance")
-          .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp));
-    const rows = await query.collect();
+    const rows = await scanAttendanceByTimestamp(ctx, range, workerId);
     for (const row of rows) {
       if (timestampBelongsToFactoryLocalDate(row.timestamp, date)) {
         rowsById.set(String(row._id), withFactoryLocalTimestamp(row, sortKey));
@@ -74,7 +79,47 @@ export async function listEffectiveAttendanceByTimestampRange(
           .withIndex("by_date", (q: any) => q.eq("date", date))
           .collect(),
   ]);
+  return applyAttendanceCorrections(rawRecords, await listActiveCorrections(ctx, corrections));
+}
 
+/**
+ * Effective attendance for consecutive factory dates from ONE bounded
+ * `by_timestamp` scan and ONE `attendanceCorrections.by_date` range read.
+ * Each returned date equals `listEffectiveAttendanceByTimestampRange(ctx, date)`:
+ * rows keep per-date factory-local membership, and a date's corrections only
+ * void or add punches on that date. The scan covers the dates' conservative
+ * string range (one extra date on each side, as for a single date), since
+ * stored timestamps mix factory-local, UTC and offset forms and cannot be
+ * bounded as instants.
+ */
+export async function listEffectiveAttendanceByFactoryDates(
+  ctx: any,
+  startDate: string,
+  endDate: string,
+): Promise<Map<string, any[]>> {
+  const dates = listFactoryLocalDateKeys(startDate, endDate);
+  const [ranges, corrections] = await Promise.all([
+    Promise.all(buildConservativeFactoryLocalTimestampRanges(startDate, endDate)
+      .map(range => scanAttendanceByTimestamp(ctx, range))),
+    ctx.db
+      .query("attendanceCorrections")
+      .withIndex("by_date", (q: any) => q.gte("date", startDate).lte("date", endDate))
+      .collect(),
+  ]);
+  const activeCorrections = await listActiveCorrections(ctx, corrections);
+  const sortKey = createRecognitionTimestampSortKey();
+  const rowsByDate = new Map(dates.map(date => [date, new Map<string, any>()]));
+  for (const row of ranges.flat()) {
+    const rowsById = rowsByDate.get(getFactoryLocalDateKey(row.timestamp) ?? "");
+    rowsById?.set(String(row._id), withFactoryLocalTimestamp(row, sortKey));
+  }
+  return new Map(dates.map(date => [date, applyAttendanceCorrections(
+    Array.from(rowsByDate.get(date)!.values()),
+    activeCorrections.filter((correction: any) => correction.date === date),
+  )]));
+}
+
+async function listActiveCorrections(ctx: any, corrections: any[]) {
   const reversed: boolean[] = [];
   const reversalBatchSize = 20;
   for (let start = 0; start < corrections.length; start += reversalBatchSize) {
@@ -83,8 +128,10 @@ export async function listEffectiveAttendanceByTimestampRange(
       Boolean(await ctx.db.query("attendanceCorrectionReversals")
         .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correction._id)).unique()))));
   }
-  const activeCorrections = corrections.filter((_: any, index: number) => !reversed[index]);
+  return corrections.filter((_: any, index: number) => !reversed[index]);
+}
 
+function applyAttendanceCorrections(rawRecords: any[], activeCorrections: any[]) {
   const voidedIds = new Set(
     activeCorrections
       .filter((correction: any) => correction.action === "void_event" && correction.originalAttendanceId)
