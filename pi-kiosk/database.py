@@ -1374,7 +1374,7 @@ def retry_recognition_rejection(rejection_id: int, note: str) -> None:
         raise ValueError("A reason for retry is required")
     conn = _get_conn()
     with conn:
-        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id, a.synced
+        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id, a.synced, a.timestamp
             FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
             WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
         if rejection is None:
@@ -1383,6 +1383,10 @@ def retry_recognition_rejection(rejection_id: int, note: str) -> None:
             raise ValueError("Recognition attempt is missing; restore the original evidence before retry")
         if rejection["synced"]:
             raise ValueError("Original unsynced evidence is required")
+        # Match attendance retry: a raw SQLite timestamp repair must update
+        # its derived retention index atomically with the audited release.
+        conn.execute("UPDATE recognition_attempts SET timestamp_epoch = ? WHERE id = ?",
+                     (_attendance_epoch(rejection["timestamp"]), rejection["attempt_id"]))
         conn.execute("""UPDATE recognition_rejections SET released_at = datetime('now'), release_note = ?
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
         conn.execute("DELETE FROM sync_state WHERE key IN ('recognition_current_scan_after', 'recognition_scan_after')")

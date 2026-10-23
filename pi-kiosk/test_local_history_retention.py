@@ -237,6 +237,27 @@ class LocalHistoryTests(unittest.TestCase):
             self.assertIn(repaired, self.ids('attendance_log'))
             self.assertEqual(database.get_last_action(restored), 'clock_out')
 
+    def test_recognition_retry_refreshes_repaired_epoch_before_retention(self):
+        with local_clock('America/Denver', NOW):
+            attempt = self.attempt(OLD)
+            database.reject_recognition_attempt(attempt, 'Incorrect timestamp')
+            rejection = database.list_recognition_rejections()[0]
+            corrected = (NOW - timedelta(minutes=1)).isoformat()
+            with sqlite3.connect(config.DB_PATH) as external:
+                external.execute('UPDATE recognition_attempts SET timestamp = ? WHERE id = ?', (corrected, attempt))
+            database.retry_recognition_rejection(rejection['id'], 'Verified against supervisor record')
+            epoch = database._get_conn().execute(
+                'SELECT timestamp_epoch FROM recognition_attempts WHERE id = ?', (attempt,),
+            ).fetchone()[0]
+            self.assertEqual(epoch, database._attendance_epoch(corrected))
+            database.mark_recognition_attempts_synced([attempt])
+            database.prune_synced_history()
+            self.assertIn(attempt, self.ids('recognition_attempts'))
+            preserved = database._get_conn().execute(
+                'SELECT original_attempt_json FROM recognition_rejections WHERE id = ?', (rejection['id'],),
+            ).fetchone()[0]
+            self.assertEqual(json.loads(preserved)['timestamp'], OLD)
+
     def test_today_query_uses_range_index_without_udf_or_sort(self):
         with local_clock('America/Denver', NOW):
             self.attendance(NOW.isoformat())
