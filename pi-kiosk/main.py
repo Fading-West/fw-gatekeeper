@@ -462,23 +462,16 @@ def run(args):
     def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
                      server_worker_id=None):
         """Log the clock event + telemetry, update the display. Returns True on success."""
-        if config.KIOSK_TYPE == "entry":
-            action = "clock_in"
-        elif config.KIOSK_TYPE == "exit":
-            action = "clock_out"
-        else:
-            last_action = database.get_last_action(worker_id)
-            action = "clock_out" if last_action == "clock_in" else "clock_in"
-
         result["liveness_confirmed"] = liveness_confirmed
         try:
-            recognizer.liveness_policy.record(
+            log_id = recognizer.liveness_policy.record(
                 database.log_recognized_attendance,
                 expected_encoding=result.get("candidate_encoding"),
                 worker_id=worker_id, worker_name=display_name,
-                action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
+                liveness_confirmed=liveness_confirmed, confidence=confidence,
                 server_worker_id=server_worker_id,
             )
+            action = database.get_attendance_action(log_id)
             _log_recognition_attempt(result, "accepted")
         except Exception as e:
             # A busy/locked SQLite must never take the kiosk down.
@@ -540,7 +533,9 @@ def run(args):
                 camera_healthy = True
                 web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
 
-            now = time.time()
+            # One monotonic domain for display holds, blink deadlines and
+            # frame ordering (including FreshFaceMatcher). NTP may step UTC.
+            now = time.monotonic()
 
             # 1. Push BGR frame to MJPEG stream (always, never blocks)
             web_app.set_frame(draw_box(bgr_frame, box_loc, box_color, box_label))
