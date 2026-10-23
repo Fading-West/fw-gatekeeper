@@ -236,6 +236,10 @@ def init_db():
         "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
     )
     _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
+    # Which removed local worker owns a retired photo; NULL for sync's entries.
+    _ensure_column(conn, "photo_cleanup_journal", "owner_worker_id", "owner_worker_id INTEGER")
+    _ensure_column(conn, "photo_cleanup_journal", "owner_name", "owner_name TEXT")
+    _ensure_column(conn, "photo_cleanup_journal", "owner_folder", "owner_folder TEXT")
     _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
     _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
@@ -375,55 +379,134 @@ def add_worker(
     enrolled_at = enrolled_at or datetime.now().isoformat(timespec="seconds")
     normalized_employee_id = employee_id.strip() if isinstance(employee_id, str) else ""
 
-    row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
-    stored_server_id = server_id
-    if row:
-        worker_id = int(row["id"])
-        stored_server_id = server_id if server_id is not None else row["server_id"]
-        conn.execute(
-            """
-            UPDATE workers
-            SET name = ?, employee_id = ?, encoding_blob = ?, enrolled_at = ?, photo_count = ?, photo_paths = ?, server_id = ?
-            WHERE id = ?
-            """,
-            (
-                normalized_name,
-                normalized_employee_id,
-                payload_blob,
-                enrolled_at,
-                len(photo_paths),
-                photo_paths_json,
-                stored_server_id,
-                worker_id,
-            ),
-        )
-    else:
-        cursor = conn.execute(
-            """
-            INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (normalized_name, normalized_employee_id, payload_blob, enrolled_at, len(photo_paths), photo_paths_json, server_id),
-        )
-        worker_id = int(cursor.lastrowid)
+    # Resolve and write the row in one write transaction: a local removal
+    # committed between the lookup and the UPDATE would otherwise make the
+    # UPDATE match nothing and silently drop a synced worker.
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
+        stored_server_id = server_id
+        if row:
+            worker_id = int(row["id"])
+            stored_server_id = server_id if server_id is not None else row["server_id"]
+            conn.execute(
+                """
+                UPDATE workers
+                SET name = ?, employee_id = ?, encoding_blob = ?, enrolled_at = ?, photo_count = ?, photo_paths = ?, server_id = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_name,
+                    normalized_employee_id,
+                    payload_blob,
+                    enrolled_at,
+                    len(photo_paths),
+                    photo_paths_json,
+                    stored_server_id,
+                    worker_id,
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (normalized_name, normalized_employee_id, payload_blob, enrolled_at, len(photo_paths), photo_paths_json, server_id),
+            )
+            worker_id = int(cursor.lastrowid)
 
-    conn.commit()
     logger.info("Saved worker: %s (id=%d, server_id=%s)", normalized_name, worker_id, stored_server_id)
     return worker_id
 
 
-def remove_worker(name: str) -> bool:
-    """Remove a worker by case-insensitive name.
+PORTAL_MANAGED_WORKER_MESSAGE = (
+    "{name} is managed by the Gatekeeper portal. Deactivate or purge the worker "
+    "in the portal; the kiosk removes them on its next roster sync."
+)
 
-    The attendance_keep_server_id_before_worker_delete trigger snapshots the
-    worker's server id onto queued attendance rows before the row goes."""
+
+def remove_local_worker(name: str, owner_folder: Optional[str] = None) -> Optional[list[str]]:
+    """Remove a local-only worker by case-insensitive name.
+
+    Returns the deleted row's photo paths, or None when no worker matches.
+    Portal-managed rows raise ValueError: roster receipts only resend changed
+    workers, so a synced worker deleted here would stay missing while the
+    kiosk certifies the roster. The ownership check and the DELETE share one
+    write transaction, so a concurrent roster sync cannot adopt the row in
+    between. The attendance_keep_server_id_before_worker_delete trigger
+    snapshots the worker's server id onto queued attendance rows."""
     conn = _get_conn()
-    worker = get_worker_by_name(name)
-    if worker is None:
-        return False
-    cursor = conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
-    conn.commit()
-    return cursor.rowcount > 0
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        worker = get_worker_by_name(name)
+        if worker is None:
+            return None
+        cursor = conn.execute(
+            "DELETE FROM workers WHERE id = ? AND (server_id IS NULL OR server_id = '')", (worker["id"],)
+        )
+        if worker.get("server_id") or cursor.rowcount != 1:
+            raise ValueError(PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
+        # Persist cleanup ownership in the same transaction as the delete, so
+        # a failed unlink or a crash before cleanup is finished by
+        # recover_photo_cleanup (every roster sync, or rerunning the removal)
+        # instead of leaving an unreferenced file that blocks roster receipts.
+        # The owner identity lets a rerun of the removal find this cleanup by
+        # the same case-insensitive name lookup, never by a sanitized folder.
+        conn.executemany(
+            "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind, owner_worker_id, owner_name, owner_folder) "
+            "VALUES (?, 'retired', ?, ?, ?)",
+            ((path, worker["id"], worker["name"], owner_folder)
+             for path in worker["photo_paths"] if is_journaled_photo_path(path)),
+        )
+    return worker["photo_paths"]
+
+
+def is_journaled_photo_path(path) -> bool:
+    """Only files under PHOTO_DIR can be journaled; recover_photo_cleanup refuses others."""
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    candidate = Path(path).resolve()
+    return candidate != photo_root and candidate.is_relative_to(photo_root)
+
+
+def count_pending_photo_cleanup() -> int:
+    conn = _get_conn()
+    return int(conn.execute("SELECT COUNT(*) FROM photo_cleanup_journal").fetchone()[0])
+
+
+def pending_removed_worker_cleanup(name: str) -> tuple[list[str], list[str]]:
+    """Retired photos and capture folders owed by removed local workers named name.
+
+    Matches the stored owner name the way get_worker_by_name matches workers.
+    Entries without an owner (sync's own) are left to sync's recovery."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT path, owner_folder FROM photo_cleanup_journal "
+        "WHERE kind = 'retired' AND owner_name = ? COLLATE NOCASE ORDER BY path",
+        (name.strip(),),
+    ).fetchall()
+    return [row["path"] for row in rows], sorted({row["owner_folder"] for row in rows if row["owner_folder"]})
+
+
+def remove_unreferenced_legacy_photo(path: str) -> None:
+    """Retire an external legacy path without deleting another worker's photo."""
+    conn = _get_conn()
+    with conn:
+        # Serialize the ownership recheck and unlink with worker publication.
+        conn.execute("BEGIN IMMEDIATE")
+        candidate = Path(path).resolve()
+        references = (
+            Path(value).resolve()
+            for row in conn.execute("SELECT photo_paths FROM workers")
+            for value in json.loads(row["photo_paths"] or "[]")
+        )
+        if not any(value == candidate for value in references):
+            Path(path).unlink(missing_ok=True)
+
+
+def remove_worker(name: str) -> bool:
+    """Remove a local-only worker by name (see remove_local_worker)."""
+    return remove_local_worker(name) is not None
 
 
 def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:
@@ -496,8 +579,12 @@ def record_photo_cleanup(paths: list[Path], kind: str) -> None:
     conn.commit()
 
 
-def recover_photo_cleanup() -> None:
-    """Remove only journaled, unreferenced files; unknown files stay untouched."""
+def recover_photo_cleanup(paths: Optional[list[str]] = None) -> None:
+    """Remove only journaled, unreferenced files; unknown files stay untouched.
+
+    paths limits recovery to those journal entries. Processes other than the
+    sync thread must pass the retired paths they own: an unreferenced
+    'published' entry is sync's in-flight download, not an orphan."""
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
     references = {
@@ -506,6 +593,9 @@ def recover_photo_cleanup() -> None:
         for path in json.loads(row["photo_paths"] or "[]")
     }
     journal = conn.execute("SELECT path, kind FROM photo_cleanup_journal ORDER BY path").fetchall()
+    if paths is not None:
+        owned = {str(path) for path in paths}
+        journal = [entry for entry in journal if entry["path"] in owned]
     first_error = None
     for entry in journal:
         path = Path(entry["path"])
