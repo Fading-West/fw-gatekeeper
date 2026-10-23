@@ -1,6 +1,7 @@
 """Readiness uses initialized state, never downloads a model from a health read."""
 import os
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -21,6 +22,93 @@ class FaceReadinessTests(unittest.TestCase):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
+        environment = patch.dict(os.environ, {"FACE_SERVICE_KEY": "synthetic-readiness-key"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_readiness_http_status_and_body_for_every_model_state(self):
+        client = TestClient(main.app)
+        states = (
+            (None, False, False, 503, "model_unavailable"),
+            (None, True, False, 503, "model_loading"),
+            (None, False, True, 503, "model_unavailable"),
+            (object(), False, True, 503, "model_unavailable"),
+            (object(), False, False, 200, None),
+        )
+        with patch.object(main.REC_PATH.__class__, "exists", return_value=True), \
+             patch.object(main, "get_rec_session") as load:
+            for session, loading, failed, status, reason in states:
+                with self.subTest(loading=loading, failed=failed, status=status), \
+                     patch.object(main, "_rec_session", session), \
+                     patch.object(main, "_rec_loading", loading), \
+                     patch.object(main, "_rec_failed", failed):
+                    # Even while the model lock is held, probes must not wait on it.
+                    with main._rec_lock:
+                        live = client.get("/health")
+                        ready = client.get("/ready")
+                    self.assertEqual(live.status_code, 200)
+                    self.assertEqual(ready.status_code, status)
+                    self.assertEqual(ready.json(), live.json())
+                    self.assertEqual(ready.json()["degraded_reason"], reason)
+                    self.assertEqual(ready.json()["status"], "ok" if status == 200 else "degraded")
+            load.assert_not_called()
+
+    def test_readiness_requires_auth_even_with_a_loaded_model(self):
+        client = TestClient(main.app)
+        for key in (None, "", "   "):
+            with self.subTest(key=key), patch.dict(os.environ), patch.object(main, "_rec_session", object()):
+                if key is None:
+                    os.environ.pop("FACE_SERVICE_KEY", None)
+                else:
+                    os.environ["FACE_SERVICE_KEY"] = key
+                response = client.get("/ready")
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json()["degraded_reason"], "authentication_not_configured")
+                self.assertFalse(response.json()["auth_ready"])
+                self.assertTrue(response.json()["model_ready"])
+                self.assertEqual(client.get("/health").status_code, 200)
+
+    def test_startup_stays_live_and_becomes_ready_after_background_warmup(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        session = object()
+
+        def slow_model_load(*_args, **_kwargs):
+            started.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("Synthetic model load timed out")
+            return session
+
+        warm_model = main._warm_recognition_model
+
+        def warm_and_signal():
+            try:
+                warm_model()
+            finally:
+                finished.set()
+
+        with patch.object(main, "ensure_models") as download, \
+             patch.object(main.ort, "InferenceSession", side_effect=slow_model_load) as load, \
+             patch.object(main, "_warm_recognition_model", side_effect=warm_and_signal):
+            try:
+                with TestClient(main.app) as client:
+                    self.assertTrue(started.wait(timeout=5), "Startup did not warm the model")
+                    self.assertEqual(client.get("/health").status_code, 200)
+                    response = client.get("/ready")
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.json()["degraded_reason"], "model_loading")
+                    release.set()
+                    self.assertTrue(finished.wait(timeout=5), "Model warmup did not finish")
+                    response = client.get("/ready")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.json()["model_ready"])
+                    self.assertEqual(response.json()["status"], "ok")
+                    download.assert_called_once()
+                    load.assert_called_once()
+            finally:
+                release.set()
+                finished.wait(timeout=5)
 
     def test_file_existence_cannot_claim_readiness_and_health_is_read_only(self):
         with patch.object(main.REC_PATH.__class__, "exists", return_value=True), \
@@ -47,12 +135,15 @@ class FaceReadinessTests(unittest.TestCase):
             main._warm_recognition_model()
         self.assertTrue(main.health()["model_failed"])
         self.assertEqual(main.health()["status"], "degraded")
+        client = TestClient(main.app)
+        self.assertEqual(client.get("/ready").status_code, 503)
         session = object()
         with patch.object(main, "ensure_models"), patch.object(main.ort, "InferenceSession", return_value=session):
             self.assertIs(main.get_rec_session(), session)
         self.assertEqual(main.health()["status"], "ok")
         self.assertTrue(main.health()["model_ready"])
         self.assertFalse(main.health()["model_failed"])
+        self.assertEqual(client.get("/ready").status_code, 200)
 
     def test_loading_status_does_not_wait_for_the_native_session_lock(self):
         with patch.object(main, "_rec_loading", True):
