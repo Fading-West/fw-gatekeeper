@@ -187,9 +187,11 @@ export async function PATCH(req: NextRequest) {
     if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(error.data?.code)) {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
     }
+
     if (error instanceof ConvexError && error.data?.code === 'INVALID_CLOSEOUT_ACTION') {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 400 });
     }
+
     const knownError = knownApiErrorResponse(error, {
       'date must use YYYY-MM-DD format': 400,
       'Reopen the completed closeout before changing notes.': 409,
@@ -200,6 +202,7 @@ export async function PATCH(req: NextRequest) {
     });
     if (knownError) return knownError;
     logApiError('Shift closeout PATCH error:', error);
+
     return NextResponse.json(
       { error: 'Failed to update shift closeout' },
       { status: 500 },
