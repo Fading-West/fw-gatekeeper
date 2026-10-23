@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -46,7 +47,7 @@ async function renderWithSavedNote(note: string) {
   const actor = t.withIdentity({ subject: userId });
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+    return actor.mutation(ref as FunctionReference<'mutation'>, JSON.parse(JSON.stringify(args)));
   });
   const storedReview = () => t.run(ctx => ctx.db.query('exceptionReviews').withIndex('by_key', q => q.eq('exceptionKey', key)).first());
   const patches: any[] = [];
