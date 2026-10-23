@@ -48,6 +48,10 @@ function EnrollPageContent() {
   const currentRole = usePortalRole();
   const router = useRouter();
   const canEnroll = currentRole === 'admin' || currentRole === 'enrollment';
+  const accessRef = useRef(canEnroll);
+  accessRef.current = canEnroll;
+  const accessGenerationRef = useRef(0);
+  const enrollmentRequestRef = useRef<AbortController | null>(null);
   const searchParams = useSearchParams();
   const workerId = searchParams.get('worker_id') || '';
   const [step, setStep] = useState<Step>('name');
@@ -65,11 +69,13 @@ function EnrollPageContent() {
   const [statusFilter, setStatusFilter] = useState<EmployeeEnrollmentStatus | 'all' | 'remaining'>('remaining');
   const [directorySummary, setDirectorySummary] = useState<EmployeeDirectorySummary | null>(null);
   const [completionSummary, setCompletionSummary] = useState<EmployeeDirectorySummary | null>(null);
-  const [directoryLoading, setDirectoryLoading] = useState(false);
-  const [directoryError, setDirectoryError] = useState('');
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
+  const consentRef = useRef(consentConfirmed);
+  const previewReadyRef = useRef(cameraReady);
+  consentRef.current = consentConfirmed;
+  previewReadyRef.current = cameraReady;
   const [consentStartedAt, setConsentStartedAt] = useState<BiometricConsentStart | null>(null);
   const [captureCount, setCaptureCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
@@ -88,21 +94,35 @@ function EnrollPageContent() {
   const [identityReady, setIdentityReady] = useState(false);
   const [identityRefresh, setIdentityRefresh] = useState(0);
   const enrollmentWorkerId = selectedEmployee?.workerId || workerId;
-  const [suggestions, setSuggestions] = useState<EmployeeDirectoryEnrollmentEntry[]>([]);
+  const [directoryResult, setDirectoryResult] = useState<{
+    query: string;
+    suggestions: EmployeeDirectoryEnrollmentEntry[];
+    error: string;
+  } | null>(null);
+  const directoryQuery = JSON.stringify([name.trim(), name.trim() ? 'all' : statusFilter]);
+  const currentDirectoryQueryRef = useRef(directoryQuery);
+  currentDirectoryQueryRef.current = directoryQuery;
+  const rosterSelectable = canEnroll && !workerId && !selectedEmployee && !manualEntry && showSuggestions;
+  const rosterSelectableRef = useRef(rosterSelectable);
+  rosterSelectableRef.current = rosterSelectable;
+  // Previously loaded identities must stop being selectable on the first
+  // render of a new search, before its debounce or network request completes.
+  const currentDirectoryResult = directoryResult?.query === directoryQuery ? directoryResult : null;
+  const suggestions = currentDirectoryResult?.suggestions ?? [];
+  const directoryError = currentDirectoryResult?.error ?? '';
+  const directoryLoading = canEnroll && !workerId && !currentDirectoryResult;
   nameRef.current = name;
   employeeIdRef.current = employeeId;
   departmentRef.current = department;
   workerIdRef.current = selectedEmployee?.workerId || workerId;
 
   useEffect(() => {
-    if (workerId) {
-      setSuggestions([]);
+    if (workerId || !canEnroll) {
+      setDirectoryResult(null);
       return;
     }
     const controller = new AbortController();
     const timer = setTimeout(async () => {
-      setDirectoryLoading(true);
-      setDirectoryError('');
       try {
         const effectiveStatus = name.trim() ? 'all' : statusFilter;
         const res = await fetch(`/api/employee-directory?q=${encodeURIComponent(name.trim())}&status=${effectiveStatus}`, {
@@ -110,21 +130,21 @@ function EnrollPageContent() {
         });
         if (!res.ok) throw new Error('Roster unavailable');
         const body = await res.json();
-        setSuggestions(Array.isArray(body?.suggestions) ? body.suggestions : []);
+        if (controller.signal.aborted || !accessRef.current) return;
+        setDirectoryResult({ query: directoryQuery, suggestions: Array.isArray(body?.suggestions) ? body.suggestions : [], error: '' });
         if (body?.summary) setDirectorySummary(body.summary);
       } catch {
-        if (!controller.signal.aborted) setDirectoryError('Unable to load the employee roster. Try again in a moment.');
-      } finally {
-        if (!controller.signal.aborted) setDirectoryLoading(false);
+        if (!controller.signal.aborted) setDirectoryResult({ query: directoryQuery, suggestions: [], error: 'Unable to load the employee roster. Try again in a moment.' });
       }
     }, 200);
     return () => {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [name, statusFilter, workerId]);
+  }, [name, statusFilter, workerId, canEnroll, directoryQuery]);
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
+    if (!rosterSelectableRef.current || currentDirectoryQueryRef.current !== directoryQuery || !suggestions.includes(employee)) return;
     identityRevisionRef.current = undefined;
     setIdentityReady(false);
     setConsentConfirmed(false);
@@ -153,7 +173,7 @@ function EnrollPageContent() {
   };
 
   const handleNameKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showSuggestions || suggestions.length === 0) return;
+    if (!rosterSelectable || suggestions.length === 0) return;
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -187,9 +207,40 @@ function EnrollPageContent() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      accessGenerationRef.current += 1;
+      enrollmentRequestRef.current?.abort();
       stopCamera();
     };
   }, [stopCamera]);
+
+  useEffect(() => {
+    // Revocation is a capture boundary, even if membership is unresolved after
+    // having been authorized. A regrant always starts with an empty session.
+    accessGenerationRef.current += 1;
+    if (canEnroll) return;
+    stopCamera();
+    enrollmentRequestRef.current?.abort();
+    enrollmentRequestRef.current = null;
+    setCameraOpening(false);
+    setCameraReady(false);
+    setConsentConfirmed(false);
+    setConsentStartedAt(null);
+    identityRevisionRef.current = undefined;
+    setIdentityReady(false);
+    setPhotos([]);
+    setCaptureCount(0);
+    setSelectedEmployee(null);
+    setDirectoryResult(null);
+    setDirectorySummary(null);
+    setCompletionSummary(null);
+    setName('');
+    setEmployeeId('');
+    setDepartment('');
+    setErrorMsg('');
+    setPhotoIssues([]);
+    setResultMsg('');
+    setStep('name');
+  }, [canEnroll, stopCamera]);
 
   useEffect(() => {
     setConsentConfirmed(false);
@@ -222,7 +273,7 @@ function EnrollPageContent() {
   }, [enrollmentWorkerId, canEnroll, identityRefresh]);
 
   const startCamera = async () => {
-    if (!canEnroll || cameraOpeningRef.current || (workerIdRef.current && (!identityRevisionRef.current || identityTargetRef.current !== workerIdRef.current))) return;
+    if (!accessRef.current || cameraOpeningRef.current || (workerIdRef.current && (!identityRevisionRef.current || identityTargetRef.current !== workerIdRef.current))) return;
     setConsentConfirmed(false);
     setConsentStartedAt(null);
     cameraOpeningRef.current = true;
@@ -233,14 +284,14 @@ function EnrollPageContent() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
       });
-      if (!mountedRef.current || request !== cameraRequestRef.current) {
+      if (!mountedRef.current || !accessRef.current || request !== cameraRequestRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
       streamRef.current = stream;
       setStep('camera');
     } catch {
-      if (!mountedRef.current || request !== cameraRequestRef.current) return;
+      if (!mountedRef.current || !accessRef.current || request !== cameraRequestRef.current) return;
       setErrorMsg('Camera access denied. Please allow camera permissions and try again.');
       setStep('error');
     } finally {
@@ -260,6 +311,7 @@ function EnrollPageContent() {
   }, [step]);
 
   const captureFrame = useCallback((): string | null => {
+    if (!accessRef.current) return null;
     const video = videoRef.current;
     if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
     const canvas = document.createElement('canvas');
@@ -274,6 +326,12 @@ function EnrollPageContent() {
   const submitEnrollmentRef = useRef<(photos: string[]) => Promise<void>>(null!);
 
   const submitEnrollment = async (capturedPhotos: string[]) => {
+    if (!accessRef.current) return;
+    const generation = accessGenerationRef.current;
+    const controller = new AbortController();
+    enrollmentRequestRef.current = controller;
+    const isCurrent = () => mountedRef.current && accessRef.current
+      && generation === accessGenerationRef.current && !controller.signal.aborted;
     try {
       if (workerIdRef.current && (!identityRevisionRef.current || identityTargetRef.current !== workerIdRef.current)) throw new Error('Reload this worker before capturing new enrollment photos.');
       const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
@@ -284,6 +342,7 @@ function EnrollPageContent() {
       }
       const res = await fetch('/api/enroll', {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: nameRef.current.trim(),
@@ -299,34 +358,42 @@ function EnrollPageContent() {
 
       if (!res.ok) {
         const data = await res.json();
+        if (!isCurrent()) return;
         setPhotoIssues(describePhotoIssues(data.photos, data.disagreeing_pairs));
         throw new Error(data.error || 'Enrollment failed');
       }
 
       const result = await res.json();
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       stopCamera();
       setResultMsg(`Face encoding saved. ${result.photosCount} photos captured.`);
       setStep('done');
       try {
-        const progressRes = await fetch('/api/employee-directory?status=not_enrolled');
+        const progressRes = await fetch('/api/employee-directory?status=not_enrolled', { signal: controller.signal });
         const progressBody = progressRes.ok ? await progressRes.json() : null;
-        if (mountedRef.current && progressBody?.summary) setCompletionSummary(progressBody.summary);
+        if (isCurrent() && progressBody?.summary) setCompletionSummary(progressBody.summary);
       } catch {
         // Enrollment succeeded; progress copy can gracefully omit fresh totals.
       }
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       stopCamera();
       setErrorMsg(err instanceof Error ? err.message : 'Enrollment failed');
       setStep('error');
+    } finally {
+      if (enrollmentRequestRef.current === controller) enrollmentRequestRef.current = null;
     }
   };
 
   submitEnrollmentRef.current = submitEnrollment;
 
+  const captureAccessGeneration = accessGenerationRef.current;
+  const capturePreviewGeneration = cameraRequestRef.current;
   const startCapturing = useCallback(() => {
-    if (!consentConfirmed) return;
+    if (!mountedRef.current || !accessRef.current || !consentRef.current) return;
+    if (captureAccessGeneration !== accessGenerationRef.current
+      || capturePreviewGeneration !== cameraRequestRef.current) return;
+    if (!previewReadyRef.current || !streamRef.current || captureTimerRef.current) return;
     const consentAgeMs = consentStartedAt === null ? null : biometricConsentAgeMs(consentStartedAt);
     if (!isRecentBiometricConsentAge(consentAgeMs)) {
       setConsentConfirmed(false);
@@ -336,16 +403,20 @@ function EnrollPageContent() {
       setStep('error');
       return;
     }
-    if (!cameraReady || captureTimerRef.current) return;
     setStep('capturing');
     setCaptureCount(0);
     setPhotos([]);
 
+    const generation = accessGenerationRef.current;
     const captured: string[] = [];
     let count = 0;
     let attempts = 0;
 
     const doCapture = () => {
+      if (!mountedRef.current || !accessRef.current || generation !== accessGenerationRef.current) {
+        captured.length = 0;
+        return;
+      }
       attempts += 1;
       let frame: string | null = null;
       try { frame = captureFrame(); } catch { /* Retry a transient video frame failure. */ }
@@ -373,7 +444,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [cameraReady, captureFrame, consentConfirmed, consentStartedAt, stopCamera]);
+  }, [captureAccessGeneration, capturePreviewGeneration, captureFrame, consentStartedAt, stopCamera]);
 
   const enrollNext = () => {
     identityRevisionRef.current = undefined;
@@ -542,9 +613,9 @@ function EnrollPageContent() {
                 readOnly={Boolean(selectedEmployee) || Boolean(workerId)}
                 role="combobox"
                 aria-autocomplete="list"
-                aria-expanded={showSuggestions && suggestions.length > 0}
+                aria-expanded={rosterSelectable && suggestions.length > 0}
                 aria-controls="employee-suggestions"
-                aria-activedescendant={showSuggestions && suggestions.length > 0 ? `employee-suggestion-${activeSuggestion}` : undefined}
+                aria-activedescendant={rosterSelectable && suggestions.length > 0 ? `employee-suggestion-${activeSuggestion}` : undefined}
                 className="input-field text-lg py-3"
               />
               {!workerId && !selectedEmployee && !manualEntry && showSuggestions && suggestions.length > 0 && (
