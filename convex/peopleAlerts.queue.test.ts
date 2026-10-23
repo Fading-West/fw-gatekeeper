@@ -91,4 +91,35 @@ describe("people alert queue progress", () => {
     expect(rows.every((row) => !row.delivered)).toBe(true);
     expect(rows.filter((row) => row.claimedUntil === now.getTime() + 60_000)).toHaveLength(20);
   });
+
+  it("does not reclaim failed events when slow deliveries outlast their retry delay", async () => {
+    configureWebhook();
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("ALERT_EMAIL_FROM", "alerts@example.test");
+    vi.stubEnv("PEOPLE_ALERT_EMAIL_TO", "owner@example.test");
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 4; index++) {
+        await ctx.db.insert("peopleAlertEvents", event(`Slow worker ${index}`));
+      }
+    });
+    const send = vi.fn(async (_url: string, _request: RequestInit) => {
+      vi.setSystemTime(Date.now() + 10_000);
+      return new Response("{}", { status: 503 });
+    });
+    vi.stubGlobal("fetch", send);
+
+    expect(await t.action(internal.peopleAlerts.deliverPending, {})).toEqual({ delivered: 0, configured: true });
+    expect(Date.now() - now.getTime()).toBe(80_000);
+    expect(send).toHaveBeenCalledTimes(8);
+    const webhookIds = send.mock.calls.filter(([url]) => url === "https://example.test/people")
+      .map(([, request]) => JSON.parse(String(request.body)).event_id);
+    expect(webhookIds).toHaveLength(4);
+    expect(new Set(webhookIds).size).toBe(4);
+    // The exclusion is run-local; a subsequent run can still retry the rows.
+    vi.advanceTimersByTime(60_000);
+    send.mockClear();
+    await t.action(internal.peopleAlerts.deliverPending, {});
+    expect(send).toHaveBeenCalledTimes(8);
+  });
 });

@@ -29,15 +29,20 @@ const claimedEvent = v.union(v.null(), v.object({
 }));
 
 export const claimPending = internalMutation({
-  args: {},
+  args: { attemptedIds: v.optional(v.array(v.id("peopleAlertEvents"))) },
   returns: claimedEvent,
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const now = Date.now();
     // Unclaimed rows (undefined sorts before numbers) and expired claims are
     // eligible. Apply eligibility in the index so deferred rows cannot hide work.
-    const event = await ctx.db.query("peopleAlertEvents")
+    // A slow run can outlive an earlier event's retry delay. Exclude that
+    // run's attempted IDs even after they become eligible in the index again.
+    // A run attempts at most 20 events, so at most 21 candidates are needed.
+    const attempted = new Set((args.attemptedIds ?? []).slice(0, 20));
+    const candidates = await ctx.db.query("peopleAlertEvents")
       .withIndex("by_delivered_and_claimed_until", (q) => q.eq("delivered", false).lte("claimedUntil", now))
-      .first();
+      .take(attempted.size + 1);
+    const event = candidates.find((candidate) => !attempted.has(candidate._id));
     if (!event) return null;
     await ctx.db.patch(event._id, { claimedUntil: now + CLAIM_MS });
     return {
@@ -90,9 +95,11 @@ export const deliverPending = internalAction({
     }
 
     let delivered = 0;
+    const attemptedIds: Event["id"][] = [];
     for (let index = 0; index < 20; index++) {
-      const event = await ctx.runMutation(internal.peopleAlerts.claimPending, {});
+      const event = await ctx.runMutation(internal.peopleAlerts.claimPending, { attemptedIds });
       if (!event) break;
+      attemptedIds.push(event.id);
       const message = buildPeopleAlert(event, config.siteUrl);
       let accepted = false;
       if (config.email) {
