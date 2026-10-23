@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
-import { ingestAttendanceEvent } from '@/lib/convex-ingest';
+import { ingestAttendanceEvent, SecuredIngestError } from '@/lib/convex-ingest';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
@@ -55,6 +55,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof ConvexError) return NextResponse.json({ error: error.data.message }, { status: 400 });
+    // A permanent Convex rejection must not look retryable to the kiosk.
+    if (error instanceof SecuredIngestError && error.status === 400 && error.code === 'INVALID_ATTENDANCE') {
+      return NextResponse.json({ error: error.detail || 'Invalid attendance', code: error.code }, { status: 400 });
+    }
     console.error('Attendance POST error:', error);
     return NextResponse.json({ error: 'Failed to record attendance' }, { status: 500 });
   }

@@ -140,7 +140,7 @@ and sync remain available. New events receive their numeric timestamps at
 insert; today's log, debounce, and last-action selection still include legacy
 rows while the backfill is incomplete. The temporary log fallback parses only
 NULL epochs in the remaining migration ID range, so the supervisor log can be
-slower until attendance backfill finishes.
+slower until attendance backfill finishes. Latest-action and debounce reads match both the current local worker ID and its stable server ID, so restored workers retain earlier history. Once backfill finishes, separate local-ID and server-ID epoch indexes keep those reads bounded; latest-action selection compares at most one row from each index.
 
 The worker creates indexes before populating epochs, excludes NULLs from new
 indexes, commits at most 100 rows per batch, and yields between transactions.
@@ -150,7 +150,7 @@ manual attendance, recognized attendance, and recognition telemetry write
 signals the index worker before opening its connection or transaction. The
 worker checks that signal every 1,000 SQLite instructions, atomically rolls
 back the current index build, and retries after 30 seconds. Completed indexes
-remain; no backfill begins until all four indexes exist. Busy door traffic can
+remain; no backfill begins until all five indexes exist. Busy door traffic can
 therefore defer migration and retention until a quieter period. This also
 protects the camera/UI loop, which records recognized attendance synchronously.
 Foreground connections wait up to 10 seconds for other writers; lock timeouts

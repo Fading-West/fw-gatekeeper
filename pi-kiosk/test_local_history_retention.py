@@ -161,6 +161,61 @@ class LocalHistoryTests(unittest.TestCase):
             database.prune_synced_history()
             self.assertIn(repaired, self.ids('attendance_log'))
 
+    def test_restored_identity_keeps_history_during_migration_and_uses_both_epoch_indexes(self):
+        with local_clock('America/Denver', NOW):
+            first = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
+            prior = self.attendance((NOW - timedelta(minutes=1)).isoformat(), worker=first)
+            database.remove_worker_by_server_id('a' * 32)
+            restored = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
+            self.assertNotEqual(restored, first)
+            self.attendance(OLD, worker=restored, action='clock_out')
+            conn = database._get_conn()
+            conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL')
+            conn.commit()
+            database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, 2]))
+            self.assertEqual(database.get_last_action(restored), 'clock_in')
+            self.assertTrue(database.was_recently_clocked(restored, 2))
+            database._migrate_history()
+            statements = []
+            conn.set_trace_callback(statements.append)
+            def reject_udf(_):
+                raise AssertionError('cached reader used UDF')
+            try:
+                conn.create_function('attendance_epoch', 1, reject_udf)
+                self.assertEqual(database.get_last_action(restored), 'clock_in')
+                self.assertTrue(database.was_recently_clocked(restored, 2))
+            finally:
+                conn.set_trace_callback(None)
+                conn.create_function('attendance_epoch', 1, database._attendance_epoch)
+            latest = next(sql for sql in statements if sql.startswith('SELECT action FROM ('))
+            plan = ' '.join(row['detail'] for row in conn.execute('EXPLAIN QUERY PLAN ' + latest))
+            self.assertIn('idx_attendance_worker_epoch', plan)
+            self.assertIn('idx_attendance_server_worker_epoch', plan)
+            self.assertEqual(conn.execute('SELECT server_worker_id FROM attendance_log WHERE id = ?',
+                                          (prior,)).fetchone()[0], 'a' * 32)
+
+    def test_restored_identity_reads_repaired_epoch_and_retains_latest_history(self):
+        with local_clock('America/Denver', NOW):
+            first = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
+            obsolete = self.attendance((NOW - timedelta(days=40)).isoformat(), worker=first, synced=True)
+            repaired = self.attendance(OLD, worker=first, action='clock_out')
+            database.reject_attendance(repaired, 'Incorrect timestamp')
+            rejection = database.list_attendance_rejections()[0]
+            database.remove_worker_by_server_id('a' * 32)
+            restored = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
+            self.attendance((NOW - timedelta(minutes=10)).isoformat(), worker=restored)
+            corrected = (NOW - timedelta(minutes=1)).isoformat()
+            with sqlite3.connect(config.DB_PATH) as external:
+                external.execute('UPDATE attendance_log SET timestamp = ? WHERE id = ?', (corrected, repaired))
+            database.retry_attendance_rejection(rejection['id'], 'Verified supervisor record')
+            self.assertEqual(database.get_last_action(restored), 'clock_out')
+            self.assertTrue(database.was_recently_clocked(restored, 2))
+            database.mark_synced([repaired])
+            database.prune_synced_history()
+            self.assertNotIn(obsolete, self.ids('attendance_log'))
+            self.assertIn(repaired, self.ids('attendance_log'))
+            self.assertEqual(database.get_last_action(restored), 'clock_out')
+
     def test_today_query_uses_range_index_without_udf_or_sort(self):
         with local_clock('America/Denver', NOW):
             self.attendance(NOW.isoformat())
@@ -502,6 +557,7 @@ class LocalHistoryTests(unittest.TestCase):
         def check_indexes(c, table, pause=None):
             names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
             self.assertTrue({'idx_attendance_epoch', 'idx_attendance_worker_epoch',
+                             'idx_attendance_server_worker_epoch',
                              'idx_attendance_log_retention', 'idx_recognition_attempts_retention'} <= names)
             migrate(c, table, pause=pause)
         with mock.patch.object(database, '_migrate_event_epoch', side_effect=check_indexes):
