@@ -289,7 +289,9 @@ function RecognitionCalibrationLabContent() {
           {payload.summary_limited
             ? ' Counts marked + are lower bounds; 0+ does not mean there are no unresolved attempts. Median score is unavailable for this incomplete selection.'
             : ' Summary counts include all matching attempts.'}
-          {' Narrow the date, kiosk, decision or confidence filters, or select Unreviewed to find unresolved evidence.'}
+          {payload.summary_limited
+            ? ' Use the scan window controls to inspect remaining evidence. Decision and confidence filters only narrow the current window; selecting another date, kiosk or Unreviewed starts a new search.'
+            : ' Narrow the date, kiosk, decision or confidence filters, or select Unreviewed to find unresolved evidence.'}
           {attempts.length < (summary?.total ?? 0) && ' Use Show all matches in this window to see hidden matches.'}
           {payload.next_scan_cursor && ' Use Next scan window to reach remaining records, even when this window is empty.'}
           {scanCursor && !payload.next_scan_cursor && ' This is the last scan window. Use First scan window to return to the beginning.'}

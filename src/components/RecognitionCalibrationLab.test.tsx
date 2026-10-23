@@ -76,6 +76,8 @@ it('labels incomplete counts as lower bounds and explains a zero backlog', async
   expect(label(tree.toJSON())).toContain('Review backlog0+');
   expect(label(tree.toJSON())).toContain('0+ does not mean there are no unresolved attempts.');
   expect(label(tree.toJSON())).toContain('Median score is unavailable');
+  expect(label(tree.toJSON())).toContain('Decision and confidence filters only narrow the current window');
+  expect(label(tree.toJSON())).not.toContain('Narrow the date, kiosk, decision or confidence filters');
 });
 
 it('keeps capped empty selections distinct from an exact empty selection', async () => {
