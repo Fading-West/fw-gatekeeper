@@ -446,6 +446,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
 
   const reviewsByKey = new Map(reviews.map((review: any) => [review.exceptionKey, review]));
   const schedulesByWorker = new Map<string, any>();
+  const assignmentsByWorker = new Map<string, any>();
   const recognitionFingerprints = new Map<string, string>();
   const eventsByWorker = new Map<string, any[]>();
   const pairingEventsByWorker = new Map<string, any[]>();
@@ -468,6 +469,10 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     let schedule = assignment.kind === "unique" ? assignment.schedule : null;
     const workerId = String(worker._id);
     schedulesByWorker.set(workerId, schedule);
+    if (assignment.kind !== "unique") assignmentsByWorker.set(workerId, {
+      kind: assignment.kind, tier: assignment.tier, department: worker.department || "",
+      candidates: assignment.candidates,
+    });
     const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const firstIn = clockIns[0] || null;
@@ -798,6 +803,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           date: exception.date, type: exception.type, workerId: exception.worker_id,
           attendanceEvents: pairingEventsByWorker.get(exception.worker_id || "") ?? [],
           schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
+          scheduleAssignment: assignmentsByWorker.get(exception.worker_id || ""),
         });
         attendanceFingerprints.set(sourceKey, source_fingerprint);
       }

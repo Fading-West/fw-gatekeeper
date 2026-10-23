@@ -22,6 +22,7 @@ export function buildExceptionSourceFingerprint(input: {
   attendanceEvents?: readonly AttendanceSource[];
   schedule?: ScheduleSource | null;
   recognitionAttempt?: RecognitionSource | null;
+  scheduleAssignment?: { kind: string; tier: string | null; department: string; candidates: readonly ScheduleSource[] };
 }): string {
   const schedule = input.schedule;
   let days: number[] = [];
@@ -51,6 +52,15 @@ export function buildExceptionSourceFingerprint(input: {
       department: schedule.department?.trim().toLowerCase() || null,
       startTime: schedule.startTime, endTime: schedule.endTime,
     } : null,
+    ...(input.scheduleAssignment ? { scheduleAssignment: {
+      kind: input.scheduleAssignment.kind, tier: input.scheduleAssignment.tier,
+      department: input.scheduleAssignment.department.trim().toLowerCase(),
+      candidates: input.scheduleAssignment.candidates.map(candidate => ({
+        id: String(candidate._id), name: candidate.name, days: candidate.days,
+        startTime: candidate.startTime, endTime: candidate.endTime,
+        department: candidate.department?.trim().toLowerCase() || null,
+      })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    } } : {}),
     recognitionAttempt: input.recognitionAttempt ? {
       id: input.recognitionAttempt.id, timestamp: input.recognitionAttempt.timestamp,
       decision: input.recognitionAttempt.decision, kioskId: input.recognitionAttempt.kioskId,
