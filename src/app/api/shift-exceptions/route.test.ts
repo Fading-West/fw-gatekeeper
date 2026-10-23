@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
 import schema from '../../../../convex/schema';
@@ -31,7 +32,7 @@ async function setup() {
   // Match Convex HTTP serialization: undefined fields disappear on the wire.
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+    return actor.mutation(ref as FunctionReference<'mutation'>, JSON.parse(JSON.stringify(args)));
   });
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-exceptions', {
     method: 'PATCH',
