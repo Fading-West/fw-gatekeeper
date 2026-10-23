@@ -495,7 +495,7 @@ function ShiftBriefingPageContent() {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-display font-semibold text-slate-100">Coverage by department</h2>
-            <span className="text-xs font-mono text-slate-500">{filteredDepartments.length} groups</span>
+            <span className="text-xs font-mono text-slate-500">{payload ? filteredDepartments.length : '—'} groups</span>
           </div>
           {loading && !payload ? (
             <div className="glass-card p-6 text-sm text-slate-400">Loading coverage briefing...</div>
@@ -542,7 +542,7 @@ function ShiftBriefingPageContent() {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-display font-semibold text-slate-100">First actions</h2>
-            <span className="text-xs font-mono text-slate-500">{payload?.action_items.length ?? 0} items</span>
+            <span className="text-xs font-mono text-slate-500">{payload ? payload.action_items.length : '—'} items</span>
           </div>
           {loading && !payload ? (
             <div className="glass-card p-6 text-sm text-slate-400">Loading first actions...</div>
