@@ -273,7 +273,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
     # --- startup migration ------------------------------------------------
 
-    def test_init_db_backfills_queued_rows_only(self):
+    def test_init_db_backfills_queued_and_synced_rows(self):
         worker_id = database.add_worker(name="prime", encoding=ENCODING, server_id="cccccccccccccccccccccccccccccccc")
         queued_id = self._insert_legacy_row(worker_id, name="prime", synced=0)
         synced_id = self._insert_legacy_row(worker_id, name="prime", synced=1)
@@ -286,7 +286,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
         self.assertEqual(self._row(queued_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
         self.assertEqual(self._row(blank_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
-        self.assertIsNone(self._row(synced_id)["server_worker_id"])
+        self.assertEqual(self._row(synced_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
 
     def test_init_db_replaces_old_installed_delete_trigger(self):
         conn = database._get_conn()
@@ -310,6 +310,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
             "AND name = 'attendance_keep_server_id_before_worker_delete'"
         ).fetchone()["sql"]
         self.assertIn("server_worker_id IS NULL", trigger_sql)
+        self.assertNotIn("synced = 0", trigger_sql)
 
         worker_id = database.add_worker(name="upgrade", encoding=ENCODING, server_id="server-b")
         log_id = database.log_attendance(

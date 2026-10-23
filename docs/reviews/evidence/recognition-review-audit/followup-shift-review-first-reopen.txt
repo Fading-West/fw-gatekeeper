@@ -1,0 +1,37 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+ ❯ review15-shift-recognition-audit.test.ts (3 tests | 1 failed) 104ms
+   × does not invent an open prior override when the first shift action reopens a Recognition Lab review 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review15-shift-recognition-audit.test.ts > does not invent an open prior override when the first shift action reopens a Recognition Lab review
+AssertionError: expected { status: 'open', note: null, …(2) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "note": null,
+  "reviewedAt": null,
+  "status": "open",
+  "updatedAt": null,
+}
+
+ ❯ review15-shift-recognition-audit.test.ts:50:25
+     48|  // The target record did not exist. Null accurately records creation …
+     49|  // override; calling the nonexistent prior override "open" invents hi…
+     50|  expect(details.before).toBeNull();expect(details.after).toMatchObject…
+       |                         ^
+     51| });
+     52|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  03:32:26
+   Duration  524ms (transform 113ms, setup 0ms, import 246ms, tests 104ms, environment 0ms)

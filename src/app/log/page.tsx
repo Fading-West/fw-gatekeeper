@@ -9,8 +9,10 @@ import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
-import { csvField } from '@/lib/csv';
+import { buildAttendanceExportCSV, buildHoursExportCSV } from '@/lib/attendance-export';
+import { isValidLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 
@@ -65,6 +67,15 @@ function LogPageContent() {
   }, [queryWorkerId]);
 
   useEffect(() => {
+    // A cleared date field sends ?date=, which the API resolves to factory
+    // today. Never show or export another day's rows under a blank date.
+    if (!isValidLocalDateString(date)) {
+      setEvents([]);
+      setCorrections([]);
+      setError('Choose a date to view the activity log.');
+      setLoading(false);
+      return;
+    }
     const attendanceParams = new URLSearchParams({ date });
     const correctionParams = new URLSearchParams({ date });
     if (queryWorkerId) {
@@ -172,48 +183,37 @@ function LogPageContent() {
   };
 
   const exportCSV = () => {
-    const header = 'Time,Worker,Department,Event,Kiosk,Source,Correction Reason,Note\n';
-    const rows = events.map((e) =>
-      [e.timestamp, e.worker_name, e.worker_department, e.event_type, e.kiosk_name || '', e.source || 'kiosk', e.correction_reason || '', e.note || ''].map(csvField).join(',')
-    ).join('\n');
-    downloadCSV(header + rows, `gatekeeper-${date}.csv`);
+    downloadCSV(buildAttendanceExportCSV(events), `gatekeeper-${date}.csv`);
   };
 
   const exportHoursCSV = async () => {
-    // Pair clock_in/clock_out events per worker in timestamp order. Shifts
-    // that start on the selected date may end after midnight, so the next
-    // day's events are fetched too and intervals are attributed to the day
-    // the clock-in happened. A truly open interval (still clocked in) is
-    // reported with an empty Out and 0 hours rather than a guess.
-    // Without the boundary day, overnight shifts would silently export as
-    // still-clocked-in with zero hours - refuse to produce bad payroll data.
+    // Query exactly the two neighboring factory dates: yesterday identifies
+    // legitimate overnight exits, tomorrow closes shifts started today.
+    // Calendar arithmetic avoids treating a DST day as a fixed 24 hours.
     let boundaryEvents: AttendanceWithWorker[] = [];
+    let previousEvents: AttendanceWithWorker[] = [];
     try {
-      const next = new Date(`${date}T00:00:00Z`);
-      next.setUTCDate(next.getUTCDate() + 1);
-      const nextDate = next.toISOString().slice(0, 10);
-      const params = new URLSearchParams({ date: nextDate });
-      if (queryWorkerId) params.set('worker_id', queryWorkerId);
-      const res = await fetch(`/api/attendance?${params.toString()}`);
-      if (!res.ok) throw new Error(`next-day fetch failed (${res.status})`);
-      const rows = await res.json();
-      if (!Array.isArray(rows)) throw new Error('next-day fetch returned an unexpected payload');
-      boundaryEvents = rows;
+      [previousEvents, boundaryEvents] = await Promise.all([-1, 1].map(async (offset) => {
+        const neighbor = new Date(`${date}T00:00:00Z`);
+        neighbor.setUTCDate(neighbor.getUTCDate() + offset);
+        const params = new URLSearchParams({ date: neighbor.toISOString().slice(0, 10) });
+        if (queryWorkerId) params.set('worker_id', queryWorkerId);
+        const res = await fetch(`/api/attendance?${params.toString()}`);
+        if (!res.ok) throw new Error(`neighboring-day fetch failed (${res.status})`);
+        const rows = await res.json();
+        if (!Array.isArray(rows)) throw new Error('neighboring-day fetch returned an unexpected payload');
+        return rows;
+      }));
     } catch {
-      toast('Could not load the next day\u2019s events, so overnight hours would be wrong. Export cancelled - try again.', 'error');
+      toast('Could not load the neighboring days\u2019 events, so overnight hours would be wrong. Export cancelled - try again.', 'error');
       return;
     }
 
-    const hoursRows = buildHoursExportRows(events, boundaryEvents, date);
+    const hoursRows = buildHoursExportRows(events, boundaryEvents, date, previousEvents);
     if (hoursRows.some((row) => row.ambiguous)) {
-      toast('Some workers need review: a next-day clock-in has no preceding clock-out. Their hours are blank in the CSV.', 'info');
+      toast('Some workers need review: punches are missing, repeated, or exceed the maximum shift length. Their hours are blank in the CSV.', 'info');
     }
-    const rows = hoursRows.map((row) =>
-      [row.name, row.department, row.firstIn, row.lastOut, row.hours, row.note].map(csvField).join(',')
-    );
-
-    const header = 'Worker,Department,First In,Last Out,Hours,Note\n';
-    downloadCSV(header + rows.join('\n'), `gatekeeper-hours-${date}.csv`);
+    downloadCSV(buildHoursExportCSV(hoursRows), `gatekeeper-hours-${date}.csv`);
   };
 
   return (
@@ -227,6 +227,7 @@ function LogPageContent() {
             {events.length} effective events · {corrections.length} correction{corrections.length === 1 ? '' : 's'}
             {queryWorkerId ? ' · worker filtered' : ''}
           </p>
+          <p className="text-xs text-slate-400 mt-2">Exports include stable worker IDs. Employee IDs reflect the current roster.</p>
         </div>
         <div className="flex items-center gap-3">
           <input
@@ -326,11 +327,11 @@ function LogPageContent() {
                       <div className="text-[11px] font-mono text-slate-500">{correction.worker_department}</div>
                     </td>
                     <td className="px-5 py-3 font-mono text-xs text-slate-400">
-                      {new Date(correctionTimestamp(correction)).toLocaleString()}
+                      {formatFactoryLocalDateTime(correctionTimestamp(correction))}
                     </td>
                     <td className="px-5 py-3 text-slate-400">
                       {correction.reason}
-                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {correction.reversed_at ? new Date(correction.reversed_at).toLocaleString() : ''}</div>}
+                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {formatFactoryLocalDateTime(correction.reversed_at, '')}</div>}
                     </td>
                     <td className="px-5 py-3 text-xs text-slate-500">
                       {correction.supervisor_name || 'Not recorded'}
