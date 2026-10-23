@@ -8,6 +8,28 @@ import { getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 const modules = import.meta.glob("./**/*.ts");
 
 it.each([
+  ["2026-10-09T12:05:00Z", "2026-10-09T07:05:00"],
+  ["2026-11-01T01:15:00-06:00", "2026-11-01T01:15:00"],
+])("returns the same factory timestamp from review writes and reads for %s", async (timestamp, display) => {
+  const t = convexTest(schema, modules);
+  const { userId, id } = await t.run(async ctx => {
+    const userId = await ctx.db.insert("users", { email: "reviewer@example.test" });
+    await ctx.db.insert("portalMembers", { userId, role: "admin", active: true, createdAt: "2026-10-09" });
+    const id = await ctx.db.insert("recognitionAttempts", {
+      timestamp, kioskId: "entry", faceDetected: true, decision: "near_miss",
+      threshold: 0.3, reviewed: false, createdAt: "2026-10-09",
+    });
+    return { userId, id };
+  });
+  const admin = t.withIdentity({ subject: userId });
+  const updated = await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewed: true, reviewedLabel: "confirmed" });
+  const read = await admin.query(api.recognitionAttempts.getById, { id });
+  expect(updated).toMatchObject({ timestamp: display, timestamp_utc: read?.timestamp_utc, reviewed: 1 });
+  expect(read).toMatchObject({ timestamp: display, reviewed: 1 });
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ timestamp });
+});
+
+it.each([
   ["2026-10-09", ["2026-10-09T12:05:00+00:00"], ["2026-10-09T07:05:00"]],
   ["2026-03-08", ["2026-03-08T07:59:00Z", "2026-03-08T08:01:00Z"], ["2026-03-08T01:59:00", "2026-03-08T03:01:00"]],
   ["2026-11-01", ["2026-11-01T06:45:00Z", "2026-11-01T07:15:00Z"], ["2026-11-01T01:45:00", "2026-11-01T01:15:00"]],
