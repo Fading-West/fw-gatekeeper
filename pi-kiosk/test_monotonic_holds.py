@@ -115,7 +115,7 @@ def run_kiosk(*, step_back, blink, complete_blink=True):
     def observe_status(**fields):
         update_status(**fields)
         if (state["stepped_at"] is not None and fields.get("state") == "NOT_RECOGNIZED"
-                and fields.get("message") == "Blink not detected - please try again"):
+                and fields.get("message") in {"Blink not detected - please try again", "Verification interrupted - please try again"}):
             state["timed_out_after"] = clock.monotonic() - state["stepped_at"]
 
     def step_clock():

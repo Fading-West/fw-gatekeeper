@@ -493,7 +493,7 @@ os.open, os.fchown = racing_open, racing_chown
                      'logger': logging.getLogger('main'), 'web_app': mock.Mock(),
                      'datetime': datetime, 'timezone': timezone, 'last_clocks': {},
                      '_log_recognition_attempt': mock.Mock(), '_now_iso': mock.Mock(),
-                     'base_degraded_reason': mock.Mock()}
+                     'base_degraded_reason': mock.Mock(), 'camera_healthy': True, 'camera_generation': [None]}
         exec(compile(ast.Module(body=[record], type_ignores=[]), 'main.py', 'exec'), namespace)
         private = 'private-name-url-token-encoding'
         with mock.patch.object(database, 'get_attendance_action', return_value='clock_in'), \

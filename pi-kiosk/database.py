@@ -292,6 +292,8 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_recognition_rejections_active
+            ON recognition_rejections(attempt_id, released_at);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_time ON recognition_attempts(timestamp);
         """
@@ -1043,7 +1045,7 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
 
 
 def count_unsynced_recognition_attempts() -> int:
-    """Count recognition telemetry rows still waiting to sync."""
+    """Count all unsynced telemetry, including retained quarantine evidence."""
     conn = _get_conn()
     row = conn.execute("""SELECT
         (SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0) +
@@ -1051,6 +1053,17 @@ def count_unsynced_recognition_attempts() -> int:
          LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
          WHERE r.released_at IS NULL AND a.id IS NULL)""").fetchone()
     return int(row[0]) if row else 0
+
+
+def count_retryable_recognition_attempts() -> int:
+    row = _get_conn().execute("""SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0
+        AND NOT EXISTS (SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL)""").fetchone()
+    return int(row[0])
+
+
+def count_rejected_recognition_attempts() -> int:
+    return count_rejected_attempts()
 
 
 def count_rejected_attempts() -> int:
@@ -1062,6 +1075,9 @@ def count_rejected_attempts() -> int:
 def reject_recognition_attempt(attempt_id: int, reason: str) -> None:
     conn = _get_conn()
     with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT id FROM recognition_rejections WHERE attempt_id = ? AND released_at IS NULL", (attempt_id,)).fetchone():
+            return
         row = conn.execute("SELECT * FROM recognition_attempts WHERE id = ? AND synced = 0", (attempt_id,)).fetchone()
         if row is None:
             raise ValueError(f"Unsynced recognition attempt {attempt_id} does not exist")
@@ -1080,13 +1096,15 @@ def retry_recognition_rejection(rejection_id: int, note: str) -> None:
         raise ValueError("A reason for retry is required")
     conn = _get_conn()
     with conn:
-        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id
+        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id, a.synced
             FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
             WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
         if rejection is None:
             raise ValueError(f"Active recognition rejection {rejection_id} does not exist")
         if rejection["existing_attempt_id"] is None:
             raise ValueError("Recognition attempt is missing; restore the original evidence before retry")
+        if rejection["synced"]:
+            raise ValueError("Original unsynced evidence is required")
         conn.execute("""UPDATE recognition_rejections SET released_at = datetime('now'), release_note = ?
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
         conn.execute("DELETE FROM sync_state WHERE key IN ('recognition_current_scan_after', 'recognition_scan_after')")

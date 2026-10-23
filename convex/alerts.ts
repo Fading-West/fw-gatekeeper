@@ -40,6 +40,7 @@ export type AlertKioskHealth = {
   knownWorkers?: number;
   queuedLogs?: number;
   queuedAttempts?: number;
+  rejectedAttempts?: number;
   degradedReason?: string;
   lastScanAt?: string;
   reportedAt: string;
@@ -472,6 +473,7 @@ const alertKioskValidator = v.object({
     knownWorkers: v.optional(v.float64()),
     queuedLogs: v.optional(v.float64()),
     queuedAttempts: v.optional(v.float64()),
+    rejectedAttempts: v.optional(v.float64()),
     degradedReason: v.optional(v.string()),
     lastScanAt: v.optional(v.string()),
     reportedAt: v.string(),

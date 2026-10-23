@@ -1,3 +1,4 @@
+import { getKioskSyncStatus, ONLINE_THRESHOLD_MS, STALE_THRESHOLD_MS } from "@/lib/kiosk-sync-status";
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
@@ -10,8 +11,7 @@ import { getKioskDegradedReasons } from '@/lib/kiosk-health-reasons';
 import { systemHealthCache } from '@/lib/system-health-cache';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
-const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
-const STALE_THRESHOLD_MS = 60 * 60 * 1000;
+
 
 type KioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 type KioskDeviceHealth = {
@@ -21,6 +21,7 @@ type KioskDeviceHealth = {
   known_workers: number | null;
   queued_logs: number | null;
   queued_attempts: number | null;
+  rejected_attempts?: number | null;
   degraded_reason: string | null;
   last_scan_at: string | null;
   reported_at: string;
@@ -78,12 +79,7 @@ function asHealthUrl(rawUrl: string) {
 }
 
 function getKioskStatus(lastSync: string | null): KioskStatus {
-  if (!lastSync) return 'never_synced';
-  const ageMs = Date.now() - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return 'online';
-  if (ageMs <= ONLINE_THRESHOLD_MS) return 'online';
-  if (ageMs <= STALE_THRESHOLD_MS) return 'stale';
-  return 'offline';
+  return getKioskSyncStatus(lastSync);
 }
 
 
@@ -93,6 +89,7 @@ function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
   const issues: string[] = [];
   if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
   if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
+  if ((health.rejected_attempts ?? 0) > 0) issues.push(`${health.rejected_attempts} recognition record${health.rejected_attempts === 1 ? " needs" : "s need"} supervisor review`);
   for (const reason of getKioskDegradedReasons(health.degraded_reason)) {
     if ((reason === 'camera_error' && health.camera_ok === false) ||
         (reason === 'model_error' && health.model_ok === false)) continue;

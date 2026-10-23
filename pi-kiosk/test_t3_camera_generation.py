@@ -170,6 +170,7 @@ class CameraGenerationTests(unittest.TestCase):
         database = types.SimpleNamespace(init_db=lambda: None,
             get_worker_by_id=lambda worker: {'id': worker, 'employee_id': str(worker), 'server_id': 'old-server' if worker == 1 else 'new-server'},
             was_recently_clocked=lambda *args: False, get_last_action=lambda *args: None,
+            get_attendance_action=lambda _: "clock_in",
             log_recognized_attendance=lambda **fields: writes.append(fields))
         web = types.SimpleNamespace(start_server=lambda: None, get_health_snapshot=lambda: dict(health),
             update_health=lambda **fields: health.update(fields), update_status=lambda **fields: statuses.append(fields),
@@ -179,13 +180,13 @@ class CameraGenerationTests(unittest.TestCase):
             raise RuntimeError('Synthetic offline mode; no network worker')
 
         namespace = {'config': settings, 'database': database, 'web_app': web, 'Camera': Camera,
-            'logger': logging.getLogger(__name__), 'os': types.SimpleNamespace(makedirs=lambda *args, **kwargs: None),
+            'logger': logging.getLogger(__name__), 'os': types.SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None),
             'require_kiosk_api_key': offline, 'require_kiosk_ui_key': lambda: None,
             'recognition_model_ready': lambda: True, 'FaceRecognizer': lambda: recognizer,
             # PR115 moves startup behind a readiness adapter. Keep this camera
             # fixture initialized in the ordered composition as well.
             'ModelRecovery': lambda _: types.SimpleNamespace(ready=True, start=lambda: None, stop=lambda: None),
-            'time': types.SimpleNamespace(time=lambda: clock[0], sleep=sleep),
+            'time': types.SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0], sleep=sleep),
             'threading': types.SimpleNamespace(Lock=threading.Lock, Thread=DetectorThread),
             'cv2': types.SimpleNamespace(resize=lambda frame, *args, **kwargs: frame),
             'fr': types.SimpleNamespace(face_locations=locations), 'embed_face': embedding,
