@@ -338,7 +338,7 @@ function ShiftBriefingPageContent() {
                 Generated {formatGeneratedAt(trustBrief?.generated_at || payload?.generated_at)}
               </span>
               <span className="badge border border-navy-500/60 bg-navy-950/35 text-[10px] text-slate-400">
-                {payload?.schedules.active_today ?? 0} active schedule{payload?.schedules.active_today === 1 ? '' : 's'}
+                {payload ? `${payload.schedules.active_today} active schedule${payload.schedules.active_today === 1 ? '' : 's'}` : 'Schedule count unavailable'}
               </span>
             </div>
           </div>
@@ -629,7 +629,7 @@ function ShiftBriefingPageContent() {
             <div>
               <h2 className="font-display font-semibold text-slate-100">Kiosk trust</h2>
               <p className="text-sm text-slate-400 mt-2">
-                {payload?.kiosks.total ?? 0} registered kiosk{payload?.kiosks.total === 1 ? '' : 's'} contribute to today&apos;s briefing confidence.
+                {payload ? `${payload.kiosks.total} registered kiosk${payload.kiosks.total === 1 ? '' : 's'} contribute to today’s briefing confidence.` : 'Kiosk count unavailable.'}
               </p>
             </div>
             <Link href={getKioskTrustHref(currentRole, date)} className="btn-ghost text-xs">

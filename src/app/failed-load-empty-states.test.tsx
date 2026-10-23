@@ -17,7 +17,7 @@ const pages = [
     Page: BriefingPage,
     endpoint: '/api/shift-briefing',
     loadingText: 'Loading coverage briefing...',
-    emptyText: ['No action items', 'are clear for this view', 'No scheduled coverage in this view', 'No workers match', 'Coverage on track'],
+    emptyText: ['No action items', 'are clear for this view', 'No scheduled coverage in this view', 'No workers match', 'Coverage on track', '0 active schedules', '0 registered kiosks'],
     emptyPayload: (date: string | null) => ({
       date,
       generated_at: `${date}T08:00:00Z`,
@@ -122,7 +122,7 @@ describe.each(pages)('$name', ({ name, Page, endpoint, loadingText, emptyText, e
     expect(tree!.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
     expect(text).not.toContain(loadingText);
     const expected = name === 'Briefing'
-      ? ['No action items', 'No scheduled coverage in this view', 'No workers match']
+      ? ['No action items', 'No scheduled coverage in this view', 'No workers match', '0 active schedules', '0 registered kiosks']
       : name === 'Exceptions' ? ['No exceptions in this view'] : ['No kiosks are registered yet', '0 devices'];
     for (const claim of expected) expect(text).toContain(claim);
     expect(tileValues().every((value) => value === '0')).toBe(true);
