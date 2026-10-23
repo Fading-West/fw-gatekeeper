@@ -89,6 +89,9 @@ export default function AttendanceCorrectionDialog({
   const [supervisorName, setSupervisorName] = useState(initialRequest?.supervisor_name || '');
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<AttendanceWithWorker | null>(null);
+  // The last attempt was refused for authentication, before the server could
+  // look up the earlier request: its outcome is still unknown.
+  const [signInRequired, setSignInRequired] = useState(false);
   const submittingRef = useRef(false);
   // Set once the dialog closes, so a pending pre-save check never posts.
   const closedRef = useRef(false);
@@ -105,6 +108,8 @@ export default function AttendanceCorrectionDialog({
   const selectableWorkers = lockedWorkerId ? workerOptions.filter((worker) => worker.id === lockedWorkerId) : workerOptions;
 
   useEffect(() => {
+    // React Strict Mode runs this cleanup once on mount; reopen the flag.
+    closedRef.current = false;
     const trigger = returnFocusRef?.current || (typeof document !== 'undefined' ? document.activeElement as HTMLElement | null : null);
     modalRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
     return () => {
@@ -154,6 +159,7 @@ export default function AttendanceCorrectionDialog({
     submittingRef.current = true;
     setPhase('saving');
     setError(null);
+    setSignInRequired(false);
     // Persist and lock before sending: if this dialog or page goes away
     // mid-request, the outcome is unknown and only the same request may be
     // retried, so no other direct draft can start meanwhile.
@@ -173,6 +179,16 @@ export default function AttendanceCorrectionDialog({
         return;
       }
       const body = await response.json().catch(() => ({}));
+      if (response.status === 401 || response.status === 403) {
+        // The portal refuses the request before Convex can return the
+        // idempotent receipt, so this proves nothing about an earlier
+        // attempt. Keep the payload and request ID frozen for a retry
+        // after the supervisor signs in again.
+        setFrozen(record);
+        setPhase('uncertain');
+        setSignInRequired(true);
+        return;
+      }
       if (response.status >= 400 && response.status < 500) {
         // A definitive rejection: nothing was saved, so the ID is released
         // and the supervisor may edit the draft.
@@ -417,9 +433,13 @@ export default function AttendanceCorrectionDialog({
 
         {phase === 'uncertain' && (
           <div role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
-            <p className="font-medium">Save may have completed</p>
+            <p className="font-medium">{signInRequired ? 'Sign in again to finish this save' : 'Save may have completed'}</p>
             <p className="mt-1 text-amber-100/80">
-              The server did not confirm this correction. Retry the same save to get its receipt; a repeated request is recorded only once. Editing is locked until the outcome is known.
+              {signInRequired ? (
+                <>Your session was not accepted, so the server could not confirm this correction. Sign in again in a new tab (<a href="/login" target="_blank" rel="noopener" className="text-gold underline">open sign-in</a>), then use Retry same save. It resends the same request, so the correction is recorded at most once. Editing stays locked until the outcome is known.</>
+              ) : (
+                <>The server did not confirm this correction. Retry the same save to get its receipt; a repeated request is recorded only once. Editing is locked until the outcome is known.</>
+              )}
             </p>
           </div>
         )}

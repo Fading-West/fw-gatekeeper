@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { act, create, ReactTestInstance, ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AttendanceCorrectionDialog, { AttendanceCorrectionDialogProps } from './AttendanceCorrectionDialog';
@@ -50,11 +51,13 @@ function postBodies() {
     .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
 }
 
-async function render(props: Partial<AttendanceCorrectionDialogProps> = {}) {
+async function render(props: Partial<AttendanceCorrectionDialogProps> = {}, { strict = false } = {}) {
   const handlers = { onPendingStart: vi.fn(), onPendingSettled: vi.fn(), onSaved: vi.fn(), onClose: vi.fn() };
   let tree!: ReactTestRenderer;
+  const Wrapper = strict ? StrictMode : ({ children }: { children: React.ReactNode }) => <>{children}</>;
   await act(async () => {
     tree = create(
+      <Wrapper>
       <AttendanceCorrectionDialog
         date="2026-09-14"
         mode="void"
@@ -65,7 +68,8 @@ async function render(props: Partial<AttendanceCorrectionDialogProps> = {}) {
         now={now}
         {...handlers}
         {...props}
-      />,
+      />
+      </Wrapper>,
     );
   });
   return { tree, ...handlers };
@@ -320,6 +324,88 @@ describe('uncertain save recovery', () => {
     await act(async () => button(tree, 'Add punch').props.onClick());
     expect(postBodies()[1]).toMatchObject({ worker_id: 'worker-2', corrected_timestamp: '2026-09-14T16:00:00' });
     expect(postBodies()[1].request_id).not.toBe('pending-a');
+  });
+
+  it.each([401, 403])('keeps a retry frozen on %i and resends the same request after signing in again', async (status) => {
+    let attempts = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('response lost');
+      if (attempts === 2) return { ok: false, status, json: async () => ({ error: 'Unauthorized' }) };
+      return { ok: true, status: 201, json: async () => ({ id: 'correction-1' }) };
+    }));
+    const { tree, onSaved, onPendingSettled } = await render();
+    await change(tree.root.findByType('textarea'), 'Duplicate badge');
+    await act(async () => button(tree, 'Void row').props.onClick());
+    await act(async () => button(tree, 'Retry same save').props.onClick());
+
+    // The auth failure says nothing about the lost first response.
+    expect(alerts(tree).join(' ')).toContain('Sign in again');
+    expect(tree.root.findByType('textarea').props.disabled).toBe(true);
+    expect(hasButton(tree, 'Void row')).toBe(false);
+    expect(onPendingSettled).not.toHaveBeenCalled();
+    expect(readPendingDirectCorrection()?.request_id).toBe(postBodies()[0].request_id);
+
+    await act(async () => button(tree, 'Retry same save').props.onClick());
+    const bodies = postBodies();
+    expect(bodies).toHaveLength(3);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(readPendingDirectCorrection()).toBeNull();
+  });
+
+  it('freezes a first attempt rejected for authentication instead of releasing its request ID', async () => {
+    let attempts = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? { ok: false, status: 401, json: async () => ({ error: 'Unauthorized' }) }
+        : { ok: true, status: 201, json: async () => ({}) };
+    }));
+    const { tree, onSaved, onPendingSettled } = await render();
+    await change(tree.root.findByType('textarea'), 'Duplicate badge');
+    await act(async () => button(tree, 'Void row').props.onClick());
+    expect(alerts(tree).join(' ')).toContain('Sign in again');
+    expect(onPendingSettled).not.toHaveBeenCalled();
+    await act(async () => button(tree, 'Retry same save').props.onClick());
+    const [first, retried] = postBodies();
+    expect(retried).toEqual(first);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts a near-midnight add under React Strict Mode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? { ok: true, status: 201, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => [] }
+    )));
+    const { tree, onSaved } = await render({ mode: 'add', sourceEvent: null, effectiveEvents: [] }, { strict: true });
+    await change(tree.root.findAllByType('select')[0], 'worker-1');
+    await change(tree.root.findByProps({ type: 'time' }), '00:01');
+    await change(tree.root.findByType('textarea'), 'Missed scan');
+    await act(async () => button(tree, 'Add punch').props.onClick());
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(['/api/attendance?date=2026-09-13&worker_id=worker-1', '/api/attendance-corrections']);
+    expect(postBodies()).toEqual([expect.objectContaining({ corrected_timestamp: '2026-09-14T00:01:00' })]);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('still cancels a near-midnight pre-check closed under React Strict Mode', async () => {
+    let resolveCheck!: (value: unknown) => void;
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? Promise.resolve({ ok: true, status: 201, json: async () => ({}) })
+        : new Promise((resolve) => { resolveCheck = resolve; })
+    )));
+    const { tree, onClose } = await render({ mode: 'add', date: '2026-09-13', sourceEvent: null, effectiveEvents: [] }, { strict: true });
+    await change(tree.root.findAllByType('select')[0], 'worker-1');
+    await change(tree.root.findByProps({ type: 'time' }), '23:59');
+    await change(tree.root.findByType('textarea'), 'Missed scan');
+    await act(async () => { button(tree, 'Add punch').props.onClick(); });
+    await act(async () => button(tree, 'Close').props.onClick());
+    expect(onClose).toHaveBeenCalled();
+    await act(async () => resolveCheck({ ok: true, status: 200, json: async () => [] }));
+    expect(postBodies()).toHaveLength(0);
   });
 
   it('does not double-submit while a save is in flight', async () => {
