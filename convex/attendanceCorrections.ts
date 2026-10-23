@@ -122,12 +122,12 @@ export const create = mutation({
 
     const reason = normalizeText(args.reason);
     if (!reason) {
-      throw new Error("Correction reason is required.");
+      throw new ConvexError("Correction reason is required.");
     }
 
     const requestId = args.requestId;
     if (requestId !== undefined && (!requestId.trim() || requestId.length > 200)) {
-      throw new Error("requestId must be a nonempty string of at most 200 characters.");
+      throw new ConvexError("requestId must be a nonempty string of at most 200 characters.");
     }
     const correctedTimestamp = normalizeText(args.correctedTimestamp);
     const evidence = {
@@ -145,7 +145,7 @@ export const create = mutation({
         .withIndex("by_requestId", (q) => q.eq("requestId", requestId)).unique();
       if (existing) {
         if (Object.entries(evidence).some(([key, value]) => existing[key as keyof typeof evidence] !== value)) {
-          throw new Error("Correction requestId was already used with different details.");
+          throw new ConvexError("Correction requestId was already used with different details.");
         }
         return { id: existing._id, createdAt: existing.createdAt };
       }
@@ -153,16 +153,16 @@ export const create = mutation({
 
     const worker = await ctx.db.get(args.workerId);
     if (!worker) {
-      throw new Error("Worker not found.");
+      throw new ConvexError("Worker not found.");
     }
 
     if (args.action === "void_event") {
       if (!args.originalAttendanceId) {
-        throw new Error("originalAttendanceId is required when voiding an event.");
+        throw new ConvexError("originalAttendanceId is required when voiding an event.");
       }
       const original = await ctx.db.get(args.originalAttendanceId);
       if (!original) {
-        throw new Error("Original attendance event not found.");
+        throw new ConvexError("Original attendance event not found.");
       }
       const priorVoids = await ctx.db.query("attendanceCorrections")
         .withIndex("by_original_attendance", q => q.eq("originalAttendanceId", args.originalAttendanceId!)).take(501);
@@ -171,16 +171,16 @@ export const create = mutation({
         if (prior.action !== "void_event") continue;
         const reversed = await ctx.db.query("attendanceCorrectionReversals")
           .withIndex("by_correctionId", q => q.eq("correctionId", prior._id)).unique();
-        if (!reversed) throw new Error("This attendance event already has an active void; reverse that correction before voiding it again");
+        if (!reversed) throw new ConvexError("This attendance event already has an active void; reverse that correction before voiding it again");
       }
       if (original.workerId !== args.workerId) {
-        throw new Error("Original attendance event belongs to a different worker.");
+        throw new ConvexError("Original attendance event belongs to a different worker.");
       }
       if (!timestampBelongsToFactoryLocalDate(original.timestamp, args.date)) {
-        throw new Error("Original attendance event is not on the correction date.");
+        throw new ConvexError("Original attendance event is not on the correction date.");
       }
     } else if (!correctedTimestamp) {
-      throw new Error("correctedTimestamp is required when adding an event.");
+      throw new ConvexError("correctedTimestamp is required when adding an event.");
     } else if (!isValidAttendanceTimestamp(correctedTimestamp)) {
       throw new ConvexError({ code: "INVALID_CORRECTION_TIMESTAMP", message: "correctedTimestamp must be a valid ISO date and time, with optional UTC offset." });
     } else if (!timestampBelongsToFactoryLocalDate(correctedTimestamp, args.date)) {
