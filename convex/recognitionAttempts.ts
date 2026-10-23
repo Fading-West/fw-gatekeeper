@@ -461,7 +461,7 @@ export const updateReview = mutation({
     reviewedAt: v.optional(v.string()),
   },
   returns: v.union(v.null(), v.object({
-    id: v.id("recognitionAttempts"), timestamp: v.string(), kiosk_id: v.string(),
+    id: v.id("recognitionAttempts"), timestamp: v.string(), timestamp_utc: v.optional(v.union(v.string(), v.null())), kiosk_id: v.string(),
     source_attempt_id: v.union(v.string(), v.null()), face_detected: v.number(),
     candidate_worker_id: v.union(v.string(), v.null()), candidate_worker_name: v.union(v.string(), v.null()),
     best_score: v.union(v.number(), v.null()), second_best_score: v.union(v.number(), v.null()),

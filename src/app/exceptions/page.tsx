@@ -1,11 +1,14 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
+import { FactoryDatePage } from '@/components/FactoryDatePage';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
-import { createLocalIsoTimestamp, getFactoryLocalDateString } from '@/lib/date';
+import { createLocalIsoTimestamp } from '@/lib/date';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -173,7 +176,7 @@ function exceptionRowId(key: string) {
 function ExceptionsPageContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  const { date, setDate, keepDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')));
   const queryDepartment = searchParams.get('department') || 'all';
   const queryType = searchParams.get('type') || 'all';
   const querySeverity = validSeverityParam(searchParams.get('severity'));
@@ -181,7 +184,6 @@ function ExceptionsPageContent() {
   const queryExceptionKey = searchParams.get('exception_key') || '';
   const queryIntent = searchParams.get('intent') || '';
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
   const [department, setDepartment] = useState(queryDepartment);
   const [type, setType] = useState(queryType);
   const [severity, setSeverity] = useState<ShiftExceptionSeverity | 'all'>(querySeverity);
@@ -199,12 +201,15 @@ function ExceptionsPageContent() {
   const correctionOpen = correctionDraft !== null;
 
   useEffect(() => {
-    setDate(queryDate);
+    if (correctionOpen || Object.keys(noteDrafts).length || isPending || savingCorrection) keepDate();
+  }, [correctionOpen, isPending, keepDate, noteDrafts, savingCorrection]);
+
+  useEffect(() => {
     setDepartment(queryDepartment);
     setType(queryType);
     setSeverity(querySeverity);
     setStatus(queryStatus);
-  }, [queryDate, queryDepartment, querySeverity, queryStatus, queryType]);
+  }, [queryDepartment, querySeverity, queryStatus, queryType]);
 
   const loadExceptions = useCallback(async (signal: AbortSignal): Promise<ShiftExceptionsResponse> => {
     const res = await fetch(`/api/shift-exceptions?date=${date}`, { cache: 'no-store', signal });
@@ -471,6 +476,8 @@ function ExceptionsPageContent() {
           </button>
         </div>
       </div>
+
+      {newDay && <FactoryDayNotice date={date} today={today} />}
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[
@@ -811,8 +818,8 @@ function ExceptionsPageContent() {
 
 export default function ExceptionsPage() {
   return (
-    <Suspense fallback={null}>
+    <FactoryDatePage>
       <ExceptionsPageContent />
-    </Suspense>
+    </FactoryDatePage>
   );
 }
