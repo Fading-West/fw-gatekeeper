@@ -19,7 +19,11 @@ def is_valid_face_service_key(provided_key: Optional[str]) -> bool:
     candidate = (provided_key or "").strip()
     if not configured_key or not candidate:
         return False
-    return hmac.compare_digest(candidate, configured_key)
+    # Compare bytes: str compare_digest raises TypeError on non-ASCII input.
+    return hmac.compare_digest(
+        candidate.encode("utf-8", "surrogatepass"),
+        configured_key.encode("utf-8", "surrogatepass"),
+    )
 
 
 def get_allowed_cors_origins() -> list[str]:
