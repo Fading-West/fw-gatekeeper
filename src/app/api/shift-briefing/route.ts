@@ -41,6 +41,8 @@ function emptyResponse(date: string) {
       total: 0,
       counts: { online: 0, stale: 0, offline: 0, never_synced: 0 },
       rows: [],
+      // Unavailable, never an empty (clear) queue.
+      attendance_queue: null,
     },
     schedules: { active_today: 0, total_active: 0 },
     shift_trust_brief: {

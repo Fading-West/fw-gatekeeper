@@ -3,6 +3,8 @@ import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
 import type { Doc } from "./_generated/dataModel";
+import { nextAttendanceQueue, observeAttendanceQueue } from "./attendanceQueue";
+import { parseQueueCount } from "../src/lib/attendance-queue";
 
 function normalizeOptionalText(value?: string) {
   const trimmed = value?.trim();
@@ -35,6 +37,7 @@ function serializeKiosk(k: any, lastPurgeAt: string | null = null) {
     roster_applied_at: k.rosterAppliedAt || null,
     purge_pending: Boolean(lastPurgeAt && (!k.rosterAppliedAt || k.rosterAppliedAt <= lastPurgeAt)),
     health: serializeHealth(k.health),
+    attendance_queue: observeAttendanceQueue(k),
     credential_status: (k.credentialHash ? "device" : k.legacyDisabledAt ? "revoked" : "legacy") as "device" | "revoked" | "legacy",
     active: 1,
   };
@@ -51,6 +54,13 @@ const healthSerialized = v.union(v.object({
   last_scan_at: v.union(v.string(), v.null()),
   reported_at: v.string(),
 }), v.null());
+
+const attendanceQueueSerialized = v.object({
+  status: v.union(v.literal("pending"), v.literal("clear"), v.literal("unknown")),
+  last_valid_count: v.union(v.number(), v.null()),
+  observed_at: v.union(v.string(), v.null()),
+  caveat: v.boolean(),
+});
 
 const healthInput = v.object({
   cameraOk: v.optional(v.boolean()),
@@ -76,6 +86,7 @@ export const list = query({
     roster_applied_at: v.union(v.string(), v.null()),
     purge_pending: v.boolean(),
     health: healthSerialized,
+    attendance_queue: attendanceQueueSerialized,
     credential_status: v.union(v.literal("device"), v.literal("revoked"), v.literal("legacy")),
     active: v.number(),
   })),
@@ -159,9 +170,27 @@ export const updateLastSyncFromHttp = internalMutation({
     const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
     if (!kiosk) return { updated: false };
 
+    const now = Date.now();
+    const incomingAt = Date.parse(args.lastSync);
+    if (!Number.isFinite(incomingAt) || incomingAt > now + 60_000) {
+      throw new ConvexError({ code: "INVALID_KIOSK_SYNC_TIME", message: "Kiosk sync time must be a valid recent or past instant" });
+    }
+    const storedAt = kiosk.lastSync ? Date.parse(kiosk.lastSync) : NaN;
+    if (Number.isFinite(storedAt) && storedAt <= now + 60_000 && incomingAt <= storedAt) return { updated: true };
+    // Queue state advances only for accepted reports, and reads the prior
+    // health before replacement so legacy rows keep their last valid count.
+    const queuedLogs = parseQueueCount(args.health?.queuedLogs);
+    let health = args.health;
+    if (health) {
+      const { queuedLogs: _logs, queuedAttempts: rawAttempts, ...rest } = health;
+      const queuedAttempts = parseQueueCount(rawAttempts);
+      health = { ...rest, ...(queuedLogs !== undefined ? { queuedLogs } : {}), ...(queuedAttempts !== undefined ? { queuedAttempts } : {}) };
+    }
+    const attendanceQueue = nextAttendanceQueue(kiosk, queuedLogs, args.lastSync);
     await ctx.db.patch(kiosk._id, {
       lastSync: args.lastSync,
-      ...(args.health ? { health: args.health } : {}),
+      ...(health ? { health } : {}),
+      ...(attendanceQueue ? { attendanceQueue } : {}),
     });
     return { updated: true };
   },

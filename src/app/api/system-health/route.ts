@@ -7,6 +7,7 @@ import { unauthorizedApiResponse } from '@/lib/auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
 import { systemHealthCache } from '@/lib/system-health-cache';
+import type { AttendanceQueueObservation } from '@/lib/types';
 
 const FACE_SERVICE_FALLBACK = 'https://fw-face-service.onrender.com';
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
@@ -54,6 +55,7 @@ type SystemHealthPayload = {
       expected_worker_count: number;
       last_attendance_upload: string | null;
       health: KioskDeviceHealth | null;
+      attendance_queue: AttendanceQueueObservation | null;
       device_issues: string[];
     }>;
   };
@@ -87,18 +89,25 @@ function getKioskStatus(lastSync: string | null): KioskStatus {
 
 
 
-function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
-  if (!health) return [];
+function getDeviceIssues(health: KioskDeviceHealth | null, queue: AttendanceQueueObservation | null): string[] {
+  if (!health) return getAttendanceQueueIssues(queue);
   const issues: string[] = [];
   if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
   if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
   if (health.degraded_reason && health.degraded_reason !== 'camera_error' && health.degraded_reason !== 'model_error') {
     issues.push(KIOSK_DEGRADED_REASON_LABELS[health.degraded_reason] ?? `degraded (${health.degraded_reason})`);
   }
-  if ((health.queued_logs ?? 0) > 0) {
-    issues.push(`${health.queued_logs} attendance record${health.queued_logs === 1 ? '' : 's'} queued on-device`);
-  }
-  return issues;
+  return [...issues, ...getAttendanceQueueIssues(queue)];
+}
+
+// Uses the retained server observation, so an unknown report does not hide a
+// previously reported positive queue.
+function getAttendanceQueueIssues(queue: AttendanceQueueObservation | null): string[] {
+  if (!queue?.caveat || queue.last_valid_count === null) return [];
+  const records = `${queue.last_valid_count} attendance record${queue.last_valid_count === 1 ? '' : 's'}`;
+  return [queue.status === 'pending'
+    ? `${records} not yet uploaded (incomplete attendance evidence)`
+    : `Latest report had no valid queue count; last valid report was ${records} not yet uploaded`];
 }
 
 function latestTimestamp(records: Array<{ timestamp?: string }>) {
@@ -185,8 +194,9 @@ export async function GET(req: NextRequest) {
         expected_worker_count: readyWorkerCount,
         last_attendance_upload: latestTimestamp(matchingEvents),
         health: kiosk.health ?? null,
+        attendance_queue: kiosk.attendance_queue ?? null,
         device_issues: [
-          ...getDeviceIssues(kiosk.health ?? null),
+          ...getDeviceIssues(kiosk.health ?? null, kiosk.attendance_queue ?? null),
           ...(kiosk.purge_pending ? ['Biometric purge still unconfirmed on this kiosk'] : []),
         ],
       };

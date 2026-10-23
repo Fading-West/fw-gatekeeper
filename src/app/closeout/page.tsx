@@ -7,8 +7,11 @@ import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { FactoryDatePage } from '@/components/FactoryDatePage';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
+import { AttendanceQueueEvidencePanel, attendanceQueueExportLines } from '@/components/AttendanceQueueEvidence';
 import { usePortalRole } from '@/hooks/usePortalRole';
+import { useCloseoutActor } from '@/hooks/useCloseoutActor';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { beginCloseoutAction, loadCloseoutAction, acknowledgeCloseoutAction, rejectCloseoutAction, reconcileRejectedCloseoutAction, closeoutActionStored, type PendingCloseoutAction } from '@/lib/closeout-request';
 import {
   ShiftCloseoutChecklistItem,
   ShiftCloseoutResponse,
@@ -51,8 +54,16 @@ function checklistExportLine(item: ShiftCloseoutChecklistItem, role: PortalRole 
   return `- ${item.label}: ${item.status} (${item.count}) - ${item.description}${proof}`;
 }
 
+const SIGNED_QUEUE_MISSING = 'Not recorded: this closeout was signed before attendance queue evidence was captured.';
+const CURRENT_QUEUE_MISSING = 'Current attendance queue evidence is unavailable. Do not treat the queue as clear.';
+
+function currentAttendanceQueue(payload: ShiftCloseoutResponse | null) {
+  return payload && !payload.backend_unavailable ? payload.attendance_queue : null;
+}
+
 function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string, role: PortalRole | undefined) {
-  const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
+  const signed = payload.closeout?.status === 'completed';
+  const summary = signed && payload.closeout ? payload.closeout.snapshot : payload.summary;
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
     `Status: ${payload.closeout?.status || 'open'}`,
@@ -68,6 +79,14 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     `Critical exceptions: ${summary.critical_exceptions}`,
     `Kiosk warnings: ${summary.kiosk_warnings}`,
     `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
+    '',
+    ...(signed ? [
+      'Signed attendance queue evidence',
+      ...attendanceQueueExportLines(payload.closeout?.signed_attendance_queue, SIGNED_QUEUE_MISSING),
+      '',
+    ] : []),
+    'Current attendance queue observations',
+    ...attendanceQueueExportLines(currentAttendanceQueue(payload), CURRENT_QUEUE_MISSING),
     '',
     'Current checklist',
     ...payload.checklist.map((item) => checklistExportLine(item, role, payload.date)),
@@ -177,12 +196,25 @@ function ShiftCloseoutPageContent() {
   // The new-day notice offers an explicit switch without hiding those actions.
   const { date, setDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')), false);
   const currentRole = usePortalRole();
+  const actorId = useCloseoutActor();
   const [supervisorName, setSupervisorName] = useState('');
   const [notes, setNotes] = useState('');
   const [acknowledgedBlockers, setAcknowledgedBlockers] = useState(false);
   const [isPending, setIsPending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingCloseoutAction | null>(null);
   const mutationPendingRef = useRef(false);
+  const conflictDraftRef = useRef<{ date: string; notes: string; supervisorName: string } | null>(null);
+  const [unsavedConflictDraft, setUnsavedConflictDraft] = useState<{ date: string; notes: string; supervisorName: string } | null>(null);
   const canOperate = canOperateCloseout(currentRole);
+  const selectedContext = useRef({ actorId, date, canOperate });
+  selectedContext.current = { actorId, date, canOperate };
+  const selectedPendingAction = pendingAction && pendingAction.actorId === actorId && pendingAction.intent.date === date ? pendingAction : null;
+
+  useEffect(() => {
+    setPendingAction(actorId ? loadCloseoutAction(actorId, date) : null);
+    setUnsavedConflictDraft(null);
+    conflictDraftRef.current = null;
+  }, [actorId, date]);
 
   const loadCloseout = useCallback(async (signal: AbortSignal): Promise<ShiftCloseoutResponse> => {
     const res = await fetch(`/api/shift-closeout?date=${date}`, { cache: 'no-store', signal });
@@ -191,13 +223,20 @@ function ShiftCloseoutPageContent() {
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
     return body;
   }, [date]);
-  const { data: payload, loading, error, refresh: fetchCloseout } = useSelectedData(date, loadCloseout);
+  const { data: payload, loading, error, refresh: fetchCloseout } = useSelectedData(JSON.stringify([actorId, date]), loadCloseout);
   const dataReady = Boolean(payload && !loading && !error);
 
   useEffect(() => {
-    setSupervisorName(payload?.closeout?.supervisor_name || '');
-    setNotes(payload?.closeout?.notes || '');
+    const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
+    const editableDraft = payload?.closeout?.status === 'completed' ? null : retained;
+    setSupervisorName(editableDraft?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
+    setNotes(editableDraft?.notes ?? payload?.closeout?.notes ?? '');
+
     setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
+    if (retained) {
+      setUnsavedConflictDraft(payload?.closeout?.status === 'completed' ? retained : null);
+      conflictDraftRef.current = null;
+    }
   }, [payload]);
 
 
@@ -209,7 +248,10 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.recognition_reviews || 0) +
     Number(payload?.summary.kiosk_warnings || 0) +
     Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0);
-  const canComplete = Boolean(payload && (
+  // Without queue evidence the backend cannot enforce acknowledgement of
+  // unsynced attendance, so signoff stays disabled (the API also refuses).
+  const queueEvidenceMissing = Boolean(payload && !completed && !currentAttendanceQueue(payload));
+  const canComplete = Boolean(payload && !queueEvidenceMissing && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
       : payload.can_complete
@@ -252,37 +294,66 @@ function ShiftCloseoutPageContent() {
   }, [payload]);
 
   function updateCloseout(action: 'save' | 'complete' | 'reopen') {
-    if (!dataReady || mutationPendingRef.current) return;
+    if (!dataReady || mutationPendingRef.current || selectedPendingAction || !actorId) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can update shift closeout.', 'error');
+      return;
+    }
+    if (action === 'complete' && queueEvidenceMissing) {
+      toast('Closeout signoff is unavailable until attendance queue evidence loads.', 'error');
       return;
     }
     if (action === 'complete' && !canComplete) {
       toast('Add an acknowledgement note before completing with blockers.', 'error');
       return;
     }
+    if (action !== 'reopen' && sourceBlockerCount > 0 && acknowledgedBlockers && !notes.trim()) {
+      toast('Add an acknowledgement note before saving acknowledged blockers.', 'error');
+      return;
+    }
 
+    const request = { date, action, expected_revision: payload?.closeout ? payload.closeout.revision ?? 0 : null,
+      supervisor_name: supervisorName, notes, acknowledged_blockers: acknowledgedBlockers, blocker_evidence: payload?.blocker_evidence };
+    try {
+      const savedAction = beginCloseoutAction(actorId, request);
+      setPendingAction(savedAction);
+      sendCloseoutAction(savedAction);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not preserve the closeout action', 'error');
+    }
+  }
+
+  function sendCloseoutAction(savedAction: PendingCloseoutAction) {
+    if (mutationPendingRef.current || !canOperate || savedAction.actorId !== actorId || savedAction.intent.date !== date) return;
     mutationPendingRef.current = true;
     setIsPending(true);
+    const stillSelected = () => selectedContext.current.actorId === savedAction.actorId && selectedContext.current.date === savedAction.intent.date;
     void (async () => {
       try {
         const res = await fetch('/api/shift-closeout', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            date,
-            action,
-            supervisor_name: supervisorName,
-            notes,
-            acknowledged_blockers: acknowledgedBlockers,
-          }),
+          body: JSON.stringify({ ...savedAction.intent, request_id: savedAction.requestId }),
         });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED', 'CLOSEOUT_REVISION_CONFLICT', 'CLOSEOUT_REQUEST_CONFLICT'].includes(body.code)) {
+          const rejected = rejectCloseoutAction(savedAction);
+          if (!stillSelected()) return;
+          setPendingAction(rejected);
+          conflictDraftRef.current = { date: savedAction.intent.date, notes: savedAction.intent.notes, supervisorName: savedAction.intent.supervisor_name };
+          setAcknowledgedBlockers(false);
+          await fetchCloseout();
+          toast(body.error, 'error');
+          return;
+        }
         if (!res.ok) throw new Error(body?.error || 'Failed to update closeout');
-        toast(action === 'complete' ? 'Shift closeout completed' : action === 'reopen' ? 'Shift closeout reopened' : 'Closeout notes saved');
+        if (!acknowledgeCloseoutAction(savedAction, body)) throw new Error('The action response could not be confirmed. Retry the saved action to recover its receipt.');
+        if (!stillSelected()) return;
+        setPendingAction(null);
+        toast('Saved action confirmed. Loading the current closeout record.');
         await fetchCloseout();
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Failed to update closeout', 'error');
+        if (stillSelected()) toast(err instanceof Error ? err.message : 'Failed to update closeout', 'error');
       } finally {
         mutationPendingRef.current = false;
         setIsPending(false);
@@ -346,6 +417,27 @@ function ShiftCloseoutPageContent() {
             </div>
           ))}
         </div>
+            {selectedPendingAction && (
+              <div className="rounded-xl border border-amber-400/30 p-3 text-sm" data-testid="saved-closeout-action">
+                <p>{selectedPendingAction.rejected ? 'This saved action was rejected. Review the current record before starting another action.' : 'This action has no confirmed response. Retry its original details to recover the result.'}</p>
+                <p>Saved action: {titleCase(selectedPendingAction.intent.action)}. Supervisor: {selectedPendingAction.intent.supervisor_name || 'Not set'}</p>
+                <p className="whitespace-pre-wrap">{selectedPendingAction.intent.notes || 'No saved action notes'}</p>
+                {!closeoutActionStored(selectedPendingAction) && <p>Tab storage is unavailable. Keep this page open until the action is confirmed.</p>}
+                <button type="button" className="btn-secondary mt-2" disabled={isPending || !dataReady || !canOperate} onClick={() => sendCloseoutAction(selectedPendingAction)}>Retry saved action</button>
+                {selectedPendingAction.rejected && <button type="button" className="btn-secondary mt-2" disabled={isPending || !dataReady || !canOperate} onClick={() => {
+                  const draft = { date, notes: selectedPendingAction.intent.notes, supervisorName: selectedPendingAction.intent.supervisor_name };
+                  reconcileRejectedCloseoutAction(selectedPendingAction);
+                  if (completed) {
+                    setUnsavedConflictDraft(draft);
+                  } else {
+                    setNotes(draft.notes);
+                    setSupervisorName(draft.supervisorName);
+                  }
+                  setAcknowledgedBlockers(false);
+                  setPendingAction(null);
+                }}>Review current record</button>}
+              </div>
+            )}
         {nextStep && (
           <div className="mt-5 border-l-4 border-gold/70 bg-navy-950/25 px-4 py-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -418,6 +510,18 @@ function ShiftCloseoutPageContent() {
           ) : (
             <div className="glass-card p-6 text-sm text-slate-400">No checklist is available for this date yet.</div>
           )}
+          {payload && (
+            <section className="glass-card p-5 space-y-3" aria-label="Attendance queue evidence">
+              <div>
+                <h2 className="font-display font-semibold text-slate-100">Attendance queue evidence</h2>
+                <p className="text-sm text-slate-400 mt-2 leading-6">Kiosk-reported attendance not yet uploaded. Signed evidence is kept separately from current observations.</p>
+              </div>
+              {completed && (
+                <AttendanceQueueEvidencePanel title="Signed with this closeout" evidence={payload.closeout?.signed_attendance_queue} missing={SIGNED_QUEUE_MISSING} testId="signed-attendance-queue" />
+              )}
+              <AttendanceQueueEvidencePanel title="Current observation" evidence={currentAttendanceQueue(payload)} missing={CURRENT_QUEUE_MISSING} testId="current-attendance-queue" />
+            </section>
+          )}
         </div>
 
         <aside className="space-y-4">
@@ -426,6 +530,13 @@ function ShiftCloseoutPageContent() {
               <h2 className="font-display font-semibold text-slate-100">Supervisor signoff</h2>
               <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
+            {unsavedConflictDraft?.date === date && completed && (
+              <div role="alert" className="rounded-xl border border-amber-400/30 p-3 text-sm">
+                <p>The record was completed while your action was rejected. This unsaved draft is separate from the signed record.</p>
+                <p>Draft supervisor: {unsavedConflictDraft.supervisorName || 'Not set'}</p>
+                <p className="whitespace-pre-wrap">{unsavedConflictDraft.notes || 'No draft notes'}</p>
+              </div>
+            )}
             <label className="space-y-1.5 block">
               <span className="section-label block">Date</span>
               <input type="date" disabled={isPending} value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
@@ -439,7 +550,7 @@ function ShiftCloseoutPageContent() {
                   setSupervisorName(event.target.value);
                 }}
                 placeholder="Supervisor name"
-                readOnly={completed || !dataReady || isPending || !canOperate}
+                readOnly={completed || !dataReady || isPending || !!selectedPendingAction || !canOperate}
                 className="input-field"
               />
             </label>
@@ -458,7 +569,7 @@ function ShiftCloseoutPageContent() {
                       type="button"
                       className="btn-secondary shrink-0 text-xs"
                       onClick={() => setNotes(draftNarrative)}
-                      disabled={isPending || draftApplied || !draftNarrative}
+                      disabled={isPending || !!selectedPendingAction || draftApplied || !draftNarrative}
                     >
                       {draftApplied ? 'Draft applied' : 'Use draft'}
                     </button>
@@ -509,7 +620,7 @@ function ShiftCloseoutPageContent() {
                       type="button"
                       className="btn-secondary shrink-0 text-xs"
                       onClick={() => setNotes(suggestedNote)}
-                      disabled={isPending || suggestedNoteApplied}
+                      disabled={isPending || !!selectedPendingAction || suggestedNoteApplied}
                     >
                       {suggestedNoteApplied ? 'Applied' : 'Use note'}
                     </button>
@@ -532,11 +643,17 @@ function ShiftCloseoutPageContent() {
                   setNotes(event.target.value);
                 }}
                 placeholder={canOperate ? 'Document exceptions reviewed, kiosk caveats, or follow-up needed.' : 'Closeout notes'}
-                readOnly={completed || !dataReady || isPending || !canOperate}
+                readOnly={completed || !dataReady || isPending || !!selectedPendingAction || !canOperate}
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
-            {blockerCount > 0 && !completed && (
+            {queueEvidenceMissing && (
+              <p role="alert" data-testid="queue-evidence-signoff-blocked" className="text-sm text-amber-300">Signoff is unavailable until the backend reports attendance queue evidence.</p>
+            )}
+            {payload?.closeout?.acknowledgement_stale && !completed && (
+              <p role="alert" className="text-sm text-amber-300">The blockers changed since the saved acknowledgement. Review and acknowledge the current evidence.</p>
+            )}
+            {sourceBlockerCount > 0 && !completed && (
               <label className="flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-100">
                 <input
                   type="checkbox"
@@ -545,7 +662,7 @@ function ShiftCloseoutPageContent() {
                     if (!canOperate) return;
                     setAcknowledgedBlockers(event.target.checked);
                   }}
-                  disabled={!dataReady || isPending || !canOperate}
+                  disabled={!dataReady || isPending || !!selectedPendingAction || !canOperate}
                   className="mt-1 h-4 w-4 rounded border-navy-500 bg-navy-900"
                 />
                 <span>I acknowledge the blocked closeout items and documented the reason in notes.</span>
@@ -554,15 +671,15 @@ function ShiftCloseoutPageContent() {
             <div className="flex flex-wrap gap-2">
               {canOperate ? (
                 <>
-                  <button type="button" className="btn-secondary" onClick={() => updateCloseout('save')} disabled={completed || !dataReady || isPending || !payload}>
+                  <button type="button" className="btn-secondary" onClick={() => updateCloseout('save')} disabled={completed || !dataReady || isPending || !!selectedPendingAction || !actorId || !payload}>
                     Save notes
                   </button>
                   {completed ? (
-                    <button type="button" className="btn-primary" onClick={() => updateCloseout('reopen')} disabled={!dataReady || isPending || !payload}>
+                    <button type="button" className="btn-primary" onClick={() => updateCloseout('reopen')} disabled={!dataReady || isPending || !!selectedPendingAction || !actorId || !payload}>
                       Reopen
                     </button>
                   ) : (
-                    <button type="button" className="btn-primary" onClick={() => updateCloseout('complete')} disabled={!dataReady || isPending || !payload || !canComplete}>
+                    <button type="button" className="btn-primary" onClick={() => updateCloseout('complete')} disabled={!dataReady || isPending || !!selectedPendingAction || !actorId || !payload || !canComplete}>
                       Complete closeout
                     </button>
                   )}

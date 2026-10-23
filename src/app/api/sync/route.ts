@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, type KioskHealthReport } from '@/lib/convex-ingest';
+import { parseQueueCount } from '@/lib/attendance-queue';
 
 function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefined {
   const bool = (key: string) => {
@@ -22,8 +23,10 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
     modelOk: bool('model_ok'),
     livenessAvailable: bool('liveness_available'),
     knownWorkers: count('known_workers'),
-    queuedLogs: count('queued_logs'),
-    queuedAttempts: count('queued_attempts'),
+    // Queue counts accept canonical integers only: blank or malformed values
+    // stay unknown rather than reporting an empty queue.
+    queuedLogs: parseQueueCount(params.get('queued_logs')),
+    queuedAttempts: parseQueueCount(params.get('queued_attempts')),
     degradedReason: text('degraded_reason'),
     lastScanAt: text('last_scan_at'),
   };
@@ -31,6 +34,8 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
 }
 
 export async function GET(req: NextRequest) {
+  // Preserve arrival order even when credential checks complete out of order.
+  const lastSync = new Date().toISOString();
   const requestedId = req.nextUrl.searchParams.get('kiosk_id');
   // Portal sessions cannot authorize device heartbeats or biometric downloads.
   const identity = await authenticateKiosk(req, [requestedId]);
@@ -42,7 +47,6 @@ export async function GET(req: NextRequest) {
   const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
   const receiptProtocol = hasDeviceKeyFormat(req) && req.nextUrl.searchParams.get('roster_receipt') === '1';
 
-  const lastSync = new Date().toISOString();
   try {
     const result = await updateKioskLastSync(kioskId, lastSync, parseKioskHealth(req.nextUrl.searchParams));
     if (!result.updated) {

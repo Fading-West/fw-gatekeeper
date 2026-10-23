@@ -42,7 +42,7 @@ the dashboard does.
 | `offline` | `lastSync` is older than 60 minutes | `stale` is never reported alongside `offline` for the same kiosk. |
 | `never_synced` | The kiosk has no `lastSync` at all | Usually a freshly registered kiosk whose `KIOSK_ID` does not match. |
 | `device_fault` | `health.cameraOk === false`, `health.modelOk === false`, or `health.degradedReason` is one of `camera_error`, `model_error`, `encoding_mismatch`, `no_workers_synced`, `liveness_required_unavailable` | These are the faults that block every scan. `liveness_unavailable` is shown on the dashboard but does not page anyone. |
-| `queue_backlog` | `health.queuedLogs >= 50` | The kiosk is scanning but cannot upload attendance. |
+| `queue_backlog` | `health.queuedLogs >= 50` | The kiosk is scanning but cannot upload attendance.  Closeout separately requires acknowledgement for any positive count; see [attendance-queue-closeout.md](attendance-queue-closeout.md). |
 
 Inactive kiosks (`active: false`) are ignored.
 
