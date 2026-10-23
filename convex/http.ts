@@ -255,7 +255,7 @@ const attendanceIngest = httpAction(async (ctx, request) => {
     console.info('secured_ingest_attendance_single', { workerId: event.workerId });
     return jsonResponse(result, 201);
   } catch (error) {
-    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message, code: error.data.code }, 400);
     throw error;
   }
 });

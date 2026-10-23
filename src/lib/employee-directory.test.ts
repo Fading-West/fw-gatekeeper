@@ -17,6 +17,24 @@ describe('employee directory', () => {
     expect(searchEmployeeDirectory('F-1')[0]?.name).toBe('Steven Wheeler (D)');
   });
 
+  it('lists everyone in an exactly matching department before partial ID and department matches', () => {
+    const departmentIds = (department: string) => employeeDirectory
+      .filter((employee) => employee.department === department)
+      .map((employee) => employee.employeeId);
+    const station4 = departmentIds('Station 4');
+    expect(station4).toHaveLength(6);
+
+    // "4" is also a substring of IDs such as F-24 and F-43 and of "Station 14".
+    expect(searchEmployeeDirectory('Station 4', station4.length).map((employee) => employee.employeeId)).toEqual(station4);
+    expect(searchEmployeeDirectory('station 1')[0]).toMatchObject({ employeeId: 'F-23', department: 'Station 1' });
+
+    const { employees } = reconcileEmployeeDirectory([]);
+    const suggestions = filterEmployeeDirectory(employees, 'Station 4', 'all');
+    expect(suggestions.slice(0, station4.length).map((employee) => employee.employeeId)).toEqual(station4);
+    expect(filterEmployeeDirectory(employees, 'Station 2', 'remaining').slice(0, 2).map((employee) => employee.employeeId))
+      .toEqual(departmentIds('Station 2'));
+  });
+
   it('finds likely misspellings so operators can avoid duplicate people', () => {
     expect(searchEmployeeDirectory('Alex Gonzales')[0]?.employeeId).toBe('F-2');
   });
