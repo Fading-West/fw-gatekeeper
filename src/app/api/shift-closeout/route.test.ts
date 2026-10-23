@@ -71,7 +71,7 @@ it('uses an explicit snake-case clear instead of falling back to a camelCase val
 it('passes an explicit note clear to blocker validation instead of silently keeping old notes', async () => {
   const { t, id, patch } = await setup(true);
   const response = await patch({ action: 'complete', notes: '', acknowledged_blockers: true });
-  expect(response.status).toBe(500);
+  expect(response.status).toBe(400);
   expect((await response.json()).error).toContain('acknowledgement note');
   expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ status: 'open', notes: 'Existing notes' });
 });
