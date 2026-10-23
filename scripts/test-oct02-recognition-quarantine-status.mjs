@@ -11,7 +11,7 @@ const end=source.indexOf('\n        async function ',start+1);
 assert.ok(start>=0 && end>start,'actual status function must be extracted');
 const element=()=>({textContent:'',style:{}});
 const chip=element();let health;
-const context=vm.createContext({syncChip:chip,statusText:element(),stateValue:element(),workerIdValue:element(),earValue:element(),knownValue:element(),liveValue:element(),lastUpdated:element(),livenessNote:element(),
+const context=vm.createContext({clockWarning:{hidden:true},syncChip:chip,statusText:element(),stateValue:element(),workerIdValue:element(),earValue:element(),knownValue:element(),liveValue:element(),lastUpdated:element(),livenessNote:element(),
  fetch:async()=>({json:async()=>({state:'IDLE',health})}),statusMessageFromState:()=>'',applyStatusState:()=>{},renderAdmin:()=>{},setAdminVisible:()=>{}});
 vm.runInContext(`let supervisorStateVersion=0;let adminVisible=false;${source.slice(start,end)};globalThis.fetchStatus=fetchStatus;`,context);
 for(const online of [true,false]){
