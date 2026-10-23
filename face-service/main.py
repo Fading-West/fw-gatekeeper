@@ -55,7 +55,11 @@ async def service_lifespan(_app):
     yield
 
 
-app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
+app = FastAPI(
+    title="Face Encoding Service",
+    lifespan=service_lifespan,
+    telemetry={"auto_configure": False},
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),

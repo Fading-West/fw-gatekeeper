@@ -75,6 +75,8 @@ export default function KiosksPage() {
   const [unknownCredentialOutcome, setUnknownCredentialOutcome] = useState<string | null>(null);
 
   const credentialStatusRequestRef = useRef(0);
+  const readinessRequestRef = useRef(0);
+
 
   const fetchCredentialStatus = useCallback(async () => {
     // Only the latest request may apply, so a slow earlier read cannot
@@ -133,26 +135,29 @@ export default function KiosksPage() {
         // The refetch below shows whether the revoke took effect.
         toast(`Could not confirm whether access for ${label} was revoked. Check its credential status.`, 'error');
       }
+
     } finally {
       credentialBusyRef.current = false;
       setCredentialBusy(null);
+      fetchReadiness();
       fetchCredentialStatus();
     }
   };
 
   const fetchReadiness = useCallback(async () => {
+    const requestId = ++readinessRequestRef.current;
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/system-health', { cache: 'no-store' });
+      const res = await fetch('/api/system-health?fresh=1', { cache: 'no-store' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || 'Failed to load kiosk readiness');
-      setHealth(body);
+      if (requestId === readinessRequestRef.current) setHealth(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load kiosk readiness';
-      setError(message);
+      if (requestId === readinessRequestRef.current) setError(message);
     } finally {
-      setLoading(false);
+      if (requestId === readinessRequestRef.current) setLoading(false);
     }
   }, []);
 

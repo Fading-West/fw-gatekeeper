@@ -10,7 +10,7 @@ it('keeps a one-time secret visible and serializes credential changes until dism
   const posts: string[] = [];
   vi.stubGlobal('confirm', vi.fn(() => true));
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/system-health') return { ok: true, json: async () => ({
+    if (url === '/api/system-health?fresh=1') return { ok: true, json: async () => ({
       kiosks: { total: 2, rows: [
         { id: 'kiosk-a', name: 'A', kiosk_id: 'a', status: 'online' },
         { id: 'kiosk-b', name: 'B', kiosk_id: 'b', status: 'online' },
@@ -53,7 +53,7 @@ it('warns that revoking a legacy-only kiosk stops sync and sends confirmation on
   const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
   vi.stubGlobal('confirm', confirm);
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/system-health') return { ok: true, json: async () => ({
+    if (url === '/api/system-health?fresh=1') return { ok: true, json: async () => ({
       kiosks: { total: 1, rows: [{ id: 'kiosk-a', name: 'Front Gate', kiosk_id: 'a', status: 'online' }], counts: { online: 1, stale: 0, offline: 0, never_synced: 0 } },
       sync: { ready_worker_count: 0 },
     }) };
@@ -80,7 +80,7 @@ it('warns that revoking a legacy-only kiosk stops sync and sends confirmation on
 it('shows the credential status of a newly registered kiosk without reloading', async () => {
   let registered = false;
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/system-health') return { ok: true, json: async () => ({
+    if (url === '/api/system-health?fresh=1') return { ok: true, json: async () => ({
       kiosks: { total: registered ? 1 : 0, rows: registered
         ? [{ id: 'new-kiosk', name: 'New Gate', kiosk_id: 'new-gate', status: 'never_synced' }] : [],
         counts: { online: 0, stale: 0, offline: 0, never_synced: registered ? 1 : 0 } },
@@ -120,7 +120,7 @@ it('requires confirmation naming the kiosk before issuing or rotating, and cance
   const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
   vi.stubGlobal('confirm', confirm);
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: 'legacy' }]) };
     requests.push({ method: init!.method!, body: JSON.parse(String(init!.body)) });
     return { ok: true, json: async () => ({ kiosk_id: 'a', credential: 'secret-a' }) };
@@ -147,7 +147,7 @@ it.each([
   vi.stubGlobal('confirm', vi.fn(() => true));
   let statusReads = 0;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') {
       statusReads += 1;
       return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: statusReads === 1 ? 'legacy' : 'device' }]) };
@@ -180,7 +180,7 @@ it('retries only the status read after an unknown rotation, without issuing anot
   let statusReads = 0;
   let rotations = 0;
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') {
       statusReads += 1;
       if (statusReads === 2) throw new TypeError('Failed to fetch');
@@ -214,7 +214,7 @@ it('shows credential status as unavailable with a retry instead of checking fore
   let statusReads = 0;
   let revokeOk = false;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') {
       statusReads += 1;
       if (!statusOk) throw new TypeError('Failed to fetch');
@@ -258,7 +258,7 @@ it('shows credential status as unavailable with a retry instead of checking fore
 it('shows a definite rejection from a 4xx issue response as an error, not an unknown outcome', async () => {
   vi.stubGlobal('confirm', vi.fn(() => true));
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: 'legacy' }]) };
     return { ok: false, status: 404, json: async () => ({ error: 'Active kiosk not found' }) };
   }));
@@ -280,7 +280,7 @@ it.each([
   vi.stubGlobal('confirm', vi.fn(() => true));
   let statusReads = 0;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') {
       statusReads += 1;
       return { ok: true, json: async () => ([{ id: 'kiosk-a', credential_status: statusReads === 1 ? 'legacy' : 'revoked' }]) };
@@ -309,7 +309,7 @@ it.each([
   const firstRead = new Promise<void>((resolve) => { releaseFirstRead = resolve; });
   let statusReads = 0;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/system-health') return oneKioskHealth();
+    if (url === '/api/system-health?fresh=1') return oneKioskHealth();
     if (url === '/api/kiosks') {
       statusReads += 1;
       if (statusReads === 1) {
@@ -332,4 +332,35 @@ it.each([
   } finally {
     await act(async () => tree.unmount());
   }
+});
+
+it('does not let a slow initial readiness response hide a just-registered kiosk', async () => {
+  const payload = (registered: boolean) => ({
+    kiosks: { total: registered ? 1 : 0, rows: registered
+      ? [{ id: 'entry-2', name: 'Entry-2', kiosk_id: 'entry-2', status: 'never_synced' }] : [],
+      counts: { online: 0, stale: 0, offline: 0, never_synced: registered ? 1 : 0 } },
+    sync: { ready_worker_count: 0 },
+  });
+  let finishInitial!: (response: Response) => void;
+  const initial = new Promise<Response>(resolve => { finishInitial = resolve; });
+  let reads = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/system-health?fresh=1') {
+      return ++reads === 1 ? initial : Response.json(payload(true));
+    }
+    if (url === '/api/kiosks' && init?.method === 'POST') return Response.json({ id: 'entry-2' }, { status: 201 });
+    if (url === '/api/kiosks') return Response.json([]);
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<KiosksPage />); });
+  try {
+    await act(async () => tree.root.findAllByType('button').find(node => node.children.includes('Add Kiosk'))!.props.onClick());
+    await act(async () => tree.root.findAllByType('input').find(node => node.props.placeholder === 'e.g. Main Entrance Kiosk')!.props.onChange({ target: { value: 'Entry-2' } }));
+    await act(async () => tree.root.findAllByType('button').find(node => node.children.includes('Register Kiosk'))!.props.onClick());
+    await act(async () => finishInitial(Response.json(payload(false))));
+    expect(reads).toBe(2);
+    expect(tree.root.findAllByType('h3').some(node => node.children.includes('Entry-2'))).toBe(true);
+    expect(tree.root.findAllByType('button').some(node => node.children.includes('Issue / rotate credential'))).toBe(true);
+  } finally { await act(async () => tree.unmount()); }
 });
