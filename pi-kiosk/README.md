@@ -255,6 +255,9 @@ sqlite3 data/attendance.db \
 python3 attendance_rejections.py retry 1 --note "Verified timestamp against supervisor shift record"
 ```
 
+The retry command refreshes the derived timestamp index in the same transaction as the audited release. Always complete this retry step after repairing a timestamp; editing the raw SQLite row alone does not refresh indexed history.
+
+
 Use the rejection id from `list` for `retry`, and the log id for the SQL edit.
 The original snapshot, rejection reason, release time, and operator note stay
 in `attendance_rejections` after retry. If the event still fails validation,

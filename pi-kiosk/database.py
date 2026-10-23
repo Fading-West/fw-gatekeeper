@@ -1114,13 +1114,18 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
         raise ValueError("A reason for retry is required")
     conn = _get_conn()
     with conn:
-        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id
+        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id, l.timestamp
             FROM attendance_rejections r LEFT JOIN attendance_log l ON l.id = r.log_id
             WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
         if rejection is None:
             raise ValueError(f"Active rejection {rejection_id} does not exist")
         if rejection["existing_log_id"] is None:
             raise ValueError(f"Attendance log {rejection['log_id']} is missing; restore the original evidence before retry")
+        # The supported repair procedure updates timestamp with a plain SQLite
+        # client before retry. Refresh the derived cache in the same transaction
+        # that releases the evidence so history/debounce/retention see the repair.
+        conn.execute("UPDATE attendance_log SET timestamp_epoch = ? WHERE id = ?",
+                     (_attendance_epoch(rejection["timestamp"]), rejection["log_id"]))
         result = conn.execute("""UPDATE attendance_rejections
             SET released_at = datetime('now'), release_note = ?
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))

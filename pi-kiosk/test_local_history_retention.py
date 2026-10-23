@@ -138,6 +138,29 @@ class LocalHistoryTests(unittest.TestCase):
                                              (inserted,)).fetchone()[0], database._attendance_epoch(day + 'T10:00:00Z'))
                 self.assertEqual(database.get_today_logs(), self.old_today(conn, 50))
 
+    def test_rejection_retry_refreshes_epoch_after_a_sqlite_timestamp_repair(self):
+        with local_clock('America/Denver', NOW):
+            self.attendance((NOW - timedelta(minutes=10)).isoformat(), action='clock_in')
+            repaired = self.attendance(OLD, action='clock_out')
+            database.reject_attendance(repaired, 'Incorrect timestamp')
+            rejection = database.list_attendance_rejections()[0]
+            corrected = (NOW - timedelta(minutes=1)).isoformat()
+            # Follow the documented workflow: edit with a plain SQLite client,
+            # then use the audited retry command before releasing the event.
+            with sqlite3.connect(config.DB_PATH) as external:
+                external.execute('UPDATE attendance_log SET timestamp = ? WHERE id = ?', (corrected, repaired))
+            database.retry_attendance_rejection(rejection['id'], 'Verified against supervisor record')
+            row = database._get_conn().execute('SELECT timestamp_epoch FROM attendance_log WHERE id = ?', (repaired,)).fetchone()
+            self.assertEqual(row[0], database._attendance_epoch(corrected))
+            self.assertEqual(database.get_last_action(1), 'clock_out')
+            self.assertEqual(database.get_today_logs()[0]['id'], repaired)
+            self.assertTrue(database.was_recently_clocked(1, 2))
+            preserved = database._get_conn().execute('SELECT original_log_json FROM attendance_rejections WHERE id = ?', (rejection['id'],)).fetchone()[0]
+            self.assertEqual(json.loads(preserved)['timestamp'], OLD)
+            database.mark_synced([repaired])
+            database.prune_synced_history()
+            self.assertIn(repaired, self.ids('attendance_log'))
+
     def test_today_query_uses_range_index_without_udf_or_sort(self):
         with local_clock('America/Denver', NOW):
             self.attendance(NOW.isoformat())
