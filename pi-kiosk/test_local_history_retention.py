@@ -161,7 +161,7 @@ class LocalHistoryTests(unittest.TestCase):
             database.prune_synced_history()
             self.assertIn(repaired, self.ids('attendance_log'))
 
-    def test_restored_identity_keeps_history_during_migration_and_uses_both_epoch_indexes(self):
+    def test_restored_identity_keeps_physical_order_during_migration_and_uses_both_identity_indexes(self):
         with local_clock('America/Denver', NOW):
             first = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
             prior = self.attendance((NOW - timedelta(minutes=1)).isoformat(), worker=first)
@@ -173,8 +173,8 @@ class LocalHistoryTests(unittest.TestCase):
             conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL')
             conn.commit()
             database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, 2]))
-            self.assertEqual(database.get_last_action(restored), 'clock_in')
-            self.assertTrue(database.was_recently_clocked(restored, 2))
+            self.assertEqual(database.get_last_action(restored), 'clock_out')
+            self.assertFalse(database.was_recently_clocked(restored, 2))
             database._migrate_history()
             statements = []
             conn.set_trace_callback(statements.append)
@@ -182,15 +182,15 @@ class LocalHistoryTests(unittest.TestCase):
                 raise AssertionError('cached reader used UDF')
             try:
                 conn.create_function('attendance_epoch', 1, reject_udf)
-                self.assertEqual(database.get_last_action(restored), 'clock_in')
-                self.assertTrue(database.was_recently_clocked(restored, 2))
+                self.assertEqual(database.get_last_action(restored), 'clock_out')
+                self.assertFalse(database.was_recently_clocked(restored, 2))
             finally:
                 conn.set_trace_callback(None)
                 conn.create_function('attendance_epoch', 1, database._attendance_epoch)
-            latest = next(sql for sql in statements if sql.startswith('SELECT action FROM ('))
+            latest = next(sql for sql in statements if sql.startswith('SELECT action, epoch, id FROM ('))
             plan = ' '.join(row['detail'] for row in conn.execute('EXPLAIN QUERY PLAN ' + latest))
-            self.assertIn('idx_attendance_worker_epoch', plan)
-            self.assertIn('idx_attendance_server_worker_epoch', plan)
+            self.assertIn('idx_attendance_worker_id', plan)
+            self.assertIn('idx_attendance_server_worker', plan)
             self.assertEqual(conn.execute('SELECT server_worker_id FROM attendance_log WHERE id = ?',
                                           (prior,)).fetchone()[0], 'a' * 32)
 
@@ -229,13 +229,15 @@ class LocalHistoryTests(unittest.TestCase):
             with sqlite3.connect(config.DB_PATH) as external:
                 external.execute('UPDATE attendance_log SET timestamp = ? WHERE id = ?', (corrected, repaired))
             database.retry_attendance_rejection(rejection['id'], 'Verified supervisor record')
-            self.assertEqual(database.get_last_action(restored), 'clock_out')
-            self.assertTrue(database.was_recently_clocked(restored, 2))
+            self.assertEqual(database.get_last_action(restored), 'clock_in')
+            self.assertFalse(database.was_recently_clocked(restored, 2))
+            self.assertEqual(database.get_today_logs()[0]['id'], repaired)
+            # Timestamp repair updates history, not the physical order of scans.
             database.mark_synced([repaired])
             database.prune_synced_history()
             self.assertNotIn(obsolete, self.ids('attendance_log'))
             self.assertIn(repaired, self.ids('attendance_log'))
-            self.assertEqual(database.get_last_action(restored), 'clock_out')
+            self.assertEqual(database.get_last_action(restored), 'clock_in')
 
     def test_recognition_retry_refreshes_repaired_epoch_before_retention(self):
         with local_clock('America/Denver', NOW):
@@ -286,6 +288,7 @@ class LocalHistoryTests(unittest.TestCase):
         self.assertEqual(json.loads(database.get_sync_state('epoch_backfill:attendance_log')), [0, 205])
         self.assertEqual(conn.execute('SELECT COUNT(*) FROM attendance_log WHERE timestamp_epoch IS NULL').fetchone()[0], 205)
         self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name = 'idx_attendance_epoch'").fetchone())
+        self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name = 'idx_attendance_worker_id'").fetchone())
 
     def test_partial_backfill_today_matches_old_query_at_every_batch_on_dst_days(self):
         for day, hours in [('2026-03-08', 23), ('2026-11-01', 25)]:
@@ -320,13 +323,14 @@ class LocalHistoryTests(unittest.TestCase):
                     self.assertIn(live, [row['id'] for row in database.get_today_logs(-1)])
                     for worker_id in (1, 2):
                         old_action = conn.execute('SELECT action FROM attendance_log WHERE worker_id = ? '
-                            'ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1', (worker_id,)).fetchone()
+                            'ORDER BY id DESC LIMIT 1', (worker_id,)).fetchone()
                         self.assertEqual(database.get_last_action(worker_id), old_action[0] if old_action else None)
                         for minutes in (0, 5, 30000):
-                            threshold = (database.datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
-                            old_recent = conn.execute('SELECT id FROM attendance_log WHERE worker_id = ? '
-                                'AND attendance_epoch(timestamp) >= ? LIMIT 1', (worker_id, threshold)).fetchone()
-                            self.assertEqual(database.was_recently_clocked(worker_id, minutes), old_recent is not None)
+                            last = conn.execute('SELECT attendance_epoch(timestamp) AS epoch FROM attendance_log '
+                                'WHERE worker_id = ? ORDER BY id DESC LIMIT 1', (worker_id,)).fetchone()
+                            age = database.datetime.now(timezone.utc).timestamp() - last['epoch'] if last and last['epoch'] is not None else None
+                            self.assertEqual(database.was_recently_clocked(worker_id, minutes),
+                                             age is not None and 0 <= age <= minutes * 60)
                 verify()
                 with mock.patch.object(database, '_EPOCH_BACKFILL_BATCH_SIZE', 2):
                     database._migrate_event_epoch(conn, 'attendance_log', pause=verify)
@@ -598,7 +602,7 @@ class LocalHistoryTests(unittest.TestCase):
         migrate = database._migrate_event_epoch
         def check_indexes(c, table, pause=None):
             names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-            self.assertTrue({'idx_attendance_epoch', 'idx_attendance_worker_epoch',
+            self.assertTrue({'idx_attendance_worker_id', 'idx_attendance_epoch', 'idx_attendance_worker_epoch',
                              'idx_attendance_server_worker_epoch',
                              'idx_attendance_log_retention', 'idx_recognition_attempts_retention'} <= names)
             migrate(c, table, pause=pause)
@@ -619,7 +623,7 @@ class LocalHistoryTests(unittest.TestCase):
             response, status = route()
         self.assertEqual(status, 503)
         self.assertFalse(response.json['success'])
-        self.assertIn('please try again', response.json['error'])
+        self.assertIn('Retry this request', response.json['error'])
         self.assertFalse(conn.in_transaction)
         self.assertFalse(database._event_write_pending.is_set())
         self.assertEqual(database.count_unsynced_logs(), 0)
@@ -647,7 +651,10 @@ class LocalHistoryTests(unittest.TestCase):
         env = dict(config=config, database=database, web_app=web_app, logger=mock.Mock(),
                    recognizer=SimpleNamespace(known_count=1, liveness_policy=SimpleNamespace(record=lambda write, **kw: write(**kw))),
                    _log_recognition_attempt=telemetry, last_clocks=last_clocks,
-                   datetime=datetime, timezone=timezone, _now_iso=lambda: NOW.isoformat(), base_degraded_reason=lambda: None)
+                   datetime=datetime, timezone=timezone, _now_iso=lambda: NOW.isoformat(), base_degraded_reason=lambda: None,
+                   require_kiosk_action_type=__import__('kiosk_policy').require_kiosk_action_type,
+                   camera_healthy=True, camera_generation=[None], camera_invalidated_at=[0.0],
+                   time=SimpleNamespace(monotonic=lambda: 100.0), is_fresh_scan=lambda *args: True)
         exec(compile(ast.Module(body=[record], type_ignores=[]), 'main.py', 'exec'), env)
         with mock.patch.object(web_app, 'update_status') as status, mock.patch.object(web_app, 'update_health') as health:
             self.assertFalse(env['record_clock']({'candidate_encoding': np.zeros(128)}, worker_id, 'Alex', '1', .9, False))
@@ -821,7 +828,7 @@ class LocalHistoryTests(unittest.TestCase):
             unsent_logs = database.get_unsynced_logs()
             unsent_attempts = database.get_unsynced_recognition_attempts()
             before_today = database.get_today_logs()
-            self.assertEqual(database.get_last_action(1), 'clock_out')
+            self.assertEqual(database.get_last_action(1), 'clock_in')
             self.assertEqual(database.prune_synced_history(), {'attendance_log': 2, 'recognition_attempts': 1})
             self.assertEqual(self.ids('attendance_log'), [latest, unsynced, recent, boundary, invalid])
             self.assertEqual(self.ids('recognition_attempts'), kept_attempts)
@@ -831,7 +838,35 @@ class LocalHistoryTests(unittest.TestCase):
             self.assertEqual(database.get_unsynced_logs(), unsent_logs)
             self.assertEqual(database.get_unsynced_recognition_attempts(), unsent_attempts)
             self.assertEqual(database.get_today_logs(), before_today)
-            self.assertEqual(database.get_last_action(1), 'clock_out')
+            self.assertEqual(database.get_last_action(1), 'clock_in')
+
+    def test_retention_preserves_last_insert_and_latest_instant_across_restore_and_backfill(self):
+        with local_clock('America/Denver', NOW), mock.patch.object(config, 'KIOSK_TYPE', 'auto'):
+            first = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
+            obsolete = self.attendance((NOW - timedelta(days=50)).isoformat(), worker=first, synced=True)
+            self.attendance(OLD, worker=first, synced=True)
+            database.remove_worker_by_server_id('a' * 32)
+            restored = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
+            latest_instant = self.attendance(OLD, worker=restored, synced=True)
+            last_inserted = self.attendance((NOW - timedelta(days=40)).isoformat(), worker=restored,
+                                           synced=True, action='clock_out')
+            conn = database._get_conn()
+            conn.execute('UPDATE attendance_log SET timestamp_epoch = NULL')
+            conn.commit()
+            database.set_sync_state('epoch_backfill:attendance_log', json.dumps([0, last_inserted]))
+            self.assertEqual(database.get_last_action(restored), 'clock_out')
+            self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
+            database._migrate_history()
+            database.prune_synced_history()
+            self.assertNotIn(obsolete, self.ids('attendance_log'))
+            self.assertIn(latest_instant, self.ids('attendance_log'))
+            self.assertIn(last_inserted, self.ids('attendance_log'))
+            self.close_database()
+            database.init_db()
+            self.assertEqual(database.get_last_action(restored), 'clock_out')
+            self.assertFalse(database.was_recently_clocked(restored, 5))
+            following = database.log_attendance(restored, 'Alex')
+            self.assertEqual(database.get_attendance_action(following), 'clock_in')
 
     def test_latest_action_of_removed_worker_is_preserved(self):
         with local_clock('America/Denver', NOW):
@@ -971,6 +1006,9 @@ class LocalHistoryTests(unittest.TestCase):
             # An older row acknowledged behind the cursor is found after wrap.
             behind = self.attendance((NOW - timedelta(days=40)).isoformat(), worker=99)
             database.mark_synced([behind])
+            # A newer inserted event protects physical direction while allowing
+            # the acknowledged older row to become eligible on the next wrap.
+            self.attendance((NOW - timedelta(days=50)).isoformat(), worker=99, synced=True)
             self.assertEqual(database.prune_synced_history()['attendance_log'], 0)
             self.assertIsNone(database.get_sync_state('attendance_prune_after'))
             self.assertEqual(database.prune_synced_history()['attendance_log'], 1)

@@ -1046,7 +1046,8 @@ def _run(args):
             # actually happened last — an exit kiosk must not say "clocked in".
             last = last_clocks.get(worker_id)
             recently_clocked = (
-                (last and datetime.now(timezone.utc) - last < timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES))
+                (last and timedelta(0) <= datetime.now(timezone.utc) - last
+                 < timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES))
                 or database.was_recently_clocked(worker_id, config.CLOCK_DEBOUNCE_MINUTES)
             )
             if recently_clocked:

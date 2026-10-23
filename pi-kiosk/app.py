@@ -369,6 +369,8 @@ def manual_clock():
         return jsonify({"success": False, "error": str(exc)}), 503
     except LookupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+    except database.ClockInferenceError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 503
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 409
     except sqlite3.Error as exc:

@@ -179,6 +179,7 @@ def _migrate_history(pause=None):
     conn = _get_conn()
     # Exclude NULLs so a first upgrade scans the tables but does not sort/write
     # hundreds of thousands of empty index entries. Existing indexes are valid.
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_worker_id ON attendance_log(worker_id, id)")
     _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id) "
                  "WHERE timestamp_epoch IS NOT NULL")
     _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id) "
@@ -1223,6 +1224,37 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+class ClockInferenceError(ValueError):
+    """The scan timestamp cannot establish an automatic direction."""
+
+
+def _infer_clock_action(worker_id: int, timestamp: str) -> str:
+    """Infer inside the attendance write transaction shared by both writers."""
+    kiosk_type = require_kiosk_action_type(config)
+    if kiosk_type == "entry":
+        return "clock_in"
+    if kiosk_type == "exit":
+        return "clock_out"
+    last = _get_last_attendance(worker_id)
+    scan_epoch = _attendance_epoch(timestamp)
+    if scan_epoch is None:
+        raise ClockInferenceError("Auto clock inference requires a valid timestamp")
+    if last is None or last["epoch"] is None:
+        return "clock_in"
+    age_seconds = scan_epoch - last["epoch"]
+    # After a power cut an offline Pi may restore an earlier saved clock.
+    # Negative age cannot establish staleness: keep toggling from the last
+    # inserted event so attendance stays available without repeating outs.
+    if last["action"] != "clock_in":
+        return "clock_in"
+    # Compare elapsed seconds, not local dates: 22:00 -> 06:00 is one shift,
+    # even across DST. Exactly the configured window still permits clock-out.
+    # An unreadable legacy timestamp cannot establish an active shift.
+    if age_seconds > config.AUTO_CLOCK_STALE_HOURS * 3600:
+        return "clock_in"
+    return "clock_out"
+
+
 @_prioritize_event_write
 def log_attendance(
     worker_id: int,
@@ -1250,16 +1282,10 @@ def log_attendance(
     with conn if owns_transaction else nullcontext():
         if owns_transaction:
             conn.execute("BEGIN IMMEDIATE")
-        if action is None:
-            kiosk_type = require_kiosk_action_type(config)
-            if kiosk_type == "entry":
-                action = "clock_in"
-            elif kiosk_type == "exit":
-                action = "clock_out"
-            else:
-                action = "clock_out" if get_last_action(worker_id) == "clock_in" else "clock_in"
-        normalized_action = _normalize_action(action)
         timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if action is None:
+            action = _infer_clock_action(worker_id, timestamp)
+        normalized_action = _normalize_action(action)
         server_worker_id = server_worker_id or get_server_id(worker_id) or None
         cursor = conn.execute(
             """
@@ -1373,47 +1399,38 @@ def _worker_attendance_scopes(conn, worker_id: int) -> list[tuple[str, int | str
 
 
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
-    """Return True if worker has any recent clock event within N minutes."""
+    """Debounce the last recorded scan, without blocking on a future clock."""
+    last = _get_last_attendance(worker_id)
+    if last is None or last["epoch"] is None:
+        return False
+    age_seconds = datetime.now(timezone.utc).timestamp() - last["epoch"]
+    return 0 <= age_seconds <= minutes * 60
+
+
+def _get_last_attendance(worker_id: int) -> Optional[sqlite3.Row]:
+    """Read the last inserted local event, independent of wall-clock jumps.
+
+    This table contains local writes, not downloaded portal history. A new
+    scan must advance the toggle even if its timestamp precedes an old row.
+    """
     conn = _get_conn()
-    threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
     scopes = _worker_attendance_scopes(conn, worker_id)
-    # Separate indexed seeks avoid scanning/sorting a restored worker's history.
-    branches = [f"SELECT id FROM attendance_log WHERE {column} = ? AND timestamp_epoch >= ?"
-                for column, _ in scopes]
-    params = [item for _, value in scopes for item in (value, threshold)]
-    if get_sync_state("epoch_backfill:attendance_log") is not None:
-        branches.extend(f"SELECT id FROM attendance_log WHERE {column} = ? "
-                        "AND timestamp_epoch IS NULL AND attendance_epoch(timestamp) >= ?"
-                        for column, _ in scopes)
-        params.extend(item for _, value in scopes for item in (value, threshold))
-    row = conn.execute(" UNION ALL ".join(branches) + " LIMIT 1", params).fetchone()
-    return row is not None
+    # During migration only the selected final event may need legacy parsing.
+    # Once completed, a NULL epoch is known-invalid evidence, not a backfill gap.
+    epoch = ("COALESCE(timestamp_epoch, attendance_epoch(timestamp))"
+             if get_sync_state("epoch_backfill:attendance_log") is not None else "timestamp_epoch")
+    # Each identity index supplies one greatest-ID row. Compare at most two
+    # rows in one statement, so restored identities retain physical scan order
+    # without sorting their full history or following a future-dated event.
+    branches = [f"""SELECT * FROM (SELECT action, {epoch} AS epoch, id FROM attendance_log
+        WHERE {column} = ? ORDER BY id DESC LIMIT 1)""" for column, _ in scopes]
+    return conn.execute("SELECT action, epoch, id FROM (" + " UNION ALL ".join(branches) +
+                        ") ORDER BY id DESC LIMIT 1", [value for _, value in scopes]).fetchone()
 
 
 def get_last_action(worker_id: int) -> Optional[str]:
-    """Return the latest event across local ids without sorting their history."""
-    conn = _get_conn()
-    scopes = _worker_attendance_scopes(conn, worker_id)
-    if get_sync_state("epoch_backfill:attendance_log") is not None:
-        worker_filter = " OR ".join(f"{column} = ?" for column, _ in scopes)
-        row = conn.execute(f"""SELECT action FROM attendance_log WHERE {worker_filter}
-            ORDER BY COALESCE(timestamp_epoch, attendance_epoch(timestamp)) DESC, id DESC LIMIT 1""",
-            [value for _, value in scopes]).fetchone()
-        return row["action"] if row else None
-    # Each branch returns only its newest row using its own identity/epoch
-    # index. The final comparison sees at most two rows in one read snapshot.
-    branches = [f"""SELECT * FROM (SELECT action, timestamp_epoch, id FROM attendance_log
-        WHERE {column} = ? AND timestamp_epoch IS NOT NULL
-        ORDER BY timestamp_epoch DESC, id DESC LIMIT 1)""" for column, _ in scopes]
-    row = conn.execute("SELECT action FROM (" + " UNION ALL ".join(branches) +
-                       ") ORDER BY timestamp_epoch DESC, id DESC LIMIT 1",
-                       [value for _, value in scopes]).fetchone()
-    if row is None:
-        # Keep legacy behavior when the identity has only malformed evidence.
-        worker_filter = " OR ".join(f"{column} = ?" for column, _ in scopes)
-        row = conn.execute(f"""SELECT action FROM attendance_log
-            WHERE ({worker_filter}) AND timestamp_epoch IS NULL ORDER BY id DESC LIMIT 1""",
-            [value for _, value in scopes]).fetchone()
+    """Return the last physically recorded action across restored local IDs."""
+    row = _get_last_attendance(worker_id)
     return row["action"] if row else None
 
 
@@ -1787,8 +1804,8 @@ def mark_recognition_attempts_synced(attempt_ids: list[int]):
 def prune_synced_history() -> dict[str, int]:
     """Delete at most one small batch per table, after sync acknowledgement.
 
-    Keep queued/rejected evidence and each worker's last action (ordered by
-    event instant, then id), even for removed workers. Invalid timestamps are
+    Keep queued/rejected evidence and each worker's latest instant and last
+    inserted event, even for removed workers and backward clocks. Invalid timestamps are
     retained because their age is unknown. Each table commits separately.
     """
     config.validate_history_retention()
@@ -1804,7 +1821,7 @@ def prune_synced_history() -> dict[str, int]:
         return {"attendance_log": 0, "recognition_attempts": 0}
     if conn.execute("""SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
         AND name IN ('idx_attendance_log_retention', 'idx_recognition_attempts_retention',
-                     'idx_attendance_worker_epoch')""").fetchone()[0] != 3:
+                     'idx_attendance_worker_epoch', 'idx_attendance_worker_id')""").fetchone()[0] != 4:
         return {"attendance_log": 0, "recognition_attempts": 0}
     deleted = {}
     # Bound candidates BEFORE checking protected evidence. A LIMIT on deletable
@@ -1846,6 +1863,9 @@ def prune_synced_history() -> dict[str, int]:
                   AND l.id != (SELECT latest.id FROM attendance_log latest
                       WHERE latest.worker_id = l.worker_id AND latest.timestamp_epoch IS NOT NULL
                       ORDER BY latest.timestamp_epoch DESC, latest.id DESC LIMIT 1)
+                  AND l.id != (SELECT latest.id FROM attendance_log latest
+                      WHERE latest.worker_id = l.worker_id
+                      ORDER BY latest.id DESC LIMIT 1)
                   AND NOT EXISTS (SELECT 1 FROM attendance_rejections r
                       WHERE r.log_id = l.id AND r.released_at IS NULL)
             )""", [row["id"] for row in candidates] + [attendance_cutoff])
