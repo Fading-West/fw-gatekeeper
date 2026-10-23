@@ -206,11 +206,13 @@ class OriginalSchemaUpgradeTests(unittest.TestCase):
         self.assertEqual(database.get_last_action(1), "clock_in")
 
         # Upload carries the original exit, followed by the new arrival.
+        def acknowledge_claim_group(*args, **kwargs):
+            return mock.Mock(status_code=200, json=lambda: {"acknowledged": len(kwargs["json"]["logs"])})
         with mock.patch.object(sync, "_auth_headers", return_value={}), \
-             mock.patch.object(sync.requests, "post", return_value=mock.Mock(
-                 status_code=200, json=lambda: {"acknowledged": 2})) as upload:
+             mock.patch.object(sync.requests, "post", side_effect=acknowledge_claim_group) as upload:
             self.assertTrue(sync.sync_attendance())
-        logs = upload.call_args.kwargs["json"]["logs"]
+        logs = sorted((row for call in upload.call_args_list for row in call.kwargs["json"]["logs"]),
+                      key=lambda row: row["timestamp"])
         self.assertEqual([(row["worker_id"], row["event_type"], row["action"], row["timestamp"]) for row in logs], [
             (SERVER_ID, "clock_out", "clock_out", "2026-02-28T17:00:00"),
             (SERVER_ID, "clock_in", "clock_in", logs[1]["timestamp"]),
