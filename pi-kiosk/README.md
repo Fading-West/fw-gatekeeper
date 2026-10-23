@@ -98,7 +98,12 @@ To regenerate, edit the direct inputs (`requirements.txt` or
 from the repository root using uv 0.12.13. Existing lock versions are retained
 when compatible; remove the corresponding lock first for an intentional full
 transitive refresh. Review all version/hash changes, validate a fresh server
-install, and provision one Bookworm kiosk before rollout.
+install, and provision one Bookworm kiosk before rollout. Installed kiosks pick
+up lock changes through `bash pi-kiosk/update.sh`, run as setup's `KIOSK_USER`
+(see Maintenance in the root README). The script pulls code, installs the two
+locks into the existing venv, then restarts the service. Restarting alone keeps
+the old dependencies. A failed dependency install can leave the kiosk venv
+partially updated; re-run the update or setup.sh to recover.
 
 ## Configuration
 

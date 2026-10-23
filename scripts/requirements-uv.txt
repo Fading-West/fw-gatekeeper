@@ -1,0 +1,4 @@
+# Lockfile compiler for the Linux x86_64 CI runner.
+# SHA-256 of uv's 0.12.13 manylinux2014_x86_64 wheel from PyPI.
+# Keep this version aligned with scripts/lock-python-dependencies.sh.
+uv==0.12.13 --hash=sha256:5312891392eb5b72eaca9b880e85fe3e706a2b11342e59f7a5cf0304d14d5cc5
