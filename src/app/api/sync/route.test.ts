@@ -24,20 +24,43 @@ beforeEach(() => {
   vi.mocked(fetchWorkersForSync).mockResolvedValue({ workers: [] });
 });
 
-it('does not issue an applied-roster receipt for an admin roster read', async () => {
+it.each(['', 'roster_receipt=1&full_roster=1'])('rejects an admin session without kiosk credentials (%s)', async (query) => {
   vi.mocked(hasValidPortalSession).mockResolvedValue(true);
-  expect((await GET(request('roster_receipt=1'))).status).toBe(200);
+  vi.mocked(hasDeviceKeyFormat).mockReturnValue(false);
+  vi.mocked(authenticateKiosk).mockResolvedValue(null);
+  const response = await GET(new NextRequest(
+    `http://localhost/api/sync?kiosk_id=Entry&camera_ok=1&model_ok=1&known_workers=99&${query}`,
+    { headers: { cookie: 'portal-session=admin' } },
+  ));
+  expect(response.status).toBe(401);
+  expect(await response.json()).toEqual({ error: 'Unauthorized' });
+  expect(authenticateKiosk).toHaveBeenCalledWith(expect.any(NextRequest), ['Entry']);
+  expect(updateKioskLastSync).not.toHaveBeenCalled();
   expect(issueRosterReceipt).not.toHaveBeenCalled();
-  expect(authenticateKiosk).not.toHaveBeenCalled();
+  expect(acknowledgeRosterReceipt).not.toHaveBeenCalled();
+  expect(fetchWorkersForSync).not.toHaveBeenCalled();
 });
 
 const request = (query: string) => new NextRequest(`http://localhost/api/sync?kiosk_id=entry&${query}`);
+
+it('uses kiosk credentials even when a portal admin session is present', async () => {
+  vi.mocked(hasValidPortalSession).mockResolvedValue(true);
+  const req = new NextRequest('http://localhost/api/sync?kiosk_id=entry', {
+    headers: { cookie: 'portal-session=admin', 'x-kiosk-key': `gkdev_${'a'.repeat(43)}` },
+  });
+  const response = await GET(req);
+  expect(response.status).toBe(200);
+  expect(authenticateKiosk).toHaveBeenCalledWith(req, ['entry']);
+  expect(updateKioskLastSync).toHaveBeenCalledWith('kiosk-document', expect.any(String), undefined);
+  expect(fetchWorkersForSync).toHaveBeenCalledWith('1970-01-01T00:00:00.000Z');
+});
 
 it('uses the server-owned cursor for receipts and requires a full initial roster', async () => {
   vi.mocked(issueRosterReceipt).mockResolvedValueOnce({ receipt: 'token-1', issuedAt: '2026-09-25T12:00:00Z', since: null });
   const first = await GET(request('roster_receipt=1&since=2999-01-01T00:00:00Z'));
   expect(await first.json()).toMatchObject({ roster_receipt: 'token-1', full_roster: true });
   expect(issueRosterReceipt).toHaveBeenCalledWith('kiosk-document');
+  expect(updateKioskLastSync).toHaveBeenCalledWith('kiosk-document', expect.any(String), undefined);
   expect(fetchWorkersForSync).toHaveBeenLastCalledWith('', true);
 
   vi.mocked(issueRosterReceipt).mockResolvedValueOnce({ receipt: 'token-2', issuedAt: '2026-09-25T12:01:00Z', since: '2026-09-25T12:00:00Z' });
