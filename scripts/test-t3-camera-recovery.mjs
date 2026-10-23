@@ -8,9 +8,14 @@ assert.ok(start >= 0 && end > start);
 const image = { style: {} };
 let cameraOkay = false;
 const context = vm.createContext({
+    statusInFlight: false, supervisorBootNonce: null, clockWarning: { hidden: true },
+    AbortController, setTimeout, clearTimeout, STATUS_TIMEOUT_MS: 1000,
+    connection: { statusOk: () => ({}), statusFailed() {} },
+    cameraFeed: { isConnected: () => true, connect() {} },
+    showReconnecting: () => assert.fail('Successful polling must not reconnect'),
     Date, adminVisible: false, supervisorStateVersion: 0,
-    document: { querySelector: () => image },
-    async fetch() { return { json: async () => ({ state: 'ERROR', health: { camera_ok: cameraOkay } }) }; },
+    document: { getElementById: () => image },
+    async fetch() { return { ok: true, json: async () => ({ state: 'ERROR', health: { camera_ok: cameraOkay } }) }; },
     statusMessageFromState: () => 'Synthetic status', applyStatusState() {},
 });
 for (const name of ['statusText', 'stateValue', 'workerIdValue', 'earValue', 'knownValue', 'liveValue', 'lastUpdated', 'livenessNote', 'syncChip']) context[name] = { style: {} };
