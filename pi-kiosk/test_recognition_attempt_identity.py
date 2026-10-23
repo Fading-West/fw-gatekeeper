@@ -100,7 +100,7 @@ class RecognitionAttemptIdentityTests(unittest.TestCase):
         self.assertEqual(first['secondBestScore'], result['second_best_score'])
         self.assertEqual(first['scoreMargin'], result['score_margin'])
         self.assertTrue(first['faceDetected'])
-        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=201)) as post:
+        with mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=201, json=lambda: {'ingested': 1, 'skipped': 0})) as post:
             self.assertTrue(sync.sync_recognition_attempts())
             self.assertEqual(post.call_args.kwargs['json']['attempts'][0], first)
         self.assertEqual(database.count_unsynced_recognition_attempts(), 0)

@@ -27,6 +27,8 @@ def prepare_context(namespace):
     namespace.setdefault('time', mock.Mock(monotonic=lambda: 100.0))
     namespace.setdefault('Path', Path)
     namespace.setdefault('model_recovery', mock.Mock(ready=True))
+    namespace.setdefault('web_app', mock.Mock())
+    namespace.setdefault('base_degraded_reason', lambda: None)
     namespace.setdefault('is_fresh_scan', is_fresh_scan)
     if namespace.get('pending'):
         namespace['pending'].setdefault('camera_generation', 0)
@@ -83,7 +85,7 @@ class RecognitionMarginFlowTests(unittest.TestCase):
             with self.subTest(top_score=top_score):
                 vector = np.array([top_score, second_score,
                                    math.sqrt(1 - top_score ** 2 - second_score ** 2)])
-                namespace = {'logger': mock.Mock(), 'EXPECTED_EMBEDDING_DIM': 512, 'Path': Path, 'FreshFaceMatcher': FreshFaceMatcher,
+                namespace = {'logger': mock.Mock(), 'EXPECTED_EMBEDDING_DIM': 3, 'Path': Path, 'FreshFaceMatcher': FreshFaceMatcher,
                              'has_minimum_margin': has_minimum_margin, 'config': config, 'np': np,
                              'detect_lock': threading.Lock(), 'pending_frame': [('bgr', 'rgb', 1., 0)],
                              'cv2': mock.Mock(), 'fr': mock.Mock(), 'detect_count': [0],
@@ -257,7 +259,7 @@ class RecognitionMarginFlowTests(unittest.TestCase):
         recognizer.snapshot_known_faces.return_value = ([alex, blair], [11, 22],
                                                        ['Alex', 'Blair'], {11: 'server-a', 22: 'server-b'})
         namespace = {'embed_face': mock.Mock(), 'logger': mock.Mock(), 'np': np,
-                     'config': config, 'EXPECTED_EMBEDDING_DIM': 512, 'Path': Path, 'FreshFaceMatcher': FreshFaceMatcher,
+                     'config': config, 'EXPECTED_EMBEDDING_DIM': 3, 'Path': Path, 'FreshFaceMatcher': FreshFaceMatcher,
                      'recognizer': recognizer, 'now': 2.,
                      'pending': {'worker_id': 11, 'server_worker_id': 'server-a', 'encoding': alex}}
         exec(compile(ast.Module(body=[callback], type_ignores=[]), 'main.py', 'exec'), namespace)

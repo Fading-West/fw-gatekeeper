@@ -18,7 +18,7 @@ liveness=fixture.liveness
 class BlinkIntegrationQA(fixture.BlinkTests):
     def test_kiosk_detector_dropout_cancels_pending_blink(self):
         tree = ast.parse((root / 'pi-kiosk/main.py').read_text())
-        run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+        run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_run')
         factory = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_empty_recognition_result')
         dropout = next(n for n in ast.walk(run) if isinstance(n, ast.If) and ast.unparse(n.test) == 'not locs')
         pending_branch = next(n for n in ast.walk(run) if isinstance(n, ast.If) and ast.unparse(n.test) == 'pending is not None')
@@ -36,7 +36,7 @@ class BlinkIntegrationQA(fixture.BlinkTests):
                    'pending': pending, 'pending_clock': [pending], 'liveness': checker,
                    '_log_recognition_attempt': mock.Mock(), 'web_app': mock.Mock(),
                    'recognizer': type('Recognizer', (), {'known_count': 1}), 'GOLD': 'gold',
-                   'generation': 0, 'camera_generation': [0], 'now': 100.0, 'camera_invalidated_at': [0.0]}
+                   'os': mock.Mock(environ={}), 'trial_state': None, 'generation': 0, 'camera_generation': [0], 'now': 100.0, 'camera_invalidated_at': [0.0]}
         def publish_detection(result, generation):
             context['current_result'][0] = result
         def consume_detection():

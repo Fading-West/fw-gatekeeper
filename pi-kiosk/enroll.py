@@ -210,10 +210,9 @@ def add_worker(name: str):
                 face_location = None
                 liveness.reset()
                 message = "More than one face: keep only the enrolled worker in frame"
-            live = False
+            live = liveness.update(frame, face_location)
 
             if face_location is not None:
-                live = liveness.update(frame, face_location)
                 top, right, bottom, left = face_location
                 cv2.rectangle(display, (left, top), (right, bottom), (0, 180, 255), 2)
                 message = "Blink to verify"
