@@ -7,12 +7,15 @@ const testDir=path.dirname(fileURLToPath(import.meta.url));
 const root=process.env.GK_CHECKOUT || (path.basename(testDir)==='scripts' ? path.dirname(testDir) : path.resolve(testDir,'../worktrees/10-recognition-valid-time'));
 const source=fs.readFileSync(path.join(root,'pi-kiosk/templates/index.html'),'utf8');
 const start=source.indexOf('async function fetchStatus(');
-const end=source.indexOf('\n        async function ',start+1);
+const end=source.indexOf('\n        function renderAdmin(',start+1);
 assert.ok(start>=0 && end>start,'actual status function must be extracted');
 const element=()=>({textContent:'',style:{}});
 const chip=element();let health;
 const context=vm.createContext({clockWarning:{hidden:true},syncChip:chip,statusText:element(),stateValue:element(),workerIdValue:element(),earValue:element(),knownValue:element(),liveValue:element(),lastUpdated:element(),livenessNote:element(),
- fetch:async()=>({json:async()=>({state:'IDLE',health})}),statusMessageFromState:()=>'',applyStatusState:()=>{},renderAdmin:()=>{},setAdminVisible:()=>{}});
+ statusInFlight:false,supervisorBootNonce:null,AbortController,setTimeout,clearTimeout,STATUS_TIMEOUT_MS:1000,
+ connection:{statusOk:()=>({}),statusFailed(){}},cameraFeed:{isConnected:()=>true,connect(){}},
+ document:{getElementById:()=>element()},showReconnecting:()=>assert.fail('Successful polling must not reconnect'),
+ fetch:async()=>({ok:true,json:async()=>({state:'IDLE',health})}),statusMessageFromState:()=>'',applyStatusState:()=>{},renderAdmin:()=>{},setAdminVisible:()=>{}});
 vm.runInContext(`let supervisorStateVersion=0;let adminVisible=false;${source.slice(start,end)};globalThis.fetchStatus=fetchStatus;`,context);
 for(const online of [true,false]){
  health={sync_online:online,retryable_logs:2,queued_attempts:1,rejected_logs:0,rejected_attempts:4};
