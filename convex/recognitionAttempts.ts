@@ -1,4 +1,5 @@
 import { getFactoryLocalDateKey } from "./localDate";
+import { isValidAttendanceTimestamp } from "./attendanceValidation";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -7,7 +8,8 @@ import {
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
-import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { writeAuditLog } from "./audit";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
 const attemptInput = v.object({
   timestamp: v.string(),
@@ -94,6 +96,15 @@ function serializeAttempt(attempt: any) {
   };
 }
 
+function withFactoryLocalDisplayTimestamp(attempt: any, timestampKey = createRecognitionTimestampSortKey()) {
+  const key = timestampKey(attempt.timestamp);
+  return {
+    ...attempt,
+    timestamp: getRecognitionDisplayTimestamp(attempt.timestamp) || attempt.timestamp,
+    timestamp_utc: key ? `${key}Z`.replace(".Z", "Z") : null,
+  };
+}
+
 function normalizeAttempt(attempt: {
   timestamp: string;
   kioskId: string;
@@ -118,6 +129,21 @@ function normalizeAttempt(attempt: {
   reviewedNote?: string;
   reviewedAt?: string;
 }) {
+  for (const [field, value, minimum, maximum] of [
+    ["bestScore", attempt.bestScore, -1, 1], ["secondBestScore", attempt.secondBestScore, -1, 1],
+    ["scoreMargin", attempt.scoreMargin, -2, 2], ["threshold", attempt.threshold, 0, 1],
+    ["imageQuality", attempt.imageQuality, 0, 1], ["faceQuality", attempt.faceQuality, 0, 1],
+    ["brightness", attempt.brightness, 0, 255], ["blur", attempt.blur, 0, Number.MAX_VALUE],
+  ] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value < minimum - 1e-12 || value > maximum + 1e-12)) {
+      throw new ConvexError({ code: "INVALID_RECOGNITION_METRIC", message: `Invalid recognition metric: ${field}` });
+    }
+  }
+
+  const timestamp = attempt.timestamp.trim();
+  if (!isValidAttendanceTimestamp(timestamp) || !createRecognitionTimestampSortKey()(timestamp)) {
+    throw new ConvexError({ code: "INVALID_RECOGNITION_TIMESTAMP", message: "Recognition timestamp must identify a valid factory-local or offset instant" });
+  }
   const reviewed = false; // Kiosks supply evidence; only portal operators may review it.
   return {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),
@@ -235,7 +261,9 @@ export async function listRecognitionAttemptsByFactoryDate(
     const reviewMatches = !args.reviewStatus || args.reviewStatus === "all" || reviewStatus === args.reviewStatus;
     return decisionMatches && confidenceMatches && reviewMatches;
   });
-  return matches.slice(0, limit);
+  // Normalize only after filtering and sorting the original evidence instants.
+  const timestampKey = createRecognitionTimestampSortKey();
+  return matches.slice(0, limit).map(row => withFactoryLocalDisplayTimestamp(row, timestampKey));
 }
 
 export async function listAllRecognitionAttemptsByFactoryDate(
@@ -397,6 +425,7 @@ export const listByDate = query({
   returns: v.array(v.object({
     id: v.id("recognitionAttempts"),
     timestamp: v.string(),
+    timestamp_utc: v.union(v.string(), v.null()),
     kiosk_id: v.string(),
     source_attempt_id: v.union(v.string(), v.null()),
     face_detected: v.number(),
@@ -447,9 +476,11 @@ export const getById = query({
     if (args.date && !timestampBelongsToFactoryLocalDate(attempt.timestamp, args.date)) {
       return null;
     }
-    return serializeAttempt(attempt);
+    return withFactoryLocalDisplayTimestamp(serializeAttempt(attempt));
   },
 });
+
+const REVIEW_LABELS = ["confirmed", "corrected", "ignored"];
 
 export const updateReview = mutation({
   args: {
@@ -459,8 +490,21 @@ export const updateReview = mutation({
     reviewedNote: v.optional(v.string()),
     reviewedAt: v.optional(v.string()),
   },
+  returns: v.union(v.null(), v.object({
+    id: v.id("recognitionAttempts"), timestamp: v.string(), timestamp_utc: v.optional(v.union(v.string(), v.null())), kiosk_id: v.string(),
+    source_attempt_id: v.union(v.string(), v.null()), face_detected: v.number(),
+    candidate_worker_id: v.union(v.string(), v.null()), candidate_worker_name: v.union(v.string(), v.null()),
+    best_score: v.union(v.number(), v.null()), second_best_score: v.union(v.number(), v.null()),
+    score_margin: v.union(v.number(), v.null()), decision: v.string(), threshold: v.number(),
+    liveness_confirmed: v.union(v.number(), v.null()), model_version: v.union(v.string(), v.null()),
+    image_quality: v.union(v.number(), v.null()), face_quality: v.union(v.number(), v.null()),
+    brightness: v.union(v.number(), v.null()), blur: v.union(v.number(), v.null()),
+    reviewed: v.number(), reviewed_label: v.union(v.string(), v.null()),
+    reviewed_note: v.union(v.string(), v.null()), reviewed_at: v.union(v.string(), v.null()),
+    created_at: v.string(), updated_at: v.union(v.string(), v.null()),
+  })),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const existing = await ctx.db.get(args.id);
     if (!existing) {
       throw new Error("Recognition attempt not found");
@@ -473,7 +517,12 @@ export const updateReview = mutation({
       updatedAt: now,
     };
     if (args.reviewedLabel !== undefined) {
-      updates.reviewedLabel = normalizeOptionalText(args.reviewedLabel);
+      const label = normalizeOptionalText(args.reviewedLabel);
+      // Reads treat any other label as unreviewed, which would hide a "reviewed" attempt.
+      if (label === undefined || !REVIEW_LABELS.includes(label)) {
+        throw new ConvexError(`reviewedLabel must be one of ${REVIEW_LABELS.join(", ")}`);
+      }
+      updates.reviewedLabel = label;
     }
     if (args.reviewedNote !== undefined) {
       updates.reviewedNote = normalizeOptionalText(args.reviewedNote);
@@ -481,8 +530,15 @@ export const updateReview = mutation({
     updates.reviewedAt = reviewed ? normalizeOptionalText(args.reviewedAt) || existing.reviewedAt || now : undefined;
 
     await ctx.db.patch(args.id, updates);
+    await writeAuditLog(ctx, {
+      actorUserId: actor.userId, action: "recognition.review", targetTable: "recognitionAttempts",
+      targetId: args.id,
+      details: JSON.stringify({ before: { updatedAt: existing.updatedAt ?? null, reviewedAt: existing.reviewedAt ?? null, reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
+        after: { updatedAt: now, reviewedAt: updates.reviewedAt ?? null, reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
+          note: args.reviewedNote === undefined ? existing.reviewedNote ?? null : updates.reviewedNote ?? null } }),
+    });
 
     const updated = await ctx.db.get(args.id);
-    return updated ? serializeAttempt(updated) : null;
+    return updated ? withFactoryLocalDisplayTimestamp(serializeAttempt(updated)) : null;
   },
 });
