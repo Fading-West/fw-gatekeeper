@@ -1,9 +1,11 @@
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { api } from '../../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 // Admin-only: permanently deletes a worker's face template and enrollment
 // photos, deactivates the worker so kiosks drop the cached template on their
@@ -23,10 +25,15 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await convex.mutation(api.workers.purgeBiometrics, { id: id as any, reason: trimmedReason });
+    systemHealthCache.invalidate();
     return NextResponse.json(result);
   } catch (error) {
-    console.error('Biometric purge failed:', error);
-    const message = error instanceof Error ? error.message : 'Failed to purge face data';
-    return NextResponse.json({ error: message }, { status: 500 });
+    logApiError('Biometric purge failed:', error);
+    const knownError = knownApiErrorResponse(error, {
+      'A reason is required to purge face data': 400,
+      'Worker not found': 400,
+    });
+    if (knownError) return knownError;
+    return NextResponse.json({ error: 'Failed to purge face data' }, { status: 500 });
   }
 }
