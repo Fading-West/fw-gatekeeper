@@ -111,7 +111,7 @@ assert.match(page, /function checklistExportLine/, 'Closeout export should centr
 assert.match(page, /item\.proof[\s\S]*Proof: \$\{item\.proof\.count\} \$\{item\.proof\.label\}/, 'Closeout export should include checklist proof counts and labels.');
 assert.match(page, /item\.proof\.exact \? 'exact source' : 'source view'/, 'Closeout export should distinguish exact proof sources from broad source views.');
 assert.match(page, /item\.proof\.href/, 'Closeout export should preserve proof source links.');
-assert.match(page, /payload\.checklist\.map\(checklistExportLine\)/, 'Closeout text export should use proof-aware checklist lines.');
+assert.match(page, /payload\.checklist\.map\((?:checklistExportLine\)|\(item\) => checklistExportLine\(item, )/, 'Closeout text export should use proof-aware checklist lines.');
 assert.match(page, /item\.proof/, 'Closeout checklist should render proof rows from the closeout payload.');
 assert.match(page, /item\.proof\.href/, 'Closeout proof rows should use the source proof href.');
 assert.match(page, /item\.proof\.count/, 'Closeout proof rows should expose source proof counts.');
