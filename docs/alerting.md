@@ -64,18 +64,20 @@ on the next run.
 ## Environment variables (Convex deployment)
 
 These are read by the Convex action, so they must be set on the Convex deployment, not on
-Render. Set them with the Convex CLI from the repo root:
+Render. Set them on the production deployment with the Convex CLI from the repo root:
 
 ```bash
-npx convex env set RESEND_API_KEY re_xxxxxxxxx
-npx convex env set ALERT_EMAIL_FROM "FW Gatekeeper <alerts@yourdomain.com>"
-npx convex env set ALERT_EMAIL_TO "supervisor@yourdomain.com,ops@yourdomain.com"
-npx convex env set ALERT_WEBHOOK_URL https://hooks.example.com/fw-gatekeeper   # optional
-npx convex env set SITE_URL https://fw-gatekeeper.onrender.com                # optional
+npx convex env set --prod RESEND_API_KEY re_xxxxxxxxx
+npx convex env set --prod ALERT_EMAIL_FROM "FW Gatekeeper <alerts@yourdomain.com>"
+npx convex env set --prod ALERT_EMAIL_TO "supervisor@yourdomain.com,ops@yourdomain.com"
+npx convex env set --prod ALERT_WEBHOOK_URL https://hooks.example.com/fw-gatekeeper   # optional
+npx convex env set --prod SITE_URL https://fw-gatekeeper.onrender.com                # optional
+npx convex env list --prod --names-only   # verify
 ```
 
-Use `npx convex env set --prod ...` (or pick the deployment with `--deployment-name`) for
-production; without a flag the CLI targets your dev deployment. Verify with `npx convex env list`.
+`--prod` targets the project's default production deployment (or name one explicitly with
+`--deployment <name>`). Without a flag the CLI targets your personal dev deployment; drop
+`--prod` only when configuring alerts for a dev deployment you run with `npx convex dev`.
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -103,6 +105,11 @@ Every run logs `kiosk_alerts_checked` with counts; look at the Convex dashboard 
    ```bash
    npx convex run alerts:checkKiosks
    ```
+
+   Without a flag this runs on your dev deployment, so steps 1-2 must also use the dev
+   deployment (a local `npm run dev` portal and the dev deployment's Data tab). Running the
+   test against production instead needs `npx convex run --prod alerts:checkKiosks`; that
+   evaluates every real kiosk and sends real alerts to the configured recipients.
 
    The command prints `{ kiosks, alerts, recoveries, delivered, configured }`. With email
    configured you should receive `[FW Gatekeeper] <name> offline for 2h 0m`.
