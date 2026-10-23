@@ -198,6 +198,7 @@ def add_worker(name: str):
         while len(encodings) < SAMPLES_REQUIRED:
             ret, frame = cap.read()
             if not ret:
+                liveness.reset()
                 time.sleep(0.05)
                 continue
 
@@ -212,9 +213,9 @@ def add_worker(name: str):
             live = False
 
             if face_location is not None:
+                live = liveness.update(frame, face_location)
                 top, right, bottom, left = face_location
                 cv2.rectangle(display, (left, top), (right, bottom), (0, 180, 255), 2)
-                live = liveness.update(frame, face_location)
                 message = "Blink to verify"
 
                 if live and (time.monotonic() - last_capture) > 1.0:
@@ -319,24 +320,80 @@ def list_workers():
     return 0
 
 
+def _capture_folder(name: str) -> Optional[Path]:
+    """The local enrollment folder for name, never the photo root itself."""
+    folder = Path(config.FACES_DIR) / _safe_name(name)
+    return None if folder.resolve() == Path(config.FACES_DIR).resolve() else folder
+
+
+def _finish_photo_cleanup(journaled: list[str], unjournaled=(), folder: Optional[Path] = None) -> bool:
+    """Finish this removal's own cleanup; sync's in-flight entries are not ours."""
+    try:
+        database.recover_photo_cleanup(journaled)
+    except (OSError, ValueError) as exc:
+        print("Photo cleanup is pending; the next roster sync or rerunning this command "
+              f"will finish it: {exc}")
+        return False
+    complete = True
+    for photo_path in unjournaled:
+        try:
+            database.remove_unreferenced_legacy_photo(photo_path)
+        except OSError as exc:
+            print(f"Could not delete photo outside {config.PHOTO_DIR}; remove it manually: {exc}")
+            complete = False
+    if folder is not None and folder.exists() and folder.is_dir():
+        # Sanitized names can share a capture folder (e.g. Alex and Alex!).
+        # Only the recorded photo paths belong to this removal; leave other
+        # workers' photos and in-flight captures intact.
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+    return complete
+
+
 def remove_worker(name: str):
     database.init_db()
     worker = database.get_worker_by_name(name)
     if worker is None:
-        print(f"Worker not found: {name}")
+        # A removal whose photo cleanup failed or was interrupted already
+        # deleted the row; rerunning it finishes the cleanup that removal
+        # journaled for the same (case-insensitive) worker name.
+        pending, folders = database.pending_removed_worker_cleanup(name)
+        if not pending:
+            print(f"Worker not found: {name}")
+            return 1
+        if not _finish_photo_cleanup(pending):
+            return 1
+        for folder in folders:
+            # Another worker's name may sanitize to the same folder: only
+            # remove it once nothing is left in it.
+            try:
+                Path(folder).rmdir()
+            except OSError:
+                pass
+        print(f"Worker not found: {name}. Finished pending photo cleanup.")
+        return 0
+    if worker.get("server_id"):
+        print(database.PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
         return 1
 
+    # Delete the row first: the ownership check is only final inside the
+    # removal transaction, which also journals the photos it releases.
+    folder = _capture_folder(worker["name"])
     try:
-        removed = database.remove_local_worker_owned(worker["name"])
+        photo_paths = database.remove_local_worker(worker["name"], str(folder) if folder is not None else None)
     except ValueError as exc:
         print(exc)
         return 1
-    if removed:
-        print(f"Removed worker: {worker['name']}")
-        return 0
+    if photo_paths is None:
+        print(f"Failed to remove worker: {worker['name']}")
+        return 1
 
-    print(f"Failed to remove worker: {worker['name']}")
-    return 1
+    print(f"Removed worker: {worker['name']}")
+    journaled = [path for path in photo_paths if database.is_journaled_photo_path(path)]
+    unjournaled = [path for path in photo_paths if path not in journaled]
+    return 0 if _finish_photo_cleanup(journaled, unjournaled, folder) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -348,7 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list", help="List enrolled workers")
 
-    remove_parser = subparsers.add_parser("remove", help="Remove a worker")
+    remove_parser = subparsers.add_parser("remove", help="Remove a local-only worker (portal workers are removed by roster sync)")
     remove_parser.add_argument("name", type=str, help="Worker full name")
 
     return parser

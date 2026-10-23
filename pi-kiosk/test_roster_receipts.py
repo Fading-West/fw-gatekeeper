@@ -60,6 +60,24 @@ class RosterReceiptTests(unittest.TestCase):
         self.assertIsNotNone(database.get_worker_by_name('Alex'))
         self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
 
+    def test_malformed_id_never_certifies_a_roster_or_removes_omitted_workers(self):
+        database.add_worker('Cached worker', ENCODING, server_id=SERVER_ID, employee_id='E1')
+        watermark = '2026-09-01T00:00:00Z'
+        database.set_sync_state('last_worker_sync', watermark)
+        for identifier in ({'photo_url': 'https://photo.invalid/private'}, ['private'],
+                           42, 1.5, True, None, ''):
+            with self.subTest(identifier=identifier):
+                malformed = {'id': identifier, 'name': 'Missing worker', 'active': True,
+                             'face_encoding': ENCODING.tolist(), 'photo_url': None}
+                posted, recognizer = self.cycle(roster([malformed]))
+                posted.assert_not_called()
+                recognizer.reload_faces.assert_called_once()
+                self.assertIsNotNone(database.get_worker_by_name('Cached worker'))
+                self.assertIsNone(database.get_worker_by_name('Missing worker'))
+                self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+                self.assertIsNone(database.get_sync_state('last_roster_applied_at'))
+                self.assertEqual(database.get_sync_state('last_worker_sync'), watermark)
+
     def test_reload_failure_then_retry_after_restart(self):
         database.add_worker('Alex', ENCODING, server_id=SERVER_ID)
         failing = mock.Mock()
@@ -79,6 +97,40 @@ class RosterReceiptTests(unittest.TestCase):
         self.assertEqual(posted.call_count, 1)
         recognizer.reload_faces.assert_called_once()
         self.assertEqual(database.get_sync_state('last_roster_applied_at'), '2026-09-25T12:00:00Z')
+
+    def test_inactive_null_biometrics_revoke_in_receipt_and_legacy_sync(self):
+        for protocol in ('full', 'incremental', 'legacy'):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch.object(config, 'PHOTO_DIR', tmp):
+                database.delete_sync_state('last_roster_applied_at')
+                database.delete_sync_state('last_worker_sync')
+                if protocol == 'incremental':
+                    database.set_sync_state('last_roster_applied_at', '2026-09-01T00:00:00Z')
+                photo = Path(tmp) / f'{SERVER_ID}.jpg'
+                photo.write_bytes(b'cached biometric thumbnail')
+                database.add_worker('Revoked', ENCODING, server_id=SERVER_ID, photo_paths=[str(photo)])
+                # Identifiers and active state suffice; no name or biometric data is needed.
+                rows = [{'id': SERVER_ID, 'active': 0, 'face_encoding': None, 'photo_url': None}]
+                response = roster(rows, full=protocol == 'full')
+                if protocol == 'legacy':
+                    response = mock.Mock(status_code=200, json=lambda: {
+                        'workers': rows, 'synced_at': '2026-09-25T12:00:00Z',
+                    })
+                with mock.patch.object(sync, '_download_photo') as download, \
+                     self.assertLogs(sync.logger, level='INFO') as logs:
+                    posted, recognizer = self.cycle(response, post=lambda *a, **kw: ack())
+                download.assert_not_called()
+                self.assertIsNone(database.get_worker_by_name('Revoked'))
+                self.assertFalse(photo.exists())
+                recognizer.reload_faces.assert_called_once()
+                self.assertFalse(any(record.levelno >= 30 for record in logs.records))
+                self.assertIsNone(database.get_sync_state('roster_pending_receipt'))
+                self.assertEqual(database.get_sync_state('last_worker_sync'), '2026-09-25T12:00:00Z')
+                if protocol == 'legacy':
+                    posted.assert_not_called()
+                else:
+                    posted.assert_called_once()
+                    self.assertEqual(database.get_sync_state('last_roster_applied_at'), '2026-09-25T12:00:00Z')
 
     def test_failed_update_cannot_block_later_explicit_revocations(self):
         update = {'id': 'other-worker', 'name': 'Other', 'active': True,

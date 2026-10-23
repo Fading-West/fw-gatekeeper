@@ -2,7 +2,7 @@ import {expect,it,vi} from 'vitest';
 import {NextRequest} from 'next/server';
 const mocks=vi.hoisted(()=>({ingest:vi.fn().mockResolvedValue({ingested:1,skipped:0,ids:['synthetic']}),auth:vi.fn().mockResolvedValue({kioskId:'synthetic'})}));
 vi.mock('@/lib/convex-ingest',()=>({ingestRecognitionAttemptBatch:mocks.ingest,SecuredIngestError:class extends Error{}}));
-vi.mock('@/lib/kiosk-device-auth',()=>({authenticateKiosk:mocks.auth,kioskClaims:()=>[],kioskEvidenceId:()=> 'synthetic'}));
+vi.mock('@/lib/kiosk-device-auth',async importOriginal=>({...await importOriginal<typeof import('@/lib/kiosk-device-auth')>(),authenticateKiosk:mocks.auth,kioskClaims:()=>[],kioskEvidenceId:()=> 'synthetic'}));
 import {POST} from './route';
 it('does not fabricate a new timestamp for an unkeyed timestamp-less legacy attempt',async()=>{
  const body={attempts:[{faceDetected:true,decision:'near_miss',threshold:.45,bestScore:.4}]};
