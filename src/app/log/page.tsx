@@ -79,6 +79,10 @@ function LogPageContent() {
   const draftIdRef = useRef(0);
   const reversalFormRef = useRef<HTMLDivElement | null>(null);
   const selectionKey = `${date}|${queryWorkerId}|${refreshVersion}`;
+  const currentSelectionRef = useRef(selectionKey);
+  currentSelectionRef.current = selectionKey;
+  const hoursExportRef = useRef<AbortController | null>(null);
+  const [exportingHours, setExportingHours] = useState(false);
   const draftKey = `${date}|${queryWorkerId}`;
   const visibleDraft = reversalDraft?.selection === selectionKey ? reversalDraft : null;
   const visibleCorrectionDraft = correctionDraft?.selection === draftKey ? correctionDraft : null;
@@ -92,6 +96,16 @@ function LogPageContent() {
   const pendingElsewhere = pendingCorrection && pendingCorrection.request.date !== date ? pendingCorrection : null;
   const hasSourceContext = Boolean(queryWorkerId || queryAttendanceId);
   const fullDayHref = `/log?date=${encodeURIComponent(date)}`;
+
+  useEffect(() => {
+    setExportingHours(false);
+    return () => {
+      // A correction refresh replaces the punches even on the same date.
+      // Retire exports using those old punches, as well as on navigation.
+      hoursExportRef.current?.abort();
+      hoursExportRef.current = null;
+    };
+  }, [selectionKey]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -348,6 +362,12 @@ function LogPageContent() {
   };
 
   const exportHoursCSV = async () => {
+    if (!exportsReady || currentSelectionRef.current !== selectionKey || hoursExportRef.current) return;
+    const controller = new AbortController();
+    hoursExportRef.current = controller;
+    setExportingHours(true);
+    const isCurrent = () => !controller.signal.aborted
+      && hoursExportRef.current === controller && currentSelectionRef.current === selectionKey;
     // Query exactly the two neighboring factory dates: yesterday identifies
     // legitimate overnight exits, tomorrow closes shifts started today.
     // Calendar arithmetic avoids treating a DST day as a fixed 24 hours.
@@ -359,22 +379,33 @@ function LogPageContent() {
         neighbor.setUTCDate(neighbor.getUTCDate() + offset);
         const params = new URLSearchParams({ date: neighbor.toISOString().slice(0, 10) });
         if (queryWorkerId) params.set('worker_id', queryWorkerId);
-        const res = await fetch(`/api/attendance?${params.toString()}`);
+        const res = await fetch(`/api/attendance?${params.toString()}`, { signal: controller.signal });
         if (!res.ok) throw new Error(`neighboring-day fetch failed (${res.status})`);
         const rows = await res.json();
         if (!Array.isArray(rows)) throw new Error('neighboring-day fetch returned an unexpected payload');
         return rows;
       }));
-    } catch {
-      toast('Could not load the neighboring days\u2019 events, so overnight hours would be wrong. Export cancelled - try again.', 'error');
-      return;
-    }
+      // Abort alone cannot prevent a response/body that already completed
+      // from downloading a payroll file based on superseded source events.
+      if (!isCurrent()) return;
 
-    const hoursRows = buildHoursExportRows(events, boundaryEvents, date, previousEvents);
-    if (hoursRows.some((row) => row.ambiguous)) {
-      toast('Some workers need review: punches are missing, repeated, or exceed the maximum shift length. Their hours are blank in the CSV.', 'info');
+      const hoursRows = buildHoursExportRows(events, boundaryEvents, date, previousEvents);
+      if (hoursRows.some((row) => row.ambiguous)) {
+        toast('Some workers need review: punches are missing, repeated, or exceed the maximum shift length. Their hours are blank in the CSV.', 'info');
+      }
+      downloadCSV(buildHoursExportCSV(hoursRows), `gatekeeper-hours-${date}.csv`);
+    } catch {
+      if (isCurrent()) {
+        toast('Could not load the neighboring days\u2019 events, so overnight hours would be wrong. Export cancelled - try again.', 'error');
+      }
+    } finally {
+      // A late completion must not release a newer export's pending guard.
+      if (hoursExportRef.current === controller) {
+        controller.abort();
+        hoursExportRef.current = null;
+        setExportingHours(false);
+      }
     }
-    downloadCSV(buildHoursExportCSV(hoursRows), `gatekeeper-hours-${date}.csv`);
   };
 
   return (
@@ -411,10 +442,10 @@ function LogPageContent() {
           )}
           <button
             onClick={exportHoursCSV}
-            disabled={!exportsReady}
+            disabled={!exportsReady || exportingHours}
             className="btn-secondary flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Export hours CSV
+            {exportingHours ? 'Preparing hours…' : 'Export hours CSV'}
           </button>
           <button
             onClick={exportCSV}
