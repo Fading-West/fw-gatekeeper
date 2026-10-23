@@ -24,9 +24,12 @@ import cv2
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 import onnxruntime as ort
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from model_pinning import REC_MODEL_URL, REC_MODEL_SHA256, ensure_pinned_model
 
@@ -45,11 +48,97 @@ from face_auth import (
 )
 
 SERVICE_VERSION = "3.1-quality-gate"
+MAX_PHOTO_CHARACTERS = 4_000_000
+MAX_ENROLLMENT_PHOTOS = 6
+# Six maximum-size base64 photos (ASCII bytes) plus 64 KiB for JSON framing
+# and whitespace. Enforce before FastAPI buffers/parses JSON or checks auth.
+MAX_REQUEST_BODY_BYTES = MAX_PHOTO_CHARACTERS * MAX_ENROLLMENT_PHOTOS + 64 * 1024
+# workers.create can insert one last worker after its 1,000-row identity scan.
+# Keep room for that entire roster of 512-dimensional vectors.
+MAX_MATCH_ENCODINGS = 1_001
+
+
+class RequestBodyTooLarge(HTTPException):
+    def __init__(self):
+        super().__init__(413, "Request body too large")
+
+
+class RequestBodyLimitMiddleware:
+    """Bound bodies on both uvicorn entry points, including chunked requests."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length":
+                try:
+                    declared_size = int(value)
+                except ValueError:
+                    # The server validates framing; still count actual bytes.
+                    continue
+                if declared_size > MAX_REQUEST_BODY_BYTES:
+                    await JSONResponse(
+                        status_code=413, content={"detail": "Request body too large"},
+                    )(scope, receive, send)
+                    return
+
+        received_bytes = 0
+        body_too_large = False
+        response_started = False
+
+        async def tracked_send(message: Message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes, body_too_large
+            if body_too_large:
+                raise RequestBodyTooLarge()
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > MAX_REQUEST_BODY_BYTES:
+                    body_too_large = True
+                    # FastAPI preserves HTTPException from its body reader;
+                    # never forward the chunk that exceeds the limit to it.
+                    raise RequestBodyTooLarge()
+                # Routing has selected the endpoint before it reads the body;
+                # its path also works behind a configured ASGI root_path.
+                route_path = getattr(scope.get("route"), "path", scope.get("path", ""))
+                if not message.get("more_body", False) and route_path in ("/encode", "/match"):
+                    # A small JSON body can expand into millions of Python
+                    # objects. Authenticate after the byte limit but before
+                    # returning the final chunk to FastAPI's JSON parser.
+                    # Earlier chunks remain only in its bounded byte buffer.
+                    provided_key = next((
+                        value.decode("latin-1") for name, value in scope.get("headers", [])
+                        if name.lower() == FACE_SERVICE_KEY_HEADER.encode("ascii")
+                    ), None)
+                    require_face_service_key(provided_key)
+            return message
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except RequestBodyTooLarge:
+            # FastAPI handles HTTPException itself; other ASGI apps may let it
+            # escape. Never replace a response that has already started.
+            if response_started:
+                raise
+            await JSONResponse(
+                status_code=413, content={"detail": "Request body too large"},
+            )(scope, receive, send)
 
 @asynccontextmanager
 async def service_lifespan(_app):
     # Initialize once at startup, outside health requests. A slow or failed
-    # model load leaves the cheap read-only endpoint available and degraded.
+    # model load leaves /health live and /ready unavailable until recovery.
     if get_configured_face_service_key():
         threading.Thread(target=_warm_recognition_model, name="face-model-warmup", daemon=True).start()
     yield
@@ -60,6 +149,7 @@ app = FastAPI(
     lifespan=service_lifespan,
     telemetry={"auto_configure": False},
 )
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_cors_origins(),
@@ -122,11 +212,11 @@ def _warm_recognition_model():
         print("Face recognition model initialization failed; enrollment unavailable")
 
 
-PhotoInput = Annotated[str, Field(min_length=1, max_length=4_000_000)]
+PhotoInput = Annotated[str, Field(min_length=1, max_length=MAX_PHOTO_CHARACTERS)]
 
 
 class EncodeRequest(BaseModel):
-    photos: list[PhotoInput] = Field(min_length=1, max_length=6)
+    photos: list[PhotoInput] = Field(min_length=1, max_length=MAX_ENROLLMENT_PHOTOS)
 
 class PhotoResult(BaseModel):
     index: int
@@ -143,8 +233,8 @@ class WorkerEncoding(BaseModel):
     encoding: list[float]
 
 class MatchRequest(BaseModel):
-    photo: str
-    encodings: list[WorkerEncoding]
+    photo: str = Field(max_length=MAX_PHOTO_CHARACTERS)
+    encodings: list[WorkerEncoding] = Field(max_length=MAX_MATCH_ENCODINGS)
 
 class MatchResult(BaseModel):
     worker_id: str
@@ -265,6 +355,14 @@ def health():
         "min_pairwise_similarity": MIN_PAIRWISE_SIMILARITY,
         "min_good_photos": MIN_GOOD_PHOTOS,
     }
+
+
+@app.get("/ready")
+def ready():
+    # Render must only route traffic once authentication and the model are ready.
+    # Reuse the cheap state snapshot without waiting for or triggering model load.
+    body = health()
+    return JSONResponse(content=body, status_code=200 if body["status"] == "ok" else 503)
 
 
 def _inspect_enrollment_photo(index: int, photo: str) -> tuple[PhotoResult, Optional[np.ndarray]]:
