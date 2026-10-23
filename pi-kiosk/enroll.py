@@ -326,7 +326,12 @@ def remove_worker(name: str):
         print(f"Worker not found: {name}")
         return 1
 
-    if database.remove_local_worker_owned(worker["name"]):
+    try:
+        removed = database.remove_local_worker_owned(worker["name"])
+    except ValueError as exc:
+        print(exc)
+        return 1
+    if removed:
         print(f"Removed worker: {worker['name']}")
         return 0
 

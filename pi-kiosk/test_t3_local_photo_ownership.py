@@ -58,6 +58,17 @@ class LocalPhotoOwnershipTests(unittest.TestCase):
         self.assertEqual(set(self.photos.iterdir()), {original, unknown})
         self.assertEqual(original.read_bytes(), b"original")
 
+    def test_local_removal_refuses_portal_worker_and_preserves_owned_photos(self):
+        worker_id = database.publish_synced_worker(
+            "Portal Alex", self.encoding, [b"portal photo"],
+            enrolled_at=None, server_id="portal-alex", employee_id="P1",
+        )
+        photo = Path(database.get_worker_by_id(worker_id)["photo_paths"][0])
+        with self.assertRaisesRegex(ValueError, "managed by the Gatekeeper portal"):
+            database.remove_local_worker_owned("Portal Alex")
+        self.assertIsNotNone(database.get_worker_by_id(worker_id))
+        self.assertEqual(photo.read_bytes(), b"portal photo")
+
     def test_directory_write_failure_never_publishes_worker_reference(self):
         self.photos.mkdir()
         with mock.patch.object(database, "_fsync_directory", side_effect=OSError("directory fsync")):

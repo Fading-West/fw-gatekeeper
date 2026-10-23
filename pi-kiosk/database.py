@@ -674,6 +674,14 @@ def remove_local_worker_owned(name: str) -> bool:
             if worker is None:
                 conn.rollback()
                 return False
+            # A local CLI cannot revoke a portal-managed roster identity.
+            # Keep the check inside the same transaction as the deletion so
+            # a concurrent sync cannot adopt the row between check and write.
+            if worker.get("server_id"):
+                raise ValueError(
+                    f"{worker['name']} is managed by the Gatekeeper portal. "
+                    "Deactivate or purge the worker in the portal."
+                )
             owned = [_owned_photo_path(Path(path), root) for path in worker["photo_paths"]
                      if Path(path).resolve() != root and Path(path).resolve().is_relative_to(root)]
             conn.executemany("INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, 'retired')",
