@@ -182,7 +182,7 @@ class SyncAuthHealthTests(unittest.TestCase):
              mock.patch.object(sync.database, "recover_photo_cleanup"), \
              mock.patch.object(sync.database, "replaced_worker_photo_paths", return_value=[]), \
              mock.patch.object(sync.database, "record_photo_cleanup"), \
-             mock.patch.object(sync.database, "add_worker") as applied, \
+             mock.patch.object(sync.database, "publish_synced_worker") as applied, \
              mock.patch.object(sync, "_download_photo", return_value=None), \
              mock.patch.object(sync.requests, "get", return_value=response):
             self.tracker.observe("roster", 401)
