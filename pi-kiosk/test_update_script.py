@@ -50,6 +50,21 @@ http.server.HTTPServer(("127.0.0.1", int(os.environ["TEST_PORT"])), Handler).ser
 '''
 
 
+class BuildReserveTests(unittest.TestCase):
+    def test_completed_build_cannot_leave_less_than_the_disk_reserve(self):
+        child = mock.Mock(returncode=0)
+        # The build finishes during the sleep, after the in-loop check.
+        child.poll.side_effect = [None, 0]
+        space = [mock.Mock(free=RELEASE.RESERVE + 1), mock.Mock(free=RELEASE.RESERVE - 1)]
+        with mock.patch.object(RELEASE.subprocess, "Popen", return_value=child), \
+                mock.patch.object(RELEASE.shutil, "disk_usage", side_effect=space), \
+                mock.patch.object(RELEASE.time, "sleep"), \
+                mock.patch.object(RELEASE.signal, "signal"), \
+                mock.patch.object(RELEASE, "stop_child"):
+            with self.assertRaisesRegex(RuntimeError, "disk reserve"):
+                RELEASE.guard(Path("."), ["build"])
+
+
 class UpdateScriptTests(unittest.TestCase):
     @staticmethod
     def git(directory, *arguments):

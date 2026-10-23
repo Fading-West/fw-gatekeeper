@@ -161,6 +161,10 @@ def guard(repo, command):
             time.sleep(0.5)
         if child.returncode:
             raise SystemExit(child.returncode)
+        # The build can consume the reserve and exit during the final sleep.
+        # A successful exit is not evidence that the OS/SQLite reserve remains.
+        if shutil.disk_usage(repo).free < RESERVE:
+            raise RuntimeError("Build exhausted the update disk reserve; keeping the old kiosk.")
     finally:
         stop_child(child)
 
