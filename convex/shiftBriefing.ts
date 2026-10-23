@@ -1,5 +1,5 @@
 import { isSupportedEncoding } from "../src/lib/encoding";
-import { getFactoryLocalDateKey } from "./localDate";
+import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
@@ -560,10 +560,14 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       });
     }
 
+    const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
     const departmentRows = [...departmentMap.values()].map((row) => {
       let status: DepartmentCoverageStatus = "covered";
       if (row.missing > 0 || row.late > 0) status = "short";
-      if (row.present === 0 && row.expected > 0) status = "critical";
+      // An empty floor is only critical while someone is missing or the shift
+      // is still running; everyone clocked out after the end is a done shift.
+      const shiftEnded = factoryNow > `${date}T${row.scheduled_end}:00`;
+      if (row.present === 0 && row.expected > 0 && (row.missing > 0 || !shiftEnded)) status = "critical";
       return { ...row, status };
     });
     departmentRows.sort((a, b) =>
