@@ -56,6 +56,8 @@ export const list = query({
 
 export const create = mutation({
   args: {
+    requestId: v.optional(v.string()),
+    expectedActorId: v.optional(v.id("users")),
     name: v.string(),
     days: v.string(),
     startTime: v.string(),
@@ -64,10 +66,27 @@ export const create = mutation({
   },
   returns: v.object({ id: v.id("schedules") }),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin"]);
+    const actor = await assertPortalRole(ctx, ["admin"]);
+    if (args.expectedActorId !== undefined && args.expectedActorId !== actor.userId) {
+      throw new ConvexError({ code: "SCHEDULE_ACTOR_CONFLICT", message: "Your account changed. Reload schedules before creating a schedule." });
+    }
 
     validateSchedule(args.name, args.days, args.startTime, args.endTime);
+    if (args.requestId !== undefined && (!args.requestId.trim() || args.requestId.length > 200)) {
+      throw new ConvexError({ code: "INVALID_SCHEDULE", message: "Schedule request ID must contain 1 to 200 characters." });
+    }
+    const creationIntent = JSON.stringify([args.name.trim(), [...parseScheduleDays(args.days)!].sort(), args.startTime, args.endTime, args.department?.trim() || ""]);
+    if (args.requestId) {
+      const existing = await ctx.db.query("schedules")
+        .withIndex("by_creation_actor_and_request", q => q.eq("creationActorId", actor.userId).eq("creationRequestId", args.requestId))
+        .unique();
+      if (existing) {
+        if (existing.creationIntent !== creationIntent) throw new ConvexError({ code: "SCHEDULE_REQUEST_CONFLICT", message: "This creation request was already used for a different schedule. Review the saved schedule before starting another." });
+        return { id: existing._id };
+      }
+    }
     const id = await ctx.db.insert("schedules", {
+      ...(args.requestId ? { creationRequestId: args.requestId, creationActorId: actor.userId, creationIntent } : {}),
       name: args.name.trim(),
       days: JSON.stringify(parseScheduleDays(args.days)),
       startTime: args.startTime,
