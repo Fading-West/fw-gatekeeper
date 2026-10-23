@@ -28,7 +28,7 @@ describe('schedule uncertainty preserves attendance evidence', () => {
     const rawBefore = await t.run(ctx => ctx.db.query('attendance').collect());
     const briefing = await actor.query(api.shiftBriefing.summary, { date });
     expect(briefing.summary.expected).toBe(0);
-    expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0 });
+    expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0, not_yet_due: 0 });
     expect(briefing.schedule_assignment_warnings).toContainEqual(expect.objectContaining({ worker_id: String(workerId), kind, event_count: 1 }));
     expect(briefing.shift_trust_brief.readiness_blockers).toContainEqual(expect.objectContaining({
       id: kind === 'unsupported' ? 'schedule:unsupported' : 'schedule:unavailable',
@@ -57,7 +57,7 @@ describe('schedule uncertainty preserves attendance evidence', () => {
     });
     const briefing = await actor.query(api.shiftBriefing.summary, { date });
     expect(briefing.coverage_unavailable).toBe(2);
-    expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0 });
+    expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0, not_yet_due: 0 });
     expect(briefing.shift_trust_brief.readiness_blockers).toContainEqual(expect.objectContaining({ id: 'schedule:unavailable', count: 2, severity: 'critical' }));
     expect(briefing.action_items).toContainEqual(expect.objectContaining({ id: 'schedules:unavailable', priority: 'critical' }));
     expect(briefing.shift_trust_brief.readiness_blockers.some(row => row.id === 'schedule:unsupported')).toBe(false);
@@ -70,7 +70,7 @@ describe('schedule uncertainty preserves attendance evidence', () => {
     expect(briefing.coverage_unavailable).toBe(0);
     expect(briefing.schedule_assignment_warnings).toEqual([]);
     expect(briefing.summary).toMatchObject({ expected: 1, present: 0, clocked_out: 1 });
-    expect(briefing.daily_attendance).toEqual({ expected: 1, present: 1, late: 1, missing: 0 });
+    expect(briefing.daily_attendance).toEqual({ expected: 1, present: 1, late: 1, missing: 0, not_yet_due: 0 });
     expect(briefing.workers[0].schedule_name).toBe('Assembly one');
   });
   it('changes coverage source identity when a reviewed ambiguous candidate is replaced at the same time/count', async () => {
@@ -91,4 +91,20 @@ describe('schedule uncertainty preserves attendance evidence', () => {
       expect(afterCloseout.blocker_evidence).not.toEqual(beforeCloseout.blocker_evidence);
     }
   });
+});
+
+it('reopens a reviewed ambiguous assignment when a same-shaped candidate is replaced', async () => {
+  const { t, actor } = await setup('ambiguous');
+  const current = async () => (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.type === 'ambiguous_schedule')!;
+  const source = await current();
+  await actor.mutation(api.shiftExceptions.review, { exceptionKey: source.key, date, type: source.type, sourceFingerprint: source.source_fingerprint, status: 'reviewed', note: 'Reviewed candidates' });
+  expect(await current()).toMatchObject({ status: 'reviewed' });
+  await t.run(async ctx => {
+    const candidate = (await ctx.db.query('schedules').collect()).find(row => row.name === 'Assembly one')!;
+    const { _id, _creationTime, ...fields } = candidate;
+    await ctx.db.delete(_id);
+    await ctx.db.insert('schedules', fields);
+  });
+  expect(await current()).toMatchObject({ status: 'open', review_note: null });
+  expect((await current()).source_fingerprint).not.toBe(source.source_fingerprint);
 });
