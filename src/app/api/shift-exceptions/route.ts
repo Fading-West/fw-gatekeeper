@@ -124,7 +124,8 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const exceptionKey = optionalString(body.exception_key) || optionalString(body.exceptionKey);
     const sourceFingerprint = optionalString(body.source_fingerprint) || optionalString(body.sourceFingerprint);
     const date = optionalString(body.date);
@@ -140,6 +141,10 @@ export async function PATCH(req: NextRequest) {
     if (!VALID_STATUSES.has(status)) {
       return NextResponse.json({ error: 'status must be open, reviewed, ignored, or resolved' }, { status: 400 });
     }
+    // Empty strings explicitly clear the note; an omitted note preserves the saved value.
+    if (body.note !== undefined && typeof body.note !== 'string') {
+      return NextResponse.json({ error: 'note must be a string' }, { status: 400 });
+    }
 
     const result = await convex.mutation((api as any).shiftExceptions.review, {
       exceptionKey,
@@ -147,7 +152,7 @@ export async function PATCH(req: NextRequest) {
       date,
       type,
       status,
-      note: optionalString(body.note),
+      note: body.note?.trim(),
     });
 
     return NextResponse.json(result || { ok: true });
