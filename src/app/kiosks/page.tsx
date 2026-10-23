@@ -71,6 +71,7 @@ export default function KiosksPage() {
   const [credentialBusy, setCredentialBusy] = useState<string | null>(null);
   const credentialBusyRef = useRef(false);
   const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
+  const readinessRequestRef = useRef(0);
 
   const fetchCredentialStatus = useCallback(async () => {
     try {
@@ -96,6 +97,7 @@ export default function KiosksPage() {
       if (!response.ok) throw new Error(body.error || 'Credential change failed');
       if (method === 'POST') setIssuedCredential({ kioskId: body.kiosk_id, value: body.credential });
       else toast('Kiosk credential revoked');
+      fetchReadiness();
       fetchCredentialStatus();
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Credential change failed', 'error');
@@ -106,18 +108,19 @@ export default function KiosksPage() {
   };
 
   const fetchReadiness = useCallback(async () => {
+    const requestId = ++readinessRequestRef.current;
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/system-health', { cache: 'no-store' });
+      const res = await fetch('/api/system-health?fresh=1', { cache: 'no-store' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || 'Failed to load kiosk readiness');
-      setHealth(body);
+      if (requestId === readinessRequestRef.current) setHealth(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load kiosk readiness';
-      setError(message);
+      if (requestId === readinessRequestRef.current) setError(message);
     } finally {
-      setLoading(false);
+      if (requestId === readinessRequestRef.current) setLoading(false);
     }
   }, []);
 

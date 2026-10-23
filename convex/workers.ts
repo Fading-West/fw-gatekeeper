@@ -102,7 +102,7 @@ async function findWorkerByEmployeeId(ctx: QueryCtx, employeeId?: string, includ
   for (const candidate of workers ?? await readWorkerIdentities(ctx)) {
     if ((!candidate.active && !includeInactive) || normalizeEmployeeId(candidate.employeeId) !== normalized) continue;
     if (match) {
-      throw new Error(`Employee ID ${normalized} belongs to multiple workers; resolve the duplicate identities before enrollment`);
+      throw new ConvexError(`Employee ID ${normalized} belongs to multiple workers; resolve the duplicate identities before enrollment`);
     }
     match = candidate;
   }
@@ -179,7 +179,7 @@ const createWorkerResult = v.object({
 async function createWorker(ctx: MutationCtx, args: { name: string; employeeId?: string; department?: string; faceEncoding: number[]; photoStorageIds?: Id<"_storage">[]; consentAt?: string }, actorUserId: Id<"users">) {
     const name = normalizeName(args.name);
     if (!name) {
-      throw new Error("Worker name is required");
+      throw new ConvexError("Worker name is required");
     }
     if (!isSupportedFaceEncoding(args.faceEncoding)) {
       throw new Error("faceEncoding must contain 512 finite values with a nonzero finite squared norm");
@@ -197,10 +197,10 @@ async function createWorker(ctx: MutationCtx, args: { name: string; employeeId?:
     const existing = existingEmployeeId;
 
     if (existingName?.active) {
-      throw new Error("Worker name already exists");
+      throw new ConvexError("Worker name already exists");
     }
     if (existingEmployeeId?.active) {
-      throw new Error(`Employee ID ${employeeId} already belongs to ${existingEmployeeId.name}`);
+      throw new ConvexError(`Employee ID ${employeeId} already belongs to ${existingEmployeeId.name}`);
     }
 
     await consumeEnrollmentPhotos(ctx, args.photoStorageIds, actorUserId, existing?.photoStorageIds);
@@ -270,7 +270,7 @@ export const createFromRoster = mutation({
   handler: async (ctx, args) => {
     const member = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const employee = findEmployeeDirectoryById(args.employeeId);
-    if (!employee) throw new Error("Employee must be selected from the company roster");
+    if (!employee) throw new ConvexError("Employee must be selected from the company roster");
     return await createWorker(ctx, {
       name: employee.name,
       employeeId: employee.employeeId,
@@ -328,13 +328,13 @@ export const update = mutation({
     const member = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const { id, ...fields } = args;
     const worker = await ctx.db.get(id);
-    if (!worker || !worker.active) throw new Error("Active worker not found; use enrollment to restore a worker by employee ID");
+    if (!worker || !worker.active) throw new ConvexError("Active worker not found; use enrollment to restore a worker by employee ID");
     if (member.role === "enrollment" && (
       (fields.name !== undefined && normalizeName(fields.name) !== normalizeName(worker.name)) ||
       (fields.employeeId !== undefined && normalizeEmployeeId(fields.employeeId) !== normalizeEmployeeId(worker.employeeId)) ||
       (fields.department !== undefined && normalizeDepartment(fields.department) !== normalizeDepartment(worker.department))
     )) {
-      throw new Error("Only admins may change worker identity or department");
+      throw new ConvexError("Only admins may change worker identity or department");
     }
     const writesBiometrics = fields.faceEncoding !== undefined || fields.photoStorageIds !== undefined;
     if (writesBiometrics) assertBiometricConsent(fields.consentAt);
@@ -349,11 +349,11 @@ export const update = mutation({
     if (fields.name !== undefined) {
       const trimmedName = normalizeName(fields.name);
       if (!trimmedName) {
-        throw new Error("Worker name is required");
+        throw new ConvexError("Worker name is required");
       }
       const existing = await findWorkerByName(ctx, trimmedName, identities);
       if (existing && existing._id !== id && existing.active) {
-        throw new Error("Worker name already exists");
+        throw new ConvexError("Worker name already exists");
       }
       updates.name = trimmedName;
     }
@@ -361,7 +361,7 @@ export const update = mutation({
       const normalizedEmployeeId = normalizeEmployeeId(fields.employeeId);
       const existingEmployeeId = await findWorkerByEmployeeId(ctx, normalizedEmployeeId, true, identities);
       if (existingEmployeeId && existingEmployeeId._id !== id) {
-        throw new Error(`Employee ID ${normalizedEmployeeId} already belongs to ${existingEmployeeId.name}`);
+        throw new ConvexError(`Employee ID ${normalizedEmployeeId} already belongs to ${existingEmployeeId.name}`);
       }
       updates.employeeId = normalizedEmployeeId;
     }
@@ -424,10 +424,10 @@ export const purgeBiometrics = mutation({
     const member = await assertPortalRole(ctx, ["admin"]);
     const reason = args.reason.trim();
     if (!reason) {
-      throw new Error("A reason is required to purge face data");
+      throw new ConvexError("A reason is required to purge face data");
     }
     const worker = await ctx.db.get(args.id);
-    if (!worker) throw new Error("Worker not found");
+    if (!worker) throw new ConvexError("Worker not found");
 
     const photosDeleted = await deleteReplacedPhotos(ctx, worker._id, worker.photoStorageIds, undefined);
 
