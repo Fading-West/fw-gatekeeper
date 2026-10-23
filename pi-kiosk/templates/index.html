@@ -122,6 +122,7 @@
         }
 
         .camera-box {
+            position: relative;
             border: 1px solid #3a3d43;
             border-radius: 10px;
             overflow: hidden;
@@ -135,6 +136,20 @@
             height: 100%;
             object-fit: cover;
             display: block;
+        }
+
+        .clock-warning {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            right: 8px;
+            padding: 12px;
+            border: 2px solid #e0a343;
+            border-radius: 8px;
+            background: #261b08;
+            color: #ffe0a3;
+            font-size: 1rem;
+            font-weight: 600;
         }
 
         /* Worker-facing result banner: large, wrapping, readable from a few
@@ -502,6 +517,10 @@
         <section class="stage">
             <div class="camera-box">
                 <img src="/feed" alt="Live camera feed">
+                <div id="clockWarning" class="clock-warning" role="alert" hidden>
+                    Clock not synchronized. Attendance times may be wrong.
+                    Contact a supervisor to verify the time. Clock-ins continue.
+                </div>
             </div>
             <div class="status-card">
                 <div id="statusGlyph" class="status-glyph" aria-hidden="true"></div>
@@ -556,6 +575,7 @@
     <script src="{{ url_for('static', filename='rendering.js') }}"></script>
     <script>
         const statusText = document.getElementById("statusText");
+        const clockWarning = document.getElementById("clockWarning");
         const statusGlyph = document.getElementById("statusGlyph");
         const statusCard = document.querySelector(".status-card");
         const stateValue = document.getElementById("stateValue");
@@ -701,6 +721,7 @@
 
                 // Footer claims must match what the kiosk actually enforces.
                 const health = data.health || {};
+                clockWarning.hidden = health.clock_synchronized !== false;
                 if (data.liveness_required && health.liveness_available) {
                     livenessNote.textContent = "Blink verification required before recognition";
                     livenessNote.style.color = "";
