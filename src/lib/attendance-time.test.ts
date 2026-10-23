@@ -23,4 +23,10 @@ describe('attendance hours export chronology', () => {
     const end = { timestamp: '2026-11-01T02:30:00' };
     expect((clock.instantMs(end) - clock.instantMs(start)) / 3_600_000).toBe(3);
   });
+
+  it('uses the first ambiguous occurrence and rejects skipped Chicago wall times', () => {
+    const clock = createAttendanceClock();
+    expect(clock.instantMs({ timestamp: '2026-11-01T01:15:00' })).toBe(Date.parse('2026-11-01T06:15:00Z'));
+    expect(clock.instantMs({ timestamp: '2026-03-08T02:30:00' })).toBeNaN();
+  });
 });

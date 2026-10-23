@@ -1,12 +1,15 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { listEffectiveAttendanceByTimestampRange } from "./attendance";
+import { listEffectiveAttendanceByFactoryDates } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { writeAuditLog } from "./audit";
+import { getFactoryLocalDateKey, getPreviousFactoryLocalDateKey, getNextFactoryLocalDateKey } from "./localDate";
+import { createShiftClock, MAX_PLAUSIBLE_SHIFT_HOURS, pairShiftEvents } from "./attendanceShifts";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
-import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
+import { createScheduleMinutesElapsed, createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
 import { buildExceptionSourceFingerprint } from "./exceptionSourceFingerprint";
 
@@ -51,6 +54,8 @@ type ShiftException = {
   kiosk_name: string | null;
   first_seen: string | null;
   last_seen: string | null;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
   schedule_name: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
@@ -90,11 +95,31 @@ function getMinutesFromTimestamp(timestamp?: string | null): number | null {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
-// Compare both the day and scheduled deadline with the factory clock. A
-// worker's last scan cannot tell us whether the shift has finished yet.
-function scheduleTimeHasPassed(date: string, time: string, now: string) {
-  if (getMinutesFromTime(time) === null) return false;
-  return now > `${date}T${time}:00`;
+// Missing clock-out rule. Schedules end on their start date
+// (scheduleTimes.ts), so an overnight worker's schedule can end before the
+// real shift does. An unpaired clock-in can legitimately end on the NEXT
+// factory date when, in factory-local wall time, either:
+//   (a) it is at or after the scheduled end: the schedule does not describe
+//       this shift, and a clock-out at the scheduled end would precede it; or
+//   (b) clock-in + max(scheduled duration, STANDARD_SHIFT_MINUTES) reaches
+//       midnight, i.e. a normal-length shift started then runs into the next
+//       date (8 h covers schedules truncated at midnight, e.g. 22:00-23:00).
+// Such a shift is "possibly in progress" (review-only) until
+// MAX_PLAUSIBLE_SHIFT_HOURS after the clock-in. Any other shift is a day
+// shift, and after its scheduled end it keeps the one-tap "Add missing
+// clock-out" at that end, unless plausible exit evidence exists.
+const STANDARD_SHIFT_MINUTES = 8 * 60;
+const MINUTES_PER_DAY = 24 * 60;
+
+function getClockInReach(clockInTimestamp: string, schedule: { startTime: string; endTime: string }) {
+  const clockIn = getMinutesFromTimestamp(clockInTimestamp);
+  const start = getMinutesFromTime(schedule.startTime);
+  const end = getMinutesFromTime(schedule.endTime);
+  // Unknown times cannot prove a day shift; stay conservative.
+  if (clockIn === null || start === null || end === null) return { afterScheduledEnd: false, couldEndNextDate: true };
+  const afterScheduledEnd = clockIn >= end;
+  const couldEndNextDate = afterScheduledEnd || clockIn + Math.max(end - start, STANDARD_SHIFT_MINUTES) >= MINUTES_PER_DAY;
+  return { afterScheduledEnd, couldEndNextDate };
 }
 
 function formatTime(value?: string | null) {
@@ -349,7 +374,7 @@ function withReview(exception: ShiftException, review: any): ShiftException {
   };
 }
 
-function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution" | "source_fingerprint">): ShiftException {
+function createException(input: Omit<ShiftException, "status" | "review_note" | "reviewed_at" | "suggested_resolution" | "source_fingerprint">, reviewOnlyReason?: string): ShiftException {
   const exception: Omit<ShiftException, "suggested_resolution"> = {
     ...input,
     source_fingerprint: "", // Hydrated from effective source evidence below.
@@ -357,10 +382,18 @@ function createException(input: Omit<ShiftException, "status" | "review_note" | 
     review_note: null,
     reviewed_at: null,
   };
-  return {
+  const result: ShiftException = {
     ...exception,
     suggested_resolution: buildSuggestedResolution(exception),
   };
+  if (reviewOnlyReason) {
+    result.suggested_resolution = {
+      ...suggestedResolutionBase(exception),
+      action: "review_only", label: "Review shift evidence", cta: "Review source",
+      reason: reviewReason(exception, reviewOnlyReason), disabled_reason: reviewOnlyReason,
+    };
+  }
+  return result;
 }
 
 function summarize(exceptions: ShiftException[]) {
@@ -389,13 +422,20 @@ function summarize(exceptions: ShiftException[]) {
 
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
-  const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
-  const [workers, attendance, schedules, reviews, recognitionAttempts] = await Promise.all([
+  const scheduleMinutesElapsed = createScheduleMinutesElapsed();
+  const now = new Date().toISOString();
+  const hasScheduleTimePassed = createScheduleTimeHasPassed(now);
+  const previousDate = getPreviousFactoryLocalDateKey(date);
+  const nextDate = getNextFactoryLocalDateKey(date);
+  const [workers, attendanceByDate, schedules, reviews, recognitionAttempts] = await Promise.all([
     ctx.db
       .query("workers")
       .withIndex("by_active", (q: any) => q.eq("active", true))
       .collect(),
-    listEffectiveAttendanceByTimestampRange(ctx, date),
+    // One bounded indexed scan for D-1..D+1, partitioned per factory date with
+    // corrections, reversals and chronological DST keys applied. Never infer
+    // pairs from raw scans.
+    listEffectiveAttendanceByFactoryDates(ctx, previousDate, nextDate),
     ctx.db
       .query("schedules")
       .withIndex("by_active", (q: any) => q.eq("active", true))
@@ -406,17 +446,27 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       .collect(),
     listAllRecognitionAttemptsByFactoryDate(ctx, { date }),
   ]);
+  const attendance = attendanceByDate.get(date)!;
+  const previousAttendance = attendanceByDate.get(previousDate)!;
+  const nextAttendance = attendanceByDate.get(nextDate)!;
 
   const reviewsByKey = new Map(reviews.map((review: any) => [review.exceptionKey, review]));
   const schedulesByWorker = new Map<string, any>();
   const recognitionFingerprints = new Map<string, string>();
   const eventsByWorker = new Map<string, any[]>();
+  const pairingEventsByWorker = new Map<string, any[]>();
   const exceptions: ShiftException[] = [];
+  const shiftClock = createShiftClock();
 
   for (const event of attendance) {
     const events = eventsByWorker.get(event.workerId) || [];
     events.push(event);
     eventsByWorker.set(event.workerId, events);
+  }
+  for (const event of [...previousAttendance, ...attendance, ...nextAttendance]) {
+    const events = pairingEventsByWorker.get(event.workerId) || [];
+    events.push(event);
+    pairingEventsByWorker.set(event.workerId, events);
   }
 
   for (const worker of workers) {
@@ -425,10 +475,9 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     schedulesByWorker.set(workerId, schedule);
     const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
-    const clockOuts = workerEvents.filter((event) => event.eventType === "clock_out");
     const firstIn = clockIns[0] || null;
     const lastEvent = workerEvents[workerEvents.length - 1] || null;
-    const lastOut = clockOuts[clockOuts.length - 1] || null;
+    const { pairedClockIns, pairedClockOuts, overlongClockOuts, repeatedEvents, plausiblePairEvents, clock } = pairShiftEvents(pairingEventsByWorker.get(workerId) || [], shiftClock);
     const workerName = worker.name || "Unknown worker";
     const department = worker.department || null;
     const baseLinks = {
@@ -453,7 +502,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       schedule = null;
     }
 
-    if (schedule && !firstIn && scheduleTimeHasPassed(date, schedule.startTime, factoryNow)) {
+    if (schedule && !firstIn && hasScheduleTimePassed(date, schedule.startTime)) {
       const key = `${date}:missing_arrival:${workerId}`;
       exceptions.push(createException({
         key,
@@ -479,15 +528,14 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
 
     if (schedule && firstIn) {
-      const startMinutes = getMinutesFromTime(schedule.startTime);
-      const firstInMinutes = getMinutesFromTimestamp(firstIn.timestamp);
-      if (startMinutes !== null && firstInMinutes !== null && firstInMinutes > startMinutes) {
+      const minutesLate = scheduleMinutesElapsed(date, schedule.startTime, firstIn);
+      if (minutesLate !== null && minutesLate > 0) {
         const key = `${date}:late_arrival:${workerId}`;
         exceptions.push(createException({
           key,
           date,
           type: "late_arrival",
-          severity: firstInMinutes - startMinutes >= 30 ? "critical" : "warning",
+          severity: minutesLate >= 30 ? "critical" : "warning",
           title: `${workerName} arrived late`,
           description: `${workerName} clocked in at ${firstIn.timestamp.slice(11, 16)}, after the ${formatTime(schedule.startTime)} scheduled start.`,
           worker_id: workerId,
@@ -510,9 +558,19 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       }
     }
 
-    if (schedule && lastEvent?.eventType === "clock_in") {
-      const shouldFlagMissingClockOut = scheduleTimeHasPassed(date, schedule.endTime, factoryNow);
+    const unfinishedShift = lastEvent?.eventType === "clock_in" && !pairedClockIns.has(lastEvent);
+    if (schedule && unfinishedShift) {
+      const shouldFlagMissingClockOut = hasScheduleTimePassed(date, schedule.endTime);
       if (shouldFlagMissingClockOut) {
+        // Pairing may refuse a plausible exit (e.g. after a repeated entry across
+        // midnight). Inventing an exit would then shorten a real shift.
+        const competingExit = plausiblePairEvents.has(lastEvent);
+        const reach = getClockInReach(lastEvent.timestamp, schedule);
+        // Only a shift that could legitimately end on the next date is treated as
+        // possibly in progress; a day shift keeps the scheduled-end suggestion.
+        const inProgress = !competingExit && reach.couldEndNextDate && clock.isPlausibleShift(lastEvent, { timestamp: now });
+        const clockInTime = lastEvent.timestamp.slice(11, 16);
+        const scheduledEnd = formatTime(schedule.endTime);
         const key = `${date}:missing_clock_out:${workerId}`;
         exceptions.push(createException({
           key,
@@ -520,7 +578,13 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           type: "missing_clock_out",
           severity: "warning",
           title: `${workerName} is still clocked in`,
-          description: `${workerName} last scanned in at ${lastEvent.timestamp.slice(11, 16)} and has no clock-out after the ${formatTime(schedule.endTime)} scheduled end.`,
+          description: competingExit
+            ? `${workerName}'s ${clockInTime} clock-in was not paired automatically, but a later clock-out within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window could close it. Review the competing scans before correcting attendance; do not add a clock-out.`
+            : inProgress
+            ? `${workerName} clocked in at ${clockInTime}${reach.afterScheduledEnd ? `, after the ${scheduledEnd} scheduled end,` : ""} and has no clock-out yet${reach.afterScheduledEnd ? "" : ` after the ${scheduledEnd} scheduled end`}. A shift starting then can run past midnight, so it may still be in progress within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window. Confirm its status and acknowledge it in closeout notes; do not invent an exit punch.`
+            : reach.afterScheduledEnd
+            ? `${workerName} last scanned in at ${clockInTime}, after the ${scheduledEnd} scheduled end, and has no clock-out within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window. The scheduled end precedes the clock-in, so review the source scans and record the actual exit time.`
+            : `${workerName} last scanned in at ${clockInTime} and has no clock-out after the ${scheduledEnd} scheduled end.`,
           worker_id: workerId,
           worker_name: workerName,
           department,
@@ -537,16 +601,27 @@ export async function buildShiftExceptions(ctx: any, date: string) {
             ...baseLinks,
             activity_log: getActivityLogHref(date, workerId, String(lastEvent._id).startsWith("correction:") ? null : String(lastEvent._id)),
           },
-        }));
+        }, competingExit
+          ? "A later clock-out could close this shift; review the competing scans before adding a clock-out."
+          : inProgress ? "The shift may still be in progress; confirm its status before adding a clock-out."
+          : reach.afterScheduledEnd ? "The clock-in is after the scheduled end, so the scheduled end cannot be used as its clock-out; review the source scans." : undefined));
       }
     }
 
     for (let index = 0; index < workerEvents.length; index += 1) {
       const event = workerEvents[index];
-      const previous = workerEvents[index - 1];
-      const repeated = previous && previous.eventType === event.eventType;
-      const firstEventIsOut = index === 0 && event.eventType === "clock_out";
-      if (!repeated && !firstEventIsOut) continue;
+      const previous = repeatedEvents.get(event) || workerEvents[index - 1];
+      const repeated = repeatedEvents.has(event);
+      const firstEventIsOut = index === 0 && event.eventType === "clock_out" && !pairedClockOuts.has(event);
+      const overlong = overlongClockOuts.has(event);
+      if (!repeated && !firstEventIsOut && !overlong) continue;
+      const reviewOnlyReason = overlong
+        ? "The interval exceeds the maximum shift; review both punches before correcting attendance."
+        : plausiblePairEvents.has(event)
+          ? "This punch has a plausible opposite punch; review the competing shift evidence before deciding which scan needs correction."
+          : repeated && getFactoryLocalDateKey(previous.timestamp) !== date
+            ? "Repeated scans cross midnight; review both days before deciding which scan needs correction."
+            : undefined;
 
       // Use the source ID, including synthetic correction IDs: independent scans
       // can share a timestamp and type. Timestamp-only legacy reviews cannot be
@@ -556,11 +631,15 @@ export async function buildShiftExceptions(ctx: any, date: string) {
         key,
         date,
         type: "scan_sequence",
-        severity: firstEventIsOut ? "critical" : "warning",
+        severity: firstEventIsOut || overlong ? "critical" : "warning",
         title: `${workerName} has a scan sequence issue`,
-        description: firstEventIsOut
-          ? `${workerName} clocked out without a prior clock-in scan today.`
-          : `${workerName} has repeated ${event.eventType.replace("_", " ")} scans without the opposite event between them.`,
+        description: overlong
+          ? `${workerName}'s clock-out exceeds the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour maximum shift. Review both punches; the exit is not automatically a mistaken scan.`
+          : firstEventIsOut && plausiblePairEvents.has(event)
+            ? `${workerName}'s clock-out has competing scan evidence within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window. Review the possible pairings before correcting attendance.`
+            : firstEventIsOut
+              ? `${workerName} clocked out without a plausible prior clock-in within the ${MAX_PLAUSIBLE_SHIFT_HOURS}-hour window.`
+              : `${workerName} has repeated ${event.eventType.replace("_", " ")} scans without the opposite event between them.`,
         worker_id: workerId,
         worker_name: workerName,
         department,
@@ -577,7 +656,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
           ...baseLinks,
           activity_log: getActivityLogHref(date, workerId, String(event._id).startsWith("correction:") ? null : String(event._id)),
         },
-      }));
+      }, reviewOnlyReason));
     }
   }
 
@@ -691,7 +770,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       if (!source_fingerprint) {
         source_fingerprint = buildExceptionSourceFingerprint({
           date: exception.date, type: exception.type, workerId: exception.worker_id,
-          attendanceEvents: eventsByWorker.get(exception.worker_id || "") ?? [],
+          attendanceEvents: pairingEventsByWorker.get(exception.worker_id || "") ?? [],
           schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
         });
         attendanceFingerprints.set(sourceKey, source_fingerprint);
@@ -699,18 +778,36 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }
     return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
   });
+  const timestampKey = createRecognitionTimestampSortKey();
+  const chronologicalKeys = new Map(hydrated.map(exception =>
+    [exception.key, timestampKey(exception.first_seen || "")],
+  ));
   hydrated.sort((a, b) => {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     const statusOrder = { open: 0, reviewed: 1, resolved: 2, ignored: 3 };
     return (
       statusOrder[a.status] - statusOrder[b.status] ||
       severityOrder[a.severity] - severityOrder[b.severity] ||
-      (a.first_seen || "").localeCompare(b.first_seen || "") ||
+      chronologicalKeys.get(a.key)!.localeCompare(chronologicalKeys.get(b.key)!) ||
       a.title.localeCompare(b.title)
     );
   });
 
-  return hydrated;
+  // Order by evidence instants, then expose factory wall time for all
+  // display/export consumers. Relative-time consumers still need the instant.
+  return hydrated.map(exception => {
+    if (exception.type !== "recognition_review") return exception;
+    const key = timestampKey(exception.first_seen || "");
+    const timestampUtc = key ? `${key}Z`.replace(".Z", "Z") : null;
+    const timestamp = getRecognitionDisplayTimestamp(exception.first_seen);
+    return {
+      ...exception,
+      first_seen: timestamp,
+      last_seen: timestamp,
+      first_seen_utc: timestampUtc,
+      last_seen_utc: timestampUtc,
+    };
+  });
 }
 
 export const summary = query({
@@ -736,8 +833,13 @@ export const review = mutation({
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
     note: v.optional(v.string()),
   },
+  returns: v.object({
+    id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), date: v.string(), type: v.string(),
+    status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
+    note: v.optional(v.string()), reviewedAt: v.optional(v.string()), updatedAt: v.string(),
+  }),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const now = new Date().toISOString();
     const existing = await ctx.db
       .query("exceptionReviews")
@@ -754,15 +856,20 @@ export const review = mutation({
       updatedAt: now,
     };
 
-    if (existing) {
-      await ctx.db.patch(existing._id, patch);
-      return { id: existing._id, ...patch };
-    }
-
-    const id = await ctx.db.insert("exceptionReviews", {
+    const id = existing?._id ?? await ctx.db.insert("exceptionReviews", {
       exceptionKey: args.exceptionKey,
       ...patch,
     });
-    return { id, exceptionKey: args.exceptionKey, ...patch };
+    if (existing) await ctx.db.patch(existing._id, patch);
+    await writeAuditLog(ctx, {
+      actorUserId: actor.userId, action: "exception.review",
+      targetTable: "exceptionReviews", targetId: id,
+      details: JSON.stringify({ exceptionKey: args.exceptionKey, date: args.date, type: args.type,
+        before: existing ? { date: existing.date, type: existing.type, status: existing.status, note: existing.note ?? null,
+          reviewedAt: existing.reviewedAt ?? null, updatedAt: existing.updatedAt } : null,
+        after: { date: patch.date, type: patch.type, status: patch.status, note: patch.note ?? null,
+          reviewedAt: patch.reviewedAt ?? null, updatedAt: patch.updatedAt } }),
+    });
+    return existing ? { id, ...patch } : { id, exceptionKey: args.exceptionKey, ...patch };
   },
 });
