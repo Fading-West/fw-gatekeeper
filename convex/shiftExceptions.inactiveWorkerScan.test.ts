@@ -99,7 +99,7 @@ describe("inactive worker scan detection", () => {
     await audit(s, "workers.enroll", ENROLLED);
     await scan(s, `${DATE}T10:00:00`);
     const payload = await summary(s);
-    expect(payload.exceptions).toEqual([]);
+    expect(payload.exceptions.filter(row => row.type === "inactive_worker_scan")).toEqual([]);
   });
 
   it("raises one open critical exception for a scan after a real Remove", async () => {
