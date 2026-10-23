@@ -1,6 +1,9 @@
 """Configuration for FW Gatekeeper Pi kiosk."""
 
+import math
 import os
+import math
+import warnings
 from pathlib import Path
 
 # Server (optional if running fully offline)
@@ -33,6 +36,10 @@ LIVENESS_WAIT_SEC = 8  # How long the kiosk waits for a blink after a face match
 # look-alikes. Tune per site with the Recognition Lab, via config_local.py.
 RECOGNITION_MATCH_THRESHOLD = 0.45
 RECOGNITION_NEAR_MISS_MARGIN = 0.08
+# Required separation must exceed this value, independent of near-miss labelling.
+# Keep the default equal to LOW_MARGIN_THRESHOLD in convex/shiftExceptions.ts.
+RECOGNITION_MIN_MARGIN = 0.08
+_SERVER_LOW_MARGIN_THRESHOLD = RECOGNITION_MIN_MARGIN
 RECOGNITION_EMBEDDING_WINDOW = 3
 RECOGNITION_UNKNOWN_STREAK = 3
 RECOGNITION_MODEL_VERSION = "mobilefacenet-buffalo_s-onnx"
@@ -42,6 +49,9 @@ RECOGNITION_ATTEMPTS_ENDPOINT = "/api/recognition-attempts/bulk"
 # Ignore repeat scans of the same person for this long. Keep it short: a long
 # debounce blocks workers from clocking out again after a quick errand.
 CLOCK_DEBOUNCE_MINUTES = 5
+# Auto/both kiosks start a new shift after an unmatched clock-in ages out.
+# Elapsed hours preserve overnight shifts; a local date change would not.
+AUTO_CLOCK_STALE_HOURS = 16
 DISPLAY_TIME_SEC = 5  # Hold failure/info results so the worker can read why
 DISPLAY_TIME_SUCCESS_SEC = 2  # Successful scans clear fast to keep the line moving
 
@@ -68,6 +78,34 @@ try:
 except ImportError:
     pass
 
+# Validate after config_local.py so per-kiosk overrides obey the same rule.
+try:
+    if (isinstance(AUTO_CLOCK_STALE_HOURS, bool)
+            or not isinstance(AUTO_CLOCK_STALE_HOURS, (int, float))
+            or AUTO_CLOCK_STALE_HOURS <= 0
+            or not math.isfinite(AUTO_CLOCK_STALE_HOURS * 3600)):
+        raise ValueError
+except (ValueError, OverflowError):
+    raise ValueError("AUTO_CLOCK_STALE_HOURS must be a finite positive number of hours representable in seconds") from None
+# Validate after config_local.py so an invalid override cannot disable the guard.
+# Cosine scores range from -1 to 1, so a positive margin can be at most 2.
+if (
+    isinstance(RECOGNITION_MIN_MARGIN, bool)
+    or not isinstance(RECOGNITION_MIN_MARGIN, (int, float))
+    or not math.isfinite(RECOGNITION_MIN_MARGIN)
+    or not 0 < RECOGNITION_MIN_MARGIN <= 2
+):
+    raise ValueError("RECOGNITION_MIN_MARGIN must be a finite number greater than 0 and at most 2")
+
+# Allow intentional site tuning, but make the server review mismatch visible.
+if RECOGNITION_MIN_MARGIN < _SERVER_LOW_MARGIN_THRESHOLD:
+    warnings.warn(
+        f"RECOGNITION_MIN_MARGIN={RECOGNITION_MIN_MARGIN} is below server "
+        f"LOW_MARGIN_THRESHOLD={_SERVER_LOW_MARGIN_THRESHOLD}; accepted scans at or "
+        "below the server threshold may be flagged for review.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 def validate_history_retention():
     if type(LOCAL_HISTORY_RETENTION_DAYS) is not int or LOCAL_HISTORY_RETENTION_DAYS < 1:

@@ -25,6 +25,18 @@ describe('role-aware application guides', () => {
     expect(getGuideSteps(guide('/schedules'), 'admin').join(' ')).toContain('Set the days');
   });
 
+  it('explains audited direct corrections on the Activity Log only to operators', () => {
+    for (const role of ['admin', 'enrollment'] as const) {
+      const steps = getGuideSteps(guide('/log'), role).join(' ');
+      expect(steps).toContain('Add missing punch');
+      expect(steps).toMatch(/audited, and can be reversed/);
+      expect(steps).toMatch(/reassign[^.]*void it with Correct, then use Add missing punch/);
+    }
+    for (const role of ['viewer', undefined] as const) {
+      expect(getGuideSteps(guide('/log'), role).join(' ')).not.toMatch(/Add missing punch|Use Correct|reverse a mistaken/);
+    }
+  });
+
   it('defaults unresolved roles to the least-privileged instructions', () => {
     const workerSteps = getGuideSteps(guide('/workers'), undefined).join(' ');
 

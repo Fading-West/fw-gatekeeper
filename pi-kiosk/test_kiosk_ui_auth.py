@@ -70,7 +70,7 @@ class KioskUiAuthTests(unittest.TestCase):
         )
         self.assertIn('snapshot.pop("admin", None)', app_source)
         self.assertIn('@app.route("/supervisor/unlock", methods=["POST"])', app_source)
-        self.assertIn('_supervisor_attempt_limiter.is_locked()', app_source)
+        self.assertIn('_supervisor_attempt_limiter.check_pin(', app_source)
         self.assertIn('"retry_after_seconds"', app_source)
         template_source = (KIOSK_DIR / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('target.matches("input, textarea, select")', template_source)
@@ -145,6 +145,22 @@ class KioskUiAuthTests(unittest.TestCase):
         limiter.record_success()
         self.assertEqual(limiter.retry_after_seconds(), 0)
 
+    def test_pin_checks_preserve_lockout_and_reset_failures_after_success(self):
+        config.KIOSK_SUPERVISOR_PIN = "supervisor-only"
+        now = [100.0]
+        limiter = SupervisorAttemptLimiter(max_attempts=2, clock=lambda: now[0])
+
+        self.assertEqual(limiter.check_pin("wrong"), (False, False))
+        self.assertEqual(limiter.check_pin("supervisor-only"), (True, False))
+        self.assertEqual(limiter.check_pin("wrong"), (False, False))
+        self.assertEqual(limiter.check_pin("wrong"), (False, True))
+        self.assertEqual(limiter.check_pin("supervisor-only"), (False, True))
+        self.assertEqual(limiter.retry_after_seconds(), 300)
+
+        now[0] += 301
+        self.assertEqual(limiter.check_pin("supervisor-only"), (True, False))
+        self.assertEqual(limiter.retry_after_seconds(), 0)
+
 
 class KioskUiNonAsciiRouteTests(unittest.TestCase):
     def setUp(self):
@@ -170,18 +186,18 @@ class KioskUiNonAsciiRouteTests(unittest.TestCase):
 
     def test_non_ascii_supervisor_pin_is_unauthorized_and_counts_toward_lockout(self):
         headers = {"X-Kiosk-UI-Key": "local-ui-key"}
-        first = self.client.post("/supervisor/unlock", json={"pin": "\u00e9"}, headers=headers)
+        first = self.client.post("/supervisor/unlock", json={"boot_nonce": self.client.get("/health").get_json()["supervisor_boot_nonce"], "pin": "\u00e9"}, headers=headers)
         self.assertEqual(first.status_code, 401)
         self.assertEqual(first.get_json()["error"], "Invalid supervisor passcode")
         second = self.client.post(
-            "/supervisor/unlock", json={"pin": "\u0661\u0662\u0663\u0664"}, headers=headers
+            "/supervisor/unlock", json={"boot_nonce": self.client.get("/health").get_json()["supervisor_boot_nonce"], "pin": "\u0661\u0662\u0663\u0664"}, headers=headers
         )
         self.assertEqual(second.status_code, 401)
         self.assertFalse(self.limiter.is_locked())
         # Lone surrogate escapes are valid JSON and decode to unencodable str values.
         third = self.client.post(
             "/supervisor/unlock",
-            data='{"pin": "\\ud800"}',
+            data='{"pin": "\\ud800", "boot_nonce": "' + self.client.get("/health").get_json()["supervisor_boot_nonce"] + '"}',
             content_type="application/json",
             headers=headers,
         )
@@ -190,7 +206,7 @@ class KioskUiNonAsciiRouteTests(unittest.TestCase):
 
     def test_non_ascii_ui_key_header_is_unauthorized(self):
         response = self.client.post(
-            "/supervisor/unlock", json={"pin": "1234"}, headers={"X-Kiosk-UI-Key": "\u00e9"}
+            "/supervisor/unlock", json={"boot_nonce": self.client.get("/health").get_json()["supervisor_boot_nonce"], "pin": "1234"}, headers={"X-Kiosk-UI-Key": "\u00e9"}
         )
         self.assertEqual(response.status_code, 401)
         self.assertFalse(self.limiter.is_locked())

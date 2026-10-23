@@ -131,21 +131,23 @@ class ClockHealthTests(unittest.TestCase):
 
     def test_unsynchronized_clock_keeps_supervisor_attendance_available(self):
         from kiosk_ui_auth import KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token
-        worker = {"id": 1, "name": "Synthetic Worker", "employee_id": "TEST-1", "server_id": "a" * 32}
+        result = {"success": True, "log_id": 123, "worker_name": "Synthetic Worker",
+                  "worker_id": "TEST-1", "action": "clock_in"}
         with mock.patch.object(self.app.config, "KIOSK_UI_KEY", "test-only", create=True), \
              mock.patch.object(self.app.config, "KIOSK_SUPERVISOR_PIN", "test-only", create=True), \
              mock.patch.object(self.app, "get_clock_synchronized", return_value=False), \
-             mock.patch.object(self.app.database, "get_worker_by_id", return_value=worker), \
-             mock.patch.object(self.app.database, "log_attendance", return_value=123) as record, \
-             mock.patch.object(self.app.database, "get_attendance_action", return_value="clock_in"), \
+             mock.patch.object(self.app.database, "record_manual_attendance", return_value=result) as record, \
              mock.patch.object(self.app, "update_status"):
             self.assertEqual(self.app.get_health_snapshot()["degraded_reason"], "clock_unsynchronized")
             self.client.set_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token())
             response = self.client.post('/manual-clock', headers={"X-Kiosk-UI-Key": "test-only"},
-                                        json={"worker_id": 1, "action": "clock_in"})
+                                        json={"request_id": "unsynchronized-clock-test",
+                                              "worker_id": 1, "action": "clock_in"})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json()["log_id"], 123)
-            record.assert_called_once()
+            # The route now delegates receipt and attendance writes atomically.
+            record.assert_called_once_with(request_id="unsynchronized-clock-test",
+                                           worker_id=1, worker_name=None, action="clock_in")
 
 
 if __name__ == "__main__":

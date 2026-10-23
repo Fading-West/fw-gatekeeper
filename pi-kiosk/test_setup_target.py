@@ -45,7 +45,7 @@ class SetupTargetTests(unittest.TestCase):
         self.assertIn('Wants=network-online.target time-sync.target', unit)
         self.assertNotIn('Requires=', unit)
 
-    def run_setup(self, machine, version):
+    def run_setup(self, machine, version, migrated=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             commands = {
@@ -64,9 +64,18 @@ class SetupTargetTests(unittest.TestCase):
                 executable = root / name
                 executable.write_text(source)
                 executable.chmod(0o755)
+            setup = Path(__file__).with_name('setup.sh')
+            if migrated:
+                installed = root / 'installed'
+                (installed / '.git').mkdir(parents=True)
+                (installed / '.git/kiosk-launch.py').touch()
+                replacement = root / 'setup.sh'
+                replacement.write_text(setup.read_text().replace(
+                    'INSTALL_DIR="/opt/fw-gatekeeper"', f'INSTALL_DIR="{installed}"'))
+                setup = replacement
             apt_log = root / 'apt.log'
             result = subprocess.run(
-                ['bash', str(Path(__file__).with_name('setup.sh'))],
+                ['bash', str(setup)],
                 env={**os.environ, 'PATH': f'{directory}:{os.environ["PATH"]}',
                      'KIOSK_USER': 'installer-test', 'KIOSK_API_KEY': 'test-only',
                      'KIOSK_UI_KEY': 'test-only', 'KIOSK_SUPERVISOR_PIN': 'test-only',
@@ -74,6 +83,12 @@ class SetupTargetTests(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             return result, apt_log.exists()
+
+    def test_interrupted_first_migration_cannot_be_reprovisioned(self):
+        result, apt_called = self.run_setup('aarch64', (3, 11), migrated=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('fetched bootstrap for an interrupted first migration', result.stdout)
+        self.assertFalse(apt_called)
 
     def test_unsupported_target_exits_before_system_changes(self):
         for machine, version in [('x86_64', (3, 11)), ('aarch64', (3, 13)), ('armv7l', (3, 11))]:

@@ -50,6 +50,8 @@ jobs:
         # Keep this separate from the hash-verified production install above.
         run: uv pip install --python "$(command -v python)" -c face-service/requirements.lock -r scripts/requirements-ci.txt
       - run: npm run lint
+      - name: Install headless Chromium for browser-level component tests
+        run: npx playwright-core install --with-deps --only-shell chromium
       - run: npm test
       - run: npm run typecheck
       - run: npm run build

@@ -62,6 +62,14 @@ if [ -z "$KIOSK_SUPERVISOR_PIN" ]; then
   exit 1
 fi
 
+# A release-based installation must be updated through its guarded updater.
+# Re-running provisioning would modify a venv in use and leave the service's
+# release override pointing at different code.
+if [ -f "$INSTALL_DIR/.git/kiosk-launch.py" ] || [ -f "$INSTALL_DIR/.git/kiosk-current.json" ] || [ -L "$INSTALL_DIR/pi-kiosk/venv" ]; then
+  echo "Existing release installation: follow README Maintenance as $KIOSK_USER (fetched bootstrap for an interrupted first migration, recovery launcher after commit). Do not reprovision a running kiosk."
+  exit 1
+fi
+
 # The native dependency lock targets Bookworm's Python 3.11 on 64-bit ARM.
 # Refuse other images before changing the machine or attempting source builds.
 python3 - <<'PYTHON_TARGET'

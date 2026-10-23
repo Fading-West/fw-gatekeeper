@@ -9,7 +9,8 @@ from unittest import mock
 
 import numpy as np
 import config
-from matching import FreshFaceMatcher
+from matching import FreshFaceMatcher, has_minimum_margin
+from kiosk_policy import validate_kiosk_policy, require_kiosk_action_type
 
 
 MAIN_PATH = Path(__file__).with_name("main.py")
@@ -76,20 +77,23 @@ class UnknownStreakTests(unittest.TestCase):
 
         tree = ast.parse(MAIN_PATH.read_text())
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-                     and node.name in {"run", "cosine_sim", "_empty_recognition_result",
+                     and node.name in {"run", "_run", "cosine_sim", "_empty_recognition_result",
                                        "_log_recognition_attempt", "_write_recognition_attempt", "_now_iso"}]
         namespace = {
             "config": config, "database": database, "np": np,
+            "validate_kiosk_policy": validate_kiosk_policy, "require_kiosk_action_type": require_kiosk_action_type,
             "datetime": datetime, "timedelta": timedelta, "timezone": timezone,
             "logger": logging.getLogger(__name__), "web_app": web_app,
-            "os": mock.Mock(), "time": SimpleNamespace(time=lambda: clock, monotonic=lambda: clock, sleep=sleep),
+            "os": SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None, environ={}), "time": SimpleNamespace(time=lambda: clock, monotonic=lambda: clock, sleep=sleep),
             "threading": SimpleNamespace(Lock=mock.MagicMock, Thread=start_thread),
             "Camera": mock.Mock(return_value=SimpleNamespace(
                 start=lambda: None, capture=capture, stop=lambda: None)),
             "FaceRecognizer": lambda: recognizer, "SyncWorker": mock.Mock(),
             "recognition_model_ready": lambda: True,
+            "ModelRecovery": lambda _: SimpleNamespace(ready=True, start=lambda: None, stop=lambda: None),
             "require_kiosk_api_key": lambda: None, "require_kiosk_ui_key": lambda: None,
-            "FreshFaceMatcher": FreshFaceMatcher,
+            "EXPECTED_EMBEDDING_DIM": 3, "Path": Path, "FreshFaceMatcher": FreshFaceMatcher, "has_minimum_margin": has_minimum_margin,
+            "is_fresh_scan": __import__("scan_freshness").is_fresh_scan,
             "fr": SimpleNamespace(face_locations=lambda *_args, **_kwargs:
                                   [] if active_embedding is None else [(0, 2, 2, 0)]),
             "cv2": SimpleNamespace(resize=lambda frame, *_args, **_kwargs: frame),
@@ -103,7 +107,7 @@ class UnknownStreakTests(unittest.TestCase):
         with mock.patch.multiple(config, LIVENESS_REQUIRED=liveness_required,
                                  RECOGNITION_MATCH_THRESHOLD=0.5, RECOGNITION_UNKNOWN_STREAK=3,
                                  DISPLAY_TIME_SEC=display_time, DISPLAY_TIME_SUCCESS_SEC=display_time):
-            namespace["run"](SimpleNamespace(server=None, kiosk_id=None, camera="usb"))
+            namespace["_run"](SimpleNamespace(server=None, kiosk_id=None, camera="usb"))
         return web_app, database
 
     @staticmethod

@@ -8,6 +8,12 @@ const end = template.indexOf('function renderAdmin(', start);
 assert.ok(start >= 0 && end > start);
 const element = () => ({ textContent: '', style: {} });
 const context = vm.createContext({
+  statusInFlight: false, supervisorBootNonce: null,
+  AbortController, setTimeout, clearTimeout, STATUS_TIMEOUT_MS: 1000,
+  connection: { statusOk: () => ({}), statusFailed() {} },
+  cameraFeed: { isConnected: () => true, connect() {} },
+  document: { getElementById: () => element() },
+  showReconnecting: () => assert.fail('Successful status polling must not reconnect'),
   supervisorStateVersion: 0, adminVisible: false, clockWarning: { hidden: true },
   statusText: element(), stateValue: element(), workerIdValue: element(),
   earValue: element(), knownValue: element(), liveValue: element(),
@@ -16,10 +22,11 @@ const context = vm.createContext({
 });
 vm.runInContext(`${template.slice(start, end)}; globalThis.pollStatus = fetchStatus;`, context);
 for (const [clockStatus, warningHidden] of [[false, false], [true, true], [null, true], [undefined, true], [false, false]]) {
-  context.fetch = async () => ({ json: async () => ({ health: { clock_synchronized: clockStatus } }) });
+  context.fetch = async () => ({ ok: true, json: async () => ({ health: { clock_synchronized: clockStatus } }) });
   await context.pollStatus();
   assert.equal(context.clockWarning.hidden, warningHidden);
   assert.equal(context.statusText.textContent, 'Attendance recorded');
+  assert.equal(context.statusInFlight, false);
 }
 assert.match(template, /id="clockWarning"[^>]*role="alert"/);
 assert.match(template, /Attendance times may be wrong/);

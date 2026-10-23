@@ -1,7 +1,14 @@
 """Behavioral regression tests for changing faces in the kiosk's camera view."""
 import unittest
+import math
+import runpy
+import types
+import warnings
+from pathlib import Path
+from unittest import mock
 import numpy as np
-from matching import FreshFaceMatcher
+import config
+from matching import FreshFaceMatcher, has_minimum_margin
 
 
 class FreshFaceMatchingTests(unittest.TestCase):
@@ -44,6 +51,69 @@ class FreshFaceMatchingTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertEqual(len(self.matcher), 0)
 
+    def test_reported_near_tie_cannot_borrow_accepted_history(self):
+        self.match(self.alex, 1.)
+        vector = np.array([.7078, .7064, math.sqrt(1 - .7078 ** 2 - .7064 ** 2)])
+        scores, accepted = self.match(vector, 1.1)
+        self.assertAlmostEqual(scores[0][0], .7078)
+        self.assertAlmostEqual(scores[1][0], .7064)
+        self.assertFalse(accepted)
+        self.assertEqual(len(self.matcher), 0)
+        _, accepted = self.match(self.alex, 1.2)
+        self.assertTrue(accepted)
+        self.assertEqual(len(self.matcher), 1)
+
+    def test_clear_winner_is_accepted(self):
+        _, accepted = self.match(np.array([.9, .2, math.sqrt(.15)]), 1.)
+        self.assertTrue(accepted)
+
+    def test_exact_margin_and_just_below_are_rejected_but_above_is_accepted(self):
+        for top_score, expected in [(.58, False), (.579999, False), (.5800000001, True), (.580001, True)]:
+            with self.subTest(top_score=top_score):
+                self.matcher.clear()
+                self.roster = [
+                    (0, np.array([top_score, math.sqrt(1 - top_score ** 2), 0.])),
+                    (1, np.array([.5, 0., math.sqrt(.75)])),
+                ]
+                _, accepted = self.match(self.alex, 1.)
+                self.assertEqual(accepted, expected)
+
+    def test_margin_boundary_has_no_roundoff_acceptance_allowance(self):
+        margin = config.RECOGNITION_MIN_MARGIN
+        for gap, expected in [(math.nextafter(margin, 0.), False),
+                              (margin, False), (math.nextafter(margin, math.inf), True),
+                              (.0800000001, True)]:
+            with self.subTest(gap=gap):
+                self.assertEqual(has_minimum_margin([(gap, 0), (0., 1)], margin), expected)
+
+    def test_single_worker_needs_threshold_but_no_margin(self):
+        self.roster = [(0, self.alex)]
+        for top_score, expected in [(.46, True), (.44, False)]:
+            with self.subTest(top_score=top_score):
+                vector = np.array([top_score, math.sqrt(1 - top_score ** 2), 0.])
+                scores, accepted = self.match(vector, 1.)
+                self.assertEqual(len(scores), 1)
+                self.assertEqual(accepted, expected)
+
+    def test_average_near_tie_after_competitor_refresh_is_rejected(self):
+        # The current frame still clearly identifies Alex, but Blair's refreshed
+        # template is too close to the accumulated embedding to approve it.
+        _, accepted = self.match(np.array([1., -.3, 0.]), 1.)
+        self.assertTrue(accepted)
+        self.roster[1] = (1, np.array([3., -1., 0.]))
+        scores, accepted = self.match(np.array([1., .3, 0.]), 1.1)
+        self.assertEqual(scores[0][1], 0)
+        self.assertGreater(scores[0][0], self.matcher.threshold)
+        self.assertLess(scores[0][0] - scores[1][0], config.RECOGNITION_MIN_MARGIN)
+        self.assertFalse(accepted)
+        self.assertEqual(len(self.matcher), 0)
+
+    def test_operator_margin_override_is_used(self):
+        with mock.patch.object(config, 'RECOGNITION_MIN_MARGIN', .2):
+            self.matcher = FreshFaceMatcher(window=3, threshold=.45)
+        _, accepted = self.match(np.array([.75, .6, math.sqrt(1 - .75 ** 2 - .6 ** 2)]), 1.)
+        self.assertFalse(accepted)
+
     def test_roster_change_time_gap_and_out_of_order_frames_reset_history(self):
         self.match(self.alex, 1.)
         self.match(self.alex, 1.1)
@@ -67,6 +137,33 @@ class FreshFaceMatchingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.match(np.array([float('nan'), 0., 0.]), 1.2)
         self.assertEqual(len(self.matcher), 0)
+
+
+class RecognitionMarginConfigTests(unittest.TestCase):
+    def load_config(self, margin):
+        local = types.ModuleType('config_local')
+        local.RECOGNITION_MIN_MARGIN = margin
+        with mock.patch.dict('sys.modules', {'config_local': local}):
+            return runpy.run_path(str(Path(__file__).with_name('config.py')))
+
+    def test_valid_operator_overrides(self):
+        for margin in [.08, 1, 2]:
+            with self.subTest(margin=margin), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                self.assertEqual(self.load_config(margin)['RECOGNITION_MIN_MARGIN'], margin)
+                self.assertEqual(caught, [])
+
+    def test_below_server_threshold_override_warns_but_remains_allowed(self):
+        for margin in [.01, math.nextafter(.08, 0.)]:
+            with self.subTest(margin=margin), self.assertWarnsRegex(
+                RuntimeWarning, 'below server LOW_MARGIN_THRESHOLD=0.08.*flagged for review',
+            ):
+                self.assertEqual(self.load_config(margin)['RECOGNITION_MIN_MARGIN'], margin)
+
+    def test_invalid_operator_overrides_fail_closed(self):
+        for margin in [0, -.01, 2.01, float('nan'), float('inf'), True, '.08', None]:
+            with self.subTest(margin=margin), self.assertRaisesRegex(ValueError, 'RECOGNITION_MIN_MARGIN'):
+                self.load_config(margin)
 
 
 if __name__ == '__main__':

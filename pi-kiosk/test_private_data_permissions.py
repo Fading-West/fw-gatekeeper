@@ -17,6 +17,7 @@ from unittest import mock
 import config
 import database
 import sync
+from kiosk_policy import require_kiosk_action_type
 
 
 class PrivateDataPermissionsTests(unittest.TestCase):
@@ -98,7 +99,7 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         # camera/model hardware. Existing tests also isolate main.py via AST.
         source = ast.parse(Path(__file__).with_name("main.py").read_text())
         run = next(node for node in source.body if isinstance(node, ast.FunctionDef)
-                   and node.name == "run")
+                   and node.name == "_run")
         namespace = {
             "config": config, "os": os, "database": database,
             "require_kiosk_api_key": mock.Mock(),
@@ -113,7 +114,7 @@ class PrivateDataPermissionsTests(unittest.TestCase):
                         Path(directory).chmod(0o755)
                 with mock.patch.object(database, "init_db", side_effect=RuntimeError("startup reached DB")):
                     with self.assertRaisesRegex(RuntimeError, "startup reached DB"):
-                        namespace["run"](argparse.Namespace(server=None, kiosk_id=None))
+                        namespace["_run"](argparse.Namespace(server=None, kiosk_id=None))
                 for directory in (config.DATA_DIR, config.FACES_DIR, config.MODEL_DIR):
                     self.assert_mode(directory, 0o700)
 
@@ -127,15 +128,20 @@ class PrivateDataPermissionsTests(unittest.TestCase):
         roster = mock.Mock(status_code=200, json=lambda: {"workers": [row]})
         photo = mock.Mock(status_code=200, content=b"synthetic-photo")
         real_fsync = os.fsync
+        staged_files = []
 
         def check_staged_file(fd):
-            self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o600)
+            # Publication now fsyncs directories as well as the downloaded
+            # file. Check the photo while it is open, before its DB reference.
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o600)
+                staged_files.append(fd)
             real_fsync(fd)
 
         with mock.patch.object(sync.requests, "get", side_effect=[roster, photo]), \
-             mock.patch.object(sync.os, "fsync", side_effect=check_staged_file) as fsync:
+             mock.patch.object(database.os, "fsync", side_effect=check_staged_file):
             self.assertTrue(sync.sync_workers())
-        fsync.assert_called_once()
+        self.assertEqual(len(staged_files), 1)
         self.assert_mode(config.PHOTO_DIR, 0o700)
         files = list(Path(config.PHOTO_DIR).iterdir())
         self.assertEqual(len(files), 1)
@@ -145,10 +151,25 @@ class PrivateDataPermissionsTests(unittest.TestCase):
 
     def test_failed_photo_fsync_removes_staged_file(self):
         database.init_db()
-        with mock.patch.object(sync.requests, "get", return_value=mock.Mock(status_code=200, content=b"photo")), \
-             mock.patch.object(sync.os, "fsync", side_effect=OSError("interrupted")):
-            self.assertIsNone(sync._download_photo("synthetic-id", "https://photo.invalid"))
+        row = {"id": "synthetic-id", "name": "Synthetic worker", "active": True,
+               "face_encoding": [0.5] * 512, "photo_url": "https://photo.invalid/private"}
+        roster = mock.Mock(status_code=200, json=lambda: {"workers": [row]})
+        photo = mock.Mock(status_code=200, content=b"photo")
+        real_fsync = os.fsync
+        failed_photos = []
+
+        def fail_photo_fsync(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                failed_photos.append(fd)
+                raise OSError("interrupted")
+            real_fsync(fd)
+
+        with mock.patch.object(sync.requests, "get", side_effect=[roster, photo]), \
+             mock.patch.object(database.os, "fsync", side_effect=fail_photo_fsync):
+            self.assertFalse(sync.sync_workers())
+        self.assertEqual(len(failed_photos), 1)
         self.assertEqual(list(Path(config.PHOTO_DIR).iterdir()), [])
+        self.assertNotIn("synthetic-id", database.get_synced_server_ids())
 
     def test_skipped_sync_row_logs_only_its_position(self):
         database.init_db()
@@ -486,14 +507,16 @@ os.open, os.fchown = racing_open, racing_chown
     def test_main_attendance_logs_local_identity_and_redacts_errors(self):
         # Exercise the real closure with camera/UI dependencies replaced.
         source = ast.parse(Path(__file__).with_name('main.py').read_text())
-        run = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+        run = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == '_run')
         record = next(node for node in run.body if isinstance(node, ast.FunctionDef) and node.name == 'record_clock')
         recognizer = mock.Mock(known_count=1)
         namespace = {'config': config, 'database': database, 'recognizer': recognizer,
+                     'require_kiosk_action_type': require_kiosk_action_type,
                      'logger': logging.getLogger('main'), 'web_app': mock.Mock(),
                      'datetime': datetime, 'timezone': timezone, 'last_clocks': {},
                      '_log_recognition_attempt': mock.Mock(), '_now_iso': mock.Mock(),
-                     'base_degraded_reason': mock.Mock()}
+                     'base_degraded_reason': mock.Mock(), 'camera_healthy': True, 'camera_generation': [None], 'camera_invalidated_at': [0.0],
+                     'time': mock.Mock(monotonic=lambda: 100.0), 'is_fresh_scan': lambda *args: True}
         exec(compile(ast.Module(body=[record], type_ignores=[]), 'main.py', 'exec'), namespace)
         private = 'private-name-url-token-encoding'
         with mock.patch.object(database, 'get_attendance_action', return_value='clock_in'), \
