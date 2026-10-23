@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { listEffectiveAttendanceByFactoryDates } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
+import { buildInactiveWorkerScanExceptions } from "./inactiveWorkerScans";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
@@ -211,6 +212,7 @@ function exceptionTypeLabel(type: string) {
     missing_clock_out: "Still clocked in",
     scan_sequence: "Bad scan sequence",
     recognition_review: "Recognition review",
+    inactive_worker_scan: "Deactivated worker scan",
   };
   return labels[type] || titleCase(type);
 }
@@ -339,6 +341,18 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
       reason: reviewReason(exception, "late arrival preserves the kiosk clock-in and should be reviewed without rewriting raw evidence"),
       href: exception.links.activity_log || null,
       disabled_reason: "Late arrivals use the kiosk clock-in as evidence; add an audited correction only if separate evidence proves a missing scan.",
+    };
+  }
+
+  if (exception.type === "inactive_worker_scan") {
+    return {
+      ...base,
+      action: "review_only",
+      label: "Review deactivated-worker scan",
+      cta: "Review source",
+      reason: reviewReason(exception, "a kiosk accepted a scan after deactivation and needs an access review"),
+      href: exception.links.activity_log || null,
+      disabled_reason: "The scan is kept as door evidence. Confirm whether this person should have access: restore them through enrollment if the deactivation was a mistake, otherwise follow up on the kiosk roster. Use an audited void only if separate evidence shows the scan was not this person.",
     };
   }
 
@@ -663,6 +677,15 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   const resolveKiosk = createActiveKioskResolver(ctx);
+  const inactiveWorkerScans = await buildInactiveWorkerScanExceptions(ctx, {
+    date,
+    attendance,
+    activeWorkerIds: new Set(workers.map((worker: any) => String(worker._id))),
+    resolveKiosk,
+    activityLogHref: getActivityLogHref,
+  });
+  for (const input of inactiveWorkerScans) exceptions.push(createException(input));
+
   const kioskNameCache = new Map<string, string | null>();
   async function resolveKioskName(kioskId?: string | null) {
     if (!kioskId) return null;
