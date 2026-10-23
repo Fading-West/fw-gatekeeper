@@ -994,7 +994,8 @@ def _publish_worker_photos(name: str, encoding: np.ndarray, photo_bytes: list[by
         while not parent.exists():
             missing.append(parent)
             parent = parent.parent
-        photo_root.mkdir(parents=True, exist_ok=True)
+        photo_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(photo_root, 0o700)
         for created in reversed(missing):
             _fsync_directory(created.parent)
         old = _find_worker_update_row(conn, name.strip(), server_id, employee_id or "")

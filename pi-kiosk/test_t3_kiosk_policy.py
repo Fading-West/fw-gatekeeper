@@ -88,7 +88,7 @@ class KioskPolicyTests(unittest.TestCase):
         calls = []
         web = types.SimpleNamespace(start_server=lambda: calls.append("ui"),
                                     update_health=lambda **fields: calls.append(fields),
-                                    update_status=lambda **fields: None, get_health_snapshot=lambda: {})
+                                    update_status=lambda **fields: None, get_health_snapshot=lambda: {}, check_server=mock.Mock())
         class Sync:
             def __init__(self, **fields): calls.append("sync" if fields["recognizer"] is None else "unexpected-recognizer")
             def start(self): calls.append("sync-start")
@@ -114,6 +114,11 @@ class KioskPolicyTests(unittest.TestCase):
             self.assertEqual(calls[:2], ["database", "ui"])
             self.assertIn({"model_ok": False, "camera_ok": False, "degraded_reason": "kiosk_policy_error"}, calls)
             self.assertEqual(calls[-3:], ["sync", "sync-start", "sync-stop"])
+        with mock.patch.object(config, "RECOGNITION_MATCH_THRESHOLD", float("nan")):
+            web.check_server.side_effect = RuntimeError("Kiosk web server stopped")
+            with self.assertRaisesRegex(RuntimeError, "Kiosk web server stopped"):
+                namespace["_run"](types.SimpleNamespace(server=None, kiosk_id=None))
+            self.assertEqual(calls[-1], "sync-stop")
 
     def test_datetime_underflow_degrades_without_blocking_supervised_manual(self):
         with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):

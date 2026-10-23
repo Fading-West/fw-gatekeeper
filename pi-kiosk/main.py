@@ -271,6 +271,7 @@ def _run(args):
             sync_worker.start()
         try:
             while True:
+                web_app.check_server()
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
