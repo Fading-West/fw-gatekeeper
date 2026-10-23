@@ -8,16 +8,48 @@ at image build time).
 
 ## Endpoints
 
-- `GET /health` — `{ status, version, rec_model, rec_exists, min_pairwise_similarity, min_good_photos }`
+- `GET /health` — liveness and diagnostics; always HTTP `200` while the server responds.
+- `GET /ready` — the same JSON diagnostics, with HTTP `200` only when authentication
+  is configured and the recognition session is initialized without a recorded failure;
+  otherwise HTTP `503` with `status: "degraded"` and `degraded_reason`.
 - `POST /encode` — `{ photos: string[] }` → `{ encoding: number[], photos: PhotoResult[], used_photo_indexes: number[] }`
 - `POST /match` — `{ photo: string, encodings: [{ worker_id, encoding }] }` → `{ match: { worker_id, confidence } | null }`
 
 Photos are base64 JPEG data URLs. Matching uses cosine similarity with a 0.4 threshold.
 
 `POST /encode` and `POST /match` require the `x-face-service-key` header to match
-`FACE_SERVICE_KEY`. `GET /health` remains public for deployment and dashboard health checks.
+`FACE_SERVICE_KEY`. `GET /health` and `GET /ready` are public and do not require a key.
+Render's `healthCheckPath` is `/ready`; the dashboard and CI startup smoke use `/health`.
 Set `FACE_SERVICE_ALLOWED_ORIGINS` to a comma-separated list of trusted dashboard origins;
 it defaults to `https://fw-gatekeeper.onrender.com` and rejects wildcard configuration.
+
+### Startup and health checks
+
+Both probes only read existing state: they never load/download the model or wait on
+its initialization lock. Their JSON includes `auth_ready`, `model_ready`,
+`model_loading`, `model_failed`, and `degraded_reason` (`authentication_not_configured`,
+`model_loading`, or `model_unavailable`). File existence alone does not imply readiness.
+
+With authentication configured, the lifespan starts one background model warmup.
+The Docker image already contains the pinned model, so a normal cold start verifies
+and loads the local file. While it loads, `/health` remains `200` and `/ready` is `503`;
+successful initialization makes `/ready` return `200` without an enrollment request.
+Use `/health` for process startup/liveness checks, including any Docker `HEALTHCHECK`
+(the current Dockerfile does not define one), and `/ready` for traffic admission.
+
+[Render health checks](https://render.com/docs/health-checks) have a five-second probe
+timeout and allow new deploys up to 15 minutes to become ready before retaining the
+previous deployment. Running instances stop receiving traffic after 15 seconds of
+failed checks and restart after 60 seconds. [Free instances](https://render.com/docs/free#spinning-down-on-idle)
+spin down on idle and take about a minute to spin up. No probe blocks on warmup or
+reports false readiness during it. If model verification/loading on the deployed
+instance exceeds Render's running-instance budget, investigate startup performance;
+splitting the endpoints does not extend that budget.
+
+The portal continues reading `/health` and uses the readiness flags to show degraded
+status. An HTTP error response is also degraded; only an unreachable/timed-out service
+is offline. Its warnings describe degradation/model unavailability in general terms;
+the specific `degraded_reason` remains available in the face service's JSON.
 
 ## Enrollment quality gate (`POST /encode`)
 
@@ -143,6 +175,7 @@ Runs on port 5557.
 ```bash
 python3 face-service/test_face_auth.py
 python3 face-service/test_encode_quality.py
+python3 face-service/test_readiness.py
 ```
 
 `test_encode_quality.py` needs `numpy` for the consistency unit tests and `fastapi` +
@@ -153,7 +186,18 @@ interpreter, e.g. `~/fsvenv/bin/python face-service/test_encode_quality.py`. Mis
 packages make the affected tests skip with a warning rather than fail.
 
 Enrollment requests accept at most six photos and four million base64 characters
-per photo. Images must be still images of at most four million pixels. Invalid or
+per photo. All HTTP request bodies are capped at 24,065,536 bytes (six maximum-size
+base64 photos plus 64 KiB of JSON overhead). Oversized requests return
+`413 {"detail": "Request body too large"}` before parsing or authentication;
+both Content-Length and streamed bytes are checked. Matching accepts a photo of
+at most four million characters and a roster of at most 1,001 worker encodings
+(the worker identity scan permits one final insertion at 1,000 existing workers);
+an empty roster still returns no match. Once the bounded body is received,
+authentication runs before JSON parsing to prevent object expansion from
+unauthenticated JSON. Run `python3 face-service/test_body_size_limit.py`
+to check these boundaries without loading the recognition model.
+
+Images must be still images of at most four million pixels. Invalid or
 zero model embeddings fail closed. Similarity thresholds must be finite in (0,1],
 and at least two consistent photos are required. Only accepted photo indexes are
 stored by the dashboard. Concurrent cold starts share one recognition session.
