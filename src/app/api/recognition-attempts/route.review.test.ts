@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
 import schema from '../../../../convex/schema';
@@ -27,7 +28,7 @@ beforeEach(async () => {
   });
   attemptId = ids.attemptId;
   admin = test.withIdentity({ subject: ids.userId });
-  vi.mocked(convex.query).mockImplementation((name, args = {}) => admin.query(name, args));
+  vi.mocked(convex.query).mockImplementation((name, args = {}) => admin.query(name as FunctionReference<'query'>, args));
   vi.mocked(convex.mutation).mockImplementation(((name: any, args: any = {}) => admin.mutation(name, args)) as any);
 });
 
