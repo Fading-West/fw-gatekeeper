@@ -360,6 +360,7 @@ export interface ShiftCloseoutSnapshot {
 
 export interface ShiftCloseoutRecord {
   id: string;
+  revision?: number;
   date: string;
   status: ShiftCloseoutStatus;
   supervisor_name: string | null;
