@@ -18,6 +18,11 @@ class SyncAuthHealthTests(unittest.TestCase):
         patcher = mock.patch.object(sync, "_auth_headers", return_value={"x-kiosk-key": "synthetic-only"})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These response-boundary tests mock persistence; privacy-safe logging
+        # also resolves local IDs now and must not open an unrelated database.
+        patcher = mock.patch.object(sync.database, "get_worker_id_by_server_id", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_denials_clear_only_after_that_protected_phase_accepts(self):
         self.assertIsNone(self.tracker.snapshot()["sync_auth_ok"])
