@@ -533,7 +533,9 @@ def run(args):
                 camera_healthy = True
                 web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
 
-            now = time.time()
+            # One monotonic domain for display holds, blink deadlines and
+            # frame ordering (including FreshFaceMatcher). NTP may step UTC.
+            now = time.monotonic()
 
             # 1. Push BGR frame to MJPEG stream (always, never blocks)
             web_app.set_frame(draw_box(bgr_frame, box_loc, box_color, box_label))

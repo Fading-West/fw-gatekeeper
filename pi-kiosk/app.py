@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime
 from functools import wraps
+from urllib.parse import urlsplit
 
 import cv2
 from flask import Flask, Response, jsonify, make_response, render_template, request
@@ -129,7 +130,15 @@ def _mjpeg_stream():
 
 
 def _is_loopback_request() -> bool:
-    return request.remote_addr in {"127.0.0.1", "::1"}
+    # A rebound attacker hostname can also connect through loopback. Only
+    # bootstrap cookies for an explicitly local browser origin; remote UI
+    # clients must supply their configured credential.
+    try:
+        hostname = urlsplit("//" + request.host).hostname
+    except ValueError:
+        return False
+    return (request.remote_addr in {"127.0.0.1", "::1"}
+            and hostname in {"localhost", "127.0.0.1", "::1"})
 
 
 def kiosk_ui_auth_required(view):
