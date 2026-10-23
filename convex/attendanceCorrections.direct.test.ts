@@ -37,7 +37,11 @@ describe('direct attendance corrections', () => {
   it('adds a missing clock-out for an unscheduled worker and fixes the hours export', async () => {
     const { enrollment, admin, workerId, enrollmentId } = await setup();
     const before = await admin.query(api.attendance.list, { date });
-    expect(buildHoursExportRows(before, [], date)).toMatchObject([{ hours: '0.00', note: 'still clocked in' }]);
+    // Missing-punch exports now withhold uncertain hours (#164). A direct
+    // correction must turn that flagged row into a complete, payable interval.
+    expect(buildHoursExportRows(before, [], date)).toMatchObject([{
+      hours: '', note: 'needs review: clock-in without clock-out (still clocked in); hours withheld',
+    }]);
     expect((await admin.query(api.shiftExceptions.summary, { date })).exceptions.filter((e: { type: string }) => e.type === 'missing_clock_out')).toHaveLength(0);
 
     await enrollment.mutation(api.attendanceCorrections.create, {
