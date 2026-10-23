@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
-import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, type KioskHealthReport } from '@/lib/convex-ingest';
+import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, issueLegacyRosterCursor, type KioskHealthReport } from '@/lib/convex-ingest';
 
 function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefined {
   const bool = (key: string) => {
@@ -39,7 +39,6 @@ export async function GET(req: NextRequest) {
   // The credential lookup already resolved the exact row. A configured alias
   // may collide with another legacy kiosk and must not be resolved again.
   const kioskId = identity.documentId;
-  const since = req.nextUrl.searchParams.get('since') || '1970-01-01T00:00:00.000Z';
   const receiptProtocol = hasDeviceKeyFormat(req) && req.nextUrl.searchParams.get('roster_receipt') === '1';
 
   const lastSync = new Date().toISOString();
@@ -56,8 +55,8 @@ export async function GET(req: NextRequest) {
   }
 
   if (receiptProtocol) {
-    // Issue before reading the complete roster: the receipt's Convex clock
-    // cannot certify a purge that raced the roster download afterward.
+    // Issue before reading the complete roster: the receipt's counter read
+    // serializes with worker writes, so its ack cannot cover a later purge.
     try {
       const issued = await issueRosterReceipt(identity!.documentId);
       const forceFull = req.nextUrl.searchParams.get('full_roster') === '1';
@@ -69,6 +68,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Roster sync unavailable' }, { status: 503 });
     }
   }
-  const { workers } = await fetchWorkersForSync(since);
+  if (identity) {
+    try {
+      const issued = await issueLegacyRosterCursor(identity.documentId,
+        req.nextUrl.searchParams.get('since') || undefined);
+      const { workers } = await fetchWorkersForSync(issued.since ?? '');
+      return NextResponse.json({ workers, synced_at: issued.issuedAt });
+    } catch (error) {
+      console.error('Legacy roster sync failed:', error);
+      return NextResponse.json({ error: 'Roster sync unavailable' }, { status: 503 });
+    }
+  }
+  // Admin reads have no device delivery cursor.
+  const { workers } = await fetchWorkersForSync('');
   return NextResponse.json({ workers, synced_at: lastSync });
 }
