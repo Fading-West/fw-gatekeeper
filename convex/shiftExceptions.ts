@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
+import { buildInactiveWorkerScanExceptions } from "./inactiveWorkerScans";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
@@ -107,6 +108,26 @@ function normalizeText(value?: string | null) {
   return trimmed || undefined;
 }
 
+/**
+ * Both screens can review or reopen a recognition exception. The latest action wins;
+ * an old exception disposition must not undo a newer Recognition Lab review.
+ */
+function explicitReviewIsNewer(explicitReview: { updatedAt: string } | null | undefined, attemptUpdatedAt: string | null) {
+  return Boolean(explicitReview) && (!attemptUpdatedAt || Date.parse(explicitReview!.updatedAt) > Date.parse(attemptUpdatedAt));
+}
+
+/** The note the summary shows for a review row, so an omitted note keeps what supervisors see. */
+async function currentReviewNote(ctx: any, args: { exceptionKey: string; date: string; type: string }, existing: any) {
+  const prefix = `${args.date}:recognition_review:`;
+  if (args.type === "recognition_review" && args.exceptionKey.startsWith(prefix)) {
+    const attemptId = ctx.db.normalizeId("recognitionAttempts", args.exceptionKey.slice(prefix.length));
+    const attempt = attemptId ? await ctx.db.get(attemptId) : null;
+    const attemptUpdatedAt = normalizeText(attempt?.updatedAt) || normalizeText(attempt?.reviewedAt) || null;
+    if (attempt && !explicitReviewIsNewer(existing, attemptUpdatedAt)) return normalizeText(attempt.reviewedNote);
+  }
+  return existing?.note;
+}
+
 function buildHref(path: string, params: Record<string, string | null | undefined>) {
   const query = Object.entries(params)
     .filter((entry): entry is [string, string] => entry[1] !== null && entry[1] !== undefined && entry[1] !== "")
@@ -163,6 +184,7 @@ function exceptionTypeLabel(type: string) {
     missing_clock_out: "Still clocked in",
     scan_sequence: "Bad scan sequence",
     recognition_review: "Recognition review",
+    inactive_worker_scan: "Deactivated worker scan",
   };
   return labels[type] || titleCase(type);
 }
@@ -291,6 +313,18 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
       reason: reviewReason(exception, "late arrival preserves the kiosk clock-in and should be reviewed without rewriting raw evidence"),
       href: exception.links.activity_log || null,
       disabled_reason: "Late arrivals use the kiosk clock-in as evidence; add an audited correction only if separate evidence proves a missing scan.",
+    };
+  }
+
+  if (exception.type === "inactive_worker_scan") {
+    return {
+      ...base,
+      action: "review_only",
+      label: "Review deactivated-worker scan",
+      cta: "Review source",
+      reason: reviewReason(exception, "a kiosk accepted a scan after deactivation and needs an access review"),
+      href: exception.links.activity_log || null,
+      disabled_reason: "The scan is kept as door evidence. Confirm whether this person should have access: restore them through enrollment if the deactivation was a mistake, otherwise follow up on the kiosk roster. Use an audited void only if separate evidence shows the scan was not this person.",
     };
   }
 
@@ -555,6 +589,15 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   const resolveKiosk = createActiveKioskResolver(ctx);
+  const inactiveWorkerScans = await buildInactiveWorkerScanExceptions(ctx, {
+    date,
+    attendance,
+    activeWorkerIds: new Set(workers.map((worker: any) => String(worker._id))),
+    resolveKiosk,
+    activityLogHref: getActivityLogHref,
+  });
+  for (const input of inactiveWorkerScans) exceptions.push(createException(input));
+
   const kioskNameCache = new Map<string, string | null>();
   async function resolveKioskName(kioskId?: string | null) {
     if (!kioskId) return null;
@@ -601,12 +644,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     const attemptReviewedAt = recognitionText(attempt, "reviewed_at", "reviewedAt");
     const attemptUpdatedAt = recognitionText(attempt, "updated_at", "updatedAt") || attemptReviewedAt;
     const explicitReview = reviewsByKey.get(key) as { updatedAt: string } | undefined;
-    // Both screens can review or reopen an exception. The latest action wins;
-    // an old exception disposition must not undo a newer Recognition Lab review.
-    const explicitIsNewer = explicitReview && (
-      !attemptUpdatedAt || Date.parse(explicitReview.updatedAt) > Date.parse(attemptUpdatedAt)
-    );
-    if (!explicitIsNewer) {
+    if (!explicitReviewIsNewer(explicitReview, attemptUpdatedAt)) {
       reviewsByKey.set(key, {
         status: completed ? (label === "ignored" ? "ignored" : "reviewed") : "open",
         note: recognitionText(attempt, "reviewed_note", "reviewedNote"),
@@ -696,7 +734,9 @@ export const review = mutation({
       date: args.date,
       type: args.type,
       status: args.status,
-      note: normalizeText(args.note),
+      // An omitted note keeps the note currently shown (for recognition reviews, a newer
+      // Recognition Lab note wins over an older exceptions note); an empty or whitespace-only note clears it.
+      note: args.note === undefined ? await currentReviewNote(ctx, args, existing) : normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,
       updatedAt: now,
     };

@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/13-monotonic-kiosk-health
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:51:54
+   Duration  390ms (transform 64ms, setup 0ms, import 200ms, tests 31ms, environment 0ms)

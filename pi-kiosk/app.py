@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import logging
+import re
+
+import sqlite3
+import uuid
 import threading
 import time
 from datetime import datetime
 from functools import wraps
+from urllib.parse import urlsplit
 
 import cv2
 from flask import Flask, Response, jsonify, make_response, render_template, request
 
 import config
 import database
+from kiosk_policy import require_kiosk_action_type, validate_kiosk_policy
+from clock_sync import get_clock_synchronized
 from kiosk_ui_auth import (
     KIOSK_UI_KEY_HEADER,
     KIOSK_UI_SESSION_COOKIE,
@@ -20,10 +27,12 @@ from kiosk_ui_auth import (
     SUPERVISOR_SESSION_TTL_SECONDS,
     SupervisorAttemptLimiter,
     get_kiosk_ui_host,
+    get_supervisor_boot_nonce,
     has_valid_kiosk_ui_credential,
     has_valid_supervisor_credential,
     kiosk_ui_session_token,
     require_kiosk_ui_key,
+    revoke_supervisor_session,
     supervisor_session_token,
 )
 
@@ -59,9 +68,13 @@ _health = {
     "retryable_logs": 0,
     "rejected_logs": 0,
     "queued_attempts": 0,
+    "rejected_attempts": 0,
     "degraded_reason": None,
     "last_scan_at": None,
     "sync_online": None,  # None = sync disabled/unknown, True/False once known
+    "sync_auth_ok": None,
+    "sync_auth_faults": [],
+    "sync_auth_phases": {},
     "last_sync_at": None,
 }
 
@@ -83,6 +96,29 @@ def update_status(**kwargs):
         _status["timestamp"] = datetime.now().isoformat(timespec="seconds")
 
 
+def replace_status_if(expected_state, expected_message, **kwargs):
+    """Recover a specific fault without overwriting a concurrent confirmation."""
+    with _status_lock:
+        if _status.get("state") != expected_state or _status.get("message") != expected_message:
+            return False
+        _status.update(kwargs)
+        _status["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        return True
+
+
+def update_status_unless_confirming(**kwargs):
+    """Keep a manual attendance confirmation visible while models initialize."""
+    with _status_lock:
+        now = datetime.now()
+        if _status.get("state") == "CLOCKED_IN" and _status.get("timestamp"):
+            age = (now - datetime.fromisoformat(_status["timestamp"])).total_seconds()
+            if 0 <= age < config.DISPLAY_TIME_SUCCESS_SEC:
+                return False
+        _status.update(kwargs)
+        _status["timestamp"] = now.isoformat(timespec="seconds")
+        return True
+
+
 def update_health(**kwargs):
     """Update kiosk health fields (camera/model/sync/queue state)."""
     with _health_lock:
@@ -91,7 +127,24 @@ def update_health(**kwargs):
 
 def get_health_snapshot() -> dict:
     with _health_lock:
-        return dict(_health)
+        snapshot = dict(_health)
+    snapshot["supervisor_boot_nonce"] = get_supervisor_boot_nonce()
+    policy = validate_kiosk_policy(config)
+    snapshot["policy_ok"] = policy.valid
+    snapshot["policy_errors"] = list(policy.errors)
+    if not policy.valid:
+        snapshot["degraded_reason"] = "kiosk_policy_error"
+    # Read at the shared boundary used by /health, /status and the heartbeat,
+    # even if recognition is idle or the camera is unavailable. Preserve the
+    # underlying fault in the existing string field so simultaneous roster
+    # failures remain visible to portal and scan-blocking alert consumers.
+    snapshot["clock_synchronized"] = get_clock_synchronized()
+    if snapshot["clock_synchronized"] is False:
+        reasons = [reason for reason in (snapshot.get("degraded_reason") or "").split(",") if reason]
+        if "clock_unsynchronized" not in reasons:
+            reasons.append("clock_unsynchronized")
+        snapshot["degraded_reason"] = ",".join(reasons)
+    return snapshot
 
 
 def get_status_snapshot() -> dict:
@@ -100,7 +153,7 @@ def get_status_snapshot() -> dict:
         data = dict(_status)
 
     data["health"] = get_health_snapshot()
-    data["liveness_required"] = bool(config.LIVENESS_REQUIRED)
+    data["liveness_required"] = config.LIVENESS_REQUIRED is True
     workers = database.list_workers()
     data["kiosk_id"] = config.KIOSK_ID
     data["kiosk_name"] = config.KIOSK_NAME
@@ -128,8 +181,17 @@ def _mjpeg_stream():
         time.sleep(0.05)
 
 
+
 def _is_loopback_request() -> bool:
-    return request.remote_addr in {"127.0.0.1", "::1"}
+    # A rebound attacker hostname can also connect through loopback. Only
+    # bootstrap cookies for an explicitly local browser origin; remote UI
+    # clients must supply their configured credential.
+    try:
+        hostname = urlsplit("//" + request.host).hostname
+    except ValueError:
+        return False
+    return (request.remote_addr in {"127.0.0.1", "::1"}
+            and hostname in {"localhost", "127.0.0.1", "::1"})
 
 
 def kiosk_ui_auth_required(view):
@@ -196,9 +258,11 @@ def video_feed_alias():
 
 @app.route("/health")
 def health():
-    """Truthful kiosk health: degraded whenever a scan-blocking subsystem is down."""
+    """Report device faults, clock uncertainty and quarantined evidence."""
     snapshot = get_health_snapshot()
-    degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+    degraded = (not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+                or snapshot.get("sync_auth_ok") is False
+                or bool(snapshot["rejected_logs"]) or bool(snapshot["rejected_attempts"]))
     return jsonify({"status": "degraded" if degraded else "ok", **snapshot})
 
 
@@ -230,77 +294,79 @@ def today_log_alias():
 @kiosk_ui_auth_required
 @supervisor_auth_required
 def manual_clock():
-    payload = request.get_json(silent=True) or {}
-    try:
-        if "worker_id" in payload:
-            worker_id = payload["worker_id"]
-            if isinstance(worker_id, bool) or not isinstance(worker_id, int) or worker_id <= 0:
-                return jsonify({"success": False, "error": "Valid worker ID is required"}), 400
-            worker = database.get_worker_by_id(worker_id)
-        else:
-            name = str(payload.get("name", "")).strip()
-            if not name:
-                return jsonify({"success": False, "error": "Name is required"}), 400
-            worker = database.get_worker_by_name(name)
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 409
-    if worker is None:
-        return jsonify({"success": False, "error": "Worker not found"}), 404
-
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Manual attendance requires an object"}), 400
+    request_id = payload.get("request_id", str(uuid.uuid4()))
+    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
+        return jsonify({"success": False, "error": "Valid request ID is required"}), 400
+    worker_id = payload.get("worker_id")
+    worker_name = None
+    if "worker_id" in payload:
+        if isinstance(worker_id, bool) or not isinstance(worker_id, int) or worker_id <= 0:
+            return jsonify({"success": False, "error": "Valid worker ID is required"}), 400
+    else:
+        worker_name = payload.get("name")
+        if not isinstance(worker_name, str) or not worker_name.strip():
+            return jsonify({"success": False, "error": "Name is required"}), 400
+        worker_name = worker_name.strip()
     action = payload.get("action")
-    if action not in {"clock_in", "clock_out"}:
-        action = None
-
+    if action is not None and action not in ("clock_in", "clock_out"):
+        return jsonify({"success": False, "error": "Valid clock action is required"}), 400
     try:
-        log_id = database.log_attendance(
-            worker_id=worker["id"],
-            worker_name=worker["name"],
-            action=action,
-            liveness_confirmed=False,
-            confidence=1.0,
-            note="manual_clock",
-            server_worker_id=worker.get("server_id"),
+        result = database.record_manual_attendance(
+            request_id=request_id, worker_id=worker_id, worker_name=worker_name, action=action,
         )
+    except database.ManualAttendancePolicyError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 503
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
     except database.ClockInferenceError as exc:
         return jsonify({"success": False, "error": str(exc)}), 503
-    action = database.get_attendance_action(log_id)
-    action_label = "Clocked in" if action == "clock_in" else "Clocked out"
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    except sqlite3.Error as exc:
+        logger.error("Manual attendance could not be committed (error=%s)", type(exc).__name__)
+        return jsonify({"success": False, "error": "Could not record attendance. Retry this request."}), 503
+    action_label = "Clocked in" if result["action"] == "clock_in" else "Clocked out"
     update_status(
-        state="CLOCKED_IN",
-        message=f"{action_label}: {worker['name']} ID: {worker['employee_id'] or worker['id']}",
-        worker_name=worker["name"],
-        worker_id=worker["employee_id"] or str(worker["id"]),
-        action=action,
-        liveness_confirmed=False,
-        confidence=1.0,
+        state="CLOCKED_IN", message=f"{action_label}: {result['worker_name']} ID: {result['worker_id']}",
+        worker_name=result["worker_name"], worker_id=result["worker_id"], action=result["action"],
+        liveness_confirmed=False, confidence=1.0,
     )
-    return jsonify({"success": True, "log_id": log_id, "worker_name": worker["name"], "action": action})
+    return jsonify(result)
 
 
 @app.route("/supervisor/unlock", methods=["POST"])
 @kiosk_ui_auth_required
 def supervisor_unlock():
-    if _supervisor_attempt_limiter.is_locked():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Supervisor request requires an object"}), 400
+    operation = payload.get("request_id")
+    if payload.get("boot_nonce") != get_supervisor_boot_nonce():
+        return jsonify({"success": False, "error": "Kiosk session changed. Refresh before unlocking."}), 409
+    if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
+        return jsonify({"success": False, "error": "Invalid unlock request"}), 400
+    valid, locked = _supervisor_attempt_limiter.check_pin(str(payload.get("pin", "")))
+    if locked:
         return jsonify({
             "success": False,
             "error": "Too many failed attempts. Try again later.",
             "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
         }), 429
-    payload = request.get_json(silent=True) or {}
-    if not has_valid_supervisor_credential(provided_pin=str(payload.get("pin", ""))):
-        locked = _supervisor_attempt_limiter.record_failure()
-        if locked:
-            return jsonify({
-                "success": False,
-                "error": "Too many failed attempts. Try again later.",
-                "retry_after_seconds": _supervisor_attempt_limiter.retry_after_seconds(),
-            }), 429
+    if not valid:
         return jsonify({"success": False, "error": "Invalid supervisor passcode"}), 401
-    _supervisor_attempt_limiter.record_success()
+    try:
+        token = supervisor_session_token(unlock_request_id=operation)
+    except ValueError:
+        return jsonify({"success": False, "error": "Supervisor unlock was cancelled"}), 409
     response = jsonify({"success": True})
     response.set_cookie(
         KIOSK_SUPERVISOR_SESSION_COOKIE,
-        supervisor_session_token(),
+        token,
         max_age=SUPERVISOR_SESSION_TTL_SECONDS,
         httponly=True,
         samesite="Strict",
@@ -312,6 +378,15 @@ def supervisor_unlock():
 @app.route("/supervisor/lock", methods=["POST"])
 @kiosk_ui_auth_required
 def supervisor_lock():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Supervisor request requires an object"}), 400
+    operation = payload.get("request_id")
+    if operation is not None and (not isinstance(operation, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", operation)):
+        return jsonify({"success": False, "error": "Invalid unlock request"}), 400
+    revoke_supervisor_session(request.cookies.get(KIOSK_SUPERVISOR_SESSION_COOKIE), operation)
     response = jsonify({"success": True})
     response.delete_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, samesite="Strict")
     return response

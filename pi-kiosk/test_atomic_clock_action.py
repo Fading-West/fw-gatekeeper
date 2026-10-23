@@ -45,6 +45,9 @@ class AtomicClockActionTests(Fixture):
             "web_app": self.display, "logger": mock.Mock(), "last_clocks": self.last_clocks,
             "_log_recognition_attempt": mock.Mock(), "_now_iso": lambda: "synthetic-time",
             "base_degraded_reason": lambda: None,
+            "camera_healthy": True, "camera_generation": [None], "camera_invalidated_at": [0.0],
+            "time": mock.Mock(monotonic=lambda: 100.0), "is_fresh_scan": lambda *args: True,
+            "require_kiosk_action_type": __import__("kiosk_policy").require_kiosk_action_type,
         }
         exec(compile(ast.Module(body=[record], type_ignores=[]), "main.py", "exec"), namespace)
         self.record_clock = namespace["record_clock"]
@@ -149,25 +152,37 @@ class AtomicClockActionTests(Fixture):
             finally:
                 self.close()
 
+        automatic_finished = threading.Event()
+        def automatic_thread():
+            try:
+                self.assertTrue(self.automatic())
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                self.close()
+                automatic_finished.set()
         thread = threading.Thread(target=manual_thread)
+        competitor = threading.Thread(target=automatic_thread)
         with mock.patch.object(database, "log_attendance", side_effect=pause_manual_write):
             thread.start()
             try:
                 self.assertTrue(paused.wait(2))
-                self.assertTrue(self.automatic())
+                competitor.start()
+                self.assertFalse(automatic_finished.wait(.05), "automatic write must wait for the manual receipt transaction")
             finally:
                 release.set()
                 thread.join(timeout=3)
+                competitor.join(timeout=3)
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual([row["action"] for row in database.get_unsynced_logs()],
                          ["clock_in", "clock_out"])
-        self.assertEqual(responses[0]["action"], "clock_out")
+        self.assertEqual(responses[0]["action"], "clock_in")
 
     def test_manual_inference_holds_write_lock_until_insert(self):
         writing, finished = threading.Event(), threading.Event()
         errors = []
-        original_log, original_last = database.log_attendance, database._get_last_attendance
+        original_log, original_last = database.record_manual_attendance, database._get_last_attendance
 
         def signal_write(*args, **fields):
             if threading.current_thread() is thread:
@@ -193,7 +208,7 @@ class AtomicClockActionTests(Fixture):
 
         thread = threading.Thread(target=competing_writer)
         try:
-            with mock.patch.object(database, "log_attendance", side_effect=signal_write), \
+            with mock.patch.object(database, "record_manual_attendance", side_effect=signal_write), \
                     mock.patch.object(database, "_get_last_attendance", side_effect=read_last_under_lock):
                 response = self.manual()
         finally:
@@ -247,16 +262,21 @@ class AtomicClockActionTests(Fixture):
         conn.commit()
         database.log_attendance(self.worker, "Synthetic worker", "clock_out",
                                 timestamp="2026-10-06T13:00:00+00:00")
+        database._migrate_history()
         statements = []
         conn.set_trace_callback(statements.append)
+        instructions = []
+        conn.set_progress_handler(lambda: instructions.append(1) or 0, 1)
         try:
             self.assertEqual(database.get_last_action(self.worker), "clock_out")
         finally:
             conn.set_trace_callback(None)
+            conn.set_progress_handler(None, 0)
+        self.assertLess(len(instructions), 500, "last-inserted lookup must not scan/sort long history")
         query = next(sql for sql in statements if "FROM attendance_log" in sql)
         plan = " ".join(row["detail"] for row in conn.execute("EXPLAIN QUERY PLAN " + query))
         self.assertIn("SEARCH attendance_log USING INDEX idx_attendance_worker_id", plan)
-        self.assertNotIn("TEMP B-TREE", plan)
+        self.assertIn("SEARCH attendance_log USING INDEX idx_attendance_server_worker", plan)
 
     def assert_inferred_action(self, previous, scan, expected, *, mode="auto", hours=16,
                                last_action="clock_in"):
@@ -264,7 +284,10 @@ class AtomicClockActionTests(Fixture):
         conn = database._get_conn()
         conn.execute("DELETE FROM attendance_log")
         conn.commit()
-        database.log_attendance(self.worker, "Synthetic worker", last_action, timestamp=previous)
+        # Cache legacy naive timestamps under the same device timezone as
+        # the later scan; changing TZ after insertion is not a clock correction.
+        with local_clock("America/Denver", datetime.fromisoformat(scan)):
+            database.log_attendance(self.worker, "Synthetic worker", last_action, timestamp=previous)
         with mock.patch.object(config, "KIOSK_TYPE", mode), \
                 mock.patch.object(config, "AUTO_CLOCK_STALE_HOURS", hours), \
                 local_clock("America/Denver", datetime.fromisoformat(scan)):
