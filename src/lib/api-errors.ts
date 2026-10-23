@@ -1,8 +1,10 @@
 import { ConvexError } from 'convex/values';
 import { NextResponse } from 'next/server';
 
-// Legacy mutations throw ordinary Errors. Expose only allowlisted validation
-// text, never the surrounding Convex request ID, function name, or stack.
+// Expose only allowlisted validation text, never the surrounding Convex request
+// ID, function name, or stack. Production Convex deployments redact ordinary
+// Error messages to "Server Error", so allowlisted validation must be thrown
+// as ConvexError; the envelope unwrap below only matches dev deployments.
 export function knownApiErrorResponse(
   error: unknown,
   messages: Readonly<Record<string, 400 | 409>>,
