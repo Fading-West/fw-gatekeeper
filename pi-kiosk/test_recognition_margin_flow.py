@@ -16,8 +16,23 @@ from matching import FreshFaceMatcher, has_minimum_margin
 TREE = ast.parse(Path(__file__).with_name('main.py').read_text())
 
 
+def prepare_context(namespace):
+    from scan_freshness import is_fresh_scan
+    namespace.setdefault('camera_generation', [0])
+    namespace.setdefault('camera_invalidated_at', [0.0])
+    namespace.setdefault('detect_lock', threading.Lock())
+    namespace.setdefault('unknown_embedding', None)
+    namespace.setdefault('is_fresh_scan', is_fresh_scan)
+    if namespace.get('pending'):
+        namespace['pending'].setdefault('camera_generation', 0)
+        namespace['pending'].setdefault('deadline', 100.)
+    for helper in [node for node in ast.walk(TREE) if isinstance(node, ast.FunctionDef) and node.name in {'consume_detection', 'publish_detection'}]:
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), 'main.py', 'exec'), namespace)
+
+
 def execute_branch(condition, namespace):
-    branch = next(node for node in ast.walk(TREE)
+    prepare_context(namespace)
+    branch = next(node for node in reversed(list(ast.walk(TREE)))
                   if isinstance(node, ast.If) and ast.unparse(node.test) == condition)
     # A one-iteration loop preserves the production branch's continue behavior.
     loop = ast.For(target=ast.Name(id='_', ctx=ast.Store()),
@@ -29,6 +44,7 @@ def execute_branch(condition, namespace):
 
 def execute_display_cycle(namespace):
     """Run the production hold, pending-clock, and result branches in order."""
+    prepare_context(namespace)
     main_loop = next(node for node in ast.walk(TREE)
                      if isinstance(node, ast.While) and any(
                          isinstance(child, ast.If) and ast.unparse(child.test) == 'now < display_until[0]'
@@ -64,10 +80,11 @@ class RecognitionMarginFlowTests(unittest.TestCase):
                                    math.sqrt(1 - top_score ** 2 - second_score ** 2)])
                 namespace = {'logger': mock.Mock(), 'FreshFaceMatcher': FreshFaceMatcher,
                              'has_minimum_margin': has_minimum_margin, 'config': config, 'np': np,
-                             'detect_lock': threading.Lock(), 'pending_frame': [('bgr', 'rgb', 1.)],
+                             'detect_lock': threading.Lock(), 'pending_frame': [('bgr', 'rgb', 1., 0)],
                              'cv2': mock.Mock(), 'fr': mock.Mock(), 'detect_count': [0],
                              'embed_face': mock.Mock(return_value=vector), 'recognizer': recognizer,
                              'largest_face': lambda locs: locs[0], 'current_result': [None]}
+                prepare_context(namespace)
                 namespace['fr'].face_locations.return_value = [(5, 50, 50, 5)]
                 module = ast.fix_missing_locations(ast.Module(body=[detection], type_ignores=[]))
                 exec(compile(module, 'main.py', 'exec'), namespace)
@@ -86,7 +103,7 @@ class RecognitionMarginFlowTests(unittest.TestCase):
             with self.subTest(confirmed=confirmed):
                 fresh = {'name': None, 'decision': 'rejected_ambiguous',
                          'candidate_worker_id': 11, 'server_worker_id': 'server-a',
-                         'best_score': .7078, 'second_best_score': .7064}
+                         'frame_ts': 2., 'face_loc': (5,50,50,5), 'camera_generation': 0, 'best_score': .7078, 'second_best_score': .7064}
                 pending = {'worker_id': 11, 'server_worker_id': 'server-a',
                            'blink_confirmed': confirmed, 'blink_confirmed_at': 1.,
                            'post_blink_confirmed': False, 'result': {'decision': 'accepted'}}
@@ -122,13 +139,17 @@ class RecognitionMarginFlowTests(unittest.TestCase):
                 namespace.update(result=None, time=mock.Mock())
                 namespace['now'] = namespace['display_until'][0] + .1
                 execute_branch('result is None', namespace)
+                self.assertEqual(status['state'], 'NOT_RECOGNIZED', 'pending inference preserves the display')
+                namespace['face_loc'] = None
+                namespace['unknown_embedding'] = None
+                execute_branch('face_loc is None', namespace)
                 self.assertEqual(status['state'], 'IDLE')
                 self.assertIsNone(status['worker_name'])
                 self.assertEqual(namespace['display_until'][0], 0.)
 
                 # The next worker starts a new blink verification with their
                 # own identity, then completes it using a fresh post-blink scan.
-                blair = {'name': 'Blair', 'decision': 'accepted', 'frame_ts': namespace['now'],
+                blair = {'name': 'Blair', 'decision': 'accepted', 'frame_ts': namespace['now'], 'camera_generation': 0,
                          'face_loc': (5, 50, 50, 5), 'confidence': .9,
                          'candidate_worker_id': 22, 'server_worker_id': 'server-b',
                          'candidate_encoding': np.array([0., 1., 0.])}
@@ -154,7 +175,7 @@ class RecognitionMarginFlowTests(unittest.TestCase):
                 namespace['record_clock'].return_value = True
                 execute_display_cycle(namespace)
                 namespace['record_clock'].assert_called_once_with(
-                    blair, 22, 'Blair', 'B22', .9, liveness_confirmed=True, server_worker_id='server-b')
+                    dict(blair, frame_ts=namespace['now']), 22, 'Blair', 'B22', .9, liveness_confirmed=True, server_worker_id='server-b')
                 self.assertIsNone(namespace['pending_clock'][0])
                 self.assertEqual(namespace['display_until'][0],
                                  namespace['now'] + config.DISPLAY_TIME_SUCCESS_SEC)
@@ -178,6 +199,7 @@ class RecognitionMarginFlowTests(unittest.TestCase):
                     self.assertIsNone(namespace['current_result'][0])
 
                     namespace['now'] = namespace['display_until'][0]
+                    namespace['current_result'][0] = {'face_loc': None, 'frame_ts': namespace['now'], 'camera_generation': 0}
                     execute_display_cycle(namespace)
                     self.assertEqual(status['state'], 'IDLE')
                     self.assertIsNone(status['worker_name'])
@@ -187,7 +209,7 @@ class RecognitionMarginFlowTests(unittest.TestCase):
         for frame_ts, expected in [(.5, False), (2., True)]:
             with self.subTest(frame_ts=frame_ts):
                 fresh = {'name': 'Alex', 'decision': 'accepted', 'frame_ts': frame_ts,
-                         'candidate_worker_id': 11, 'server_worker_id': 'server-a'}
+                         'candidate_worker_id': 11, 'server_worker_id': 'server-a', 'camera_generation': 0}
                 pending = {'worker_id': 11, 'server_worker_id': 'server-a',
                            'display_name': 'Alex', 'display_id': 'A11', 'confidence': .9,
                            'blink_confirmed': True, 'blink_confirmed_at': 1.,

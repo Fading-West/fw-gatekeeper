@@ -1,4 +1,5 @@
 import { getFactoryLocalDateKey } from "./localDate";
+import { isValidAttendanceTimestamp } from "./attendanceValidation";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -118,6 +119,21 @@ function normalizeAttempt(attempt: {
   reviewedNote?: string;
   reviewedAt?: string;
 }) {
+  for (const [field, value, minimum, maximum] of [
+    ["bestScore", attempt.bestScore, -1, 1], ["secondBestScore", attempt.secondBestScore, -1, 1],
+    ["scoreMargin", attempt.scoreMargin, -2, 2], ["threshold", attempt.threshold, 0, 1],
+    ["imageQuality", attempt.imageQuality, 0, 1], ["faceQuality", attempt.faceQuality, 0, 1],
+    ["brightness", attempt.brightness, 0, 255], ["blur", attempt.blur, 0, Number.MAX_VALUE],
+  ] as const) {
+    if (value !== undefined && (!Number.isFinite(value) || value < minimum - 1e-12 || value > maximum + 1e-12)) {
+      throw new ConvexError({ code: "INVALID_RECOGNITION_METRIC", message: `Invalid recognition metric: ${field}` });
+    }
+  }
+
+  const timestamp = attempt.timestamp.trim();
+  if (!isValidAttendanceTimestamp(timestamp) || !createRecognitionTimestampSortKey()(timestamp)) {
+    throw new ConvexError({ code: "INVALID_RECOGNITION_TIMESTAMP", message: "Recognition timestamp must identify a valid factory-local or offset instant" });
+  }
   const reviewed = false; // Kiosks supply evidence; only portal operators may review it.
   return {
     timestamp: normalizeRequiredText(attempt.timestamp, "timestamp"),
@@ -451,6 +467,8 @@ export const getById = query({
   },
 });
 
+const REVIEW_LABELS = ["confirmed", "corrected", "ignored"];
+
 export const updateReview = mutation({
   args: {
     id: v.id("recognitionAttempts"),
@@ -473,7 +491,12 @@ export const updateReview = mutation({
       updatedAt: now,
     };
     if (args.reviewedLabel !== undefined) {
-      updates.reviewedLabel = normalizeOptionalText(args.reviewedLabel);
+      const label = normalizeOptionalText(args.reviewedLabel);
+      // Reads treat any other label as unreviewed, which would hide a "reviewed" attempt.
+      if (label === undefined || !REVIEW_LABELS.includes(label)) {
+        throw new ConvexError(`reviewedLabel must be one of ${REVIEW_LABELS.join(", ")}`);
+      }
+      updates.reviewedLabel = label;
     }
     if (args.reviewedNote !== undefined) {
       updates.reviewedNote = normalizeOptionalText(args.reviewedNote);

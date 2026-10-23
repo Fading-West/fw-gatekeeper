@@ -1,7 +1,9 @@
+import { getKioskSyncStatus } from "../src/lib/kiosk-sync-status";
 import { isSupportedEncoding } from "../src/lib/encoding";
-import { getFactoryLocalDateKey } from "./localDate";
+import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
+import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
@@ -25,8 +27,6 @@ type ShiftTrustRisk = {
   exact: boolean;
 };
 
-const ONLINE_THRESHOLD_MS = 15 * 60 * 1000;
-const STALE_THRESHOLD_MS = 60 * 60 * 1000;
 // Kiosks match exclusively 512-dim MobileFaceNet embeddings.
 
 function getDayOfWeek(dateKey: string): number {
@@ -82,12 +82,7 @@ function getScheduleForWorker(worker: any, schedules: any[], dayOfWeek: number) 
 }
 
 function getKioskStatus(lastSync?: string | null): KioskStatus {
-  if (!lastSync) return "never_synced";
-  const ageMs = Date.now() - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return "online";
-  if (ageMs <= ONLINE_THRESHOLD_MS) return "online";
-  if (ageMs <= STALE_THRESHOLD_MS) return "stale";
-  return "offline";
+  return getKioskSyncStatus(lastSync);
 }
 
 function actionRank(priority: ActionPriority) {
@@ -175,7 +170,7 @@ const SCAN_BLOCKING_DEGRADED_REASONS = new Set([
 function hasScanBlockingDeviceFault(health: any): boolean {
   if (!health) return false;
   if (health.cameraOk === false || health.modelOk === false) return true;
-  return typeof health.degradedReason === "string" && SCAN_BLOCKING_DEGRADED_REASONS.has(health.degradedReason);
+  return getKioskDegradedReasons(health.degradedReason).some(reason => SCAN_BLOCKING_DEGRADED_REASONS.has(reason));
 }
 
 function buildShiftTrustBrief(input: {
@@ -560,10 +555,14 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       });
     }
 
+    const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
     const departmentRows = [...departmentMap.values()].map((row) => {
       let status: DepartmentCoverageStatus = "covered";
       if (row.missing > 0 || row.late > 0) status = "short";
-      if (row.present === 0 && row.expected > 0) status = "critical";
+      // An empty floor is only critical while someone is missing or the shift
+      // is still running; everyone clocked out after the end is a done shift.
+      const shiftEnded = factoryNow > `${date}T${row.scheduled_end}:00`;
+      if (row.present === 0 && row.expected > 0 && (row.missing > 0 || !shiftEnded)) status = "critical";
       return { ...row, status };
     });
     departmentRows.sort((a, b) =>
