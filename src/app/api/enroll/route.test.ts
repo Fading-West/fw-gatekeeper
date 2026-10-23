@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(), mutation: vi.fn(), action: vi.fn(), authorized: vi.fn(), fetch: vi.fn(),
@@ -29,6 +30,15 @@ it('stores only photo indexes used by the quality gate', async () => {
   expect(Buffer.from(mocks.action.mock.calls[1][1].photo).toString()).toBe('c');
   expect(mocks.fetch).toHaveBeenCalledTimes(1);
   expect(mocks.mutation.mock.calls.at(-1)?.[1]).toEqual({ storageIds: ['photo-b', 'photo-c'] });
+});
+it('invalidates health for every date after enrollment changes the ready worker count', async () => {
+  for (const date of ['2026-10-08', '2026-10-09']) {
+    systemHealthCache.set(date, { sync: { ready_worker_count: 0 } }, systemHealthCache.generation);
+  }
+  mocks.fetch.mockResolvedValueOnce(Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [1,2] }));
+  expect((await POST(request())).status).toBe(201);
+  expect(systemHealthCache.get('2026-10-08')).toBeUndefined();
+  expect(systemHealthCache.get('2026-10-09')).toBeUndefined();
 });
 it('rejects malformed photo arrays before calling the encoding service', async () => {
   expect((await POST(request([{}, {}, {}]))).status).toBe(400);
@@ -89,6 +99,27 @@ it('rejects an unauthorized role before processing or creating storage', async (
   mocks.authorized.mockResolvedValue(false);
   expect((await POST(request())).status).toBe(401);
   expect(mocks.fetch).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
+
+it('preserves a busy face service message, 503 status and Retry-After', async () => {
+  const message = 'Recognition service is busy. Please try again shortly.';
+  mocks.fetch.mockResolvedValueOnce(Response.json({ detail: message }, { status: 503, headers: { 'Retry-After': '5' } }));
+  const response = await POST(request());
+  expect(response.status).toBe(503);
+  expect(response.headers.get('Retry-After')).toBe('5');
+  expect(await response.json()).toEqual({ error: message });
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
+
+it('preserves face quality messages and per-photo evidence at 422', async () => {
+  const detail = { message: 'Enrollment needs at least 2 clear, matching photos of one face: 1 of 3 photos could not be used (no face detected). Retake the photos facing the camera in good light.', photos: [{ index: 0, ok: false, reason: 'no_face' }], disagreeing_pairs: [] };
+  mocks.fetch.mockResolvedValueOnce(Response.json({ detail }, { status: 422 }));
+  const response = await POST(request());
+  expect(response.status).toBe(422);
+  expect(await response.json()).toEqual({ error: detail.message, photos: detail.photos, disagreeing_pairs: [] });
   expect(mocks.action).not.toHaveBeenCalled();
   expect(mocks.mutation).not.toHaveBeenCalled();
 });

@@ -6,6 +6,7 @@ import { getEncodingValidationMessage, isSupportedEncoding } from '@/lib/encodin
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { ConvexError } from 'convex/values';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 async function requireAdmin(req: NextRequest) {
   return (await hasValidPortalSession(req, ['admin'])) ? null : unauthorizedApiResponse();
@@ -103,6 +104,7 @@ export async function PATCH(req: NextRequest) {
   if (face_encoding !== undefined) updates.faceEncoding = face_encoding;
 
   await convex.mutation(api.workers.update, updates as any);
+  systemHealthCache.invalidate();
   return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof ConvexError && typeof error.data === 'object' && error.data?.code === 'WORKER_IDENTITY_CONFLICT') {
@@ -120,5 +122,6 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
 
   await convex.mutation(api.workers.remove, { id: id as any });
+  systemHealthCache.invalidate();
   return NextResponse.json({ ok: true });
 }
