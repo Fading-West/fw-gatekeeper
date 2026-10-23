@@ -57,7 +57,11 @@ async def service_lifespan(_app):
     yield
 
 
-app = FastAPI(title="Face Encoding Service", lifespan=service_lifespan)
+app = FastAPI(
+    title="Face Encoding Service",
+    lifespan=service_lifespan,
+    telemetry={"auto_configure": False},
+)
 # Inner to CORS: bound bodies of concurrent image requests before they are parsed.
 app.add_middleware(ImageAdmissionMiddleware)
 app.add_middleware(
