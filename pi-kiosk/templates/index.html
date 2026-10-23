@@ -122,6 +122,7 @@
         }
 
         .camera-box {
+            position: relative;
             border: 1px solid #3a3d43;
             border-radius: 10px;
             overflow: hidden;
@@ -135,6 +136,20 @@
             height: 100%;
             object-fit: cover;
             display: block;
+        }
+
+        .clock-warning {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            right: 8px;
+            padding: 12px;
+            border: 2px solid #e0a343;
+            border-radius: 8px;
+            background: #261b08;
+            color: #ffe0a3;
+            font-size: 1rem;
+            font-weight: 600;
         }
 
         /* Worker-facing result banner: large, wrapping, readable from a few
@@ -502,6 +517,10 @@
         <section class="stage">
             <div class="camera-box">
                 <img id="cameraFeed" alt="Live camera feed">
+                <div id="clockWarning" class="clock-warning" role="alert" hidden>
+                    Clock not synchronized. Attendance times may be wrong.
+                    Contact a supervisor to verify the time. Clock-ins continue.
+                </div>
             </div>
             <div class="status-card">
                 <div id="statusGlyph" class="status-glyph" aria-hidden="true"></div>
@@ -542,7 +561,7 @@
             <div id="supervisorError" class="supervisor-error" role="alert" aria-live="polite"></div>
             <div class="supervisor-dialog-actions">
                 <button id="supervisorCancel" type="button">Cancel</button>
-                <button type="submit">Unlock</button>
+                <button id="supervisorSubmit" type="submit">Unlock</button>
             </div>
         </form>
     </dialog>
@@ -557,6 +576,7 @@
     <script src="{{ url_for('static', filename='connection.js') }}"></script>
     <script>
         const statusText = document.getElementById("statusText");
+        const clockWarning = document.getElementById("clockWarning");
         const statusGlyph = document.getElementById("statusGlyph");
         const statusCard = document.querySelector(".status-card");
         const stateValue = document.getElementById("stateValue");
@@ -575,6 +595,7 @@
         const supervisorPin = document.getElementById("supervisorPin");
         const supervisorError = document.getElementById("supervisorError");
         const supervisorCancel = document.getElementById("supervisorCancel");
+        const supervisorSubmit = document.getElementById("supervisorSubmit");
         const adminPanel = document.getElementById("adminPanel");
         const lastUpdated = document.getElementById("lastUpdated");
         const livenessNote = document.getElementById("livenessNote");
@@ -625,6 +646,76 @@
             img: document.getElementById("cameraFeed"),
             url: "/feed",
         });
+        let supervisorLockPending = false;
+        let supervisorLockNeeded = false;
+        let supervisorUnlockPending = false;
+        let supervisorUnlockGeneration = 0;
+        let activeUnlockRequest = null;
+        let activeUnlockController = null;
+        let supervisorBootNonce = null;
+        let manualSubmitting = false;
+        let pendingManualRequest = null;
+        const manualIntentKey = "fw-gatekeeper-pending-manual-attendance-v1";
+        let manualIntentStorageError = false;
+        function readManualRequest() {
+            const saved = sessionStorage.getItem(manualIntentKey);
+            if (saved === null) return null;
+            const intent = JSON.parse(saved);
+            if (!intent || !Number.isSafeInteger(intent.worker_id) || intent.worker_id <= 0 ||
+                typeof intent.request_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(intent.request_id)) {
+                throw new Error("Invalid saved attendance intent");
+            }
+            return { worker_id: intent.worker_id, request_id: intent.request_id };
+        }
+
+        function sameManualRequest(left, right) {
+            return left !== null && right !== null &&
+                left.worker_id === right.worker_id && left.request_id === right.request_id;
+        }
+
+        try {
+            pendingManualRequest = readManualRequest();
+            if (pendingManualRequest !== null) {
+                manualName.disabled = true;
+                manualResult.textContent = "Attendance confirmation pending. Retry before selecting another worker.";
+            }
+        } catch (_) {
+            manualIntentStorageError = true;
+        }
+
+        function retainManualRequest(operation) {
+            const existing = readManualRequest();
+            if (existing !== null && !sameManualRequest(existing, operation)) {
+                throw new Error("Another attendance intent is pending");
+            }
+            const saved = JSON.stringify(operation);
+            sessionStorage.setItem(manualIntentKey, saved);
+            if (sessionStorage.getItem(manualIntentKey) !== saved) throw new Error("Attendance intent not saved");
+            pendingManualRequest = operation;
+        }
+
+        function verifyManualRequest(operation) {
+            try {
+                if (!sameManualRequest(readManualRequest(), operation)) {
+                    throw new Error("Attendance intent changed");
+                }
+            } catch (error) {
+                manualIntentStorageError = true;
+                throw error;
+            }
+        }
+
+        function clearManualRequest(operation) {
+            try {
+                verifyManualRequest(operation);
+                sessionStorage.removeItem(manualIntentKey);
+                if (sessionStorage.getItem(manualIntentKey) !== null) throw new Error("Attendance receipt not cleared");
+                if (sameManualRequest(pendingManualRequest, operation)) pendingManualRequest = null;
+            } catch (error) {
+                manualIntentStorageError = true;
+                throw error;
+            }
+        }
 
         function tickClock() {
             const now = new Date();
@@ -702,30 +793,116 @@
         }
 
         async function toggleSupervisorControls() {
-            if (adminVisible) {
-                await fetch("/supervisor/lock", { method: "POST" });
+            if (supervisorLockPending) return;
+            if (adminVisible || supervisorLockNeeded || supervisorUnlockPending) {
+                supervisorStateVersion += 1;
                 setAdminVisible(false);
+                supervisorLockPending = true;
+                supervisorLockNeeded = true;
+                supervisorUnlock.disabled = true;
+                supervisorUnlock.textContent = "Locking supervisor session...";
+                try {
+                    const response = await fetch("/supervisor/lock", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ request_id: activeUnlockRequest })
+                    });
+                    if (!response.ok) throw new Error("Lock not confirmed");
+                    // The server has retired this operation, so recovery need
+                    // not wait for its original response to ever arrive.
+                    supervisorUnlockGeneration += 1;
+                    supervisorUnlockPending = false;
+                    supervisorSubmit.disabled = false;
+                    const retiredController = activeUnlockController;
+                    activeUnlockController = null;
+                    activeUnlockRequest = null;
+                    retiredController?.abort();
+                    supervisorLockNeeded = false;
+                    supervisorUnlock.textContent = "Supervisor controls (A)";
+                } catch (_) {
+                    supervisorUnlock.textContent = "Lock not confirmed. Retry locking controls";
+                } finally {
+                    supervisorLockPending = false;
+                    supervisorUnlock.disabled = false;
+                }
                 return;
             }
             openSupervisorDialog();
         }
 
-        async function unlockSupervisorControls() {
-            const pin = supervisorPin.value;
-            const response = await fetch("/supervisor/unlock", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pin })
-            });
-            if (!response.ok) {
-                supervisorError.textContent = "Supervisor authentication failed.";
-                supervisorPin.select();
-                return;
+        function createSupervisorUnlockRequestId() {
+            const cryptography = globalThis.crypto;
+            if (typeof cryptography?.randomUUID === "function") {
+                try { return cryptography.randomUUID(); } catch (_) { /* Try the cryptographic fallback. */ }
             }
+            if (typeof cryptography?.getRandomValues !== "function") {
+                throw new Error("Secure unlock identity unavailable");
+            }
+            const bytes = new Uint8Array(16);
+            cryptography.getRandomValues(bytes);
+            return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+        }
+
+        async function unlockSupervisorControls() {
+            if (supervisorUnlockPending || supervisorLockPending || supervisorLockNeeded) return;
+            supervisorUnlockPending = true;
+            supervisorSubmit.disabled = true;
+            const generation = ++supervisorUnlockGeneration;
+            const version = supervisorStateVersion;
+            let requestStarted = false;
+            try {
+                if (!supervisorBootNonce) throw new Error("Kiosk session not yet observed");
+                const operation = createSupervisorUnlockRequestId();
+                activeUnlockRequest = operation;
+                const controller = new AbortController();
+                activeUnlockController = controller;
+                const pin = supervisorPin.value;
+                requestStarted = true;
+                const response = await fetch("/supervisor/unlock", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pin, request_id: operation, boot_nonce: supervisorBootNonce }),
+                    signal: controller.signal
+                });
+                if (generation !== supervisorUnlockGeneration || version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
+                if (!response.ok) {
+                    if (response.status >= 500) throw new Error("Unlock not confirmed");
+                    if (response.status === 409) {
+                        supervisorBootNonce = null;
+                        supervisorError.textContent = "Kiosk session changed. Wait for status and unlock again.";
+                        fetchStatus();
+                        return;
+                    }
+                    supervisorError.textContent = "Supervisor authentication failed.";
+                    supervisorPin.select();
+                    return;
+                }
+                supervisorDialog.close();
+                setAdminVisible(true);
+                fetchStatus();
+                fetchLog();
+            } catch (_) {
+                if (generation === supervisorUnlockGeneration && version === supervisorStateVersion) {
+                    if (requestStarted) {
+                        supervisorLockNeeded = true;
+                        supervisorError.textContent = "Unlock not confirmed. Close this dialog and lock before retrying.";
+                        supervisorUnlock.textContent = "Unlock uncertain. Lock supervisor controls";
+                    } else {
+                        supervisorError.textContent = supervisorBootNonce
+                            ? "Secure unlock identity unavailable. Retry on the kiosk browser."
+                            : "Wait for kiosk status before unlocking.";
+                    }
+                }
+            } finally {
+                if (generation === supervisorUnlockGeneration) {
+                    supervisorUnlockPending = false;
+                    supervisorSubmit.disabled = false;
+                    activeUnlockController = null;
+                }
+            }
+        }
+
+        function cancelSupervisorUnlock() {
             supervisorDialog.close();
-            setAdminVisible(true);
-            fetchStatus();
-            fetchLog();
+            if (supervisorUnlockPending || supervisorLockNeeded) toggleSupervisorControls();
         }
 
         // Never let a failing kiosk look like the idle prompt or keep showing
@@ -760,6 +937,8 @@
                     return;
                 }
                 if (link.reconnectFeed || !cameraFeed.isConnected()) cameraFeed.connect();
+                const observedBoot = data.health?.supervisor_boot_nonce;
+                supervisorBootNonce = typeof observedBoot === "string" && /^[a-f0-9]{32}$/.test(observedBoot) ? observedBoot : null;
                 const msg = statusMessageFromState(
                     data.state,
                     data.message,
@@ -777,7 +956,12 @@
 
                 // Footer claims must match what the kiosk actually enforces.
                 const health = data.health || {};
-                if (data.liveness_required && health.liveness_available) {
+                document.getElementById("cameraFeed").style.visibility = health.camera_ok === false ? "hidden" : "visible";
+                clockWarning.hidden = health.clock_synchronized !== false;
+                if (health.policy_ok === false) {
+                    livenessNote.textContent = "Configuration needs attention - automatic scans paused; ask your supervisor";
+                    livenessNote.style.color = "#e0a343";
+                } else if (data.liveness_required && health.liveness_available) {
                     livenessNote.textContent = "Blink verification required before recognition";
                     livenessNote.style.color = "";
                 } else if (data.liveness_required) {
@@ -787,11 +971,21 @@
                     livenessNote.textContent = "";
                 }
 
-                const rejected = health.rejected_logs || 0;
+                const rejected = (health.rejected_logs || 0) + (health.rejected_attempts || 0);
                 const queued = (health.retryable_logs || 0) + (health.queued_attempts || 0);
-                if (health.sync_online === true) {
+                if (health.sync_auth_ok === false) {
+                    const phases = (health.sync_auth_faults || []).map(phase => ({
+                        roster: "worker download", roster_ack: "roster confirmation",
+                        attendance: "attendance upload", recognition: "recognition upload"
+                    }[phase] || "protected sync")).join(", ");
+                    syncChip.textContent = `Sync authorization needs attention${phases ? ` (${phases})` : ""} - ask your supervisor; ${queued} retryable queued${rejected ? `; ${rejected} rejected need attention` : ""}`;
+                    syncChip.style.color = "#ff9e8f";
+                } else if (health.sync_online === true && health.sync_auth_ok !== true) {
+                    syncChip.textContent = `Server reachable - protected sync not fully confirmed; ${queued} retryable queued${rejected ? `; ${rejected} rejected need attention` : ""}`;
+                    syncChip.style.color = "#e0a343";
+                } else if (health.sync_online === true) {
                     syncChip.textContent = rejected > 0
-                        ? `Needs attention - ${rejected} attendance record${rejected === 1 ? "" : "s"} rejected; ${queued} retryable queued. Review with attendance_rejections.py list`
+                        ? `Needs attention - ${rejected} record${rejected === 1 ? "" : "s"} quarantined; ${queued} retryable queued. Review attendance_rejections.py / recognition_rejections.py list`
                         : queued > 0
                         ? `Syncing - ${queued} record${queued === 1 ? "" : "s"} queued`
                         : (health.last_sync_at
@@ -850,38 +1044,78 @@
         }
 
         async function submitManualClock() {
-            const workerId = manualName.value;
+            if (manualSubmitting) return;
+            if (manualIntentStorageError) {
+                manualResult.textContent = "Browser attendance storage is unavailable. Ask your supervisor to restore it before submitting.";
+                manualResult.style.color = "#ff9e8f";
+                return;
+            }
+            const workerId = pendingManualRequest ? String(pendingManualRequest.worker_id) : manualName.value;
             if (!workerId) {
                 manualResult.textContent = "Select a worker.";
                 manualResult.style.color = "#ff9e8f";
                 return;
             }
+            if (!pendingManualRequest || pendingManualRequest.worker_id !== Number(workerId)) {
+                try {
+                    retainManualRequest({ worker_id: Number(workerId), request_id: crypto.randomUUID() });
+                } catch (_) {
+                    manualIntentStorageError = true;
+                    manualResult.textContent = "Could not save attendance intent. Nothing was submitted; restore browser storage and reload.";
+                    manualResult.style.color = "#ff9e8f";
+                    return;
+                }
+            }
+            manualSubmitting = true;
+            manualBtn.disabled = true;
+            manualName.disabled = true;
+            const operation = pendingManualRequest;
+            const operationStateVersion = supervisorStateVersion;
             manualResult.textContent = "Submitting...";
             manualResult.style.color = "#9ea1a8";
             try {
+                verifyManualRequest(operation);
                 const response = await fetch("/manual-clock", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ worker_id: Number(workerId) })
+                    body: JSON.stringify(operation)
                 });
                 const data = await response.json();
+                if (operationStateVersion !== supervisorStateVersion || !adminVisible) {
+                    if ((response.ok && data.success) || (response.status >= 400 && response.status < 500 && response.status !== 401)) {
+                        clearManualRequest(operation);
+                    }
+                    return;
+                }
                 if (!response.ok || !data.success) {
                     if (response.status === 401) {
                         setAdminVisible(false);
                         openSupervisorDialog("Supervisor session expired. Unlock again to retry.");
                         return;
                     }
+                    if (response.status >= 400 && response.status < 500) clearManualRequest(operation);
+                    if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                     manualResult.textContent = data.error || "Manual clock failed.";
                     manualResult.style.color = "#ff9e8f";
                     return;
                 }
+                clearManualRequest(operation);
+                if (operationStateVersion !== supervisorStateVersion || !adminVisible) return;
                 manualResult.textContent = `${data.worker_name}: ${data.action.replace("_", " ")}`;
                 manualResult.style.color = "#87dfb3";
                 manualName.value = "";
                 fetchLog();
             } catch (error) {
-                manualResult.textContent = "Connection error.";
-                manualResult.style.color = "#ff9e8f";
+                if (operationStateVersion === supervisorStateVersion && adminVisible) {
+                    manualResult.textContent = manualIntentStorageError
+                        ? "Browser attendance storage changed or is unavailable. Restore it before retrying this attendance."
+                        : "Connection error. Retry to confirm this attendance.";
+                    manualResult.style.color = "#ff9e8f";
+                }
+            } finally {
+                manualSubmitting = false;
+                manualBtn.disabled = false;
+                manualName.disabled = pendingManualRequest !== null || manualIntentStorageError;
             }
         }
 
@@ -890,7 +1124,11 @@
             event.preventDefault();
             unlockSupervisorControls();
         });
-        supervisorCancel.addEventListener("click", () => supervisorDialog.close());
+        supervisorCancel.addEventListener("click", cancelSupervisorUnlock);
+        supervisorDialog.addEventListener("cancel", (event) => {
+            event.preventDefault();
+            cancelSupervisorUnlock();
+        });
         supervisorDialog.addEventListener("close", () => supervisorUnlock.focus());
 
         document.addEventListener("keydown", (event) => {
