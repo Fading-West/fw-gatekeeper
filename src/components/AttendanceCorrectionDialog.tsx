@@ -96,6 +96,9 @@ export default function AttendanceCorrectionDialog({
   // Set once the dialog closes, so a pending pre-save check never posts.
   const closedRef = useRef(false);
   const modalRef = useRef<HTMLElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const closeRef = useRef<() => void>(() => {});
 
   const editable = phase === 'editing';
   const source = frozen?.source || (sourceEvent ? {
@@ -106,6 +109,39 @@ export default function AttendanceCorrectionDialog({
   } : undefined);
   const sourceWorkerLabel = frozen?.worker_label || (sourceEvent ? `${sourceEvent.worker_name || sourceEvent.worker_id}${sourceEvent.worker_department ? ` · ${sourceEvent.worker_department}` : ''}` : '');
   const selectableWorkers = lockedWorkerId ? workerOptions.filter((worker) => worker.id === lockedWorkerId) : workerOptions;
+
+  useEffect(() => { closeRef.current = close; });
+
+  // Browsers drop focus to <body> when the focused button becomes disabled,
+  // and focus can leave the dialog in other ways. While the dialog is open,
+  // keep Tab and Escape working from outside it and pull focus back in.
+  // Declared before the focus-return effect so it is removed first.
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+    const outside = (target: EventTarget | null) => !(target instanceof Node) || !overlayRef.current?.contains(target);
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (closedRef.current || !outside(event.target)) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeRef.current();
+      } else if (event.key === 'Tab') {
+        event.preventDefault();
+        const focusables = dialogFocusables();
+        const target = event.shiftKey ? focusables[focusables.length - 1] : focusables[0];
+        (target || headingRef.current)?.focus();
+      }
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (closedRef.current || !outside(event.target)) return;
+      (dialogFocusables()[0] || headingRef.current)?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('focusin', onFocusIn);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('focusin', onFocusIn);
+    };
+  }, []);
 
   useEffect(() => {
     // React Strict Mode runs this cleanup once on mount; reopen the flag.
@@ -127,6 +163,16 @@ export default function AttendanceCorrectionDialog({
     onClose();
   }
 
+  function dialogFocusables() {
+    return modalRef.current ? Array.from(modalRef.current.querySelectorAll<HTMLElement>(focusableSelector)) : [];
+  }
+
+  // Move focus to the dialog heading before a save disables the focused
+  // button, so focus never falls out of the modal.
+  function holdFocus() {
+    headingRef.current?.focus?.();
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === 'Escape') {
       event.stopPropagation();
@@ -134,15 +180,17 @@ export default function AttendanceCorrectionDialog({
       return;
     }
     if (event.key !== 'Tab' || !modalRef.current) return;
-    const focusables = Array.from(modalRef.current.querySelectorAll<HTMLElement>(focusableSelector));
+    const focusables = dialogFocusables();
     if (focusables.length === 0) return;
     const first = focusables[0];
     const last = focusables[focusables.length - 1];
     const active = typeof document !== 'undefined' ? document.activeElement : null;
-    if (event.shiftKey && (active === first || !modalRef.current.contains(active))) {
+    // Focus on a non-tabbable dialog element (the heading) wraps like the ends.
+    const index = focusables.indexOf(active as HTMLElement);
+    if (event.shiftKey && index <= 0) {
       event.preventDefault();
       last.focus();
-    } else if (!event.shiftKey && (active === last || !modalRef.current.contains(active))) {
+    } else if (!event.shiftKey && (index === -1 || active === last)) {
       event.preventDefault();
       first.focus();
     }
@@ -156,6 +204,7 @@ export default function AttendanceCorrectionDialog({
   }
 
   async function send(record: PendingDirectCorrection) {
+    holdFocus();
     submittingRef.current = true;
     setPhase('saving');
     setError(null);
@@ -259,6 +308,7 @@ export default function AttendanceCorrectionDialog({
         const adjacentDates = duplicateWindowDates(date, time);
         if (adjacentDates.length) {
           // Near midnight the duplicate window reaches the neighboring day.
+          holdFocus();
           submittingRef.current = true;
           setPhase('saving');
           try {
@@ -310,13 +360,14 @@ export default function AttendanceCorrectionDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby="direct-correction-title"
+      ref={overlayRef}
       onKeyDown={handleKeyDown}
     >
       <section ref={modalRef} className="w-full max-w-2xl rounded-2xl border border-navy-600/70 bg-navy-950 p-6 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="section-label mb-2">Direct correction · {date}</p>
-            <h2 id="direct-correction-title" className="font-display text-2xl text-slate-100">{title}</h2>
+            <h2 id="direct-correction-title" ref={headingRef} tabIndex={-1} className="font-display text-2xl text-slate-100 focus:outline-none">{title}</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
               Audited and reversible. The original kiosk evidence stays in the record.
             </p>
