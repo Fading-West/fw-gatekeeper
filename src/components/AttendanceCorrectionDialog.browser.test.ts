@@ -12,7 +12,7 @@ let bundle = '';
 
 beforeAll(async () => {
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
   } catch (error) {
     if (process.env.CI) throw error;
     return;

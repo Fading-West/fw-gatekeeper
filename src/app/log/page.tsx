@@ -72,12 +72,17 @@ function LogPageContent() {
   const [workerListVersion, setWorkerListVersion] = useState(0);
   const [retainedWorkers, setRetainedWorkers] = useState<{ key: string; options: Map<string, WorkerOption> }>({ key: '', options: new Map() });
   const correctionTriggerRef = useRef<HTMLElement | null>(null);
+  const pendingFocusRef = useRef<{ trigger: HTMLElement | null; selection: string } | null>(null);
+  const addPunchRef = useRef<HTMLButtonElement | null>(null);
+  const pageHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const draftIdRef = useRef(0);
   const reversalFormRef = useRef<HTMLDivElement | null>(null);
   const selectionKey = `${date}|${queryWorkerId}|${refreshVersion}`;
   const draftKey = `${date}|${queryWorkerId}`;
   const visibleDraft = reversalDraft?.selection === selectionKey ? reversalDraft : null;
   const visibleCorrectionDraft = correctionDraft?.selection === draftKey ? correctionDraft : null;
+  const currentCorrectionDraftRef = useRef(visibleCorrectionDraft);
+  currentCorrectionDraftRef.current = visibleCorrectionDraft;
   const exportsReady = !loading && !error && loadedSelection === selectionKey;
   // Direct corrections need an authorized role and a fully loaded selection:
   // effective events and correction history for exactly this date and worker.
@@ -86,6 +91,27 @@ function LogPageContent() {
   const pendingElsewhere = pendingCorrection && pendingCorrection.request.date !== date ? pendingCorrection : null;
   const hasSourceContext = Boolean(queryWorkerId || queryAttendanceId);
   const fullDayHref = `/log?date=${encodeURIComponent(date)}`;
+
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending || visibleCorrectionDraft) return;
+    if (pending.selection !== draftKey) {
+      pendingFocusRef.current = null;
+      return;
+    }
+    // Refresh disables the old trigger before the dialog unmounts. Keep a
+    // usable focus target while waiting, then restore it after fresh data.
+    if (!exportsReady) {
+      pageHeadingRef.current?.focus();
+      if (error) pendingFocusRef.current = null;
+      return;
+    }
+    const available = (element: HTMLElement | null) => element?.isConnected && !element.matches(':disabled');
+    const target = available(pending.trigger) ? pending.trigger
+      : available(addPunchRef.current) ? addPunchRef.current : pageHeadingRef.current;
+    target?.focus();
+    pendingFocusRef.current = null;
+  }, [draftKey, error, exportsReady, visibleCorrectionDraft]);
 
   useEffect(() => {
     if (reversalDraft || reversing || correctionDraft) keepDate();
@@ -356,7 +382,7 @@ function LogPageContent() {
     <div className="animate-fade-in">
       <div className="flex items-start justify-between mb-8 flex-wrap gap-4">
         <div>
-          <h1 className="page-title text-slate-100">
+          <h1 ref={pageHeadingRef} tabIndex={-1} className="page-title text-slate-100 focus:outline-none">
             Activity <span className="text-gold">Log</span>
           </h1>
           <p className="text-sm text-slate-500 mt-1 font-mono">
@@ -373,6 +399,7 @@ function LogPageContent() {
           />
           {canCorrect && (
             <button
+              ref={addPunchRef}
               type="button"
               onClick={(click) => openCorrection(click.currentTarget, { mode: 'add' })}
               disabled={Boolean(addDisabledReason) || reversing}
@@ -559,6 +586,9 @@ function LogPageContent() {
           onSaved={() => {
             // A late success from an earlier dialog must not close a newer draft.
             const draftId = visibleCorrectionDraft.id;
+            if (currentCorrectionDraftRef.current?.id === draftId) {
+              pendingFocusRef.current = { trigger: correctionTriggerRef.current, selection: draftKey };
+            }
             setCorrectionDraft((current) => current?.id === draftId ? null : current);
             setRefreshVersion((version) => version + 1);
             toast('Attendance correction saved');

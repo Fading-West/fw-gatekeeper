@@ -363,7 +363,7 @@ export default function AttendanceCorrectionDialog({
       ref={overlayRef}
       onKeyDown={handleKeyDown}
     >
-      <section ref={modalRef} className="w-full max-w-2xl rounded-2xl border border-navy-600/70 bg-navy-950 p-6 shadow-2xl">
+      <section ref={modalRef} className="w-full max-w-2xl max-h-[calc(100dvh-3rem)] overflow-y-auto rounded-2xl border border-navy-600/70 bg-navy-950 p-6 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="section-label mb-2">Direct correction · {date}</p>
