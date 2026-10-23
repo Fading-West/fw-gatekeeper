@@ -194,6 +194,27 @@ class LocalHistoryTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT server_worker_id FROM attendance_log WHERE id = ?',
                                           (prior,)).fetchone()[0], 'a' * 32)
 
+    def test_atomic_toggle_after_restore_uses_indexed_history_and_caches_each_insert(self):
+        with local_clock('America/Denver', NOW), mock.patch.object(config, 'KIOSK_TYPE', 'auto'):
+            encoding = np.ones(512)
+            first = database.add_worker('Alex', encoding, server_id='a' * 32)
+            self.attendance((NOW - timedelta(minutes=1)).isoformat(), worker=first)
+            database.remove_worker_by_server_id('a' * 32)
+            restored = database.add_worker('Alex', encoding, server_id='a' * 32)
+            manual = database.log_attendance(restored, 'Alex')
+            self.assertEqual(database.get_attendance_action(manual), 'clock_out')
+            recognized = database.log_recognized_attendance(
+                worker_id=restored, worker_name='Alex', server_worker_id='a' * 32,
+                expected_encoding=encoding,
+            )
+            self.assertEqual(database.get_attendance_action(recognized), 'clock_in')
+            self.assertEqual(database.get_last_action(restored), 'clock_in')
+            for row_id in (manual, recognized):
+                row = database._get_conn().execute(
+                    'SELECT timestamp, timestamp_epoch FROM attendance_log WHERE id = ?', (row_id,),
+                ).fetchone()
+                self.assertEqual(row['timestamp_epoch'], database._attendance_epoch(row['timestamp']))
+
     def test_restored_identity_reads_repaired_epoch_and_retains_latest_history(self):
         with local_clock('America/Denver', NOW):
             first = database.add_worker('Alex', np.ones(512), server_id='a' * 32)
@@ -962,8 +983,8 @@ class LocalHistoryTests(unittest.TestCase):
                     worker._running = False
                 with mock.patch.object(sync, 'check_server', return_value=online), \
                      mock.patch.object(sync, 'sync_workers', return_value=True), \
-                     mock.patch.object(sync, 'sync_attendance', side_effect=lambda: calls.append('attendance')), \
-                     mock.patch.object(sync, 'sync_recognition_attempts', side_effect=lambda: calls.append('attempts')), \
+                     mock.patch.object(sync, 'sync_attendance', side_effect=lambda **_: calls.append('attendance')), \
+                     mock.patch.object(sync, 'sync_recognition_attempts', side_effect=lambda **_: calls.append('attempts')), \
                      mock.patch.object(database, 'prune_synced_history', side_effect=lambda: calls.append('prune')), \
                      mock.patch.object(sync.time, 'sleep', side_effect=stop), \
                      mock.patch.object(config, 'SYNC_INTERVAL', 1):

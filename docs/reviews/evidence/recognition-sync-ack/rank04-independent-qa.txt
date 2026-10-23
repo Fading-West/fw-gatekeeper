@@ -1,0 +1,12 @@
+test_full_insert_and_duplicate_acknowledgements_drain_queue (__main__.RecognitionAcknowledgementTests.test_full_insert_and_duplicate_acknowledgements_drain_queue) ... ok
+test_malformed_or_partial_success_retains_every_unsynced_attempt (__main__.RecognitionAcknowledgementTests.test_malformed_or_partial_success_retains_every_unsynced_attempt) ... Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+Recognition sync acknowledgement incomplete; retaining 2 attempts
+ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.021s
+
+OK

@@ -39,7 +39,9 @@ class RestoredWorkerHistoryTests(unittest.TestCase):
         restored = self._restore()
         self.assertEqual(database.get_last_action(restored), "clock_in")
         with mock.patch.object(config, "KIOSK_TYPE", "auto"):
-            self.assertEqual(app._manual_action_for_worker(restored), "clock_out")
+            # Action selection now shares the write transaction with the insert.
+            log_id = database.log_attendance(restored, "caleb")
+        self.assertEqual(database.get_attendance_action(log_id), "clock_out")
 
     def test_restored_worker_is_still_debounced(self):
         restored = self._restore()
