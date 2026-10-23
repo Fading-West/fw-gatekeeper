@@ -123,7 +123,8 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const exceptionKey = optionalString(body.exception_key) || optionalString(body.exceptionKey);
     const date = optionalString(body.date);
     const type = optionalString(body.type);

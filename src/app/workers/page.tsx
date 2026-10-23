@@ -6,6 +6,7 @@ import { useToast } from '@/components/Toast';
 import { Worker } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 
 function getEncodingStatus(worker: Worker) {
   if (worker.encoding_status) return worker.encoding_status;
@@ -159,7 +160,7 @@ export default function WorkersPage() {
   const invalidFaceCount = activeWorkers.filter((worker) => getEncodingStatus(worker) === 'invalid').length;
   const missingFaceCount = activeWorkers.filter((worker) => getEncodingStatus(worker) === 'missing').length;
   const retainedFaceCount = workers.filter((worker) => !worker.active && getEncodingStatus(worker) !== 'missing').length;
-  const departments = Array.from(new Set(workers.map((worker) => worker.department).filter(Boolean))).sort();
+  const departments = filterOptions(workers.map((worker) => worker.department).filter(Boolean), departmentFilter);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredWorkers = workers
     .filter((worker) => statusFilter === 'all' || getEncodingStatus(worker) === statusFilter)
