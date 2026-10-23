@@ -8,7 +8,10 @@ vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: () => Promise.resol
 vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn() }));
 vi.mock('@/lib/convex-ingest', () => ({ fetchWorkersForSync: vi.fn(), updateKioskLastSync: vi.fn(), issueLegacyRosterCursor: vi.fn() }));
 const request = (id: string) => new NextRequest(`http://localhost/api/sync?kiosk_id=${id}`);
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(issueLegacyRosterCursor).mockResolvedValue({ issuedAt: '2026-10-09T12:00:00.000Z', since: null });
+});
 
 it('keeps unknown, inactive, and mismatched devices from downloading a roster', async () => {
   vi.mocked(authenticateKiosk).mockResolvedValue(null);
@@ -46,5 +49,6 @@ it('records health from a credential-authenticated sync on the resolved kiosk', 
     degradedReason: 'Model unavailable',
     lastScanAt: '2026-09-25T12:00:00Z',
   });
-  expect(fetchWorkersForSync).toHaveBeenCalledWith('1970-01-01T00:00:00.000Z');
+  expect(issueLegacyRosterCursor).toHaveBeenCalledWith('kiosk-document', undefined);
+  expect(fetchWorkersForSync).toHaveBeenCalledWith('');
 });

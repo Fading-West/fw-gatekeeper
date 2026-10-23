@@ -54,7 +54,8 @@ it('uses kiosk credentials even when a portal admin session is present', async (
   expect(response.status).toBe(200);
   expect(authenticateKiosk).toHaveBeenCalledWith(req, ['entry']);
   expect(updateKioskLastSync).toHaveBeenCalledWith('kiosk-document', expect.any(String), undefined);
-  expect(fetchWorkersForSync).toHaveBeenCalledWith('1970-01-01T00:00:00.000Z');
+  expect(issueLegacyRosterCursor).toHaveBeenCalledWith('kiosk-document', undefined);
+  expect(fetchWorkersForSync).toHaveBeenCalledWith('');
 });
 
 it('uses the server-owned cursor for receipts and requires a full initial roster', async () => {
