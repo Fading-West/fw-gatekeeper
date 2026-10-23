@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildWorkerOptions,
   clearPendingDirectCorrection,
+  duplicateWindowDates,
   readPendingDirectCorrection,
   writePendingDirectCorrection,
   factoryInstantMs,
@@ -129,5 +130,14 @@ describe('pending direct correction store', () => {
     expect(readPendingDirectCorrection()?.request_id).toBe('newer');
     clearPendingDirectCorrection('newer');
     expect(readPendingDirectCorrection()).toBeNull();
+  });
+});
+
+describe('duplicate window across midnight', () => {
+  it('names the neighboring date only for times within two minutes of midnight', () => {
+    expect(duplicateWindowDates('2026-03-01', '00:02')).toEqual(['2026-02-28']);
+    expect(duplicateWindowDates('2026-12-31', '23:58')).toEqual(['2027-01-01']);
+    expect(duplicateWindowDates('2026-09-14', '00:03')).toEqual([]);
+    expect(duplicateWindowDates('2026-09-14', '23:57')).toEqual([]);
   });
 });

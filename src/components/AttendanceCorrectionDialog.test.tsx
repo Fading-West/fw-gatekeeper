@@ -158,6 +158,42 @@ describe('add mode', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['previous', '2026-09-14', '00:00', 'clock_in', '2026-09-13', '2026-09-13T23:59:00'],
+    ['next', '2026-09-13', '23:59', 'clock_out', '2026-09-14', '2026-09-14T00:00:30'],
+  ])('checks the %s day for a duplicate across midnight', async (_label, date, time, type, adjacentDate, adjacentTimestamp) => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push(url);
+      if (init?.method === 'POST') return { ok: true, status: 201, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => [{ ...rawScan, id: 'adjacent', event_type: type, timestamp: adjacentTimestamp }] };
+    }));
+    const { tree } = await render({ mode: 'add', date, sourceEvent: null, effectiveEvents: [] });
+    await change(tree.root.findAllByType('select')[0], 'worker-1');
+    await change(tree.root.findAllByType('select')[1], type);
+    await change(tree.root.findByProps({ type: 'time' }), time);
+    await change(tree.root.findByType('textarea'), 'Missed scan');
+    await act(async () => button(tree, 'Add punch').props.onClick());
+    expect(requests).toEqual([`/api/attendance?date=${adjacentDate}&worker_id=worker-1`]);
+    expect(alerts(tree).join(' ')).toContain('Possible duplicate');
+    expect(alerts(tree).join(' ')).toContain(`on ${adjacentDate}`);
+    expect(postBodies()).toHaveLength(0);
+    await act(async () => button(tree, 'Save anyway').props.onClick());
+    expect(postBodies()).toHaveLength(1);
+  });
+
+  it('does not save near midnight when the neighboring day cannot be checked', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+    const { tree } = await render({ mode: 'add', sourceEvent: null, effectiveEvents: [] });
+    await change(tree.root.findAllByType('select')[0], 'worker-1');
+    await change(tree.root.findByProps({ type: 'time' }), '00:01');
+    await change(tree.root.findByType('textarea'), 'Missed scan');
+    await act(async () => button(tree, 'Add punch').props.onClick());
+    expect(alerts(tree)).toEqual(['Could not check the neighboring day for a possible duplicate. Try again.']);
+    expect(postBodies()).toHaveLength(0);
+    expect(tree.root.findByType('textarea').props.disabled).toBe(false);
+  });
+
   it('asks for confirmation before saving a possible duplicate', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 201, json: async () => ({}) })));
     const { tree } = await render({ mode: 'add', sourceEvent: null });
@@ -295,7 +331,7 @@ describe('uncertain save recovery', () => {
     await act(async () => { save(); save(); });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(tree.root.findByType('textarea').props.disabled).toBe(true);
-    expect(button(tree, 'Cancel').props.disabled).toBe(true);
+    expect(hasButton(tree, 'Cancel')).toBe(false);
     await act(async () => resolve({ ok: true, status: 201, json: async () => ({}) }));
   });
 
@@ -358,12 +394,30 @@ describe('accessible modal', () => {
     expect(trigger.focus).toHaveBeenCalled();
   });
 
-  it('ignores Escape while a save is in flight', async () => {
+  it('lets Escape close a hanging save while keeping it pending for an identical retry', async () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
-    const { tree, onClose } = await render();
+    const { tree, onClose, onPendingStart } = await render();
     await change(tree.root.findByType('textarea'), 'Duplicate badge');
     await act(async () => { button(tree, 'Void row').props.onClick(); });
+    expect(button(tree, 'Close').props.disabled).toBeFalsy();
     await act(async () => tree.root.findByProps({ role: 'dialog' }).props.onKeyDown({ key: 'Escape', stopPropagation: vi.fn() }));
-    expect(onClose).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onPendingStart).toHaveBeenCalledTimes(1);
+    expect(readPendingDirectCorrection()?.request_id).toBe(postBodies()[0].request_id);
+  });
+
+  it('reports a definitive rejection that arrives after the dialog closed', async () => {
+    let reject!: (value: unknown) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => { reject = resolve; })));
+    const onRejectedAfterClose = vi.fn();
+    const { tree, onPendingSettled } = await render({ onRejectedAfterClose });
+    await change(tree.root.findByType('textarea'), 'Duplicate badge');
+    await act(async () => { button(tree, 'Void row').props.onClick(); });
+    await act(async () => button(tree, 'Close').props.onClick());
+    await act(async () => tree.unmount());
+    await act(async () => reject({ ok: false, status: 409, json: async () => ({ error: 'Already voided' }) }));
+    expect(onRejectedAfterClose).toHaveBeenCalledWith('Already voided');
+    expect(onPendingSettled).toHaveBeenCalled();
+    expect(readPendingDirectCorrection()).toBeNull();
   });
 });

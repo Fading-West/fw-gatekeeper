@@ -80,6 +80,20 @@ export function findPossibleDuplicate(
   ) || null;
 }
 
+function shiftDate(date: string, days: number) {
+  const day = new Date(`${date}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + days);
+  return day.toISOString().slice(0, 10);
+}
+
+// Adjacent factory dates whose events can fall within the duplicate window
+// of an HH:mm time on `date` (a punch two minutes either side of midnight).
+export function duplicateWindowDates(date: string, time: string): string[] {
+  if (time <= '00:02') return [shiftDate(date, -1)];
+  if (time >= '23:58') return [shiftDate(date, 1)];
+  return [];
+}
+
 // Active workers plus any inactive identity that has evidence on the loaded
 // day (effective events or correction history). `retained` carries identities
 // seen earlier for the same selection so a void that removed a worker's last

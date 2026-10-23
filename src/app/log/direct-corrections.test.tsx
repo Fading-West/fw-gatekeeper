@@ -280,12 +280,24 @@ describe('uncertain save on the page', () => {
       await act(async () => buttonsNamed(tree, 'Correct')[0].props.onClick({ currentTarget: null }));
       await change(tree.root.findAllByType('textarea')[0], 'Wrong person');
       await act(async () => { buttonsNamed(tree, 'Void row')[0].props.onClick(); });
+      // A hanging save can be closed; the page keeps it locked.
+      await act(async () => buttonsNamed(tree, 'Close')[0].props.onClick());
+      expect(tree.root.findAll((node) => node.props.role === 'dialog')).toHaveLength(0);
+      expect(text(tree.root)).toContain('Save may have completed:');
       // Navigate to another date while save A is still pending.
       await act(async () => tree.root.findByProps({ type: 'date' }).props.onChange({ target: { value: '2026-09-13' } }));
       expect(tree.root.findAll((node) => node.props.role === 'dialog')).toHaveLength(0);
       expect(buttonsNamed(tree, 'Correct')[0].props.disabled).toBe(true);
       expect(buttonsNamed(tree, 'Add missing punch')[0].props.disabled).toBe(true);
       expect(text(tree.root)).toContain('Open 2026-09-14 to retry the same save');
+
+      // Back on the save's date, any trigger reopens the frozen save.
+      await act(async () => tree.root.findByProps({ type: 'date' }).props.onChange({ target: { value: '2026-09-14' } }));
+      await act(async () => buttonsNamed(tree, 'Add missing punch')[0].props.onClick({ currentTarget: null }));
+      expect(tree.root.findByProps({ role: 'dialog' }).findByType('textarea').props.value).toBe('Wrong person');
+      expect(tree.root.findByProps({ role: 'dialog' }).findByType('textarea').props.disabled).toBe(true);
+      await act(async () => buttonsNamed(tree, 'Close (keep pending)')[0].props.onClick());
+      await act(async () => tree.root.findByProps({ type: 'date' }).props.onChange({ target: { value: '2026-09-13' } }));
 
       await act(async () => resolvePost({ ok: true, status: 201, json: async () => ({ id: 'c-a' }) }));
       expect(text(tree.root)).not.toContain('Save may have completed:');

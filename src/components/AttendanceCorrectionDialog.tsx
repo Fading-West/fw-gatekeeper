@@ -8,6 +8,7 @@ import { createLocalIsoTimestamp, DEFAULT_FACTORY_TIME_ZONE } from '@/lib/date';
 import {
   clearPendingDirectCorrection,
   DirectCorrectionRequest,
+  duplicateWindowDates,
   findPossibleDuplicate,
   futureCorrectionError,
   PendingDirectCorrection,
@@ -40,6 +41,8 @@ export type AttendanceCorrectionDialogProps = {
   onPendingStart: (pending: PendingDirectCorrection) => void;
   onPendingSettled: (requestId: string) => void;
   onSaved: () => void;
+  // A definitive rejection that arrives after the dialog was closed.
+  onRejectedAfterClose?: (message: string) => void;
   onClose: () => void;
   now?: () => Date;
 };
@@ -71,6 +74,7 @@ export default function AttendanceCorrectionDialog({
   onPendingStart,
   onPendingSettled,
   onSaved,
+  onRejectedAfterClose,
   onClose,
   now = () => new Date(),
 }: AttendanceCorrectionDialogProps) {
@@ -86,6 +90,8 @@ export default function AttendanceCorrectionDialog({
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<AttendanceWithWorker | null>(null);
   const submittingRef = useRef(false);
+  // Set once the dialog closes, so a pending pre-save check never posts.
+  const closedRef = useRef(false);
   const modalRef = useRef<HTMLElement | null>(null);
 
   const editable = phase === 'editing';
@@ -101,13 +107,18 @@ export default function AttendanceCorrectionDialog({
   useEffect(() => {
     const trigger = returnFocusRef?.current || (typeof document !== 'undefined' ? document.activeElement as HTMLElement | null : null);
     modalRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
-    return () => { trigger?.focus?.(); };
+    return () => {
+      closedRef.current = true;
+      trigger?.focus?.();
+    };
   // Capture the trigger once when the dialog opens.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Closing is always allowed. A request already sent stays persisted and
+  // locked by the page, so reopening shows it frozen for an identical retry.
   function close() {
-    if (phase === 'saving') return;
+    closedRef.current = true;
     onClose();
   }
 
@@ -175,7 +186,9 @@ export default function AttendanceCorrectionDialog({
           setWorkerId(lockedWorkerId || '');
         }
         setPhase('editing');
-        setError(typeof body?.error === 'string' && body.error ? body.error : 'The correction was not saved.');
+        const message = typeof body?.error === 'string' && body.error ? body.error : 'The correction was not saved.';
+        if (closedRef.current) onRejectedAfterClose?.(message);
+        setError(message);
         return;
       }
       throw new Error('server');
@@ -225,10 +238,38 @@ export default function AttendanceCorrectionDialog({
       }
       const futureProblem = futureCorrectionError(date, time, now());
       if (futureProblem) { setError(futureProblem); return; }
-      const match = findPossibleDuplicate(effectiveEvents, worker.id, eventType, correctedTimestamp);
-      if (match && !confirmedDuplicate) {
-        setDuplicate(match);
-        return;
+      if (!confirmedDuplicate) {
+        let candidates = effectiveEvents;
+        const adjacentDates = duplicateWindowDates(date, time);
+        if (adjacentDates.length) {
+          // Near midnight the duplicate window reaches the neighboring day.
+          submittingRef.current = true;
+          setPhase('saving');
+          try {
+            for (const adjacentDate of adjacentDates) {
+              const params = new URLSearchParams({ date: adjacentDate, worker_id: worker.id });
+              const response = await fetch(`/api/attendance?${params.toString()}`);
+              const rows = response.ok ? await response.json() : null;
+              if (!Array.isArray(rows)) throw new Error('adjacent day unavailable');
+              candidates = [...candidates, ...rows];
+            }
+          } catch {
+            if (!closedRef.current) {
+              setPhase('editing');
+              setError('Could not check the neighboring day for a possible duplicate. Try again.');
+            }
+            return;
+          } finally {
+            submittingRef.current = false;
+          }
+          if (closedRef.current) return;
+          setPhase('editing');
+        }
+        const match = findPossibleDuplicate(candidates, worker.id, eventType, correctedTimestamp);
+        if (match) {
+          setDuplicate(match);
+          return;
+        }
       }
       request = {
         date,
@@ -264,7 +305,7 @@ export default function AttendanceCorrectionDialog({
               Audited and reversible. The original kiosk evidence stays in the record.
             </p>
           </div>
-          <button type="button" className="btn-ghost text-xs" onClick={close} disabled={phase === 'saving'}>
+          <button type="button" className="btn-ghost text-xs" onClick={close}>
             Close
           </button>
         </div>
@@ -391,14 +432,14 @@ export default function AttendanceCorrectionDialog({
           <div role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
             <p className="font-medium">Possible duplicate</p>
             <p className="mt-1 text-amber-100/80">
-              {duplicate.worker_name || duplicate.worker_id} already has an effective {eventLabel(duplicate.event_type).toLowerCase()} at {formatFactoryTime(duplicate)}, within 2 minutes of this time. Save anyway only if both punches are real.
+              {duplicate.worker_name || duplicate.worker_id} already has an effective {eventLabel(duplicate.event_type).toLowerCase()} at {formatFactoryTime(duplicate)}{duplicate.timestamp.slice(0, 10) !== date ? ` on ${duplicate.timestamp.slice(0, 10)}` : ''}, within 2 minutes of this time. Save anyway only if both punches are real.
             </p>
           </div>
         )}
 
         <div className="mt-5 flex flex-wrap justify-end gap-3">
-          <button type="button" className="btn-secondary" onClick={close} disabled={phase === 'saving'}>
-            {phase === 'uncertain' ? 'Close (keep pending)' : 'Cancel'}
+          <button type="button" className="btn-secondary" onClick={close}>
+            {phase === 'uncertain' ? 'Close (keep pending)' : phase === 'saving' ? 'Close' : 'Cancel'}
           </button>
           {phase === 'uncertain' || (phase === 'saving' && frozen) ? (
             <button type="button" className="btn-primary" onClick={() => void submit()} disabled={phase === 'saving' || !ready}>

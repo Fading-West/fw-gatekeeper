@@ -563,6 +563,7 @@ function LogPageContent() {
             setRefreshVersion((version) => version + 1);
             toast('Attendance correction saved');
           }}
+          onRejectedAfterClose={(message) => toast(`Correction not saved: ${message}`, 'error')}
           onClose={() => setCorrectionDraft(null)}
         />
       )}
