@@ -70,6 +70,18 @@ class SupervisorAttemptLimiter:
             self._locked_until = 0.0
 
 
+def _equal_secret(provided: str, expected: str) -> bool:
+    """Constant-time compare that tolerates non-ASCII input (str compare_digest raises).
+
+    surrogatepass keeps lone surrogates from JSON (e.g. "\\ud800") encodable and
+    remains injective, so distinct strings never compare equal.
+    """
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
+
+
 def _config_or_env(config_name: str, env_name: str, default: str = "") -> str:
     configured = getattr(config, config_name, None)
     if configured is not None:
@@ -126,7 +138,7 @@ def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_
     except RuntimeError:
         return False
     candidate_pin = (provided_pin or "").strip()
-    if candidate_pin and hmac.compare_digest(candidate_pin, configured_pin):
+    if candidate_pin and _equal_secret(candidate_pin, configured_pin):
         return True
     candidate_session = (session_token or "").strip()
     if not candidate_session:
@@ -140,7 +152,7 @@ def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_
     if age_seconds < -30 or age_seconds > SUPERVISOR_SESSION_TTL_SECONDS:
         return False
     expected_signature = supervisor_session_token(configured_pin, issued_at).split(".", 1)[1]
-    return hmac.compare_digest(provided_signature, expected_signature)
+    return _equal_secret(provided_signature, expected_signature)
 
 
 def has_valid_kiosk_ui_credential(
@@ -153,11 +165,11 @@ def has_valid_kiosk_ui_credential(
         return False
 
     candidate_key = (provided_key or "").strip()
-    if candidate_key and hmac.compare_digest(candidate_key, configured_key):
+    if candidate_key and _equal_secret(candidate_key, configured_key):
         return True
 
     candidate_session = (session_token or "").strip()
     return bool(
         candidate_session
-        and hmac.compare_digest(candidate_session, kiosk_ui_session_token(configured_key))
+        and _equal_secret(candidate_session, kiosk_ui_session_token(configured_key))
     )
