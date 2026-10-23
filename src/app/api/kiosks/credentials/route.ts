@@ -7,6 +7,7 @@ import convex from '@/lib/convex';
 import { api } from '../../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 import type { Id } from '../../../../../convex/_generated/dataModel';
 
 async function adminId(req: NextRequest): Promise<string | null> {
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest) {
   const credentialHash = createHash('sha256').update(credential).digest('hex');
   try {
     const result = await convex.mutation(api.kiosks.rotateCredential, { id: id as Id<'kiosks'>, credentialHash });
+    systemHealthCache.invalidate();
     return NextResponse.json({ kiosk_id: result.kioskId, credential });
   } catch (error) {
     const known = credentialError(error);
@@ -48,6 +50,7 @@ export async function DELETE(req: NextRequest) {
   if (body.confirmStopSync !== true) return NextResponse.json({ error: 'Confirm that this kiosk will stop syncing before revoking access' }, { status: 400 });
   try {
     await convex.mutation(api.kiosks.revokeCredential, { id: id as Id<'kiosks'>, confirmStopSync: true });
+    systemHealthCache.invalidate();
     return NextResponse.json({ ok: true });
   } catch (error) {
     const known = credentialError(error);
