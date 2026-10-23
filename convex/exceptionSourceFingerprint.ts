@@ -22,6 +22,7 @@ export function buildExceptionSourceFingerprint(input: {
   attendanceEvents?: readonly AttendanceSource[];
   schedule?: ScheduleSource | null;
   recognitionAttempt?: RecognitionSource | null;
+  deactivation?: { at: string; exact: boolean; auditId?: string };
 }): string {
   const schedule = input.schedule;
   let days: number[] = [];
@@ -51,6 +52,7 @@ export function buildExceptionSourceFingerprint(input: {
       department: schedule.department?.trim().toLowerCase() || null,
       startTime: schedule.startTime, endTime: schedule.endTime,
     } : null,
+    ...(input.deactivation ? { deactivation: input.deactivation } : {}),
     recognitionAttempt: input.recognitionAttempt ? {
       id: input.recognitionAttempt.id, timestamp: input.recognitionAttempt.timestamp,
       decision: input.recognitionAttempt.decision, kioskId: input.recognitionAttempt.kioskId,

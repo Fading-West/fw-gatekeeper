@@ -684,7 +684,11 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     resolveKiosk,
     activityLogHref: getActivityLogHref,
   });
-  for (const input of inactiveWorkerScans) exceptions.push(createException(input));
+  for (const { sourceFingerprint, ...input } of inactiveWorkerScans) {
+    // Each inactive scan stands alone; a later scan does not invalidate its review.
+    recognitionFingerprints.set(input.key, sourceFingerprint);
+    exceptions.push(createException(input));
+  }
 
   const kioskNameCache = new Map<string, string | null>();
   async function resolveKioskName(kioskId?: string | null) {

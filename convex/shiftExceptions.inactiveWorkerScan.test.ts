@@ -449,7 +449,7 @@ describe("inactive worker scan review", () => {
     await removeAt(s);
     const first = await scan(s, `${DATE}T10:00:00`);
     const [a] = await inactiveScans(s);
-    await s.admin.mutation(api.shiftExceptions.review, { exceptionKey: a.key, date: DATE, type: a.type, status: "reviewed", note: "Called the kiosk lead" });
+    await s.admin.mutation(api.shiftExceptions.review, { exceptionKey: a.key, sourceFingerprint: a.source_fingerprint, date: DATE, type: a.type, status: "reviewed", note: "Called the kiosk lead" });
 
     const second = await scan(s, `${DATE}T12:00:00`, { eventType: "clock_out" });
     const flagged = await inactiveScans(s);
@@ -457,7 +457,7 @@ describe("inactive worker scan review", () => {
     expect(flagged.find((exception: any) => exception.attendance_id === second)).toMatchObject({ status: "open" });
     expect((await summary(s)).summary.critical).toBe(1);
 
-    await s.admin.mutation(api.shiftExceptions.review, { exceptionKey: a.key, date: DATE, type: a.type, status: "open" });
+    await s.admin.mutation(api.shiftExceptions.review, { exceptionKey: a.key, sourceFingerprint: a.source_fingerprint, date: DATE, type: a.type, status: "open" });
     const reopened = await inactiveScans(s);
     expect(reopened.find((exception: any) => exception.key === a.key)).toMatchObject({ status: "open", reviewed_at: null });
     expect((await summary(s)).summary.critical).toBe(2);
@@ -471,7 +471,7 @@ describe("inactive worker scan review", () => {
     const [exception] = viewerPayload.exceptions.filter((row: any) => row.type === "inactive_worker_scan");
     expect(exception).toMatchObject({ status: "open", severity: "critical" });
 
-    const args = { exceptionKey: exception.key, date: DATE, type: exception.type };
+    const args = { exceptionKey: exception.key, sourceFingerprint: exception.source_fingerprint, date: DATE, type: exception.type };
     await expect(s.viewer.mutation(api.shiftExceptions.review, { ...args, status: "reviewed" })).rejects.toThrow("Insufficient permissions");
     await expect(s.t.query(api.shiftExceptions.summary, { date: DATE })).rejects.toThrow("Unauthorized");
     await expect(s.t.mutation(api.shiftExceptions.review, { ...args, status: "reviewed" })).rejects.toThrow("Unauthorized");
@@ -507,7 +507,7 @@ describe("inactive worker scans in shift trust workflows", () => {
       .rejects.toThrow("acknowledgement note");
 
     const [exception] = await inactiveScans(s);
-    await s.enrollment.mutation(api.shiftExceptions.review, { exceptionKey: exception.key, date: DATE, type: exception.type, status: "reviewed" });
+    await s.enrollment.mutation(api.shiftExceptions.review, { exceptionKey: exception.key, sourceFingerprint: exception.source_fingerprint, date: DATE, type: exception.type, status: "reviewed" });
     const cleared = await s.enrollment.query(api.shiftCloseouts.get, { date: DATE });
     expect(cleared.summary.critical_exceptions).toBe(0);
     expect(cleared.blockers).toEqual([]);
@@ -551,5 +551,35 @@ describe("inactive worker scans in shift trust workflows", () => {
     expect(actions).toHaveLength(8);
     expect(actions.every((item: any) => item.priority === "critical" && item.href.includes("type=inactive_worker_scan"))).toBe(true);
     expect(actions[0].href).not.toContain("intent=");
+  });
+});
+
+describe("inactive scan source evidence", () => {
+  it.each(["boundary-time", "audit-identity"])("reopens a review after changed %s", async change => {
+    const s = await setup();
+    await removeAt(s);
+    await scan(s, `${DATE}T10:00:00`);
+    const [source] = await inactiveScans(s);
+    await s.admin.mutation(api.shiftExceptions.review, {
+      exceptionKey: source.key, date: DATE, type: source.type,
+      sourceFingerprint: source.source_fingerprint, status: "reviewed", note: "Confirmed access incident",
+    });
+    expect((await inactiveScans(s))[0]).toMatchObject({ status: "reviewed" });
+    await s.t.run(async ctx => {
+      const record = (await ctx.db.query("auditLog").collect()).find(row => row.action === "workers.remove")!;
+      if (change === "boundary-time") await ctx.db.patch(record._id, { createdAt: `${DATE}T13:30:00.000Z` });
+      else {
+        const { _id, _creationTime, ...fields } = record;
+        await ctx.db.delete(_id);
+        await ctx.db.insert("auditLog", fields);
+      }
+    });
+    const [updated] = await inactiveScans(s);
+    expect(updated.source_fingerprint).not.toBe(source.source_fingerprint);
+    expect(updated).toMatchObject({ status: "open", review_note: null });
+    await expect(s.admin.mutation(api.shiftExceptions.review, {
+      exceptionKey: source.key, date: DATE, type: source.type,
+      sourceFingerprint: source.source_fingerprint, status: "reviewed",
+    })).rejects.toThrow("no longer matches");
   });
 });
