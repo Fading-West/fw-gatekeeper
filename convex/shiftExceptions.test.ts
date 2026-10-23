@@ -148,28 +148,64 @@ describe("recognition review completion", () => {
     const exceptionKey = `${DATE}:recognition_review:${id}`;
     const status = async () => (await admin.query(api.shiftExceptions.summary, { date: DATE })).exceptions.find(row => row.key === exceptionKey);
     expect(await status()).toMatchObject({ status: "open" });
-    await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "open" });
+    await admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await status())!.source_fingerprint, date: DATE, type: "recognition_review", status: "open" });
     for (const label of ["confirmed", "corrected", "ignored"]) {
       vi.advanceTimersByTime(1000);
       await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: label, reviewedNote: `Reviewed ${label}` });
       expect(await status()).toMatchObject({ status: label === "ignored" ? "ignored" : "reviewed", review_note: `Reviewed ${label}` });
     }
     vi.advanceTimersByTime(1000);
-    await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "open", note: "Recheck" });
+    await admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await status())!.source_fingerprint, date: DATE, type: "recognition_review", status: "open", note: "Recheck" });
     expect(await status()).toMatchObject({ status: "open", review_note: "Recheck" });
     expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(1);
     expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(1);
     vi.advanceTimersByTime(1000);
+    // The Lab keeps its own note when none is sent, and that newer note replaces "Recheck".
     await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed" });
-    expect(await status()).toMatchObject({ status: "reviewed" });
+    expect(await status()).toMatchObject({ status: "reviewed", review_note: "Reviewed ignored" });
     expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(0);
     expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(0);
     vi.advanceTimersByTime(1000);
-    await admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status: "resolved" });
-    expect(await status()).toMatchObject({ status: "resolved" });
+    // An omitted note keeps the current, source-bound note.
+    await admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await status())!.source_fingerprint, date: DATE, type: "recognition_review", status: "resolved" });
+    expect(await status()).toMatchObject({ status: "resolved", review_note: "Reviewed ignored" });
     vi.advanceTimersByTime(1000);
     await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewed: false });
     expect(await status()).toMatchObject({ status: "open", reviewed_at: null });
+  });
+});
+
+describe("recognition review notes", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps the newest review's note when an exceptions review omits the note", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${DATE}T15:00:00Z`));
+    const admin = await seedShift();
+    const id = await admin.run(ctx => ctx.db.insert("recognitionAttempts", {
+      timestamp: `${DATE}T09:00:00`, kioskId: "entry", faceDetected: true,
+      decision: "near_miss", scoreMargin: 0.01, threshold: 0.3, reviewed: false, createdAt: `${DATE}T14:00:00Z`,
+    }));
+    const exceptionKey = `${DATE}:recognition_review:${id}`;
+    const row = async () => (await admin.query(api.shiftExceptions.summary, { date: DATE })).exceptions.find(item => item.key === exceptionKey);
+    const review = async (status: "open" | "reviewed" | "resolved", note?: string) =>
+      admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await row())!.source_fingerprint, date: DATE, type: "recognition_review", status, ...(note === undefined ? {} : { note }) });
+
+    await review("open", "Recheck");
+    expect(await row()).toMatchObject({ status: "open", review_note: "Recheck" });
+    // A newer Recognition Lab review clears its note; the old exceptions note must not come back.
+    vi.advanceTimersByTime(1000);
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed", reviewedNote: "" });
+    expect(await row()).toMatchObject({ status: "reviewed", review_note: null });
+    vi.advanceTimersByTime(1000);
+    await review("resolved");
+    expect(await row()).toMatchObject({ status: "resolved", review_note: null });
+    // Once the exceptions review is the newest, an omitted note keeps its own saved note.
+    vi.advanceTimersByTime(1000);
+    await review("open", "Second look");
+    vi.advanceTimersByTime(1000);
+    await review("reviewed");
+    expect(await row()).toMatchObject({ status: "reviewed", review_note: "Second look" });
   });
 });
 
@@ -190,7 +226,7 @@ describe("scan sequence event identity", () => {
     return { admin, sequences, ...events };
   }
 
-  it("reviews same-time scans independently and keeps keys when another scan is voided", async () => {
+  it("reviews same-time scans independently and reopens changed sequence evidence while keeping keys", async () => {
     const { admin, sequences, ids, workerId } = await seedRepeatedScans();
     const before = await sequences();
     expect(before).toHaveLength(3);
@@ -199,7 +235,7 @@ describe("scan sequence event identity", () => {
     expect(selected.suggested_resolution.source_exception_key).toBe(selected.key);
     expect(selected.links.activity_log).toContain(`attendance_id=${ids[1]}`);
     await admin.mutation(api.shiftExceptions.review, {
-      exceptionKey: selected.key, date: DATE, type: "scan_sequence", status: "ignored", note: "Reviewed this scan only",
+      exceptionKey: selected.key, sourceFingerprint: selected.source_fingerprint, date: DATE, type: "scan_sequence", status: "ignored", note: "Reviewed this scan only",
     });
     expect((await sequences()).filter(row => row.status === "ignored").map(row => row.attendance_id)).toEqual([ids[1]]);
     await admin.run(ctx => ctx.db.insert("attendanceCorrections", {
@@ -208,16 +244,19 @@ describe("scan sequence event identity", () => {
     }));
     const after = await sequences();
     expect(after).toHaveLength(2);
-    expect(after.find(row => row.attendance_id === ids[1])).toMatchObject({ key: selected.key, status: "ignored" });
+    expect(after.find(row => row.attendance_id === ids[1])).toMatchObject({ key: selected.key, status: "open", review_note: null });
     expect(after.find(row => row.attendance_id === ids[2])).toMatchObject({ status: "open" });
   });
 
   it("does not reuse ambiguous legacy reviews even after all but one same-time scan is voided", async () => {
     const { admin, sequences, ids, workerId } = await seedRepeatedScans();
     const legacyKey = `${DATE}:scan_sequence:${workerId}:${DATE}T08:00:00:clock_in`;
-    await admin.mutation(api.shiftExceptions.review, {
+    // Preserve a pre-upgrade stored disposition without allowing the current
+    // mutation to create reviews for obsolete timestamp-only source keys.
+    await admin.run(ctx => ctx.db.insert("exceptionReviews", {
       exceptionKey: legacyKey, date: DATE, type: "scan_sequence", status: "ignored",
-    });
+      updatedAt: `${DATE}T18:00:00Z`,
+    }));
     expect((await sequences()).every(row => row.status === "open")).toBe(true);
     await admin.run(async ctx => {
       for (const id of ids.slice(0, 2)) await ctx.db.insert("attendanceCorrections", {
@@ -242,7 +281,7 @@ describe("scan sequence event identity", () => {
     const keys = correctionIds.map(id => `${DATE}:scan_sequence:${workerId}:correction:${id}`);
     expect((await sequences()).filter(row => keys.includes(row.key))).toHaveLength(2);
     await admin.mutation(api.shiftExceptions.review, {
-      exceptionKey: keys[0], date: DATE, type: "scan_sequence", status: "reviewed",
+      exceptionKey: keys[0], sourceFingerprint: (await sequences()).find(row => row.key === keys[0])!.source_fingerprint, date: DATE, type: "scan_sequence", status: "reviewed",
     });
     // Same instant, different timestamp representation must not change source identity.
     await admin.run(ctx => ctx.db.patch(correctionIds[0], { correctedTimestamp: `${DATE}T14:00:00Z` }));

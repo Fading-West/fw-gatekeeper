@@ -8,10 +8,11 @@ import { FactoryDatePage } from '@/components/FactoryDatePage';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
-import { createLocalIsoTimestamp } from '@/lib/date';
+import { createLocalIsoTimestamp, formatFactoryLocalDateTime } from '@/lib/date';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 import {
   AttendanceCorrectionAction,
   ShiftException,
@@ -21,6 +22,9 @@ import {
 } from '@/lib/types';
 
 const typeLabels: Record<string, string> = {
+  ambiguous_schedule: 'Ambiguous schedule assignment',
+  unassigned_schedule: 'No matching schedule',
+  unsupported_schedule: 'Unsupported schedule',
   missing_arrival: 'Missing arrival',
   late_arrival: 'Late arrival',
   missing_clock_out: 'Still clocked in',
@@ -48,6 +52,7 @@ type CorrectionDraft = {
   suggestedCorrectedTime: string;
   originalAttendanceId: string | null;
   sourceExceptionKey: string;
+  sourceFingerprint: string;
   sourceHref: string | null;
   reason: string;
   reasonWasSuggested: boolean;
@@ -61,15 +66,7 @@ function titleCase(value: string) {
 }
 
 function formatDateTime(value: string | null) {
-  if (!value) return 'No scan';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return formatFactoryLocalDateTime(value, 'No scan');
 }
 
 function isAttendanceCorrectionAction(action: ShiftException['suggested_resolution']['action']): action is AttendanceCorrectionAction {
@@ -190,6 +187,7 @@ function ExceptionsPageContent() {
   const [status, setStatus] = useState<ShiftExceptionStatus | 'all'>(queryStatus);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [correctionDraft, setCorrectionDraft] = useState<CorrectionDraft | null>(null);
+  const [correctionSourceConflict, setCorrectionSourceConflict] = useState('');
   const [handledIntentKey, setHandledIntentKey] = useState('');
   const [savingCorrection, setSavingCorrection] = useState(false);
   const [isPending, setIsPending] = useState(false);
@@ -216,6 +214,7 @@ function ExceptionsPageContent() {
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load exceptions');
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    if (body.backend_unavailable) throw new Error(body.warning || 'Shift exception storage is waiting for deployment.');
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchExceptions } = useSelectedData(date, loadExceptions);
@@ -231,12 +230,12 @@ function ExceptionsPageContent() {
   const exceptions = payload?.exceptions ?? [];
   const departments = useMemo(() => {
     const values = exceptions.flatMap((exception) => (exception.department ? [exception.department] : []));
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [exceptions]);
+    return filterOptions(values, department);
+  }, [department, exceptions]);
   const types = useMemo(() => {
     const values = exceptions.map((exception) => exception.type);
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [exceptions]);
+    return filterOptions(values, type);
+  }, [exceptions, type]);
 
   const filtered = useMemo(() => {
     return exceptions.filter((exception) => {
@@ -254,6 +253,8 @@ function ExceptionsPageContent() {
       return;
     }
     if (!dataReady || exception.date !== date || reviewPendingRef.current || correctionPendingRef.current) return;
+    // Send the note exactly as shown. An empty draft is an explicit clear, not "keep the old note".
+    const noteDraft = noteDrafts[exception.key];
     reviewPendingRef.current = true;
     setIsPending(true);
     void (async () => {
@@ -263,14 +264,28 @@ function ExceptionsPageContent() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             exception_key: exception.key,
+            source_fingerprint: exception.source_fingerprint,
             date: exception.date,
             type: exception.type,
             status: nextStatus,
-            note: noteDrafts[exception.key] || exception.review_note || undefined,
+            note: noteDraft ?? exception.review_note ?? '',
           }),
         });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && body.code === 'EXCEPTION_SOURCE_CONFLICT') {
+          await fetchExceptions();
+          toast(body.error, 'error');
+          return;
+        }
         if (!res.ok) throw new Error(body?.error || 'Failed to update exception');
+        // Drop the draft (unless it was edited during the save) so the textarea shows the saved note
+        // from the refresh below, and later refreshes are not hidden behind a pinned copy.
+        setNoteDrafts((current) => {
+          if (!(exception.key in current) || current[exception.key] !== noteDraft) return current;
+          const next = { ...current };
+          delete next[exception.key];
+          return next;
+        });
         toast(`Exception marked ${titleCase(nextStatus)}`);
         await fetchExceptions();
       } catch (err) {
@@ -283,6 +298,7 @@ function ExceptionsPageContent() {
   }
 
   function openCorrection(exception: ShiftException) {
+    setCorrectionSourceConflict('');
     if (!dataReady || exception.date !== date || reviewPendingRef.current) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can correct attendance.', 'error');
@@ -293,7 +309,7 @@ function ExceptionsPageContent() {
       toast(resolution.disabled_reason || 'This exception does not have a one-tap correction path.', 'error');
       return;
     }
-    const existingReason = noteDrafts[exception.key] || exception.review_note || '';
+    const existingReason = (noteDrafts[exception.key] ?? exception.review_note ?? '').trim();
     correctionTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setCorrectionDraft({
       exception,
@@ -302,6 +318,7 @@ function ExceptionsPageContent() {
       suggestedCorrectedTime: resolution.corrected_time || '',
       originalAttendanceId: resolution.original_attendance_id,
       sourceExceptionKey: resolution.source_exception_key,
+      sourceFingerprint: exception.source_fingerprint,
       sourceHref: resolution.source_href,
       reason: existingReason || resolution.reason,
       reasonWasSuggested: !existingReason,
@@ -380,6 +397,7 @@ function ExceptionsPageContent() {
   }, [filtered, queryExceptionKey]);
 
   async function submitCorrection() {
+    if (correctionSourceConflict) return;
     if (!dataReady || correctionPendingRef.current || correctionDraft?.exception.date !== date) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can save attendance corrections.', 'error');
@@ -410,6 +428,7 @@ function ExceptionsPageContent() {
       corrected_timestamp: correctionDraft.action === 'void_event' ? undefined : timestampFor(date, correctionDraft.correctedTime),
       original_attendance_id: correctionDraft.action === 'void_event' ? correctionDraft.originalAttendanceId : undefined,
       related_exception_key: correctionDraft.sourceExceptionKey,
+      source_fingerprint: correctionDraft.sourceFingerprint,
       reason: correctionDraft.reason.trim(),
       supervisor_name: correctionDraft.supervisorName.trim(),
     };
@@ -423,6 +442,12 @@ function ExceptionsPageContent() {
         body: JSON.stringify({ ...request, request_id: correctionRequestId(request) }),
       });
       const body = await res.json().catch(() => ({}));
+      if (res.status === 409 && body.code === 'CORRECTION_SOURCE_CONFLICT') {
+        setCorrectionSourceConflict(body.error);
+        await fetchExceptions();
+        toast(body.error, 'error');
+        return;
+      }
       if (!res.ok) throw new Error(body?.error || 'Failed to save correction');
       acknowledgeCorrectionRequest(request);
       toast('Attendance correction saved');
@@ -483,7 +508,7 @@ function ExceptionsPageContent() {
         ].map(([label, value, tone]) => (
           <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
             <p className="text-xs text-slate-500">{label}</p>
-            <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+            <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
           </div>
         ))}
       </section>
@@ -548,7 +573,7 @@ function ExceptionsPageContent() {
 
       {loading && !payload ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading shift exceptions...</div>
-      ) : filtered.length === 0 ? (
+      ) : error ? null : filtered.length === 0 ? (
         <div className="glass-card p-8 text-center">
           <h2 className="font-display text-xl text-slate-100">No exceptions in this view</h2>
           <p className="mt-2 text-sm text-slate-400">Adjust filters or pick another date to inspect the daily breakdown sheet.</p>
@@ -613,7 +638,8 @@ function ExceptionsPageContent() {
                           {exception.links.recognition_lab && (
                             <Link href={exception.links.recognition_lab} className="text-xs text-gold hover:text-gold-light">Recognition Lab</Link>
                           )}
-                          {exception.links.kiosk && (
+                          {/* /kiosks is admin-only; the proxy sends other roles back to the dashboard. */}
+                          {exception.links.kiosk && currentRole === 'admin' && (
                             <Link href={exception.links.kiosk} className="text-xs text-gold hover:text-gold-light">Kiosks</Link>
                           )}
                         </div>
@@ -795,11 +821,16 @@ function ExceptionsPageContent() {
               />
             </label>
 
+            {correctionSourceConflict && (
+              <p role="alert" className="mt-4 text-sm text-amber-300">
+                {correctionSourceConflict} Your draft is retained below. Close it to review the refreshed source evidence.
+              </p>
+            )}
             <div className="mt-5 flex flex-wrap justify-end gap-3">
               <button type="button" className="btn-secondary" onClick={() => setCorrectionDraft(null)} disabled={savingCorrection}>
                 Cancel
               </button>
-              <button type="button" className="btn-primary" onClick={submitCorrection} disabled={savingCorrection || !correctionDraft.reason.trim()}>
+              <button type="button" className="btn-primary" onClick={submitCorrection} disabled={!dataReady || Boolean(correctionSourceConflict) || savingCorrection || !correctionDraft.reason.trim()}>
                 {savingCorrection ? 'Saving...' : 'Save correction'}
               </button>
             </div>
