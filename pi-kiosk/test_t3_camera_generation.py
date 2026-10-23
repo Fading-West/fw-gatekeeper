@@ -172,7 +172,8 @@ class CameraGenerationTests(unittest.TestCase):
             was_recently_clocked=lambda *args: False, get_last_action=lambda *args: None,
             get_attendance_action=lambda _: "clock_in",
             log_recognized_attendance=lambda **fields: writes.append(fields))
-        web = types.SimpleNamespace(start_server=lambda: None, get_health_snapshot=lambda: dict(health),
+        web = types.SimpleNamespace(start_server=lambda: None, check_server=lambda: None,
+            get_health_snapshot=lambda: dict(health),
             update_health=lambda **fields: health.update(fields), update_status=lambda **fields: statuses.append(fields),
             replace_status_if=mock.Mock(), set_frame=lambda frame: None)
 
@@ -180,7 +181,7 @@ class CameraGenerationTests(unittest.TestCase):
             raise RuntimeError('Synthetic offline mode; no network worker')
 
         namespace = {'config': settings, 'database': database, 'web_app': web, 'Camera': Camera,
-            'logger': logging.getLogger(__name__), 'os': types.SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None),
+            'logger': logging.getLogger(__name__), 'os': types.SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None, environ={}),
             'require_kiosk_api_key': offline, 'require_kiosk_ui_key': lambda: None,
             'recognition_model_ready': lambda: True, 'FaceRecognizer': lambda: recognizer,
             # PR115 moves startup behind a readiness adapter. Keep this camera

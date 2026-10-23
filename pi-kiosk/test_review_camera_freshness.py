@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 from scan_freshness import is_fresh_scan
+from kiosk_policy import require_kiosk_action_type
 
 SOURCE = ast.parse(Path(__file__).with_name("main.py").read_text())
 RUN = next(node for node in SOURCE.body if isinstance(node, ast.FunctionDef) and node.name == "_run")
@@ -16,7 +17,7 @@ class FreshnessBoundaryTests(unittest.TestCase):
     def test_slow_work_cannot_write_an_expired_scan(self):
         writer = next(node for node in RUN.body if isinstance(node, ast.FunctionDef) and node.name == "record_clock")
         policy = mock.Mock()
-        context = {"is_fresh_scan": is_fresh_scan, "time": SimpleNamespace(time=lambda: -3000.0, monotonic=lambda: 106.0),
+        context = {"require_kiosk_action_type": require_kiosk_action_type, "is_fresh_scan": is_fresh_scan, "time": SimpleNamespace(time=lambda: -3000.0, monotonic=lambda: 106.0),
                    "camera_healthy": True, "camera_generation": [0],
                    "camera_invalidated_at": [0.0], "recognizer": SimpleNamespace(liveness_policy=policy, known_count=1),
                    "config": SimpleNamespace(KIOSK_TYPE="entry"), "database": mock.Mock(),

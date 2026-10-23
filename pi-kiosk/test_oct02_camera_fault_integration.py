@@ -13,7 +13,7 @@ sys.path.insert(0, str(root / 'pi-kiosk'))
 from scan_freshness import is_fresh_scan
 source = ast.parse((root / 'pi-kiosk/main.py').read_text())
 factory = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == '_empty_recognition_result')
-run = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+run = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == '_run')
 failure_statements = [n for n in ast.walk(run) if isinstance(n, (ast.Assign, ast.Expr))
     and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
             and call.func.id == '_empty_recognition_result'

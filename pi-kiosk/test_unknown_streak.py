@@ -10,6 +10,7 @@ from unittest import mock
 import numpy as np
 import config
 from matching import FreshFaceMatcher, has_minimum_margin
+from kiosk_policy import validate_kiosk_policy, require_kiosk_action_type
 
 
 MAIN_PATH = Path(__file__).with_name("main.py")
@@ -80,9 +81,10 @@ class UnknownStreakTests(unittest.TestCase):
                                        "_log_recognition_attempt", "_write_recognition_attempt", "_now_iso"}]
         namespace = {
             "config": config, "database": database, "np": np,
+            "validate_kiosk_policy": validate_kiosk_policy, "require_kiosk_action_type": require_kiosk_action_type,
             "datetime": datetime, "timedelta": timedelta, "timezone": timezone,
             "logger": logging.getLogger(__name__), "web_app": web_app,
-            "os": mock.Mock(), "time": SimpleNamespace(time=lambda: clock, monotonic=lambda: clock, sleep=sleep),
+            "os": SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None, environ={}), "time": SimpleNamespace(time=lambda: clock, monotonic=lambda: clock, sleep=sleep),
             "threading": SimpleNamespace(Lock=mock.MagicMock, Thread=start_thread),
             "Camera": mock.Mock(return_value=SimpleNamespace(
                 start=lambda: None, capture=capture, stop=lambda: None)),

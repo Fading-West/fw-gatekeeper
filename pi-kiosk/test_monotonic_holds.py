@@ -178,7 +178,8 @@ def run_kiosk(*, step_back, blink, complete_blink=True):
             mock.patch.object(main, "embed_face", fake_embed), \
             mock.patch.object(main, "recognition_model_ready", lambda: True), \
             mock.patch.object(main.web_app, "update_status", observe_status), \
-            mock.patch.object(main.web_app, "start_server", lambda: None):
+            mock.patch.object(main.web_app, "start_server", lambda: None), \
+            mock.patch.object(main.web_app, "check_server", lambda: None):
         database._local.conn = None
         try:
             database.init_db()

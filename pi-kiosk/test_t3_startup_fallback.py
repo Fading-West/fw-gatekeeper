@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 from model_recovery import ModelRecovery
+from kiosk_policy import validate_kiosk_policy
+import config
 
 
 class ModelRecoveryTests(unittest.TestCase):
@@ -108,8 +110,11 @@ class ModelRecoveryTests(unittest.TestCase):
         recognizer = mock.Mock(known_count=1, usable_count=1, liveness_checker=None)
         web = mock.Mock()
         web.start_server.side_effect = lambda: events.append("ui")
+        settings = types.SimpleNamespace(**{name: getattr(config, name) for name in dir(config) if name.isupper()})
+        settings.LIVENESS_REQUIRED = False
+        settings.DATA_DIR = settings.FACES_DIR = settings.MODEL_DIR = "synthetic"
         namespace = {
-            "config": types.SimpleNamespace(LIVENESS_REQUIRED=False, DATA_DIR="synthetic", FACES_DIR="synthetic", MODEL_DIR="synthetic", KIOSK_PORT=5555),
+            "config": settings, "validate_kiosk_policy": validate_kiosk_policy,
             "require_kiosk_api_key": lambda: None, "require_kiosk_ui_key": lambda: None,
             "os": types.SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None),
             "database": mock.Mock(), "logger": logging.getLogger(__name__),
