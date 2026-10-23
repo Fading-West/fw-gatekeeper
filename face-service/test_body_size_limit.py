@@ -115,9 +115,13 @@ class BodySizeLimitTests(unittest.TestCase):
     def test_matching_accepts_maximum_photo_and_roster(self):
         vector = np.random.default_rng(42).normal(size=512)
         vector = (vector / np.linalg.norm(vector)).tolist()
+        # Give worker 0 a unique best match. Identical vectors can tie with
+        # tiny BLAS rounding differences, making the winning row platform-dependent.
+        distractor = [-value for value in vector]
         payload = {
             "photo": "A" * main.MAX_PHOTO_CHARACTERS,
-            "encodings": [{"worker_id": str(index).zfill(32), "encoding": vector}
+            "encodings": [{"worker_id": str(index).zfill(32),
+                           "encoding": vector if index == 0 else distractor}
                           for index in range(main.MAX_MATCH_ENCODINGS)],
         }
         self.assertGreaterEqual(main.MAX_MATCH_ENCODINGS, 1001)
