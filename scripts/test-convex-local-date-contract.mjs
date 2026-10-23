@@ -118,7 +118,7 @@ assert.match(recognitionAttempts, /buildConservativeFactoryLocalTimestampRanges/
 assert.match(recognitionAttempts, /timestampBelongsToFactoryLocalDate/, 'Recognition attempts should post-filter by factory local date.');
 assert.match(recognitionAttempts, /applyLimit:\s*false/, 'Recognition attempts should filter the widened factory-date range before applying the requested limit.');
 assert.doesNotMatch(recognitionAttempts, /conservativeLimit/, 'Recognition attempts should not pre-limit adjacent-day rows before factory-date filtering.');
-assert.match(recognitionAttempts, /listRecognitionAttemptsByFactoryDate\(ctx,\s*\{[\s\S]*date/, 'listByDate should use the factory-date reader.');
+assert.match(recognitionAttempts, /selectRecognitionAttemptsByFactoryDate\(ctx,\s*\{[\s\S]*date/, 'listByDate should use the bounded factory-date selection reader.');
 
 const shiftExceptions = read('convex/shiftExceptions.ts');
 assert.match(shiftExceptions, /listAllRecognitionAttemptsByFactoryDate\(ctx,\s*\{\s*date\s*\}\)/, 'Shift exceptions should use the uncapped recognition factory-date reader.');

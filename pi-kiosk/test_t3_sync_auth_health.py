@@ -104,6 +104,7 @@ class SyncAuthHealthTests(unittest.TestCase):
              mock.patch.object(sync.database, "count_rejected_logs", return_value=0), \
              mock.patch.object(sync.database, "count_rejected_attempts", return_value=0), \
              mock.patch.object(sync.database, "count_unsynced_recognition_attempts", return_value=0), \
+             mock.patch.object(sync.database, "count_retryable_recognition_attempts", return_value=0), \
              mock.patch.object(sync.database, "get_sync_state", return_value=None), \
              mock.patch.object(sync, "check_server", return_value=True), \
              mock.patch.object(sync, "sync_workers", return_value=True), \

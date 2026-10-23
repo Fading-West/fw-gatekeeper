@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
+import { ConvexError } from 'convex/values';
 import convex from '@/lib/convex';
 import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { unauthorizedApiResponse } from '@/lib/auth';
@@ -134,10 +135,14 @@ export async function PATCH(req: NextRequest) {
       supervisorName: supervisorName?.trim(),
       notes: body.notes?.trim(),
       acknowledgedBlockers,
+      blockerEvidence: optionalString(body.blocker_evidence ?? body.blockerEvidence),
     });
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
+    if (error instanceof ConvexError && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED'].includes(error.data?.code)) {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
     const knownError = knownApiErrorResponse(error, {
       'date must use YYYY-MM-DD format': 400,
       'Reopen the completed closeout before changing notes.': 409,

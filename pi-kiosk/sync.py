@@ -317,7 +317,6 @@ def _upload_recognition_attempts(attempts: list[dict], budget: list[int], deadli
     if budget[0] <= 0 or remaining <= 0:
         logger.warning("Recognition upload limit reached; remaining rows stay queued")
         return False
-    budget[0] -= 1
     payload_attempts = []
     synced_attempt_ids = []
     for attempt in attempts:
@@ -351,40 +350,10 @@ def _upload_recognition_attempts(attempts: list[dict], budget: list[int], deadli
         )
         synced_attempt_ids.append(int(attempt["id"]))
 
-    try:
-        r = requests.post(
-            f"{config.SERVER_URL}{config.RECOGNITION_ATTEMPTS_ENDPOINT}",
-            json={"kiosk_id": config.KIOSK_ID, "attempts": payload_attempts},
-            headers=_auth_headers(),
-            timeout=min(15, remaining),
-        )
-        sync_auth_health.observe("recognition", r.status_code)
-        if 200 <= r.status_code < 300 and _recognition_acknowledged(r, len(payload_attempts)):
-            database.mark_recognition_attempts_synced(synced_attempt_ids)
-            sync_auth_health.observe("recognition", r.status_code, validated=True)
-            logger.info("Synced %d recognition attempts to server", len(synced_attempt_ids))
-            return True
-
-        if r.status_code == 401:
-            raise KioskCredentialDenied("Recognition credential/configuration rejected; all uploads halted")
-        if _claim_mismatch(r):
-            for attempt_id in synced_attempt_ids:
-                database.reject_recognition_attempt(attempt_id, "KIOSK_CLAIM_MISMATCH: captured kiosk claim is not authorized by current credential")
-            logger.error("Quarantined %d recognition attempts with captured kiosk claim %r; review recognition_rejections.py list",
-                         len(synced_attempt_ids), payload_attempts[0]["kioskId"])
-            return True
-        logger.warning(
-            "Recognition attempt sync failed with status=%d",
-            r.status_code,
-        )
-        return False
-    except requests.RequestException as exc:
-        logger.warning("Recognition attempt sync request failed (error=%s)", type(exc).__name__)
-        return False
+    return _upload_recognition(synced_attempt_ids, payload_attempts, budget, deadline)
 
 
 def _recognition_acknowledged(response, submitted: int) -> bool:
-    # Same complete-ack contract preserved by PR107; health cannot accept less.
     try:
         acknowledgement = response.json()
     except (ValueError, requests.RequestException):
@@ -406,6 +375,71 @@ def _valid_sync_timestamp(value) -> bool:
         return False
 
 
+def _recognition_rejection_reason(response) -> Optional[str]:
+    if response.status_code != 400:
+        return None
+    try:
+        data = response.json()
+    except (ValueError, requests.RequestException):
+        return None
+    if (isinstance(data, dict) and data.get("code") in
+            {"INVALID_RECOGNITION_TIMESTAMP", "INVALID_RECOGNITION_METRIC"}
+            and isinstance(data.get("error"), str)):
+        return data["error"].strip() or "Invalid recognition evidence"
+    return None
+
+
+def _upload_recognition(attempt_ids: list[int], payload: list[dict], budget: list[int], deadline: float) -> bool:
+    remaining = deadline - time.monotonic()
+    if budget[0] <= 0 or remaining <= 0:
+        return False
+    budget[0] -= 1
+    # Deterministic local JSON failures never reach the server validator. Isolate
+    # them before HTTP so one corrupt metric cannot starve valid later evidence.
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (ValueError, TypeError):
+        return _isolate_recognition(attempt_ids, payload, budget, deadline,
+                                    "Recognition evidence cannot be encoded as finite JSON")
+    try:
+        response = requests.post(
+            f"{config.SERVER_URL}{config.RECOGNITION_ATTEMPTS_ENDPOINT}",
+            json={"kiosk_id": config.KIOSK_ID, "attempts": payload},
+            headers=_auth_headers(), timeout=min(15, remaining),
+        )
+    except requests.RequestException as exc:
+        logger.warning("Recognition sync request failed (error=%s); keeping unresolved evidence queued", type(exc).__name__)
+        return False
+    sync_auth_health.observe("recognition", response.status_code)
+    if 200 <= response.status_code < 300 and _recognition_acknowledged(response, len(payload)):
+        database.mark_recognition_attempts_synced(attempt_ids)
+        sync_auth_health.observe("recognition", response.status_code, validated=True)
+        return True
+    if response.status_code == 401:
+        raise KioskCredentialDenied("Recognition credential/configuration rejected; all uploads halted")
+    if _claim_mismatch(response):
+        for attempt_id in attempt_ids:
+            database.reject_recognition_attempt(attempt_id, "KIOSK_CLAIM_MISMATCH: captured kiosk claim is not authorized by current credential")
+        logger.error("Quarantined %d recognition attempts with captured kiosk claim %r; review recognition_rejections.py list", len(attempt_ids), payload[0]["kioskId"])
+        return True
+    reason = _recognition_rejection_reason(response)
+    if reason:
+        return _isolate_recognition(attempt_ids, payload, budget, deadline, reason)
+    logger.warning("Recognition sync not acknowledged (status=%d); keeping %d attempts queued", response.status_code, len(payload))
+    return False
+
+
+def _isolate_recognition(attempt_ids: list[int], payload: list[dict], budget: list[int],
+                         deadline: float, reason: str) -> bool:
+    if len(attempt_ids) == 1:
+        database.reject_recognition_attempt(attempt_ids[0], reason)
+        logger.error("Recognition attempt %s needs review: %s; inspect recognition_rejections.py list", attempt_ids[0], reason)
+        return True
+    midpoint = len(attempt_ids) // 2
+    return (_upload_recognition(attempt_ids[:midpoint], payload[:midpoint], budget, deadline)
+            and _upload_recognition(attempt_ids[midpoint:], payload[midpoint:], budget, deadline))
+
+
 def _health_params(health: Optional[dict]) -> dict:
     """Flatten kiosk health into sync query params the server stores per kiosk."""
     if not health:
@@ -414,7 +448,7 @@ def _health_params(health: Optional[dict]) -> dict:
     for key in ("camera_ok", "model_ok", "liveness_available"):
         if health.get(key) is not None:
             params[key] = "1" if health[key] else "0"
-    for key in ("known_workers", "queued_logs", "queued_attempts"):
+    for key in ("known_workers", "queued_logs", "queued_attempts", "rejected_attempts"):
         if health.get(key) is not None:
             params[key] = str(int(health[key]))
     for key in ("degraded_reason", "last_scan_at"):
@@ -808,7 +842,7 @@ class SyncWorker:
                 queued_logs = database.count_unsynced_logs()
                 retryable_logs = database.count_retryable_logs()
                 rejected_logs = database.count_rejected_logs()
-                queued_attempts = database.count_unsynced_recognition_attempts()
+                queued_attempts = database.count_retryable_recognition_attempts()
                 rejected_attempts = database.count_rejected_attempts()
                 self._report(queued_logs=queued_logs, retryable_logs=retryable_logs,
                              rejected_logs=rejected_logs, queued_attempts=queued_attempts,
@@ -838,7 +872,7 @@ class SyncWorker:
                         queued_logs=database.count_unsynced_logs(),
                         retryable_logs=database.count_retryable_logs(),
                         rejected_logs=database.count_rejected_logs(),
-                        queued_attempts=database.count_unsynced_recognition_attempts(),
+                        queued_attempts=database.count_retryable_recognition_attempts(),
                         rejected_attempts=database.count_rejected_attempts(),
                     )
                 else:

@@ -733,7 +733,7 @@
                 }
 
                 const rejected = (health.rejected_logs || 0) + (health.rejected_attempts || 0);
-                const queued = (health.retryable_logs || 0) + Math.max(0, (health.queued_attempts || 0) - (health.rejected_attempts || 0));
+                const queued = (health.retryable_logs || 0) + (health.queued_attempts || 0);
                 if (health.sync_auth_ok === false) {
                     const phases = (health.sync_auth_faults || []).map(phase => ({
                         roster: "worker download", roster_ack: "roster confirmation",
