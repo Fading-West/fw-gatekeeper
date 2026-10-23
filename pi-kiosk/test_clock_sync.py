@@ -137,6 +137,7 @@ class ClockHealthTests(unittest.TestCase):
              mock.patch.object(self.app, "get_clock_synchronized", return_value=False), \
              mock.patch.object(self.app.database, "get_worker_by_id", return_value=worker), \
              mock.patch.object(self.app.database, "log_attendance", return_value=123) as record, \
+             mock.patch.object(self.app.database, "get_attendance_action", return_value="clock_in"), \
              mock.patch.object(self.app, "update_status"):
             self.assertEqual(self.app.get_health_snapshot()["degraded_reason"], "clock_unsynchronized")
             self.client.set_cookie(KIOSK_SUPERVISOR_SESSION_COOKIE, supervisor_session_token())
