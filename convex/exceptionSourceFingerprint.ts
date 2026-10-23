@@ -1,3 +1,5 @@
+import { sha256 } from "@oslojs/crypto/sha2";
+
 /** Canonical evidence identity shared by corrections and exception reviews.
  * Keep v1 fields identical across branches. Review notes/status and generation
  * time are deliberately excluded, so disposition writes do not change identity.
@@ -29,7 +31,7 @@ export function buildExceptionSourceFingerprint(input: {
       if (Array.isArray(parsed)) days = [...new Set(parsed.filter((day): day is number => Number.isInteger(day)))].sort((a, b) => a - b);
     } catch { /* Invalid days select no schedule. */ }
   }
-  return JSON.stringify({
+  const canonical = JSON.stringify({
     version: 1,
     date: input.date,
     type: input.type,
@@ -59,4 +61,8 @@ export function buildExceptionSourceFingerprint(input: {
       livenessConfirmed: input.recognitionAttempt.livenessConfirmed,
     } : null,
   });
+  // The same day's evidence is attached to every derived exception. Keep the
+  // wire/storage value bounded instead of repeating all scans in each row.
+  const digest = sha256(new TextEncoder().encode(canonical));
+  return `v1:sha256:${Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("")}`;
 }

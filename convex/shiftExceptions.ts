@@ -667,12 +667,21 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     }));
   }
 
+  const attendanceFingerprints = new Map<string, string>();
   const hydrated = exceptions.map((exception) => {
-    const source_fingerprint = recognitionFingerprints.get(exception.key) ?? buildExceptionSourceFingerprint({
-      date: exception.date, type: exception.type, workerId: exception.worker_id,
-      attendanceEvents: eventsByWorker.get(exception.worker_id || "") ?? [],
-      schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
-    });
+    let source_fingerprint = recognitionFingerprints.get(exception.key);
+    if (!source_fingerprint) {
+      const sourceKey = JSON.stringify([exception.type, exception.worker_id]);
+      source_fingerprint = attendanceFingerprints.get(sourceKey);
+      if (!source_fingerprint) {
+        source_fingerprint = buildExceptionSourceFingerprint({
+          date: exception.date, type: exception.type, workerId: exception.worker_id,
+          attendanceEvents: eventsByWorker.get(exception.worker_id || "") ?? [],
+          schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
+        });
+        attendanceFingerprints.set(sourceKey, source_fingerprint);
+      }
+    }
     return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
   });
   hydrated.sort((a, b) => {

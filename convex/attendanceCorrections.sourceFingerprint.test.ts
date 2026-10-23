@@ -6,6 +6,24 @@ import schema from './schema';
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-03';
 afterEach(() => vi.useRealTimers());
+
+it('keeps repeated-scan exception evidence bounded without losing source identity', async () => {
+  const { t, actor, workerId, current, sourceFingerprint } = await setup();
+  await t.run(async ctx => {
+    for (let index = 1; index <= 120; index += 1) {
+      await ctx.db.insert('attendance', {
+        workerId, eventType: 'clock_in', timestamp: `${date}T10:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}`,
+        synced: true,
+      });
+    }
+  });
+  const result = await actor.query(api.shiftExceptions.summary, { date });
+  expect(result.exceptions.length).toBeGreaterThan(100);
+  expect(JSON.stringify(result).length).toBeLessThan(500_000);
+  const updated = await current();
+  expect(updated.source_fingerprint).not.toBe(sourceFingerprint);
+});
+
 async function setup() {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-09-04T01:00:00Z'));
