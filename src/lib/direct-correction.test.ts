@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildWorkerOptions,
+  clearPendingDirectCorrection,
+  readPendingDirectCorrection,
+  writePendingDirectCorrection,
   factoryInstantMs,
   findPossibleDuplicate,
   futureCorrectionError,
@@ -115,5 +118,16 @@ describe('worker options', () => {
   it('does not invent inactive workers without evidence and ignores inactive list rows', () => {
     const options = buildWorkerOptions([{ ...active[0], id: 'inactive-9', active: 0 }], [], []);
     expect(options.size).toBe(0);
+  });
+});
+
+describe('pending direct correction store', () => {
+  it('clears only the request that settled', () => {
+    const pending = (request_id: string) => ({ request_id, worker_label: 'W', request: { date: '2026-09-14', worker_id: 'w', action: 'void_event' as const, original_attendance_id: 'raw', reason: 'r' } });
+    writePendingDirectCorrection(pending('newer'));
+    clearPendingDirectCorrection('older');
+    expect(readPendingDirectCorrection()?.request_id).toBe('newer');
+    clearPendingDirectCorrection('newer');
+    expect(readPendingDirectCorrection()).toBeNull();
   });
 });

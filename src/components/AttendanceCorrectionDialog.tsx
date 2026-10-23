@@ -35,7 +35,10 @@ export type AttendanceCorrectionDialogProps = {
   // False when the page's loaded selection no longer matches this draft.
   ready: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
-  onPendingChange: (pending: PendingDirectCorrection | null) => void;
+  // The page owns the pending lock: it is set before every POST and cleared
+  // only for the request ID that settled.
+  onPendingStart: (pending: PendingDirectCorrection) => void;
+  onPendingSettled: (requestId: string) => void;
   onSaved: () => void;
   onClose: () => void;
   now?: () => Date;
@@ -65,7 +68,8 @@ export default function AttendanceCorrectionDialog({
   pending,
   ready,
   returnFocusRef,
-  onPendingChange,
+  onPendingStart,
+  onPendingSettled,
   onSaved,
   onClose,
   now = () => new Date(),
@@ -139,9 +143,11 @@ export default function AttendanceCorrectionDialog({
     submittingRef.current = true;
     setPhase('saving');
     setError(null);
-    // Persist before sending: if this dialog or page goes away mid-request,
-    // the outcome is unknown and only the same request may be retried.
+    // Persist and lock before sending: if this dialog or page goes away
+    // mid-request, the outcome is unknown and only the same request may be
+    // retried, so no other direct draft can start meanwhile.
     writePendingDirectCorrection(record);
+    onPendingStart(record);
     try {
       const response = await fetch('/api/attendance-corrections', {
         method: 'POST',
@@ -150,8 +156,8 @@ export default function AttendanceCorrectionDialog({
       });
       if (response.ok) {
         acknowledgeCorrectionRequest(record.request);
-        clearPendingDirectCorrection();
-        onPendingChange(null);
+        clearPendingDirectCorrection(record.request_id);
+        onPendingSettled(record.request_id);
         onSaved();
         return;
       }
@@ -160,9 +166,14 @@ export default function AttendanceCorrectionDialog({
         // A definitive rejection: nothing was saved, so the ID is released
         // and the supervisor may edit the draft.
         acknowledgeCorrectionRequest(record.request);
-        clearPendingDirectCorrection();
-        onPendingChange(null);
+        clearPendingDirectCorrection(record.request_id);
+        onPendingSettled(record.request_id);
         setFrozen(null);
+        // A reopened save may belong to a worker outside the current filter;
+        // rebind the editable draft to a worker this view can select.
+        if (record.request.action !== 'void_event' && !selectableWorkers.some((worker) => worker.id === record.request.worker_id)) {
+          setWorkerId(lockedWorkerId || '');
+        }
         setPhase('editing');
         setError(typeof body?.error === 'string' && body.error ? body.error : 'The correction was not saved.');
         return;
@@ -171,7 +182,6 @@ export default function AttendanceCorrectionDialog({
     } catch {
       setFrozen(record);
       setPhase('uncertain');
-      onPendingChange(record);
     } finally {
       submittingRef.current = false;
     }
@@ -285,6 +295,11 @@ export default function AttendanceCorrectionDialog({
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <label className="space-y-1.5">
               <span className="section-label block">Worker</span>
+              {frozen ? (
+                // The frozen request's worker, shown independently of the
+                // current worker filter and option list.
+                <input value={frozen.worker_label} readOnly className="input-field" />
+              ) : (
               <select
                 value={workerId}
                 onChange={(event) => edited(() => setWorkerId(event.target.value))}
@@ -298,6 +313,7 @@ export default function AttendanceCorrectionDialog({
                   </option>
                 ))}
               </select>
+              )}
             </label>
             <label className="space-y-1.5">
               <span className="section-label block">Punch</span>

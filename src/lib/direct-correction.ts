@@ -143,7 +143,13 @@ export function writePendingDirectCorrection(pending: PendingDirectCorrection): 
   try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending)); } catch { /* Keep the in-memory copy. */ }
 }
 
-export function clearPendingDirectCorrection(): void {
+// Pass the settled request's ID so a late response for an older request
+// never clears a newer save that is still unconfirmed.
+export function clearPendingDirectCorrection(requestId?: string): void {
+  if (requestId !== undefined) {
+    const current = readPendingDirectCorrection();
+    if (current && current.request_id !== requestId) return;
+  }
   memoryPending = null;
   try { sessionStorage.removeItem(PENDING_KEY); } catch { /* Storage may be disabled. */ }
 }

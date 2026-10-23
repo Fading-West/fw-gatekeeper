@@ -266,6 +266,36 @@ describe('worker filter and inactive retention', () => {
 });
 
 describe('uncertain save on the page', () => {
+  it('locks new drafts while a save is in flight, even after navigating away, and a late success clears only that save', async () => {
+    let resolvePost!: (value: unknown) => void;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Promise((resolve) => { resolvePost = resolve; });
+      if (url.startsWith('/api/workers')) return { ok: true, status: 200, json: async () => activeWorkers };
+      if (url.startsWith('/api/attendance-corrections')) return { ok: true, status: 200, json: async () => ({ corrections: [] }) };
+      return { ok: true, status: 200, json: async () => [{ ...raw, timestamp: url.includes('2026-09-13') ? '2026-09-13T08:00:00' : raw.timestamp }] };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const tree = await render();
+    try {
+      await act(async () => buttonsNamed(tree, 'Correct')[0].props.onClick({ currentTarget: null }));
+      await change(tree.root.findAllByType('textarea')[0], 'Wrong person');
+      await act(async () => { buttonsNamed(tree, 'Void row')[0].props.onClick(); });
+      // Navigate to another date while save A is still pending.
+      await act(async () => tree.root.findByProps({ type: 'date' }).props.onChange({ target: { value: '2026-09-13' } }));
+      expect(tree.root.findAll((node) => node.props.role === 'dialog')).toHaveLength(0);
+      expect(buttonsNamed(tree, 'Correct')[0].props.disabled).toBe(true);
+      expect(buttonsNamed(tree, 'Add missing punch')[0].props.disabled).toBe(true);
+      expect(text(tree.root)).toContain('Open 2026-09-14 to retry the same save');
+
+      await act(async () => resolvePost({ ok: true, status: 201, json: async () => ({ id: 'c-a' }) }));
+      expect(text(tree.root)).not.toContain('Save may have completed:');
+      expect(buttonsNamed(tree, 'Correct')[0].props.disabled).toBe(false);
+      expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(1);
+    } finally {
+      await act(async () => tree.unmount());
+    }
+  });
+
   it('keeps an unconfirmed save across dialog close and lets only the same request be retried', async () => {
     let posts = 0;
     const fetchMock = stubFetch({

@@ -51,7 +51,7 @@ function postBodies() {
 }
 
 async function render(props: Partial<AttendanceCorrectionDialogProps> = {}) {
-  const handlers = { onPendingChange: vi.fn(), onSaved: vi.fn(), onClose: vi.fn() };
+  const handlers = { onPendingStart: vi.fn(), onPendingSettled: vi.fn(), onSaved: vi.fn(), onClose: vi.fn() };
   let tree!: ReactTestRenderer;
   await act(async () => {
     tree = create(
@@ -189,14 +189,16 @@ describe('uncertain save recovery', () => {
       if (attempts === 1) return firstAttempt();
       return { ok: true, status: 201, json: async () => ({ id: 'correction-1' }) };
     }));
-    const { tree, onSaved, onPendingChange } = await render();
+    const { tree, onSaved, onPendingStart, onPendingSettled } = await render();
     await fillVoid(tree);
 
     expect(alerts(tree).join(' ')).toContain('Save may have completed');
+    expect(onPendingSettled).not.toHaveBeenCalled();
     expect(tree.root.findByType('textarea').props.disabled).toBe(true);
     expect(tree.root.findAllByType('input').filter((input) => !input.props.readOnly).every((input) => input.props.disabled)).toBe(true);
     expect(hasButton(tree, 'Void row')).toBe(false);
-    expect(onPendingChange).toHaveBeenLastCalledWith(expect.objectContaining({ request_id: postBodies()[0].request_id }));
+    // The page lock is taken before the request is sent.
+    expect(onPendingStart).toHaveBeenCalledWith(expect.objectContaining({ request_id: postBodies()[0].request_id }));
     // Edits are ignored while the outcome is unknown.
     await change(tree.root.findByType('textarea'), 'Edited');
     expect(tree.root.findByType('textarea').props.value).toBe('Duplicate badge');
@@ -205,7 +207,7 @@ describe('uncertain save recovery', () => {
     const [first, second] = postBodies();
     expect(second).toEqual(first);
     expect(onSaved).toHaveBeenCalledTimes(1);
-    expect(onPendingChange).toHaveBeenLastCalledWith(null);
+    expect(onPendingSettled).toHaveBeenCalledWith(first.request_id);
     expect(readPendingDirectCorrection()).toBeNull();
   });
 
@@ -241,12 +243,12 @@ describe('uncertain save recovery', () => {
       if (attempts === 1) throw new Error('offline');
       return { ok: false, status: 409, json: async () => ({ error: 'This attendance event already has an active void; reverse that correction before voiding it again' }) };
     }));
-    const { tree, onSaved, onPendingChange } = await render();
+    const { tree, onSaved, onPendingSettled } = await render();
     await fillVoid(tree);
     await act(async () => button(tree, 'Retry same save').props.onClick());
     expect(alerts(tree)).toEqual(['This attendance event already has an active void; reverse that correction before voiding it again']);
     expect(onSaved).not.toHaveBeenCalled();
-    expect(onPendingChange).toHaveBeenLastCalledWith(null);
+    expect(onPendingSettled).toHaveBeenCalledWith(postBodies()[0].request_id);
     expect(tree.root.findByType('textarea').props.disabled).toBe(false);
     expect(readPendingDirectCorrection()).toBeNull();
 
@@ -255,6 +257,33 @@ describe('uncertain save recovery', () => {
     const bodies = postBodies();
     expect(bodies).toHaveLength(3);
     expect(bodies[2].request_id).not.toBe(bodies[0].request_id);
+  });
+
+  it('shows a reopened add for another worker read-only, then rebinds to the filter after a 4xx', async () => {
+    const pending = {
+      request: { date: '2026-09-14', worker_id: 'worker-1', action: 'add_clock_out' as const, corrected_timestamp: '2026-09-14T16:00:00', reason: 'Forgot to clock out' },
+      request_id: 'pending-a', worker_label: 'Worker One · Assembly',
+    };
+    let attempts = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? { ok: false, status: 400, json: async () => ({ error: 'Worker not found.' }) }
+        : { ok: true, status: 201, json: async () => ({}) };
+    }));
+    // Reopened under ?worker_id=worker-2.
+    const { tree } = await render({ mode: 'add', sourceEvent: null, lockedWorkerId: 'worker-2', effectiveEvents: [], pending });
+    expect(tree.root.findAllByType('input').find((input) => input.props.value === 'Worker One · Assembly')?.props.readOnly).toBe(true);
+    await act(async () => button(tree, 'Retry same save').props.onClick());
+    expect(postBodies()[0]).toMatchObject({ worker_id: 'worker-1', request_id: 'pending-a' });
+    expect(alerts(tree)).toEqual(['Worker not found.']);
+
+    const [worker] = tree.root.findAllByType('select');
+    expect(worker.props.value).toBe('worker-2');
+    expect(worker.findAllByType('option').map((option) => option.props.value)).toEqual(['worker-2']);
+    await act(async () => button(tree, 'Add punch').props.onClick());
+    expect(postBodies()[1]).toMatchObject({ worker_id: 'worker-2', corrected_timestamp: '2026-09-14T16:00:00' });
+    expect(postBodies()[1].request_id).not.toBe('pending-a');
   });
 
   it('does not double-submit while a save is in flight', async () => {
@@ -303,7 +332,7 @@ describe('accessible modal', () => {
         <AttendanceCorrectionDialog
           date="2026-09-14" mode="void" sourceEvent={rawScan} effectiveEvents={[]} ready now={now}
           returnFocusRef={{ current: trigger as unknown as HTMLElement }}
-          onPendingChange={vi.fn()} onSaved={vi.fn()} onClose={onClose}
+          onPendingStart={vi.fn()} onPendingSettled={vi.fn()} onSaved={vi.fn()} onClose={onClose}
         />,
         { createNodeMock: (element) => element.type === 'section' ? section : null },
       );

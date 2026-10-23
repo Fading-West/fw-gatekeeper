@@ -32,6 +32,7 @@ function correctionTimestamp(correction: AttendanceCorrection) {
 }
 
 type DirectCorrectionDraft = {
+  id: number;
   mode: 'void' | 'add';
   event?: AttendanceWithWorker;
   pending?: PendingDirectCorrection;
@@ -71,6 +72,7 @@ function LogPageContent() {
   const [workerListVersion, setWorkerListVersion] = useState(0);
   const [retainedWorkers, setRetainedWorkers] = useState<{ key: string; options: Map<string, WorkerOption> }>({ key: '', options: new Map() });
   const correctionTriggerRef = useRef<HTMLElement | null>(null);
+  const draftIdRef = useRef(0);
   const reversalFormRef = useRef<HTMLDivElement | null>(null);
   const selectionKey = `${date}|${queryWorkerId}|${refreshVersion}`;
   const draftKey = `${date}|${queryWorkerId}`;
@@ -153,7 +155,7 @@ function LogPageContent() {
   else if (workerOptions.length === 0) addDisabledReason = 'No selectable workers for this date.';
   const rowCorrectionsReady = correctionsReady && !pendingElsewhere;
 
-  function openCorrection(trigger: HTMLElement | null, draft: Omit<DirectCorrectionDraft, 'selection'>) {
+  function openCorrection(trigger: HTMLElement | null, draft: Omit<DirectCorrectionDraft, 'selection' | 'id'>) {
     if (!canCorrect || !rowCorrectionsReady || reversing) return;
     correctionTriggerRef.current = trigger;
     setReversalDraft(null);
@@ -161,10 +163,10 @@ function LogPageContent() {
     const pending = pendingCorrection && pendingCorrection.request.date === date ? pendingCorrection : undefined;
     if (pending) {
       const sourceEvent = events.find((event) => event.id === pending.request.original_attendance_id);
-      setCorrectionDraft({ mode: pending.request.action === 'void_event' ? 'void' : 'add', event: sourceEvent, pending, selection: draftKey });
+      setCorrectionDraft({ id: ++draftIdRef.current, mode: pending.request.action === 'void_event' ? 'void' : 'add', event: sourceEvent, pending, selection: draftKey });
       return;
     }
-    setCorrectionDraft({ ...draft, selection: draftKey });
+    setCorrectionDraft({ ...draft, id: ++draftIdRef.current, selection: draftKey });
   }
 
   function openReversalFor(event: AttendanceWithWorker) {
@@ -413,7 +415,7 @@ function LogPageContent() {
 
       {newDay && <FactoryDayNotice date={date} today={today} />}
 
-      {canCorrect && pendingCorrection && (
+      {canCorrect && pendingCorrection && !visibleCorrectionDraft && (
         <div role="alert" className="mb-6 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
           <span className="font-medium">Save may have completed:</span> {correctionLabel(pendingCorrection.request.action)} for {pendingCorrection.worker_label} on {pendingCorrection.request.date}.
           {pendingElsewhere ? (
@@ -542,7 +544,7 @@ function LogPageContent() {
 
       {canCorrect && visibleCorrectionDraft && (
         <AttendanceCorrectionDialog
-          key={`${visibleCorrectionDraft.mode}|${visibleCorrectionDraft.event?.id || ''}|${visibleCorrectionDraft.pending?.request_id || ''}`}
+          key={visibleCorrectionDraft.id}
           date={date}
           mode={visibleCorrectionDraft.mode}
           sourceEvent={visibleCorrectionDraft.event}
@@ -552,9 +554,12 @@ function LogPageContent() {
           pending={visibleCorrectionDraft.pending}
           ready={correctionsReady}
           returnFocusRef={correctionTriggerRef}
-          onPendingChange={setPendingCorrection}
+          onPendingStart={setPendingCorrection}
+          onPendingSettled={(requestId) => setPendingCorrection((current) => current?.request_id === requestId ? null : current)}
           onSaved={() => {
-            setCorrectionDraft(null);
+            // A late success from an earlier dialog must not close a newer draft.
+            const draftId = visibleCorrectionDraft.id;
+            setCorrectionDraft((current) => current?.id === draftId ? null : current);
             setRefreshVersion((version) => version + 1);
             toast('Attendance correction saved');
           }}
