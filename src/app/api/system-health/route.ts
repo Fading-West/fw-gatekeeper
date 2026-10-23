@@ -7,6 +7,7 @@ import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { KIOSK_DEGRADED_REASON_LABELS } from '@/lib/kiosk-health-labels';
+import { createAttendanceClock } from '@/lib/attendance-time';
 import { getKioskDegradedReasons } from '@/lib/kiosk-health-reasons';
 import { systemHealthCache } from '@/lib/system-health-cache';
 
@@ -101,20 +102,20 @@ function getDeviceIssues(health: KioskDeviceHealth | null): string[] {
   return issues;
 }
 
-function latestTimestamp(records: Array<{ timestamp?: string }>) {
-  let latest: string | null = null;
-  let latestMs = -Infinity;
+function latestTimestamp(records: Array<{ timestamp: string; timestamp_utc?: string | null }>) {
+  const clock = createAttendanceClock();
+  let latest: (typeof records)[number] | null = null;
 
   for (const record of records) {
     if (!record.timestamp) continue;
-    const ms = new Date(record.timestamp).getTime();
-    if (Number.isFinite(ms) && ms > latestMs) {
-      latestMs = ms;
-      latest = record.timestamp;
+    if (Number.isFinite(clock.instantMs(record)) && (!latest || clock.compare(record, latest) > 0)) {
+      latest = record;
     }
   }
 
-  return latest;
+  // Upload ages need an instant, including the recorded occurrence of a
+  // repeated fall-back hour. Never expose factory wall time as an instant.
+  return latest ? new Date(clock.instantMs(latest)).toISOString() : null;
 }
 
 function normalizeIdentifier(value: unknown) {

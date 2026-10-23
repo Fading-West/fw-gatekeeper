@@ -8,7 +8,8 @@ import {
   timestampBelongsToFactoryLocalDate,
 } from "./localDate";
 import { assertPortalRole } from "./access";
-import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { writeAuditLog } from "./audit";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
 const attemptInput = v.object({
   timestamp: v.string(),
@@ -95,6 +96,15 @@ function serializeAttempt(attempt: any) {
   };
 }
 
+function withFactoryLocalDisplayTimestamp(attempt: any, timestampKey = createRecognitionTimestampSortKey()) {
+  const key = timestampKey(attempt.timestamp);
+  return {
+    ...attempt,
+    timestamp: getRecognitionDisplayTimestamp(attempt.timestamp) || attempt.timestamp,
+    timestamp_utc: key ? `${key}Z`.replace(".Z", "Z") : null,
+  };
+}
+
 function normalizeAttempt(attempt: {
   timestamp: string;
   kioskId: string;
@@ -174,7 +184,7 @@ function sameEvidence(
   return evidenceFields.every(field => existing[field] === incoming[field]);
 }
 
-async function listRangeInternal(
+function recognitionRangeQuery(
   ctx: any,
   args: {
     startTimestamp: string;
@@ -183,10 +193,8 @@ async function listRangeInternal(
     reviewed?: boolean;
     limit?: number;
   },
-  options: { applyLimit?: boolean } = {},
 ) {
   const kioskId = normalizeOptionalText(args.kioskId);
-  const limit = clampLimit(args.limit);
   const start = args.startTimestamp;
   const end = args.endTimestamp;
 
@@ -215,9 +223,18 @@ async function listRangeInternal(
       .withIndex("by_timestamp", (q: any) => q.gte("timestamp", start).lt("timestamp", end));
   }
 
+  return builder.order("desc");
+}
+
+async function listRangeInternal(
+  ctx: any,
+  args: { startTimestamp: string; endTimestamp: string; kioskId?: string; reviewed?: boolean; limit?: number },
+  options: { applyLimit?: boolean } = {},
+) {
+  const builder = recognitionRangeQuery(ctx, args);
   const attempts = options.applyLimit === false
-    ? await builder.order("desc").collect()
-    : await builder.order("desc").take(limit);
+    ? await builder.collect()
+    : await builder.take(clampLimit(args.limit));
   return attempts.map(serializeAttempt);
 }
 
@@ -233,10 +250,49 @@ export async function listRecognitionAttemptsByFactoryDate(
     reviewStatus?: string;
   },
 ) {
-  const rows = await listAllRecognitionAttemptsByFactoryDate(ctx, args);
+  return (await selectRecognitionAttemptsByFactoryDate(ctx, args)).attempts;
+}
+
+// Scan windows follow the raw timestamp index, including its tie breakers.
+// Sorting happens only within a window: mixed timestamp representations cannot
+// support a chronological cursor without normalizing stored evidence first.
+const SELECTION_READ_LIMIT = 1000;
+const SELECTION_BYTE_LIMIT = 4 * 1024 * 1024;
+
+async function selectRecognitionAttemptsByFactoryDate(
+  ctx: any,
+  args: {
+    date: string;
+    kioskId?: string;
+    reviewed?: boolean;
+    limit?: number;
+    decision?: string;
+    confidenceBand?: string;
+    reviewStatus?: string;
+    scanCursor?: string;
+  },
+) {
+  // The conservative range is one continuous index interval. Use Convex's
+  // cursor rather than a timestamp boundary so equal timestamps are not lost.
+  const [range] = buildConservativeFactoryLocalTimestampRanges(args.date);
+  const page = await recognitionRangeQuery(ctx, { ...args, ...range }).paginate({
+    cursor: args.scanCursor ?? null,
+    numItems: SELECTION_READ_LIMIT,
+    maximumRowsRead: SELECTION_READ_LIMIT + 1,
+    maximumBytesRead: SELECTION_BYTE_LIMIT,
+  });
+  const summaryLimited = Boolean(args.scanCursor) || !page.isDone;
+  const rows: ReturnType<typeof serializeAttempt>[] = page.page.map(serializeAttempt).filter((row: any) =>
+    timestampBelongsToFactoryLocalDate(row.timestamp, args.date));
+  const timestampKey = createRecognitionTimestampSortKey();
+  rows.sort((a: any, b: any) => {
+    const aKey = timestampKey(a.timestamp);
+    const bKey = timestampKey(b.timestamp);
+    return aKey === bKey ? String(a.id).localeCompare(String(b.id)) : aKey < bKey ? 1 : -1;
+  });
   const limit = clampLimit(args.limit);
-  // Apply portal filters to the full date selection before imposing the display
-  // cap. Otherwise newer nonmatching scans hide older matching evidence.
+  // Apply portal filters to the bounded selection before imposing the display
+  // cap. Matches beyond the read bound are explicitly reported as incomplete.
   const matches = rows.filter((row) => {
     const decision = args.decision;
     const decisionMatches = !decision || decision === "all" || row.decision === decision ||
@@ -251,7 +307,42 @@ export async function listRecognitionAttemptsByFactoryDate(
     const reviewMatches = !args.reviewStatus || args.reviewStatus === "all" || reviewStatus === args.reviewStatus;
     return decisionMatches && confidenceMatches && reviewMatches;
   });
-  return matches.slice(0, limit);
+  // Normalize only after filtering and sorting the original evidence instants.
+  const scores = matches.flatMap(row => typeof row.best_score === "number" ? [row.best_score] : []).sort((a, b) => a - b);
+  const midpoint = Math.floor(scores.length / 2);
+  const decisionFilter = args.decision;
+  const allowsDecision = (matchesCategory: (decision: string) => boolean) =>
+    !decisionFilter || decisionFilter === "all" || matchesCategory(decisionFilter);
+  // A filter can prove a category empty even if other indexed rows are unread.
+  const possibleCounts = {
+    accepted: allowsDecision(decision => decision.startsWith("accepted")),
+    rejected: allowsDecision(decision => decision.startsWith("rejected")),
+    unknown: allowsDecision(decision => decision === "unknown"),
+    near_miss: allowsDecision(decision => decision === "near_miss"),
+    low_margin_accepted: allowsDecision(decision => decision.startsWith("accepted")),
+    review_backlog: !args.reviewStatus || args.reviewStatus === "all" || args.reviewStatus === "unreviewed",
+    total: true,
+  };
+  const summaryLimitedFields = summaryLimited
+    ? Object.entries(possibleCounts).filter(([, possible]) => possible).map(([field]) => field)
+    : [];
+  return {
+    attempts: matches.slice(0, limit).map(row => withFactoryLocalDisplayTimestamp(row, timestampKey)),
+    summary: {
+      accepted: matches.filter(row => row.decision.startsWith("accepted")).length,
+      rejected: matches.filter(row => row.decision.startsWith("rejected")).length,
+      unknown: matches.filter(row => row.decision === "unknown").length,
+      near_miss: matches.filter(row => row.decision === "near_miss").length,
+      low_margin_accepted: matches.filter(row => row.decision.startsWith("accepted") && typeof row.score_margin === "number" && row.score_margin <= 0.08).length,
+      median_score: summaryLimited || !scores.length ? null : scores.length % 2 ? scores[midpoint] : (scores[midpoint - 1] + scores[midpoint]) / 2,
+      review_backlog: matches.filter(row => !row.reviewed || (row.reviewed_label != null && !["confirmed", "corrected", "ignored"].includes(row.reviewed_label))).length,
+      total: matches.length,
+    },
+    truncated: summaryLimited || matches.length > limit,
+    summary_limited: summaryLimited,
+    summary_limited_fields: summaryLimitedFields,
+    next_scan_cursor: page.isDone ? null : page.continueCursor,
+  };
 }
 
 export async function listAllRecognitionAttemptsByFactoryDate(
@@ -409,37 +500,55 @@ export const listByDate = query({
     decision: v.optional(v.string()),
     confidenceBand: v.optional(v.string()),
     reviewStatus: v.optional(v.string()),
+    scanCursor: v.optional(v.string()),
   },
-  returns: v.array(v.object({
-    id: v.id("recognitionAttempts"),
-    timestamp: v.string(),
-    kiosk_id: v.string(),
-    source_attempt_id: v.union(v.string(), v.null()),
-    face_detected: v.number(),
-    candidate_worker_id: v.union(v.string(), v.null()),
-    candidate_worker_name: v.union(v.string(), v.null()),
-    best_score: v.union(v.number(), v.null()),
-    second_best_score: v.union(v.number(), v.null()),
-    score_margin: v.union(v.number(), v.null()),
-    decision: v.string(),
-    threshold: v.number(),
-    liveness_confirmed: v.union(v.number(), v.null()),
-    model_version: v.union(v.string(), v.null()),
-    image_quality: v.union(v.number(), v.null()),
-    face_quality: v.union(v.number(), v.null()),
-    brightness: v.union(v.number(), v.null()),
-    blur: v.union(v.number(), v.null()),
-    reviewed: v.number(),
-    reviewed_label: v.union(v.string(), v.null()),
-    reviewed_note: v.union(v.string(), v.null()),
-    reviewed_at: v.union(v.string(), v.null()),
-    created_at: v.string(),
-    updated_at: v.union(v.string(), v.null()),
-  })),
+  returns: v.object({
+    attempts: v.array(v.object({
+      id: v.id("recognitionAttempts"),
+      timestamp: v.string(),
+      timestamp_utc: v.union(v.string(), v.null()),
+      kiosk_id: v.string(),
+      source_attempt_id: v.union(v.string(), v.null()),
+      face_detected: v.number(),
+      candidate_worker_id: v.union(v.string(), v.null()),
+      candidate_worker_name: v.union(v.string(), v.null()),
+      best_score: v.union(v.number(), v.null()),
+      second_best_score: v.union(v.number(), v.null()),
+      score_margin: v.union(v.number(), v.null()),
+      decision: v.string(),
+      threshold: v.number(),
+      liveness_confirmed: v.union(v.number(), v.null()),
+      model_version: v.union(v.string(), v.null()),
+      image_quality: v.union(v.number(), v.null()),
+      face_quality: v.union(v.number(), v.null()),
+      brightness: v.union(v.number(), v.null()),
+      blur: v.union(v.number(), v.null()),
+      reviewed: v.number(),
+      reviewed_label: v.union(v.string(), v.null()),
+      reviewed_note: v.union(v.string(), v.null()),
+      reviewed_at: v.union(v.string(), v.null()),
+      created_at: v.string(),
+      updated_at: v.union(v.string(), v.null()),
+    })),
+    summary: v.object({
+      accepted: v.number(),
+      rejected: v.number(),
+      unknown: v.number(),
+      near_miss: v.number(),
+      low_margin_accepted: v.number(),
+      median_score: v.union(v.number(), v.null()),
+      review_backlog: v.number(),
+      total: v.number(),
+    }),
+    truncated: v.boolean(),
+    summary_limited: v.boolean(),
+    summary_limited_fields: v.array(v.string()),
+    next_scan_cursor: v.union(v.string(), v.null()),
+  }),
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
     const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
-    return await listRecognitionAttemptsByFactoryDate(ctx, {
+    return await selectRecognitionAttemptsByFactoryDate(ctx, {
       date,
       kioskId: args.kioskId,
       reviewed: args.reviewed,
@@ -447,6 +556,7 @@ export const listByDate = query({
       decision: args.decision,
       confidenceBand: args.confidenceBand,
       reviewStatus: args.reviewStatus,
+      scanCursor: args.scanCursor,
     });
   },
 });
@@ -463,7 +573,7 @@ export const getById = query({
     if (args.date && !timestampBelongsToFactoryLocalDate(attempt.timestamp, args.date)) {
       return null;
     }
-    return serializeAttempt(attempt);
+    return withFactoryLocalDisplayTimestamp(serializeAttempt(attempt));
   },
 });
 
@@ -477,8 +587,21 @@ export const updateReview = mutation({
     reviewedNote: v.optional(v.string()),
     reviewedAt: v.optional(v.string()),
   },
+  returns: v.union(v.null(), v.object({
+    id: v.id("recognitionAttempts"), timestamp: v.string(), timestamp_utc: v.optional(v.union(v.string(), v.null())), kiosk_id: v.string(),
+    source_attempt_id: v.union(v.string(), v.null()), face_detected: v.number(),
+    candidate_worker_id: v.union(v.string(), v.null()), candidate_worker_name: v.union(v.string(), v.null()),
+    best_score: v.union(v.number(), v.null()), second_best_score: v.union(v.number(), v.null()),
+    score_margin: v.union(v.number(), v.null()), decision: v.string(), threshold: v.number(),
+    liveness_confirmed: v.union(v.number(), v.null()), model_version: v.union(v.string(), v.null()),
+    image_quality: v.union(v.number(), v.null()), face_quality: v.union(v.number(), v.null()),
+    brightness: v.union(v.number(), v.null()), blur: v.union(v.number(), v.null()),
+    reviewed: v.number(), reviewed_label: v.union(v.string(), v.null()),
+    reviewed_note: v.union(v.string(), v.null()), reviewed_at: v.union(v.string(), v.null()),
+    created_at: v.string(), updated_at: v.union(v.string(), v.null()),
+  })),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const existing = await ctx.db.get(args.id);
     if (!existing) {
       throw new Error("Recognition attempt not found");
@@ -504,8 +627,15 @@ export const updateReview = mutation({
     updates.reviewedAt = reviewed ? normalizeOptionalText(args.reviewedAt) || existing.reviewedAt || now : undefined;
 
     await ctx.db.patch(args.id, updates);
+    await writeAuditLog(ctx, {
+      actorUserId: actor.userId, action: "recognition.review", targetTable: "recognitionAttempts",
+      targetId: args.id,
+      details: JSON.stringify({ before: { updatedAt: existing.updatedAt ?? null, reviewedAt: existing.reviewedAt ?? null, reviewed: existing.reviewed, label: existing.reviewedLabel ?? null, note: existing.reviewedNote ?? null },
+        after: { updatedAt: now, reviewedAt: updates.reviewedAt ?? null, reviewed, label: args.reviewedLabel === undefined ? existing.reviewedLabel ?? null : updates.reviewedLabel ?? null,
+          note: args.reviewedNote === undefined ? existing.reviewedNote ?? null : updates.reviewedNote ?? null } }),
+    });
 
     const updated = await ctx.db.get(args.id);
-    return updated ? serializeAttempt(updated) : null;
+    return updated ? withFactoryLocalDisplayTimestamp(serializeAttempt(updated)) : null;
   },
 });

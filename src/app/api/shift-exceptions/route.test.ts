@@ -4,6 +4,7 @@ import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
 import schema from '../../../../convex/schema';
+import { api } from '../../../../convex/_generated/api';
 import convex from '@/lib/convex';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { PATCH } from './route';
@@ -12,7 +13,6 @@ vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn(), query: vi.fn() } 
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
 const modules = import.meta.glob('../../../../convex/**/*.ts');
 const date = '2026-09-10';
-const exceptionKey = `${date}:missing_arrival:worker`;
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(hasValidPortalSession).mockResolvedValue(true);
@@ -20,15 +20,17 @@ beforeEach(() => {
 
 async function setup() {
   const t = convexTest(schema, modules);
-  const { userId, id } = await t.run(async ctx => {
+  const userId = await t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'exceptions@example.test' });
     await ctx.db.insert('portalMembers', { userId, role: 'enrollment', active: true, createdAt: date });
-    const id = await ctx.db.insert('exceptionReviews', {
-      exceptionKey, date, type: 'missing_arrival', status: 'open', note: 'Existing note', updatedAt: date,
-    });
-    return { userId, id };
+    await ctx.db.insert('workers', { name: 'Worker', department: 'Operations', active: true, enrolledAt: date });
+    await ctx.db.insert('schedules', { name: 'Day', days: '[1,2,3,4,5]', startTime: '08:00', endTime: '17:00', active: true, createdAt: date });
+    return userId;
   });
   const actor = t.withIdentity({ subject: userId });
+  const source = (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.type === 'missing_arrival')!;
+  const exceptionKey = source.key;
+  const id = await t.run(ctx => ctx.db.insert('exceptionReviews', { exceptionKey, date, type: source.type, sourceFingerprint: source.source_fingerprint, status: 'open', note: 'Existing note', updatedAt: date }));
   // Match Convex HTTP serialization: undefined fields disappear on the wire.
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
@@ -37,7 +39,7 @@ async function setup() {
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-exceptions', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ exception_key: exceptionKey, date, type: 'missing_arrival', status: 'reviewed', ...fields }),
+    body: JSON.stringify({ exception_key: exceptionKey, source_fingerprint: source.source_fingerprint, date, type: 'missing_arrival', status: 'reviewed', ...fields }),
   }));
   return { t, id, patch };
 }

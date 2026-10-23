@@ -31,6 +31,8 @@ async function setup(blocked = false) {
     return { userId, id };
   });
   const actor = t.withIdentity({ subject: userId });
+  const evidence = (await actor.query(api.shiftCloseouts.get, { date })).blocker_evidence;
+  await t.run(ctx => ctx.db.patch(id, { acknowledgedBlockerEvidence: evidence }));
   // Match Convex HTTP serialization: undefined fields disappear on the wire.
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
@@ -38,7 +40,7 @@ async function setup(blocked = false) {
     return actor.mutation(ref as typeof api.shiftCloseouts.save, JSON.parse(JSON.stringify(args)));
   });
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
-    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, ...fields }),
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, blocker_evidence: evidence, ...fields }),
   }));
   return { t, id, patch };
 }
@@ -71,7 +73,7 @@ it('uses an explicit snake-case clear instead of falling back to a camelCase val
 it('passes an explicit note clear to blocker validation instead of silently keeping old notes', async () => {
   const { t, id, patch } = await setup(true);
   const response = await patch({ action: 'complete', notes: '', acknowledged_blockers: true });
-  expect(response.status).toBe(400);
+  expect(response.status).toBe(409);
   expect((await response.json()).error).toContain('acknowledgement note');
   expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ status: 'open', notes: 'Existing notes' });
 });

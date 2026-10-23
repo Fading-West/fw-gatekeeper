@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 const mocks = vi.hoisted(() => ({ ingest: vi.fn() }));
 vi.mock('@/lib/convex-ingest', async (original) => ({ ...await original<typeof import('@/lib/convex-ingest')>(), ingestRecognitionAttemptBatch: mocks.ingest }));
-vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: async () => ({ kioskId: 'synthetic' }), kioskClaims: () => [], kioskEvidenceId: () => 'synthetic' }));
+vi.mock('@/lib/kiosk-device-auth', async (original) => ({ ...await original<typeof import('@/lib/kiosk-device-auth')>(), authenticateKiosk: async () => ({ kioskId: 'synthetic' }), kioskClaims: () => [], kioskEvidenceId: () => 'synthetic' }));
 import { SecuredIngestError } from '@/lib/convex-ingest';
 import { POST } from './route';
 it.each(['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'])('preserves permanent validation code %s through the Next API', async code => {
