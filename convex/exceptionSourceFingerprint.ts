@@ -36,7 +36,7 @@ export function buildExceptionSourceFingerprint(input: {
     date: input.date,
     type: input.type,
     workerId: input.workerId,
-    // Bind to the complete effective day: earlier scans affect sequence evidence.
+    // Bind to the complete effective pairing window, including adjacent dates.
     // Sort by ID for deterministic identity independent of query enumeration.
     attendanceEvents: [...(input.attendanceEvents ?? [])].map(event => ({
       id: String(event._id),

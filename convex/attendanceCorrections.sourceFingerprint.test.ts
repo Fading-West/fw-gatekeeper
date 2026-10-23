@@ -79,3 +79,13 @@ it('refuses a first source-linked commit without a fingerprint, but replays a le
   }));
   expect(await actor.mutation(api.attendanceCorrections.create, request)).toEqual({ id, createdAt: date });
 });
+
+it('invalidates a draft when next-day pairing evidence changes', async () => {
+  const { t, actor, workerId, current, sourceFingerprint } = await setup();
+  await t.run(ctx => ctx.db.insert('attendance', {
+    workerId, eventType: 'clock_in', timestamp: '2026-09-04T04:00:00', synced: true,
+  }));
+  const updated = await current();
+  expect(updated).toBeDefined();
+  expect(updated.source_fingerprint).not.toBe(sourceFingerprint);
+});
