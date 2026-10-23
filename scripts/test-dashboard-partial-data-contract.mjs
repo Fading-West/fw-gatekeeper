@@ -22,4 +22,6 @@ assert.match(dashboard, /Worker roster unavailable/, 'Dashboard should not label
 assert.match(dashboard, /signalFailures\.map/, 'Dashboard failures should become operator-visible action items or links');
 assert.match(read('src/components/WorkerCard.tsx'), /Cached/, 'Worker cards should have a compact stale-data marker');
 
+assert.match(dashboard, /fetchData\(true, false\)/, 'Automatic polling should coalesce active same-day reads');
+assert.match(dashboard, /boundedRead/, 'Every live signal needs a bounded response read');
 console.log('Dashboard partial-data contract passed');
