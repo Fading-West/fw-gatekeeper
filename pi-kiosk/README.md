@@ -2,6 +2,20 @@
 
 Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 
+The kiosk distinguishes public server reachability from protected sync
+authorization. A denied worker download, roster confirmation, attendance
+upload, or recognition upload remains visible in /health and the sync footer
+until that same protected workflow accepts the credential again. Ask a
+supervisor to check the local kiosk API-key configuration; queued evidence
+and local offline attendance remain available. Public health success alone
+does not clear a protected authorization fault.
+
+Only validated successful responses confirm protected sync. Observations are
+process-local: after restart every protected phase is unknown, and the footer
+says protected sync is not fully confirmed until all four phases have actually
+succeeded. Restarting does not establish that credentials have been repaired;
+idle phases can stay unknown until their next request.
+
 ## How It Works
 
 - `main.py` is the entry point (run by the `fw-gatekeeper-kiosk` systemd service).
@@ -67,6 +81,13 @@ Setup fails immediately if `KIOSK_API_KEY`, `KIOSK_UI_KEY`, or
 `KIOSK_SUPERVISOR_PIN` is missing. It writes them to `config_local.py`
 (imported by `config.py`, never committed), installs the systemd service and
 watchdog timer, and configures the Firefox kiosk display autostart.
+
+An existing `pi-kiosk/data` symlink may point to a dedicated data directory
+on a mounted USB drive. Its resolved target must be owned by the kiosk user
+(the login user, or `KIOSK_USER`). Setup checks this before changing packages,
+configuration or services; mount the drive or correct the directory ownership
+if validation fails. It tightens files and directories in the resolved target
+without following nested symlinks.
 
 By default setup **skips** the 97MB dlib shape predictor used for blink
 liveness. To install it, rerun setup with `ENABLE_LIVENESS=1`, then set
@@ -135,6 +156,79 @@ python3 main.py --server URL --kiosk-id ID --camera [auto|pi|usb]
 The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
 `config_local.py`.
 
+## Upgrade notes: local history
+
+The first upgrade adds numeric timestamp columns and saved migration cursors
+during startup. Historical backfill and index creation run in a background
+thread after the UI and detection have started. Manual attendance, scanning,
+and sync remain available. New events receive their numeric timestamps at
+insert; today's log, debounce, and last-action selection still include legacy
+rows while the backfill is incomplete. The temporary log fallback parses only
+NULL epochs in the remaining migration ID range, so the supervisor log can be
+slower until attendance backfill finishes. Latest-action and debounce reads match both the current local worker ID and its stable server ID, so restored workers retain earlier history. Once backfill finishes, separate local-ID and server-ID epoch indexes keep those reads bounded; latest-action selection compares at most one row from each index.
+
+The worker creates indexes before populating epochs, excludes NULLs from new
+indexes, commits at most 100 rows per batch, and yields between transactions.
+SQLite holds its writer lock during index creation, including on a restart
+with partially populated epochs or a device with a missing index. Every
+manual attendance, recognized attendance, and recognition telemetry write
+signals the index worker before opening its connection or transaction. The
+worker checks that signal every 1,000 SQLite instructions, atomically rolls
+back the current index build, and retries after 30 seconds. Completed indexes
+remain; no backfill begins until all five indexes exist. Busy door traffic can
+therefore defer migration and retention until a quieter period. This also
+protects the camera/UI loop, which records recognized attendance synchronously.
+Foreground connections wait up to 10 seconds for other writers; lock timeouts
+show a "please try again" message for both manual and recognized attendance.
+Failed event writes roll back their transaction. The background connection
+waits only five seconds for other writers. Shutdown interrupts index creation,
+finishes or rolls back the current batch, wakes retry delays, and joins the
+worker so its own connection is closed. Progress survives restart, and failures
+(including opening the connection) are logged and retried every 30 seconds.
+Look for
+`Local history epoch migration complete` in the service journal. Retention
+waits until both tables are migrated and the required indexes exist; sync
+continues during that wait.
+
+Afterward, only synced history older than `LOCAL_HISTORY_RETENTION_DAYS`
+(default **30**, positive integer override in `config_local.py`) is eligible
+for bounded cleanup. Unsynced events, active rejection evidence, debounce
+history, and each worker's latest action remain. SQLite reuses freed pages;
+the database file does not immediately shrink because no full vacuum runs.
+
+For scale, a synthetic 185 MiB WAL database with 200,000 attendance rows and
+600,000 recognition attempts took 3.65 seconds to migrate synchronously on an
+x86 host, with 8,003 commits (an earlier run during dependency installation
+took 13.07 seconds). A conservative sizing assumption of 20 times these host
+durations plus 10–50 ms per SD-card commit flush gives roughly **2.5–11 minutes**;
+this is an estimate, not a measured Pi 3B duration. This historical work no
+longer gates startup.
+
+Round 4 measured individual index builds on an x86 host with a synthetic
+181 MiB database containing 200,000 attendance rows and 600,000 recognition
+attempts. First-upgrade indexes with NULL historical epochs took **72–429 ms**;
+rebuilding indexes with populated epochs took **201–1,813 ms**. Concurrent
+attendance inserts queued and committed without errors. The same 20x sizing
+assumption gives up to **8.6 seconds** and **36.3 seconds**, respectively,
+before extra SD-card I/O costs. Round 5 replaces waiting through these builds
+with interruption when an event write arrives.
+
+Round 5 used a separate **199 MiB** WAL/FULL database with the same row counts,
+mixed naive/offset timestamps, 200 worker identities and 95% synced history.
+Across three builds per index, before the fix, the recognition retention
+index took **71–76 ms** at 0% populated epochs, **141–167 ms** at 25%,
+**207–208 ms** at 50%, and **282–340 ms** at 100%. Across all attendance
+indexes, corresponding ranges were **15–20**, **31–40**, **51–63**, and
+**79–118 ms**. These vary from round 4 with host load and data distribution.
+Attendance inserts issued 1, 50 or 200 ms into recognition index creation
+took up to **79, 180, 230 and 330 ms**, respectively, before the fix, and up to
+**0.54, 1.31, 1.59 and 1.63 ms** after it. Active builds were interrupted;
+builds that had already finished needed no interruption. Pi hardware and SD
+flush latency remain unmeasured. Regression coverage also verifies interruption
+of a populated attendance index, concurrent manual/recognized/telemetry writes,
+unchanged backfill cursors and retention gating, shutdown, restart, and real
+lock-timeout messages.
+
 ## Tools
 
 - `enroll.py` — local enrollment CLI (add/list/remove workers) with a
@@ -144,6 +238,58 @@ The match threshold is not a flag: set `RECOGNITION_MATCH_THRESHOLD` in
   camera).
 
 ## Troubleshooting
+
+### Clock synchronization and offline attendance
+
+Pi 3B/4 devices have no RTC. A restored saved clock after a power cut can be
+days behind, and those past attendance times can still pass server validation.
+Attendance continues while the clock is unsynchronized: this release detects
+and exposes the risk; it does not repair timestamps, block scans, or quarantine
+uploads. Supervisors should verify the time against an independent source and
+review affected attendance before using it for payroll.
+
+Setup orders the kiosk after `time-sync.target` and wants that target. Ordering
+alone does not wait for NTP: with systemd-timesyncd, an enabled
+`systemd-time-wait-sync.service` delays the target. That waiter's upstream
+[`TimeoutStartSec=infinity`](https://github.com/systemd/systemd/blob/v252/units/systemd-time-wait-sync.service.in)
+could otherwise stop an offline kiosk from starting. Setup installs
+`/etc/systemd/system/systemd-time-wait-sync.service.d/fw-gatekeeper-timeout.conf`
+with `TimeoutStartSec=30s`, reloads systemd, and enables the waiter if available.
+After its timeout/failure, ordering completes and the kiosk starts: `Wants`
+does not require successful synchronization. Existing network-online ordering
+still applies. A missing waiter means there is no added NTP boot wait.
+See the upstream [target semantics](https://github.com/systemd/systemd/blob/v252/man/systemd.special.xml).
+Sites using a different NTP boot waiter must also configure a finite timeout
+for it. Rerun setup and reboot to apply the service changes to existing Pis;
+updating Python files alone does not rewrite installed units.
+
+At runtime `clock_sync.py` reads `timedatectl show -p NTPSynchronized --value`
+with a 0.5-second timeout. Probes are serialized and cached for 30 seconds
+using monotonic time, including failures. If timedatectl is unavailable or
+returns unrecognized output, the current-boot timesyncd marker
+`/run/systemd/timesync/synchronized` is positive evidence of synchronization;
+its absence is unknown, since another NTP service may be used. Non-systemd
+hosts and probe errors remain unknown and do not cause degradation.
+
+A known unsynchronized clock adds `clock_unsynchronized` to the snapshot's
+existing `degraded_reason` string. Simultaneous faults use comma-separated
+reason codes, so roster failures remain visible in portal warnings, alerting,
+and shift readiness. When synchronization recovers, only the clock reason
+clears; underlying device faults remain unchanged. Camera/model flags
+continue to report their own state. The local `/health`, local UI warning,
+and the existing roster-sync heartbeat share this snapshot. The portal shows
+the warning through its existing system-health reason labels. The local-only
+`clock_synchronized` value is true/false/null; no new server fields are needed.
+While the network is down, the local warning remains available and the portal
+receives the current reason when heartbeats can resume. This is current health,
+not a historical record of which attendance rows used an uncertain clock.
+
+Physical Pi acceptance is still needed: power-cycle with NTP unreachable and
+verify the scanner/UI start after the bounded wait; inspect `systemctl cat
+systemd-time-wait-sync.service` and `/health`; verify the warning is visible
+while attendance still queues; restore NTP and confirm warning/heartbeat
+recovery within the probe interval and next sync cycle. Test permanent network
+loss as well as blocked UDP 123, and verify payroll review of the outage window.
 
 | Issue | Fix |
 |-------|-----|
@@ -164,8 +310,9 @@ original row snapshot in `attendance_rejections`. Other events continue syncing.
 Rejected events remain in the `queued_logs` health count, while `rejected_logs`
 and `retryable_logs` distinguish paused evidence from uploads that can drain.
 The kiosk displays Needs attention for rejected records. They do not retry until
-an operator reviews them. Authentication, network, and server failures remain
-in the normal retry queue.
+an operator reviews them. Invalid credentials, network, and server failures
+remain in the normal retry queue. Explicit kiosk claim mismatches are handled
+as described below.
 
 On the kiosk, make a SQLite backup, then inspect active rejections:
 
@@ -186,6 +333,9 @@ sqlite3 data/attendance.db \
 python3 attendance_rejections.py retry 1 --note "Verified timestamp against supervisor shift record"
 ```
 
+The retry command refreshes the derived timestamp index in the same transaction as the audited release. Always complete this retry step after repairing a timestamp; editing the raw SQLite row alone does not refresh indexed history.
+
+
 Use the rejection id from `list` for `retry`, and the log id for the SQL edit.
 The original snapshot, rejection reason, release time, and operator note stay
 in `attendance_rejections` after retry. If the event still fails validation,
@@ -193,6 +343,82 @@ the kiosk records a new rejection; do not delete the evidence to clear an alert.
 If an attendance row was deleted, `list` still shows its rejection and original
 snapshot. `retry` refuses to release it until the row is restored from a backup
 or the snapshot under supervisor review.
+
+### Queued events after changing KIOSK_ID
+
+Each row keeps the kiosk identity captured when it was recorded. Changing
+`KIOSK_ID` does not change old evidence. Attendance and recognition uploads scan
+rows matching the current `KIOSK_ID` first, then upload historical rows in
+separate batches grouped by their captured claim. Authorized aliases remain
+accepted and keep their original spelling and retry identities.
+
+The portal validates the credential and current batch claim before checking
+all event claims. An invalid/revoked credential or unauthorized current
+`KIOSK_ID` returns 401 and halts the sync cycle without quarantining evidence.
+An authenticated batch containing unauthorized event claims returns **403 with
+`code: KIOSK_CLAIM_MISMATCH`**, before any events are written. This explicit
+server denial quarantines that claim's rows immediately; repeated retries
+cannot authorize that identity. Other 403 responses remain retryable. A newer
+kiosk talking to an older portal still uploads current rows first, but retains
+historical 401s in the retry queue until the portal is upgraded. Older kiosks
+keep retrying the new 403 as they did the previous 401.
+
+Quarantined rows are never marked synced or automatically re-attributed.
+Attendance uses `attendance_rejections`; recognition uses local SQLite
+`recognition_rejections`, with the original row snapshot, reason, timestamp,
+and eventual release note. They survive restart. Kiosk `/health` exposes
+`rejected_logs` and `rejected_attempts`, and queued totals still include this
+unsent evidence. The kiosk shows Needs attention, logs name the captured
+claim, and the next roster health report includes `upload_quarantine` in the
+portal's existing degraded reason field. A queue with quarantined rows is not
+fully synced, even while newer rows continue uploading.
+
+Operator recovery:
+
+1. Stop scanning/syncing and back up SQLite before reviewing evidence:
+
+   ```bash
+   sudo systemctl stop fw-gatekeeper-kiosk
+   cd /opt/fw-gatekeeper/pi-kiosk
+   sqlite3 data/attendance.db ".backup data/attendance.db.claim-review.bak"
+   python3 attendance_rejections.py list
+   python3 recognition_rejections.py list
+   ```
+
+2. Inspect the reason and `original_log_json` / `original_attempt_json`.
+   Independently verify which real kiosk recorded each event. A default
+   `kiosk-1` claim is not proof of ownership. Do not bulk replace `kiosk_id`,
+   mark rejected rows synced, or delete them to clear the alert. If ownership
+   cannot be established, retain the quarantine and escalate to the portal
+   administrator for evidence review.
+
+3. For evidence belonging to the original real kiosk, use an authorized
+   maintenance environment (or temporarily configure this stopped kiosk)
+   with that kiosk's existing valid credential and `KIOSK_ID`. Keep scanning
+   disabled during recovery. Release only reviewed rejection IDs, with an
+   operator note, and run uploads manually using the configured environment:
+
+   ```bash
+   python3 attendance_rejections.py retry 1 --note "Verified original kiosk ownership; restored its authorized credential"
+   python3 recognition_rejections.py retry 2 --note "Verified original kiosk ownership; restored its authorized credential"
+   python3 -c 'import database, sync; database.init_db(); print("Attendance drained:", sync.sync_attendance(halt_on_unauthorized=True)); print("Recognition drained:", sync.sync_recognition_attempts(halt_on_unauthorized=True))'
+   ```
+
+   Use rejection IDs from the corresponding `list`, not row IDs. If a portal
+   administrator can safely restore an original alias for the **same** real
+   kiosk, that also allows retry under its credential. Never assign another
+   real kiosk's alias to this kiosk just to make old events upload. If a default
+   claim was erroneous, keep the evidence quarantined pending an explicit,
+   audited administrative correction; this upload path does not rename it.
+
+4. Inspect the lists and logs again. A denial creates a new quarantine rather
+   than losing evidence. Release history and original snapshots remain in
+   SQLite after success; recognition source IDs and captured claims stay
+   unchanged. Restore the normal current kiosk configuration before restarting
+   `sudo systemctl start fw-gatekeeper-kiosk`. A missing original row cannot
+   be released until its evidence is restored from backup under operator review.
+
+No Convex schema changes are required. The new rejection table is local only.
 
 ### Stranded attendance rows
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Iterable
@@ -31,8 +32,9 @@ def _eye_aspect_ratio(eye_points: Iterable[np.ndarray]) -> float:
     vertical_1 = euclidean(p2, p6)
     vertical_2 = euclidean(p3, p5)
     horizontal = euclidean(p1, p4)
-    if horizontal == 0:
-        return 0.0
+    if horizontal <= 0:
+        return math.nan
+    # Zero lid separation is valid closed-eye evidence when eye width exists.
     return (vertical_1 + vertical_2) / (2.0 * horizontal)
 
 
@@ -103,6 +105,7 @@ class LivenessChecker:
         """
         self._reset_window_if_expired()
         if frame is None or face_location is None:
+            self.reset()
             return False
 
         top, right, bottom, left = [int(v) for v in face_location]
@@ -112,6 +115,7 @@ class LivenessChecker:
         left = max(0, min(left, width - 1))
         right = max(0, min(right, width - 1))
         if right <= left or bottom <= top:
+            self.reset()
             return False
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -133,6 +137,10 @@ class LivenessChecker:
         left_ear = _eye_aspect_ratio(left_eye)
         right_ear = _eye_aspect_ratio(right_eye)
         self._current_ear = (left_ear + right_ear) / 2.0
+        if (not math.isfinite(left_ear) or not math.isfinite(right_ear)
+                or left_ear < 0 or right_ear < 0):
+            self.reset()
+            return False
 
         if self._current_ear < self.ear_threshold:
             if frame_check is not None and not frame_check(frame, face_location):

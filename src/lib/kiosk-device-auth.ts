@@ -16,7 +16,13 @@ export function kioskEvidenceId(identity: Pick<KioskIdentity, 'kioskId'>, record
   return typeof claim === 'string' ? claim.trim() : identity.kioskId;
 }
 
-export async function authenticateKiosk(req: NextRequest, claims: unknown[]): Promise<KioskIdentity | null> {
+export class KioskClaimMismatchError extends Error {
+  constructor() { super('Event kiosk claim does not match the authenticated kiosk'); }
+}
+
+// Bulk uploads opt in to a recoverable record denial only when the batch's
+// current kiosk claim is authorized. Invalid credentials/configuration remain 401.
+export async function authenticateKiosk(req: NextRequest, claims: unknown[], options?: { batchClaims: unknown[] }): Promise<KioskIdentity | null> {
   let identity: KioskIdentity | null = null;
   if (hasDeviceKeyFormat(req)) {
     const hash = createHash('sha256').update(presentedKioskKey(req)!).digest('hex');
@@ -28,6 +34,11 @@ export async function authenticateKiosk(req: NextRequest, claims: unknown[]): Pr
   }
   if (!identity) return null;
   const aliases = new Set(identity.aliases.map(alias => alias.trim().toLowerCase()));
-  if (claims.some(claim => typeof claim !== 'string' || !aliases.has(claim.trim().toLowerCase()))) return null;
+  const mismatched = (claim: unknown) => typeof claim !== 'string' || !aliases.has(claim.trim().toLowerCase());
+  if (options?.batchClaims.some(mismatched)) return null;
+  if (claims.some(mismatched)) {
+    if (options) throw new KioskClaimMismatchError();
+    return null;
+  }
   return identity;
 }

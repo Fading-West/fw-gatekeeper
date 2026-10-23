@@ -1,0 +1,15 @@
+test_actual_sync_loop_reports_retryable_and_quarantined_attempts_separately (test_review10_queue_health.QuarantineHealthQA.test_actual_sync_loop_reports_retryable_and_quarantined_attempts_separately) ... FAIL
+test_retryable_queue_depth_excludes_active_quarantine_and_release_restores_it (test_review10_queue_health.QuarantineHealthQA.test_retryable_queue_depth_excludes_active_quarantine_and_release_restores_it) ... ok
+
+======================================================================
+FAIL: test_actual_sync_loop_reports_retryable_and_quarantined_attempts_separately (test_review10_queue_health.QuarantineHealthQA.test_actual_sync_loop_reports_retryable_and_quarantined_attempts_separately)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/qa-notes/test_review10_queue_health.py", line 37, in test_actual_sync_loop_reports_retryable_and_quarantined_attempts_separately
+    self.assertEqual(published[0].get('rejected_attempts'),1,'manager health must retain a distinct needs-review count')
+AssertionError: None != 1 : manager health must retain a distinct needs-review count
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.027s
+
+FAILED (failures=1)

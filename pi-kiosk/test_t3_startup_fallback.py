@@ -111,7 +111,7 @@ class ModelRecoveryTests(unittest.TestCase):
         namespace = {
             "config": types.SimpleNamespace(LIVENESS_REQUIRED=False, DATA_DIR="synthetic", FACES_DIR="synthetic", MODEL_DIR="synthetic", KIOSK_PORT=5555),
             "require_kiosk_api_key": lambda: None, "require_kiosk_ui_key": lambda: None,
-            "os": types.SimpleNamespace(makedirs=lambda *args, **kwargs: None),
+            "os": types.SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None),
             "database": mock.Mock(), "logger": logging.getLogger(__name__),
             "web_app": web, "FaceRecognizer": lambda: recognizer,
             "recognition_model_ready": lambda: self.fail("Model loading must be delegated"),
