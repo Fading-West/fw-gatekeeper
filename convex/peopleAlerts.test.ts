@@ -27,7 +27,7 @@ describe("new person alerts", () => {
       name: "New Worker", department: "Assembly", faceEncoding: encoding,
       consentAt: new Date().toISOString(),
     });
-    await admin.mutation(api.workers.update, { id: added.id, department: "Production" });
+    await admin.mutation(api.workers.update, { id: added.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: added.id }))?.identity_revision, department: "Production" });
     const events = await t.run((ctx) => ctx.db.query("peopleAlertEvents").collect());
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: "worker", targetId: added.id, label: "New Worker", delivered: false });
