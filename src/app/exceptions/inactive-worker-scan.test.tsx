@@ -56,7 +56,9 @@ it('labels the type, offers it as a filter, and lets admins review with an optio
 
   const reviewed = tree.root.findAllByType('button').find((node) => label(node) === 'Reviewed')!;
   await act(async () => reviewed.props.onClick());
-  expect(patches).toEqual([{ exception_key: '2026-09-03:inactive_worker_scan:w1:a1', date: '2026-09-03', type: 'inactive_worker_scan', status: 'reviewed' }]);
+  // An empty note is intentional: the review contract clears a prior note
+  // rather than omitting the field and leaving stale text attached.
+  expect(patches).toEqual([{ exception_key: '2026-09-03:inactive_worker_scan:w1:a1', date: '2026-09-03', type: 'inactive_worker_scan', status: 'reviewed', note: '' }]);
 });
 
 it('shows viewers the exception without review controls', async () => {
