@@ -79,6 +79,8 @@ describe("evaluateKioskAlerts", () => {
       expect(conditionsFor(kiosk({ health: { degradedReason: reason, reportedAt: reported } }))).toEqual(["device_fault"]);
     }
     expect(conditionsFor(kiosk({ health: { degradedReason: "liveness_unavailable", reportedAt: reported } }))).toEqual([]);
+    expect(conditionsFor(kiosk({ health: { degradedReason: "no_workers_synced,clock_unsynchronized", reportedAt: reported } }))).toEqual(["device_fault"]);
+    expect(conditionsFor(kiosk({ health: { degradedReason: "clock_unsynchronized", reportedAt: reported } }))).toEqual([]);
   });
 
   it("flags queue_backlog at 50 or more queued logs", () => {

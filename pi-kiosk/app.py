@@ -10,12 +10,14 @@ import threading
 import time
 from datetime import datetime
 from functools import wraps
+from urllib.parse import urlsplit
 
 import cv2
 from flask import Flask, Response, jsonify, make_response, render_template, request
 
 import config
 import database
+from clock_sync import get_clock_synchronized
 from kiosk_ui_auth import (
     KIOSK_UI_KEY_HEADER,
     KIOSK_UI_SESSION_COOKIE,
@@ -62,9 +64,13 @@ _health = {
     "retryable_logs": 0,
     "rejected_logs": 0,
     "queued_attempts": 0,
+    "rejected_attempts": 0,
     "degraded_reason": None,
     "last_scan_at": None,
     "sync_online": None,  # None = sync disabled/unknown, True/False once known
+    "sync_auth_ok": None,
+    "sync_auth_faults": [],
+    "sync_auth_phases": {},
     "last_sync_at": None,
 }
 
@@ -86,6 +92,29 @@ def update_status(**kwargs):
         _status["timestamp"] = datetime.now().isoformat(timespec="seconds")
 
 
+def replace_status_if(expected_state, expected_message, **kwargs):
+    """Recover a specific fault without overwriting a concurrent confirmation."""
+    with _status_lock:
+        if _status.get("state") != expected_state or _status.get("message") != expected_message:
+            return False
+        _status.update(kwargs)
+        _status["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        return True
+
+
+def update_status_unless_confirming(**kwargs):
+    """Keep a manual attendance confirmation visible while models initialize."""
+    with _status_lock:
+        now = datetime.now()
+        if _status.get("state") == "CLOCKED_IN" and _status.get("timestamp"):
+            age = (now - datetime.fromisoformat(_status["timestamp"])).total_seconds()
+            if 0 <= age < config.DISPLAY_TIME_SUCCESS_SEC:
+                return False
+        _status.update(kwargs)
+        _status["timestamp"] = now.isoformat(timespec="seconds")
+        return True
+
+
 def update_health(**kwargs):
     """Update kiosk health fields (camera/model/sync/queue state)."""
     with _health_lock:
@@ -94,7 +123,18 @@ def update_health(**kwargs):
 
 def get_health_snapshot() -> dict:
     with _health_lock:
-        return dict(_health)
+        snapshot = dict(_health)
+    # Read at the shared boundary used by /health, /status and the heartbeat,
+    # even if recognition is idle or the camera is unavailable. Preserve the
+    # underlying fault in the existing string field so simultaneous roster
+    # failures remain visible to portal and scan-blocking alert consumers.
+    snapshot["clock_synchronized"] = get_clock_synchronized()
+    if snapshot["clock_synchronized"] is False:
+        reasons = [reason for reason in (snapshot.get("degraded_reason") or "").split(",") if reason]
+        if "clock_unsynchronized" not in reasons:
+            reasons.append("clock_unsynchronized")
+        snapshot["degraded_reason"] = ",".join(reasons)
+    return snapshot
 
 
 def get_status_snapshot() -> dict:
@@ -131,17 +171,16 @@ def _mjpeg_stream():
         time.sleep(0.05)
 
 
-def _manual_action_for_worker(worker_id: int) -> str:
-    if config.KIOSK_TYPE == "entry":
-        return "clock_in"
-    if config.KIOSK_TYPE == "exit":
-        return "clock_out"
-    last = database.get_last_action(worker_id)
-    return "clock_out" if last == "clock_in" else "clock_in"
-
-
 def _is_loopback_request() -> bool:
-    return request.remote_addr in {"127.0.0.1", "::1"}
+    # A rebound attacker hostname can also connect through loopback. Only
+    # bootstrap cookies for an explicitly local browser origin; remote UI
+    # clients must supply their configured credential.
+    try:
+        hostname = urlsplit("//" + request.host).hostname
+    except ValueError:
+        return False
+    return (request.remote_addr in {"127.0.0.1", "::1"}
+            and hostname in {"localhost", "127.0.0.1", "::1"})
 
 
 def kiosk_ui_auth_required(view):
@@ -208,9 +247,11 @@ def video_feed_alias():
 
 @app.route("/health")
 def health():
-    """Truthful kiosk health: degraded whenever a scan-blocking subsystem is down."""
+    """Report device faults, clock uncertainty and quarantined evidence."""
     snapshot = get_health_snapshot()
-    degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+    degraded = (not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+                or snapshot.get("sync_auth_ok") is False
+                or bool(snapshot["rejected_logs"]) or bool(snapshot["rejected_attempts"]))
     return jsonify({"status": "degraded" if degraded else "ok", **snapshot})
 
 
@@ -264,7 +305,6 @@ def manual_clock():
     try:
         result = database.record_manual_attendance(
             request_id=request_id, worker_id=worker_id, worker_name=worker_name, action=action,
-            action_for_worker=_manual_action_for_worker,
         )
     except database.ManualAttendancePolicyError as exc:
         return jsonify({"success": False, "error": str(exc)}), 503
@@ -272,8 +312,8 @@ def manual_clock():
         return jsonify({"success": False, "error": str(exc)}), 404
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 409
-    except sqlite3.Error:
-        logger.exception("Manual attendance could not be committed")
+    except sqlite3.Error as exc:
+        logger.error("Manual attendance could not be committed (error=%s)", type(exc).__name__)
         return jsonify({"success": False, "error": "Could not record attendance. Retry this request."}), 503
     action_label = "Clocked in" if result["action"] == "clock_in" else "Clocked out"
     update_status(

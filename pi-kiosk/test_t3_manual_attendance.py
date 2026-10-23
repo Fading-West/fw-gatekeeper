@@ -102,7 +102,7 @@ class ManualAttendanceTests(unittest.TestCase):
             self.assertEqual(unlocked.status_code, 200)
             worker = self.worker()
             args = {"worker_id": worker, "request_id": "route-operation"}
-            with mock.patch.object(app, "_manual_action_for_worker", side_effect=ValueError("Invalid kiosk policy")):
+            with mock.patch.object(database, "record_manual_attendance", side_effect=database.ManualAttendancePolicyError("Invalid kiosk policy")):
                 self.assertEqual(client.post("/manual-clock", json=args, headers=headers).status_code, 503)
                 self.assertEqual(database.count_unsynced_logs(), 0)
             first = client.post("/manual-clock", json=args, headers=headers)
