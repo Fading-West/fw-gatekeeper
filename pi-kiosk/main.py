@@ -512,6 +512,7 @@ def run(args):
     web_app.update_status(state="IDLE", message="Step toward camera",
                           worker_id=None, known_workers=recognizer.known_count, face_detected=False)
     logger.info("Kiosk ready")
+    database.start_history_migration()
 
     # Liveness wait state: set when a matched worker still needs to blink.
     pending_clock = [None]
@@ -955,6 +956,7 @@ def run(args):
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
+        database.stop_history_migration()
         camera.stop()
         if sync_worker:
             sync_worker.stop()

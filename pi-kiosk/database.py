@@ -10,6 +10,7 @@ import threading
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,66 @@ import config
 logger = logging.getLogger(__name__)
 _local = threading.local()
 _IDENTITY_NOT_CAPTURED = object()
+_HISTORY_PRUNE_BATCH_SIZE = 100
+_EPOCH_BACKFILL_BATCH_SIZE = 100
+_history_thread = None
+_history_lock = threading.Lock()
+_history_stop = None
+_HISTORY_RETRY_SECONDS = 30
+_event_write_lock = threading.Lock()
+_event_writers = 0
+_event_write_pending = threading.Event()
+
+
+class _HistoryMigrationStopped(Exception):
+    pass
+
+
+class _HistoryMigrationYielded(Exception):
+    pass
+
+
+def _prioritize_event_write(write):
+    """Interrupt a history index build before a UI-loop write waits on it."""
+    @wraps(write)
+    def prioritized(*args, **kwargs):
+        global _event_writers
+        with _event_write_lock:
+            _event_writers += 1
+            _event_write_pending.set()
+        try:
+            return write(*args, **kwargs)
+        except sqlite3.Error:
+            conn = getattr(_local, "conn", None)
+            if conn is not None:
+                conn.rollback()
+            raise
+        finally:
+            with _event_write_lock:
+                _event_writers -= 1
+                if _event_writers == 0:
+                    _event_write_pending.clear()
+    return prioritized
+
+
+def _create_history_index(conn, sql):
+    """SQLite has no online CREATE INDEX; yield its lock to incoming events."""
+    if _event_write_pending.is_set():
+        raise _HistoryMigrationYielded()
+    stop = _history_stop if threading.current_thread() is _history_thread else None
+    def stopped():
+        return stop is not None and stop.is_set()
+    conn.set_progress_handler(lambda: int(stopped() or _event_write_pending.is_set()), 1000)
+    try:
+        conn.execute(sql)
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT and not stopped():
+            # CREATE INDEX is rolled back atomically. Keep completed indexes
+            # and all backfill markers, and retry when the door is quieter.
+            raise _HistoryMigrationYielded() from exc
+        raise
+    finally:
+        conn.set_progress_handler(lambda: int(stopped()), 1000)
 
 
 def _attendance_epoch(value: str) -> Optional[float]:
@@ -57,7 +118,126 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
         logger.info("Added column %s.%s", table, column)
 
 
-def _get_conn() -> sqlite3.Connection:
+def _prepare_event_epoch(conn: sqlite3.Connection, table: str):
+    """Add the column and durable cursor without visiting historical rows.
+
+    Column creation and its progress marker are atomic.
+    The initial high-water id excludes new inserts, which already cache epochs.
+    Call only after committing the other startup schema migrations.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("Epoch migration requires its own transactions")
+    key = f"epoch_backfill:{table}"
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if "timestamp_epoch" not in columns:
+        conn.execute("SAVEPOINT migrate_event_epoch")
+        try:
+            _ensure_column(conn, table, "timestamp_epoch", "timestamp_epoch REAL")
+            high_water = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0]
+            conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                         (key, json.dumps([0, high_water])))
+            conn.execute("RELEASE SAVEPOINT migrate_event_epoch")
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT migrate_event_epoch")
+            conn.execute("RELEASE SAVEPOINT migrate_event_epoch")
+            raise
+
+
+def _migrate_event_epoch(conn: sqlite3.Connection, table: str, pause=None):
+    """Resume committed 100-row batches, parsing and yielding outside write locks."""
+    _prepare_event_epoch(conn, table)
+    key = f"epoch_backfill:{table}"
+    progress = conn.execute("SELECT value FROM sync_state WHERE key = ?", (key,)).fetchone()
+    if progress is None:
+        # Includes devices that completed the original atomic backfill.
+        return
+    after_id, high_water = json.loads(progress[0])
+    while True:
+        rows = conn.execute(f"SELECT id, timestamp FROM {table} WHERE id > ? AND id <= ? "
+                            "ORDER BY id LIMIT ?",
+                            (after_id, high_water, _EPOCH_BACKFILL_BATCH_SIZE)).fetchall()
+        if not rows:
+            with conn:
+                conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
+            return
+        epochs = [(_attendance_epoch(row["timestamp"]), row["id"]) for row in rows]
+        after_id = rows[-1]["id"]
+        with conn:
+            conn.executemany(f"UPDATE {table} SET timestamp_epoch = ? "
+                             "WHERE id = ? AND timestamp_epoch IS NULL", epochs)
+            conn.execute("UPDATE sync_state SET value = ? WHERE key = ?",
+                         (json.dumps([after_id, high_water]), key))
+        if pause is not None:
+            pause()
+
+
+def _migrate_history(pause=None):
+    """Build indexes before filling epochs; run off the kiosk startup path."""
+    conn = _get_conn()
+    # Exclude NULLs so a first upgrade scans the tables but does not sort/write
+    # hundreds of thousands of empty index entries. Existing indexes are valid.
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_server_worker_epoch ON attendance_log(server_worker_id, timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    for table in ("attendance_log", "recognition_attempts"):
+        _create_history_index(conn, f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
+                     f"ON {table}(timestamp_epoch, id) WHERE synced = 1 AND timestamp_epoch IS NOT NULL")
+    for table in ("attendance_log", "recognition_attempts"):
+        _migrate_event_epoch(conn, table, pause=pause)
+    logger.info("Local history epoch migration complete")
+
+
+def start_history_migration():
+    """Start one resumable worker after the UI and detection have started."""
+    global _history_thread, _history_stop
+    def pause():
+        if stop.wait(0.01):
+            raise _HistoryMigrationStopped()
+
+    def run():
+        try:
+            while not stop.is_set():
+                try:
+                    conn = _get_conn(timeout=5.0)
+                    # Interrupt CREATE INDEX on shutdown too. SQLite rolls back
+                    # the interrupted statement atomically.
+                    conn.set_progress_handler(lambda: int(stop.is_set()), 1000)
+                    _migrate_history(pause=pause)
+                    return
+                except _HistoryMigrationYielded:
+                    logger.info("Local history index deferred for event write; retrying in 30 seconds")
+                    stop.wait(_HISTORY_RETRY_SECONDS)
+                except Exception:
+                    if stop.is_set():
+                        return
+                    logger.exception("Local history migration paused; retrying in 30 seconds")
+                    stop.wait(_HISTORY_RETRY_SECONDS)
+        finally:
+            conn = getattr(_local, "conn", None)
+            if conn is not None:
+                conn.close()
+                _local.conn = None
+
+    with _history_lock:
+        if _history_thread is None or not _history_thread.is_alive():
+            stop = _history_stop = threading.Event()
+            _history_thread = threading.Thread(target=run, daemon=True, name="history-migration")
+            _history_thread.start()
+        return _history_thread
+
+
+def stop_history_migration():
+    """Finish/roll back active work and close the worker's connection before exit."""
+    with _history_lock:
+        if _history_thread is not None:
+            _history_stop.set()
+            _history_thread.join()
+
+
+def _get_conn(timeout: float = 10.0) -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
         # Keep this process-wide restriction: SQLite can recreate WAL/SHM
@@ -67,7 +247,9 @@ def _get_conn() -> sqlite3.Connection:
         db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         db_path.parent.chmod(0o700)
         _secure_db_files(db_path)
-        _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # Index builds yield to event writes. Bound waits for other writers;
+        # the background worker uses five seconds so shutdown stays bounded.
+        _local.conn = sqlite3.connect(str(db_path), timeout=timeout, check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")
@@ -379,6 +561,10 @@ def init_db():
         logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
 
     conn.commit()
+    # Only install columns/cursors here. Historical reads use a fallback until
+    # the worker finishes; neither backfill nor index creation blocks startup.
+    for table in ("attendance_log", "recognition_attempts"):
+        _prepare_event_epoch(conn, table)
     logger.info("Database initialized")
 
 
@@ -773,6 +959,7 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+@_prioritize_event_write
 def log_attendance(
     worker_id: int,
     worker_name: str,
@@ -812,8 +999,8 @@ def log_attendance(
             """
             INSERT INTO attendance_log
                 (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
-                 server_worker_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                 server_worker_id, timestamp_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 int(worker_id),
@@ -825,6 +1012,7 @@ def log_attendance(
                 config.KIOSK_ID,
                 note,
                 server_worker_id,
+                _attendance_epoch(timestamp),
             ),
         )
     log_id = int(cursor.lastrowid)
@@ -838,6 +1026,7 @@ def log_attendance(
     return log_id
 
 
+@_prioritize_event_write
 def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_encoding=None, **fields):
     """Reject a removed or re-enrolled face before committing automatic attendance.
 
@@ -865,45 +1054,57 @@ def get_attendance_action(log_id: int) -> str:
     return row["action"]
 
 
-def _worker_attendance_filter(conn, worker_id: int) -> tuple[str, tuple]:
-    """Match a worker's attendance across local ids.
-
-    Roster sync deletes a deactivated or purged worker's row, and restoring
-    them inserts a new local id for the same Convex id. Their earlier events
-    keep that Convex id in server_worker_id.
-    """
+def _worker_attendance_scopes(conn, worker_id: int) -> list[tuple[str, int | str]]:
+    """Match local events and earlier local ids for the same restored identity."""
+    scopes = [("worker_id", int(worker_id))]
     row = conn.execute("SELECT server_id FROM workers WHERE id = ?", (int(worker_id),)).fetchone()
-    server_id = row["server_id"] if row else None
-    if server_id:
-        return "(worker_id = ? OR server_worker_id = ?)", (int(worker_id), server_id)
-    return "worker_id = ?", (int(worker_id),)
+    if row and row["server_id"]:
+        scopes.append(("server_worker_id", row["server_id"]))
+    return scopes
 
 
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
-    worker_filter, params = _worker_attendance_filter(conn, worker_id)
-    row = conn.execute(
-        f"""
-        SELECT id FROM attendance_log
-        WHERE {worker_filter} AND attendance_epoch(timestamp) >= ?
-        LIMIT 1
-        """,
-        (*params, threshold),
-    ).fetchone()
+    scopes = _worker_attendance_scopes(conn, worker_id)
+    # Separate indexed seeks avoid scanning/sorting a restored worker's history.
+    branches = [f"SELECT id FROM attendance_log WHERE {column} = ? AND timestamp_epoch >= ?"
+                for column, _ in scopes]
+    params = [item for _, value in scopes for item in (value, threshold)]
+    if get_sync_state("epoch_backfill:attendance_log") is not None:
+        branches.extend(f"SELECT id FROM attendance_log WHERE {column} = ? "
+                        "AND timestamp_epoch IS NULL AND attendance_epoch(timestamp) >= ?"
+                        for column, _ in scopes)
+        params.extend(item for _, value in scopes for item in (value, threshold))
+    row = conn.execute(" UNION ALL ".join(branches) + " LIMIT 1", params).fetchone()
     return row is not None
 
 
 def get_last_action(worker_id: int) -> Optional[str]:
-    """Return last clock action for a worker."""
+    """Return the latest event across local ids without sorting their history."""
     conn = _get_conn()
-    worker_filter, params = _worker_attendance_filter(conn, worker_id)
-    row = conn.execute(
-        f"""SELECT action FROM attendance_log WHERE {worker_filter}
-        ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
-        params,
-    ).fetchone()
+    scopes = _worker_attendance_scopes(conn, worker_id)
+    if get_sync_state("epoch_backfill:attendance_log") is not None:
+        worker_filter = " OR ".join(f"{column} = ?" for column, _ in scopes)
+        row = conn.execute(f"""SELECT action FROM attendance_log WHERE {worker_filter}
+            ORDER BY COALESCE(timestamp_epoch, attendance_epoch(timestamp)) DESC, id DESC LIMIT 1""",
+            [value for _, value in scopes]).fetchone()
+        return row["action"] if row else None
+    # Each branch returns only its newest row using its own identity/epoch
+    # index. The final comparison sees at most two rows in one read snapshot.
+    branches = [f"""SELECT * FROM (SELECT action, timestamp_epoch, id FROM attendance_log
+        WHERE {column} = ? AND timestamp_epoch IS NOT NULL
+        ORDER BY timestamp_epoch DESC, id DESC LIMIT 1)""" for column, _ in scopes]
+    row = conn.execute("SELECT action FROM (" + " UNION ALL ".join(branches) +
+                       ") ORDER BY timestamp_epoch DESC, id DESC LIMIT 1",
+                       [value for _, value in scopes]).fetchone()
+    if row is None:
+        # Keep legacy behavior when the identity has only malformed evidence.
+        worker_filter = " OR ".join(f"{column} = ?" for column, _ in scopes)
+        row = conn.execute(f"""SELECT action FROM attendance_log
+            WHERE ({worker_filter}) AND timestamp_epoch IS NULL ORDER BY id DESC LIMIT 1""",
+            [value for _, value in scopes]).fetchone()
     return row["action"] if row else None
 
 
@@ -913,16 +1114,36 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     # Convert each local midnight separately: DST days can be 23 or 25 hours.
     start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
     end = start + timedelta(days=1)
-    rows = conn.execute(
-        """
+    sql = """
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, note
         FROM attendance_log
-        WHERE attendance_epoch(timestamp) >= ? AND attendance_epoch(timestamp) < ?
-        ORDER BY attendance_epoch(timestamp) DESC, id DESC
+        WHERE timestamp_epoch >= ? AND timestamp_epoch < ?
+        ORDER BY timestamp_epoch DESC, id DESC
         LIMIT ?
-        """,
-        (start.timestamp(), end.timestamp(), limit),
-    ).fetchall()
+        """
+    args = (start.timestamp(), end.timestamp(), limit)
+    progress = get_sync_state("epoch_backfill:attendance_log")
+    if progress is not None:
+        after_id, high_water = json.loads(progress)
+        # One SQLite statement/snapshot: a concurrently migrated row is in
+        # exactly one branch, so it cannot disappear or be returned twice.
+        # The fallback scans only the remaining high-water ID range, excludes
+        # cached rows and ignores already-processed malformed timestamps.
+        sql = """SELECT id, worker_id, worker_name, action, timestamp,
+            liveness_confirmed, confidence, note FROM (
+                SELECT id, worker_id, worker_name, action, timestamp,
+                    liveness_confirmed, confidence, note, timestamp_epoch AS epoch
+                FROM attendance_log WHERE timestamp_epoch >= ? AND timestamp_epoch < ?
+                UNION ALL
+                SELECT id, worker_id, worker_name, action, timestamp,
+                    liveness_confirmed, confidence, note, attendance_epoch(timestamp) AS epoch
+                FROM attendance_log
+                WHERE id > ? AND id <= ? AND timestamp_epoch IS NULL
+                  AND attendance_epoch(timestamp) >= ? AND attendance_epoch(timestamp) < ?
+            ) ORDER BY epoch DESC, id DESC LIMIT ?"""
+        args = (start.timestamp(), end.timestamp(), after_id, high_water,
+                start.timestamp(), end.timestamp(), limit)
+    rows = conn.execute(sql, args).fetchall()
     logs: list[dict] = []
     for row in rows:
         item = dict(row)
@@ -1029,13 +1250,18 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
         raise ValueError("A reason for retry is required")
     conn = _get_conn()
     with conn:
-        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id
+        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id, l.timestamp
             FROM attendance_rejections r LEFT JOIN attendance_log l ON l.id = r.log_id
             WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
         if rejection is None:
             raise ValueError(f"Active rejection {rejection_id} does not exist")
         if rejection["existing_log_id"] is None:
             raise ValueError(f"Attendance log {rejection['log_id']} is missing; restore the original evidence before retry")
+        # The supported repair procedure updates timestamp with a plain SQLite
+        # client before retry. Refresh the derived cache in the same transaction
+        # that releases the evidence so history/debounce/retention see the repair.
+        conn.execute("UPDATE attendance_log SET timestamp_epoch = ? WHERE id = ?",
+                     (_attendance_epoch(rejection["timestamp"]), rejection["log_id"]))
         result = conn.execute("""UPDATE attendance_rejections
             SET released_at = datetime('now'), release_note = ?
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
@@ -1116,6 +1342,7 @@ def _optional_float(value) -> Optional[float]:
     return float(value)
 
 
+@_prioritize_event_write
 def log_recognition_attempt(
     *,
     decision: str,
@@ -1149,9 +1376,9 @@ def log_recognition_attempt(
             (
                 timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
                 best_score, second_best_score, score_margin, decision, threshold,
-                liveness_confirmed, model_version, source_attempt_id, candidate_server_worker_id, synced
+                liveness_confirmed, model_version, source_attempt_id, candidate_server_worker_id, timestamp_epoch, synced
             )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         """,
         (
             timestamp,
@@ -1168,6 +1395,7 @@ def log_recognition_attempt(
             model_version,
             str(uuid.uuid4()),
             candidate_server_worker_id,
+            _attendance_epoch(timestamp),
         ),
     )
     conn.commit()
@@ -1241,6 +1469,90 @@ def mark_recognition_attempts_synced(attempt_ids: list[int]):
     placeholders = ",".join("?" for _ in attempt_ids)
     conn.execute(f"UPDATE recognition_attempts SET synced = 1 WHERE id IN ({placeholders})", attempt_ids)
     conn.commit()
+
+
+def prune_synced_history() -> dict[str, int]:
+    """Delete at most one small batch per table, after sync acknowledgement.
+
+    Keep queued/rejected evidence and each worker's last action (ordered by
+    event instant, then id), even for removed workers. Invalid timestamps are
+    retained because their age is unknown. Each table commits separately.
+    """
+    config.validate_history_retention()
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=config.LOCAL_HISTORY_RETENTION_DAYS)).timestamp()
+    # An operator can configure debounce longer than the retention period.
+    attendance_cutoff = min(cutoff, (now - timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES)).timestamp())
+    conn = _get_conn()
+    # Incomplete epochs cannot establish the latest action safely, and the
+    # background worker may not have installed the forced age indexes yet.
+    if any(get_sync_state(f"epoch_backfill:{table}") is not None
+           for table in ("attendance_log", "recognition_attempts")):
+        return {"attendance_log": 0, "recognition_attempts": 0}
+    if conn.execute("""SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+        AND name IN ('idx_attendance_log_retention', 'idx_recognition_attempts_retention',
+                     'idx_attendance_worker_epoch')""").fetchone()[0] != 3:
+        return {"attendance_log": 0, "recognition_attempts": 0}
+    deleted = {}
+    # Bound candidates BEFORE checking protected evidence. A LIMIT on deletable
+    # rows could scan every old latest/rejected row while holding a write lock.
+    # A persisted keyset cursor skips protected prefixes and wraps each sweep;
+    # newly acknowledged older rows will be revisited on the next sweep.
+    key = "attendance_prune_after"
+    progress = get_sync_state(key)
+    after = json.loads(progress) if progress else None
+    candidates = []
+    if after is not None:
+        # SQLite seeks only the epoch for a tuple range when id aliases rowid,
+        # then rescans earlier ids at that epoch. Separate equality/id and
+        # later-epoch ranges so even a large tied prefix has bounded scan work.
+        candidates = conn.execute("""SELECT id, timestamp_epoch FROM attendance_log
+            INDEXED BY idx_attendance_log_retention
+            WHERE synced = 1 AND timestamp_epoch = ? AND id > ? AND timestamp_epoch < ?
+            ORDER BY timestamp_epoch, id LIMIT ?""",
+            [*after, attendance_cutoff, _HISTORY_PRUNE_BATCH_SIZE]).fetchall()
+    remaining = _HISTORY_PRUNE_BATCH_SIZE - len(candidates)
+    if remaining:
+        sql = """SELECT id, timestamp_epoch FROM attendance_log
+            INDEXED BY idx_attendance_log_retention
+            WHERE synced = 1 AND timestamp_epoch < ?"""
+        args = [attendance_cutoff]
+        if after is not None:
+            sql += " AND timestamp_epoch > ?"
+            args.append(after[0])
+        sql += " ORDER BY timestamp_epoch, id LIMIT ?"
+        args.append(remaining)
+        candidates.extend(conn.execute(sql, args).fetchall())
+    with conn:
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            cursor = conn.execute(f"""DELETE FROM attendance_log WHERE id IN (
+                SELECT l.id FROM attendance_log l
+                WHERE l.id IN ({placeholders})
+                  AND l.synced = 1 AND l.timestamp_epoch < ?
+                  AND l.id != (SELECT latest.id FROM attendance_log latest
+                      WHERE latest.worker_id = l.worker_id AND latest.timestamp_epoch IS NOT NULL
+                      ORDER BY latest.timestamp_epoch DESC, latest.id DESC LIMIT 1)
+                  AND NOT EXISTS (SELECT 1 FROM attendance_rejections r
+                      WHERE r.log_id = l.id AND r.released_at IS NULL)
+            )""", [row["id"] for row in candidates] + [attendance_cutoff])
+            deleted["attendance_log"] = cursor.rowcount
+            last = candidates[-1]
+            conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                         (key, json.dumps([last["timestamp_epoch"], last["id"]])))
+        else:
+            conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
+            deleted["attendance_log"] = 0
+    with conn:
+        cursor = conn.execute("""DELETE FROM recognition_attempts WHERE id IN (
+            SELECT id FROM recognition_attempts INDEXED BY idx_recognition_attempts_retention
+            WHERE synced = 1 AND timestamp_epoch < ?
+            ORDER BY timestamp_epoch, id LIMIT ?
+        )""", (cutoff, _HISTORY_PRUNE_BATCH_SIZE))
+        deleted["recognition_attempts"] = cursor.rowcount
+    if any(deleted.values()):
+        logger.info("Pruned synced local history: %s", deleted)
+    return deleted
 
 
 def get_sync_state(key: str) -> Optional[str]:
