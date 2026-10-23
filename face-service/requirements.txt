@@ -9,3 +9,5 @@ numpy==1.26.4
 Pillow==12.3.0
 opencv-python-headless==4.11.0.86
 onnxruntime==1.30.0
+# HOG detector only; keep identical to the kiosk dlib pin. Built in a separate stage.
+dlib==20.0.1

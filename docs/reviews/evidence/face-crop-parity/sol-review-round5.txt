@@ -1,0 +1,69 @@
+GPT-6.1-Sol independent review, round 5
+Starting head: 618fb1d286df11cb1599e83e191cd4a227f2c01e
+Scope: master...final round-5 head, design simplification and final review.
+
+Decision: Option A. Remove bounded_json.py, its APIRoute hook and parser-specific
+regressions; remove ijson from runtime inputs, regenerated hash lock, CI inputs
+and Docker COPY. Keep ordinary FastAPI parsing, Pydantic contract validation,
+authentication before body reads, actual byte limits and weighted admission.
+
+Verified trust boundary:
+- .env.example:23 and :52 configure the portal and face service with the same
+  server-only key. src/app/api/enroll/route.ts:88 validates 3-6 bounded strings;
+  :108-120 reads the server secret and constructs JSON.stringify({ photos }).
+- No client exposure of the key and no current /match caller in src or pi-kiosk.
+- pi-kiosk enrollment and recognition use local half-resolution HOG and ONNX.
+- ImageAdmissionMiddleware authenticates before Content-Length inspection,
+  receive calls or FastAPI body/JSON parsing, including under root_path.
+- Authenticated callers are trusted to construct bounded JSON; a holder of the
+  secret can still exhaust memory with hostile structure. Explicit in README.
+
+Additional finding: untrusted Unicode photo contents are possible even within
+that trusted structure. Six maximum-length mostly-ASCII strings containing one
+astral character each expand to four-byte Python strings. Beside two-photo image
+work this local probe peaked at 467.0 MiB (200/422), below 512 MiB but above the
+450 MiB legitimate-traffic headroom gate. Enrollment bodies above 16 MiB now
+reserve the whole 32 MiB budget; underdeclared bodies upgrade on actual bytes.
+Normal portal-sized requests still share capacity; maximum requests run alone.
+Reservation tests cover both successful upgrades and refusal beside held work.
+Separate Unicode probes with exclusive admission returned 422 alone and 503
+beside image work, at 443.9-479.1 MiB across buffered/streamed client variants.
+These invalid-photo probes are separate from the CI legitimate-traffic workload;
+no claim that arbitrary invalid photo strings stay below 450 MiB is made.
+
+Whole-PR review:
+- dlib 20.0.1 half RGB resize, HOG upsample 1, inclusive endpoints trimmed before
+  doubling, largest box, 25% padding, 112x112 crop and recognition tensor match
+  pi-kiosk/enroll.py, main.py and embeddings.py. Model digest unchanged.
+- No quality-gate relaxation. Native parity/blank/crowd/clipping/odd-size tests pass.
+- Matching discards decoded frames before unlocking; ONNX has one inference thread.
+- Admission releases in finally on completion, exception, cancellation, disconnect,
+  body rejection, validation/decode/model error and streamed response completion.
+- Oversized declared/actual/chunked bodies return 413; busy returns 503 with retry.
+- Full 1001 x 512 roster remains supported; no new roster/body reduction.
+- No Convex code or convex/schema.ts changes; no merge, deployment or migration.
+
+Validation:
+- All 24 Python test files via repository test:python runner pass, including
+  digest-verified real-model crop/tensor/embedding parity: peak 250.0 MiB.
+- All 18 contract suites pass. Focused portal enrollment route/page and enrollment
+  photo tests: 3 suites, 48 tests pass. Lint: no errors (6 existing warnings).
+- All four locks regenerate with required uv 0.12.13; only ijson disappears.
+- scripts/check-face-service-memory.py uses legal JPEG comments to reach
+  3,999,999 characters (largest base64 size below the 4-million limit), six
+  photos, full/compact roster concurrency, maximum byte-limit whitespace,
+  mixed matching/enrollment, 413 chunked and 401 preparse authentication.
+- Final local legitimate-traffic HTTP peak: 411.5 MiB. Production Docker image
+  and hard 512 MiB validation are performed by the new head's CI (Docker is
+  unavailable locally). PR description records final CI results.
+
+Final local HTTP measurement:
+Photo characters: 3,999,999; request body bytes: 24,000,030
+After model load: 147.9 MiB
+One request (status, seconds): (200, 3.56); peak 293.8 MiB
+Maximum + two-photo requests: [(200, 3.13), (503, 0.0)]
+Oversized chunked request: (413, 0.03); unauthenticated: (401, 0.02)
+Matching body bytes: 15,331,347; padded at byte limit: (200, 1.23)
+Three full rosters: [(200, 1.44), (200, 2.2), (503, 0.01)]; compact rosters: [(200, 1.16), (200, 1.9), (503, 0.01)]
+Match + four-photo enrollment: [(200, 2.3), (200, 4.67)]; oversized: (413, 0.01)
+Three concurrent requests (status, seconds): [(200, 3.57), (503, 0.02), (503, 0.02)]; peak 411.5 MiB

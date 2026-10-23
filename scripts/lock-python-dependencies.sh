@@ -7,10 +7,16 @@ if [[ "$("$UV" --version | cut -d ' ' -f 1-2)" != "uv 0.12.13" ]]; then
   echo "Use uv 0.12.13 to regenerate the checked-in Python locks." >&2
   exit 1
 fi
+"$UV" pip compile face-service/requirements-build.txt \
+  --python-version 3.11 --python-platform x86_64-manylinux_2_36 \
+  --generate-hashes --only-binary=:all: \
+  --custom-compile-command 'bash scripts/lock-python-dependencies.sh' \
+  --output-file face-service/requirements-build.lock --quiet
 "$UV" pip compile face-service/requirements.txt \
   --python-version 3.11 --python-platform x86_64-manylinux_2_36 \
   --generate-hashes --only-binary=:all: \
   --custom-compile-command 'bash scripts/lock-python-dependencies.sh' \
+  --no-binary=dlib --build-constraints face-service/requirements-build.txt \
   --output-file face-service/requirements.lock --quiet
 "$UV" pip compile pi-kiosk/requirements-build.txt \
   --python-version 3.11 --python-platform aarch64-manylinux_2_36 \

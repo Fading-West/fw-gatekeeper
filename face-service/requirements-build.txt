@@ -1,0 +1,5 @@
+# Source-build tools only; excluded from the runtime image.
+setuptools==80.9.0
+wheel==0.48.0
+packaging==26.3
+cmake==3.31.6

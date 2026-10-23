@@ -1,0 +1,31 @@
+Independent review of PR #165, starting at 1c00eb01362dca0e9d0a52be7c97f4491b883792.
+No production biometrics accessed, no merge or deployment, no Convex schema change.
+
+Reproduced and fixed:
+- Chunked/unknown-length and idle oversized requests could exceed admission's
+  declared-byte budget. Enforce received-byte limits and concurrent accounting.
+- FastAPI parsed unauthenticated JSON before endpoint authentication. Reject
+  invalid credentials in admission before buffering/parsing.
+- A valid 32,364,030-byte /match request with 15,500 512-d vectors returned 200
+  and peaked at 703,308 KiB (686.8 MiB), above the 512 MB plan. Limit /match to
+  8 MiB and charge four times body bytes against the 32 MiB shared budget.
+- /match retained its decoded image after releasing the image lock. Dispose of
+  it inside the lock, with a regression check on image lifetime.
+
+Validation with the existing uv Python 3.11 venv, dlib 20.0.1 and the pinned model:
+- npm run test:python: all 23 files pass, including native real-model parity.
+- npm run test:contracts: all 18 files pass.
+- Native maximum-photo test peak: 248.6 MiB; exact crop/tensor/embedding parity
+  includes six synthetic faces, four resolutions, odd sizes and image edges.
+- Expanded HTTP memory check: six-photo request 200; three maximum requests
+  200/503/503; maximum plus two-photo requests both 200; oversized chunked
+  enrollment 413; unauthenticated 401; near-limit matching 200; two concurrent
+  half-limit matching rosters both 200; oversized chunked matching 413.
+  Combined service-process high-water RSS: 409.1 MiB (<450 MiB check).
+- Admission tests cover validation/decode/model failures, disconnect,
+  cancellation, growing reservations and malformed Content-Length values.
+- git diff --check passes. Production Docker/512 MiB check runs in GitHub CI.
+
+Historical Haar templates remain incompatible for some faces; the PR README,
+description and migration plan explicitly flag repair/re-enrollment and fresh
+consent before rollout. Existing kiosk HOG templates retain the same pipeline.
