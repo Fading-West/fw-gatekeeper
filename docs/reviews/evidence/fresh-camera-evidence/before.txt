@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/07-fresh-camera-evidence/pi-kiosk/test_oct02_fresh_camera_evidence.py", line 2, in <module>
+    from scan_freshness import is_fresh_scan
+ModuleNotFoundError: No module named 'scan_freshness'

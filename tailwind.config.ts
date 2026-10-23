@@ -49,6 +49,9 @@ const config: Config = {
       backgroundSize: {
         'grid': '24px 24px',
       },
+      // Tailwind 4 renamed these scale steps; keep the existing portal appearance.
+      backdropBlur: { sm: '4px' },
+      boxShadow: { sm: '0 1px 2px 0 rgb(0 0 0 / 0.05)' },
     },
   },
   plugins: [],

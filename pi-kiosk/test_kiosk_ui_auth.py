@@ -103,6 +103,28 @@ class KioskUiAuthTests(unittest.TestCase):
         expired = supervisor_session_token("supervisor-only", int(time.time()) - 301)
         self.assertFalse(has_valid_supervisor_credential(session_token=expired))
 
+    def test_non_ascii_credentials_are_rejected_without_raising(self):
+        config.KIOSK_UI_KEY = "local-ui-key"
+        config.KIOSK_SUPERVISOR_PIN = "1234"
+        for candidate in ("\u00e9", "\u0661\u0662\u0663\u0664", "\ud800"):
+            with self.subTest(candidate=candidate):
+                self.assertFalse(has_valid_supervisor_credential(provided_pin=candidate))
+                self.assertFalse(has_valid_kiosk_ui_credential(provided_key=candidate))
+                self.assertFalse(has_valid_kiosk_ui_credential(session_token=candidate))
+                self.assertFalse(
+                    has_valid_supervisor_credential(session_token=f"{int(time.time())}.{candidate}")
+                )
+
+    def test_non_ascii_configured_secrets_still_authenticate(self):
+        config.KIOSK_UI_KEY = "cl\u00e9-locale"
+        config.KIOSK_SUPERVISOR_PIN = "\u0661\u0662\u0663\u0664"
+        self.assertTrue(has_valid_kiosk_ui_credential(provided_key="cl\u00e9-locale"))
+        self.assertTrue(has_valid_kiosk_ui_credential(session_token=kiosk_ui_session_token()))
+        self.assertFalse(has_valid_kiosk_ui_credential(provided_key="local-ui-key"))
+        self.assertTrue(has_valid_supervisor_credential(provided_pin="\u0661\u0662\u0663\u0664"))
+        self.assertTrue(has_valid_supervisor_credential(session_token=supervisor_session_token()))
+        self.assertFalse(has_valid_supervisor_credential(provided_pin="1234"))
+
     def test_supervisor_attempts_lock_and_recover_after_timeout(self):
         now = [100.0]
         limiter = SupervisorAttemptLimiter(
@@ -138,6 +160,56 @@ class KioskUiAuthTests(unittest.TestCase):
         now[0] += 301
         self.assertEqual(limiter.check_pin("supervisor-only"), (True, False))
         self.assertEqual(limiter.retry_after_seconds(), 0)
+
+
+class KioskUiNonAsciiRouteTests(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+
+        try:
+            import app as kiosk_app
+        except ImportError:  # cv2 is optional for these route-level checks.
+            import types
+
+            with mock.patch.dict(sys.modules, {"cv2": types.ModuleType("cv2")}):
+                import app as kiosk_app
+        self.app = kiosk_app
+        for name, value in {"KIOSK_UI_KEY": "local-ui-key", "KIOSK_SUPERVISOR_PIN": "1234"}.items():
+            patcher = mock.patch.object(config, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.limiter = SupervisorAttemptLimiter(max_attempts=3, window_seconds=60, lockout_seconds=300)
+        patcher = mock.patch.object(kiosk_app, "_supervisor_attempt_limiter", self.limiter)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.client = kiosk_app.app.test_client()
+
+    def test_non_ascii_supervisor_pin_is_unauthorized_and_counts_toward_lockout(self):
+        headers = {"X-Kiosk-UI-Key": "local-ui-key"}
+        first = self.client.post("/supervisor/unlock", json={"pin": "\u00e9"}, headers=headers)
+        self.assertEqual(first.status_code, 401)
+        self.assertEqual(first.get_json()["error"], "Invalid supervisor passcode")
+        second = self.client.post(
+            "/supervisor/unlock", json={"pin": "\u0661\u0662\u0663\u0664"}, headers=headers
+        )
+        self.assertEqual(second.status_code, 401)
+        self.assertFalse(self.limiter.is_locked())
+        # Lone surrogate escapes are valid JSON and decode to unencodable str values.
+        third = self.client.post(
+            "/supervisor/unlock",
+            data='{"pin": "\\ud800"}',
+            content_type="application/json",
+            headers=headers,
+        )
+        self.assertEqual(third.status_code, 429)
+        self.assertTrue(self.limiter.is_locked())
+
+    def test_non_ascii_ui_key_header_is_unauthorized(self):
+        response = self.client.post(
+            "/supervisor/unlock", json={"pin": "1234"}, headers={"X-Kiosk-UI-Key": "\u00e9"}
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(self.limiter.is_locked())
 
 
 if __name__ == "__main__":
