@@ -380,7 +380,10 @@ export const update = mutation({
     }
     updates.updatedAt = new Date().toISOString();
     await ctx.db.patch(id, updates);
-    if (fields.name !== undefined || fields.employeeId !== undefined || fields.department !== undefined) {
+    // Enrollment and the Workers page resend unchanged identity fields; only real changes are audited.
+    const identityChanged = (["name", "employeeId", "department"] as const)
+      .some((field) => field in updates && updates[field] !== worker[field]);
+    if (identityChanged) {
       await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.updateIdentity", targetTable: "workers", targetId: id,
         details: JSON.stringify({ before: { name: worker.name, employeeId: worker.employeeId, department: worker.department }, after: { name: updates.name ?? worker.name, employeeId: fields.employeeId === undefined ? worker.employeeId : updates.employeeId, department: updates.department ?? worker.department } }) });
     }
@@ -395,6 +398,8 @@ export const remove = mutation({
     const member = await assertPortalRole(ctx, ["admin"]);
     const worker = await ctx.db.get(args.id);
     if (!worker) throw new Error("Worker not found");
+    // Repeated deactivation (a retry or a stale tab) changes nothing to audit or resync.
+    if (!worker.active) return { ok: true };
     await ctx.db.patch(args.id, { active: false, updatedAt: new Date().toISOString() });
     await writeAuditLog(ctx, {
       actorUserId: member.userId,

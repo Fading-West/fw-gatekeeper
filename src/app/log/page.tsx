@@ -12,9 +12,9 @@ import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker, Worker } from '@/lib/types';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
 import { csvField } from '@/lib/csv';
+import { isValidLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
-import { isValidLocalDateString } from '@/lib/date';
 import {
   buildWorkerOptions,
   PendingDirectCorrection,
@@ -227,6 +227,15 @@ function LogPageContent() {
   }
 
   useEffect(() => {
+    // A cleared date field sends ?date=, which the API resolves to factory
+    // today. Never show or export another day's rows under a blank date.
+    if (!isValidLocalDateString(date)) {
+      setEvents([]);
+      setCorrections([]);
+      setError('Choose a date to view the activity log.');
+      setLoading(false);
+      return;
+    }
     const attendanceParams = new URLSearchParams({ date });
     const correctionParams = new URLSearchParams({ date });
     if (queryWorkerId) {
