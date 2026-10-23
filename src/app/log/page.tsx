@@ -1,20 +1,28 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { FactoryDatePage } from '@/components/FactoryDatePage';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
+import AttendanceCorrectionDialog from '@/components/AttendanceCorrectionDialog';
 import { useToast } from '@/components/Toast';
-import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker } from '@/lib/types';
+import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker, Worker } from '@/lib/types';
 import { formatFactoryLocalDateTime } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
 import { buildAttendanceExportCSV, buildHoursExportCSV } from '@/lib/attendance-export';
 import { isValidLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
+import {
+  buildWorkerOptions,
+  PendingDirectCorrection,
+  readPendingDirectCorrection,
+  sortWorkerOptions,
+  WorkerOption,
+} from '@/lib/direct-correction';
 
 function correctionLabel(action: string) {
   return action.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -23,6 +31,17 @@ function correctionLabel(action: string) {
 function correctionTimestamp(correction: AttendanceCorrection) {
   return correction.corrected_timestamp || correction.original_timestamp || correction.created_at;
 }
+
+type DirectCorrectionDraft = {
+  id: number;
+  mode: 'void' | 'add';
+  event?: AttendanceWithWorker;
+  pending?: PendingDirectCorrection;
+  // Drafts belong to one date and worker filter, like reversal drafts.
+  selection: string;
+};
+
+type WorkerListState = { status: 'idle' | 'loading' | 'ready' | 'error'; workers: Worker[] };
 
 function validDateParam(value: string | null) {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
@@ -48,23 +67,165 @@ function LogPageContent() {
   const [reversalDraft, setReversalDraft] = useState<{ correction: AttendanceCorrection; reason: string; selection: string } | null>(null);
   const [reversing, setReversing] = useState(false);
   const reversalPendingRef = useRef(false);
+  const [correctionDraft, setCorrectionDraft] = useState<DirectCorrectionDraft | null>(null);
+  const [pendingCorrection, setPendingCorrection] = useState<PendingDirectCorrection | null>(null);
+  const [workerList, setWorkerList] = useState<WorkerListState>({ status: 'idle', workers: [] });
+  const [workerListVersion, setWorkerListVersion] = useState(0);
+  const [retainedWorkers, setRetainedWorkers] = useState<{ key: string; options: Map<string, WorkerOption> }>({ key: '', options: new Map() });
+  const correctionTriggerRef = useRef<HTMLElement | null>(null);
+  const pendingFocusRef = useRef<{ trigger: HTMLElement | null; selection: string } | null>(null);
+  const addPunchRef = useRef<HTMLButtonElement | null>(null);
+  const pageHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const draftIdRef = useRef(0);
+  const reversalFormRef = useRef<HTMLDivElement | null>(null);
   const selectionKey = `${date}|${queryWorkerId}|${refreshVersion}`;
+  const draftKey = `${date}|${queryWorkerId}`;
   const visibleDraft = reversalDraft?.selection === selectionKey ? reversalDraft : null;
+  const visibleCorrectionDraft = correctionDraft?.selection === draftKey ? correctionDraft : null;
+  const currentCorrectionDraftRef = useRef(visibleCorrectionDraft);
+  currentCorrectionDraftRef.current = visibleCorrectionDraft;
   const exportsReady = !loading && !error && loadedSelection === selectionKey;
+  // Direct corrections need an authorized role and a fully loaded selection:
+  // effective events and correction history for exactly this date and worker.
+  const canCorrect = canReverse;
+  const correctionsReady = canCorrect && isValidLocalDateString(date) && date <= today && exportsReady;
+  const pendingElsewhere = pendingCorrection && pendingCorrection.request.date !== date ? pendingCorrection : null;
   const hasSourceContext = Boolean(queryWorkerId || queryAttendanceId);
   const fullDayHref = `/log?date=${encodeURIComponent(date)}`;
 
   useEffect(() => {
-    if (reversalDraft || reversing) keepDate();
-  }, [keepDate, reversalDraft, reversing]);
+    const pending = pendingFocusRef.current;
+    if (!pending || visibleCorrectionDraft) return;
+    if (pending.selection !== draftKey) {
+      pendingFocusRef.current = null;
+      return;
+    }
+    // Refresh disables the old trigger before the dialog unmounts. Keep a
+    // usable focus target while waiting, then restore it after fresh data.
+    if (!exportsReady) {
+      pageHeadingRef.current?.focus();
+      if (error) pendingFocusRef.current = null;
+      return;
+    }
+    const available = (element: HTMLElement | null) => element?.isConnected && !element.matches(':disabled');
+    const target = available(pending.trigger) ? pending.trigger
+      : available(addPunchRef.current) ? addPunchRef.current : pageHeadingRef.current;
+    target?.focus();
+    pendingFocusRef.current = null;
+  }, [draftKey, error, exportsReady, visibleCorrectionDraft]);
+
+  useEffect(() => {
+    if (reversalDraft || reversing || correctionDraft) keepDate();
+  }, [keepDate, reversalDraft, reversing, correctionDraft]);
 
   useEffect(() => {
     setReversalDraft(null);
+    setCorrectionDraft(null);
   }, [date]);
 
   useEffect(() => {
     setReversalDraft(null);
+    setCorrectionDraft(null);
   }, [queryWorkerId]);
+
+  useEffect(() => {
+    // A save from an earlier visit in this tab may still be unconfirmed.
+    setPendingCorrection(readPendingDirectCorrection());
+  }, []);
+
+  useEffect(() => {
+    if (!canCorrect) return;
+    let cancelled = false;
+    setWorkerList((current) => ({ status: 'loading', workers: current.workers }));
+    (async () => {
+      try {
+        const response = await fetch('/api/workers?scope=dashboard');
+        if (!response.ok) throw new Error('Failed to load workers');
+        const rows = await response.json();
+        if (!Array.isArray(rows)) throw new Error('Unexpected worker list');
+        if (!cancelled) setWorkerList({ status: 'ready', workers: rows });
+      } catch {
+        if (!cancelled) setWorkerList({ status: 'error', workers: [] });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [canCorrect, workerListVersion]);
+
+  useEffect(() => {
+    // Remember every identity seen for this date and filter, so an inactive
+    // worker stays selectable after a void removes their last effective row.
+    if (!exportsReady) return;
+    setRetainedWorkers((current) => ({
+      key: draftKey,
+      options: buildWorkerOptions([], events, corrections, current.key === draftKey ? current.options : new Map()),
+    }));
+  }, [exportsReady, events, corrections, draftKey]);
+
+  const workerOptions = useMemo(() => {
+    const merged = buildWorkerOptions(
+      workerList.workers,
+      exportsReady ? events : [],
+      exportsReady ? corrections : [],
+      retainedWorkers.key === draftKey ? retainedWorkers.options : new Map(),
+    );
+    return sortWorkerOptions(merged.values()).filter((worker) => !queryWorkerId || worker.id === queryWorkerId);
+  }, [workerList.workers, exportsReady, events, corrections, retainedWorkers, draftKey, queryWorkerId]);
+
+  let addDisabledReason = '';
+  if (!isValidLocalDateString(date)) addDisabledReason = 'Choose a valid date to add a missing punch.';
+  else if (date > today) addDisabledReason = 'Future dates cannot be corrected.';
+  else if (pendingElsewhere) addDisabledReason = `Resolve the unconfirmed correction for ${pendingElsewhere.request.date} first.`;
+  else if (error) addDisabledReason = 'The activity log did not load. Retry before correcting.';
+  else if (!exportsReady) addDisabledReason = 'Loading activity log…';
+  else if (workerList.status === 'error') addDisabledReason = 'Could not load the worker list.';
+  else if (workerList.status !== 'ready') addDisabledReason = 'Loading workers…';
+  else if (workerOptions.length === 0) addDisabledReason = 'No selectable workers for this date.';
+  const rowCorrectionsReady = correctionsReady && !pendingElsewhere;
+
+  function openCorrection(trigger: HTMLElement | null, draft: Omit<DirectCorrectionDraft, 'selection' | 'id'>) {
+    if (!canCorrect || !rowCorrectionsReady || reversing) return;
+    correctionTriggerRef.current = trigger;
+    setReversalDraft(null);
+    // An unconfirmed save on this date must be retried before any new draft.
+    const pending = pendingCorrection && pendingCorrection.request.date === date ? pendingCorrection : undefined;
+    if (pending) {
+      const sourceEvent = events.find((event) => event.id === pending.request.original_attendance_id);
+      setCorrectionDraft({ id: ++draftIdRef.current, mode: pending.request.action === 'void_event' ? 'void' : 'add', event: sourceEvent, pending, selection: draftKey });
+      return;
+    }
+    setCorrectionDraft({ ...draft, id: ++draftIdRef.current, selection: draftKey });
+  }
+
+  function openReversalFor(event: AttendanceWithWorker) {
+    const correction = corrections.find((item) => item.id === event.correction_id);
+    if (!canReverse || !correction || correction.reversal_id || reversing || !exportsReady) return;
+    setCorrectionDraft(null);
+    setReversalDraft({ correction, reason: '', selection: selectionKey });
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => reversalFormRef.current?.scrollIntoView?.({ block: 'center' }));
+    }
+  }
+
+  function renderRowAction(event: AttendanceWithWorker) {
+    if (event.source === 'correction') {
+      const correction = corrections.find((item) => item.id === event.correction_id);
+      return (
+        <button type="button" className="btn-secondary text-xs" disabled={!correction || Boolean(correction.reversal_id) || reversing || !exportsReady} onClick={() => openReversalFor(event)}>
+          Reverse
+        </button>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className="btn-secondary text-xs"
+        disabled={!rowCorrectionsReady || reversing}
+        onClick={(click) => openCorrection(click.currentTarget, { mode: 'void', event })}
+      >
+        Correct
+      </button>
+    );
+  }
 
   useEffect(() => {
     // A cleared date field sends ?date=, which the API resolves to factory
@@ -220,7 +381,7 @@ function LogPageContent() {
     <div className="animate-fade-in">
       <div className="flex items-start justify-between mb-8 flex-wrap gap-4">
         <div>
-          <h1 className="page-title text-slate-100">
+          <h1 ref={pageHeadingRef} tabIndex={-1} className="page-title text-slate-100 focus:outline-none">
             Activity <span className="text-gold">Log</span>
           </h1>
           <p className="text-sm text-slate-500 mt-1 font-mono">
@@ -233,9 +394,21 @@ function LogPageContent() {
           <input
             type="date"
             value={date}
-            onChange={(e) => { setReversalDraft(null); setDate(e.target.value); }}
+            onChange={(e) => { setReversalDraft(null); setCorrectionDraft(null); setDate(e.target.value); }}
             className="input-field w-auto"
           />
+          {canCorrect && (
+            <button
+              ref={addPunchRef}
+              type="button"
+              onClick={(click) => openCorrection(click.currentTarget, { mode: 'add' })}
+              disabled={Boolean(addDisabledReason) || reversing}
+              aria-describedby={addDisabledReason ? 'add-punch-status' : undefined}
+              className="btn-secondary flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Add missing punch
+            </button>
+          )}
           <button
             onClick={exportHoursCSV}
             disabled={!exportsReady}
@@ -256,7 +429,33 @@ function LogPageContent() {
         </div>
       </div>
 
+      {canCorrect && addDisabledReason && (
+        <p id="add-punch-status" role="status" className="-mt-5 mb-6 text-right text-xs text-slate-500">
+          {addDisabledReason}
+          {workerList.status === 'error' && isValidLocalDateString(date) && (
+            <button type="button" className="ml-2 text-gold hover:text-gold-light" onClick={() => setWorkerListVersion((version) => version + 1)}>
+              Retry
+            </button>
+          )}
+        </p>
+      )}
+
       {newDay && <FactoryDayNotice date={date} today={today} />}
+
+      {canCorrect && pendingCorrection && !visibleCorrectionDraft && (
+        <div role="alert" className="mb-6 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <span className="font-medium">Save may have completed:</span> {correctionLabel(pendingCorrection.request.action)} for {pendingCorrection.worker_label} on {pendingCorrection.request.date}.
+          {pendingElsewhere ? (
+            <Link href={`/log?date=${encodeURIComponent(pendingElsewhere.request.date)}`} className="ml-2 text-gold hover:text-gold-light">
+              Open {pendingElsewhere.request.date} to retry the same save
+            </Link>
+          ) : (
+            <button type="button" className="ml-2 text-gold hover:text-gold-light disabled:opacity-50" disabled={!rowCorrectionsReady} onClick={(click) => openCorrection(click.currentTarget, { mode: 'add' })}>
+              Retry same save
+            </button>
+          )}
+        </div>
+      )}
 
       {hasSourceContext && (
         <div className="glass-card mb-6 flex flex-col gap-4 border-l-4 border-gold/70 px-5 py-4 md:flex-row md:items-center md:justify-between">
@@ -284,6 +483,9 @@ function LogPageContent() {
       {error && (
         <div role="alert" className="mb-6 rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-300">
           {error}
+          <button type="button" className="ml-3 text-gold hover:text-gold-light" onClick={() => setRefreshVersion((version) => version + 1)}>
+            Retry
+          </button>
         </div>
       )}
 
@@ -292,7 +494,7 @@ function LogPageContent() {
       ) : error ? null : (
       <>
       <div className="glass-card overflow-hidden">
-        <AttendanceTable events={events} targetAttendanceId={queryAttendanceId} />
+        <AttendanceTable events={events} targetAttendanceId={queryAttendanceId} renderRowAction={canCorrect ? renderRowAction : undefined} />
       </div>
 
       <section className="glass-card mt-6 overflow-hidden">
@@ -321,6 +523,7 @@ function LogPageContent() {
                     <td className="px-5 py-3">
                       <span className="badge border border-gold/20 bg-gold/10 text-gold text-[11px]">{correctionLabel(correction.action)}</span>
                       {correction.reversal_id && <span className="ml-2 text-xs text-amber-300">Reversed</span>}
+                      <div className="mt-1 text-[11px] text-slate-500">{correction.related_exception_key ? 'From exception' : 'Direct (no exception)'}</div>
                     </td>
                     <td className="px-5 py-3">
                       <div className="font-display font-medium text-slate-200">{correction.worker_name || correction.worker_id}</div>
@@ -348,7 +551,7 @@ function LogPageContent() {
           </div>
         )}
         {canReverse && visibleDraft && (
-          <div className="border-t border-navy-600/50 p-5">
+          <div ref={reversalFormRef} className="border-t border-navy-600/50 p-5">
             <label htmlFor="reversal-reason" className="section-label mb-2 block">Reason for reversal</label>
             <p className="mb-3 text-sm text-slate-300">
               {visibleDraft.correction.worker_name || visibleDraft.correction.worker_id} · {visibleDraft.correction.date} · {correctionLabel(visibleDraft.correction.action)}
@@ -364,6 +567,35 @@ function LogPageContent() {
         )}
       </section>
       </>
+      )}
+
+      {canCorrect && visibleCorrectionDraft && (
+        <AttendanceCorrectionDialog
+          key={visibleCorrectionDraft.id}
+          date={date}
+          mode={visibleCorrectionDraft.mode}
+          sourceEvent={visibleCorrectionDraft.event}
+          workerOptions={workerOptions}
+          lockedWorkerId={queryWorkerId || undefined}
+          effectiveEvents={events}
+          pending={visibleCorrectionDraft.pending}
+          ready={correctionsReady}
+          returnFocusRef={correctionTriggerRef}
+          onPendingStart={setPendingCorrection}
+          onPendingSettled={(requestId) => setPendingCorrection((current) => current?.request_id === requestId ? null : current)}
+          onSaved={() => {
+            // A late success from an earlier dialog must not close a newer draft.
+            const draftId = visibleCorrectionDraft.id;
+            if (currentCorrectionDraftRef.current?.id === draftId) {
+              pendingFocusRef.current = { trigger: correctionTriggerRef.current, selection: draftKey };
+            }
+            setCorrectionDraft((current) => current?.id === draftId ? null : current);
+            setRefreshVersion((version) => version + 1);
+            toast('Attendance correction saved');
+          }}
+          onRejectedAfterClose={(message) => toast(`Correction not saved: ${message}`, 'error')}
+          onClose={() => setCorrectionDraft(null)}
+        />
       )}
     </div>
   );
