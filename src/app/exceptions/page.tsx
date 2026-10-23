@@ -30,6 +30,7 @@ const typeLabels: Record<string, string> = {
   missing_clock_out: 'Still clocked in',
   scan_sequence: 'Bad scan sequence',
   recognition_review: 'Recognition review',
+  inactive_worker_scan: 'Deactivated worker scan',
 };
 
 const severityStyles: Record<ShiftExceptionSeverity, string> = {
