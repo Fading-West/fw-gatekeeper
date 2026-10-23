@@ -23,18 +23,18 @@ describe("same-day schedules", () => {
   it("validates merged partial updates atomically", async () => {
     const t = await admin();
     const { id } = await t.mutation(api.schedules.create, valid);
-    await expect(t.mutation(api.schedules.update, { id, startTime: "15:00" })).rejects.toThrow("Overnight");
-    await expect(t.mutation(api.schedules.update, { id, endTime: "05:00" })).rejects.toThrow("Overnight");
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, startTime: "15:00" })).rejects.toThrow("Overnight");
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, endTime: "05:00" })).rejects.toThrow("Overnight");
     expect(await t.query(api.schedules.list, {})).toMatchObject([{ start_time: "06:00", end_time: "14:30" }]);
-    await t.mutation(api.schedules.update, { id, name: "Renamed", endTime: "15:00" });
+    await t.mutation(api.schedules.update, { id, expectedRevision: 0, name: "Renamed", endTime: "15:00" });
   });
   it("allows repairing or removing legacy overnight schedules", async () => {
     const t = await admin();
     const id = await t.run(ctx => ctx.db.insert("schedules", { ...valid, startTime: "22:00", endTime: "06:00", active: true, createdAt: new Date().toISOString() }));
-    await expect(t.mutation(api.schedules.update, { id, name: "Still invalid" })).rejects.toThrow("Overnight");
-    await t.mutation(api.schedules.update, { id, startTime: "05:00" });
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, name: "Still invalid" })).rejects.toThrow("Overnight");
+    await t.mutation(api.schedules.update, { id, expectedRevision: 0, startTime: "05:00" });
     expect(await t.query(api.schedules.list, {})).toMatchObject([{ start_time: "05:00", end_time: "06:00" }]);
-    await t.mutation(api.schedules.remove, { id });
+    await t.mutation(api.schedules.remove, { id, expectedRevision: 1 });
   });
 });
 
@@ -43,7 +43,7 @@ describe("schedule fields", () => {
     const t = await admin();
     await expect(t.mutation(api.schedules.create, { ...valid, name })).rejects.toThrow("Schedule name");
     const { id } = await t.mutation(api.schedules.create, valid);
-    await expect(t.mutation(api.schedules.update, { id, name })).rejects.toThrow("Schedule name");
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, name })).rejects.toThrow("Schedule name");
     expect((await t.query(api.schedules.list, {}))[0].name).toBe("Day");
   });
 
@@ -51,7 +51,7 @@ describe("schedule fields", () => {
     const t = await admin();
     await expect(t.mutation(api.schedules.create, { ...valid, days })).rejects.toThrow("Schedule days");
     const { id } = await t.mutation(api.schedules.create, valid);
-    await expect(t.mutation(api.schedules.update, { id, days })).rejects.toThrow("Schedule days");
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, days })).rejects.toThrow("Schedule days");
     expect((await t.query(api.schedules.list, {}))[0].days).toBe(valid.days);
   });
 
@@ -60,7 +60,7 @@ describe("schedule fields", () => {
     await expect(t.mutation(api.schedules.create, { ...valid, days: [1] as unknown as string })).rejects.toThrow();
     await expect(t.mutation(api.schedules.create, { ...valid, name: 42 as unknown as string })).rejects.toThrow();
     const { id } = await t.mutation(api.schedules.create, valid);
-    await expect(t.mutation(api.schedules.update, { id, days: [1] as unknown as string })).rejects.toThrow();
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, days: [1] as unknown as string })).rejects.toThrow();
   });
 
   it("validates the merged row and permits a legacy row to be repaired", async () => {
@@ -68,9 +68,9 @@ describe("schedule fields", () => {
     const id = await t.run(ctx => ctx.db.insert("schedules", {
       ...valid, name: " ", days: "1,2", active: true, createdAt: new Date().toISOString(),
     }));
-    await expect(t.mutation(api.schedules.update, { id, name: "Fixed" })).rejects.toThrow("Schedule days");
-    await expect(t.mutation(api.schedules.update, { id, days: "[1,2]" })).rejects.toThrow("Schedule name");
-    await t.mutation(api.schedules.update, { id, name: " Fixed ", days: "[1,2]" });
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, name: "Fixed" })).rejects.toThrow("Schedule days");
+    await expect(t.mutation(api.schedules.update, { id, expectedRevision: 0, days: "[1,2]" })).rejects.toThrow("Schedule name");
+    await t.mutation(api.schedules.update, { id, expectedRevision: 0, name: " Fixed ", days: "[1,2]" });
     expect((await t.query(api.schedules.list, {}))[0]).toMatchObject({ name: "Fixed", days: "[1,2]" });
   });
 });
