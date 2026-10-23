@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/12-conservative-kiosk-health
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  01:51:41
+   Duration  424ms (transform 86ms, setup 0ms, import 195ms, tests 70ms, environment 0ms)

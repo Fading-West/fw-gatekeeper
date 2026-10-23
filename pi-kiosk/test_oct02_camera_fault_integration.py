@@ -39,9 +39,9 @@ class FaultFreshnessQA(unittest.TestCase):
         handler = next(n for n in ast.walk(run) if isinstance(n, ast.ExceptHandler)
             and any(isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
                 and s.value.args and isinstance(s.value.args[0], ast.Constant)
-                and s.value.args[0].value == 'Capture error: %s' for s in n.body))
+                and isinstance(s.value.args[0].value, str) and s.value.args[0].value.startswith('Capture error') for s in n.body))
         context = {'logger': mock.Mock(), 'e': RuntimeError('synthetic capture loss'),
-            'time': SimpleNamespace(time=lambda: 100.0, sleep=lambda n: None),
+            'time': SimpleNamespace(time=lambda: -3000.0, monotonic=lambda: 100.0, sleep=lambda n: None),
             'camera_invalidated_at': [0.0], 'pending_clock': [{'worker_id': 'synthetic'}],
             'current_result': [{'frame_ts': 99.0}], 'pending_frame': [('synthetic-frame',)],
             'detect_lock': threading.Lock(), 'liveness': mock.Mock(), 'camera_healthy': True,
