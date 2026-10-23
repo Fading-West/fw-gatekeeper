@@ -1,12 +1,11 @@
 import {NextRequest} from 'next/server';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({portal:vi.fn(),authenticate:vi.fn(),update:vi.fn(),fetch:vi.fn()}));
+const mocks=vi.hoisted(()=>({authenticate:vi.fn(),update:vi.fn(),fetch:vi.fn()}));
 vi.mock('@/lib/auth',()=>({hasDeviceKeyFormat:()=>true,unauthorizedApiResponse:()=>Response.json({error:'Unauthorized'},{status:401})}));
-vi.mock('@/lib/portal-auth',()=>({hasValidPortalSession:mocks.portal}));
 vi.mock('@/lib/kiosk-device-auth',()=>({authenticateKiosk:mocks.authenticate}));
 vi.mock('@/lib/convex-ingest',()=>({fetchWorkersForSync:mocks.fetch,updateKioskLastSync:mocks.update,issueRosterReceipt:vi.fn()}));
 import {GET} from './route';
-beforeEach(()=>{vi.useFakeTimers({toFake:['Date']});vi.clearAllMocks();mocks.portal.mockResolvedValue(false);mocks.authenticate.mockResolvedValue({documentId:'synthetic-kiosk'});mocks.update.mockResolvedValue({updated:true});mocks.fetch.mockResolvedValue({workers:[]});});
+beforeEach(()=>{vi.useFakeTimers({toFake:['Date']});vi.clearAllMocks();mocks.authenticate.mockResolvedValue({documentId:'synthetic-kiosk'});mocks.update.mockResolvedValue({updated:true});mocks.fetch.mockResolvedValue({workers:[]});});
 afterEach(()=>vi.useRealTimers());
 const req=(ok:boolean)=>new NextRequest(`https://synthetic.test/api/sync?kiosk_id=synthetic-kiosk&camera_ok=${ok?1:0}`);
 it('orders concurrent health observations by route arrival even when older authentication finishes last',async()=>{
