@@ -1,11 +1,52 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import { internalMutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 
 import type { Doc } from "./_generated/dataModel";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 export type PortalMemberRole = Doc<"portalMembers">["role"];
+
+const SESSION_CLEANUP_BATCH = 100;
+
+// Time alone does not invalidate cached/subscribed Convex queries. Deleting
+// the expired session changes the document every authorized query reads.
+export const expireSessions = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const expired = await ctx.db.query("authSessions")
+      .withIndex("by_expirationTime", (q) => q.lte("expirationTime", Date.now()))
+      .take(SESSION_CLEANUP_BATCH);
+    for (const session of expired) {
+      await ctx.db.delete(session._id);
+      await ctx.scheduler.runAfter(0, internal.access.removeExpiredSessionTokens, { sessionId: session._id });
+    }
+    if (expired.length === SESSION_CLEANUP_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.access.expireSessions, {});
+    }
+    return expired.length;
+  },
+});
+
+export const removeExpiredSessionTokens = internalMutation({
+  args: { sessionId: v.id("authSessions") },
+  returns: v.number(),
+  handler: async (ctx, { sessionId }) => {
+    // Never remove tokens for a session that is still present.
+    if (await ctx.db.get(sessionId)) return 0;
+    const tokens = await ctx.db.query("authRefreshTokens")
+      .withIndex("sessionId", (q) => q.eq("sessionId", sessionId))
+      .take(SESSION_CLEANUP_BATCH);
+    for (const token of tokens) await ctx.db.delete(token._id);
+    if (tokens.length === SESSION_CLEANUP_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.access.removeExpiredSessionTokens, { sessionId });
+    }
+    return tokens.length;
+  },
+});
 
 export async function hasCurrentPortalSession(ctx: QueryCtx | MutationCtx, userId: Id<"users">) {
   const identity = await ctx.auth.getUserIdentity();
