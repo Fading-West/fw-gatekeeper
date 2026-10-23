@@ -321,6 +321,18 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
         self.assertFalse(own_photo.exists())
         self.assertEqual(portal_photo.read_bytes(), b"portal photo")
 
+    def test_removing_local_worker_preserves_a_shared_legacy_photo_outside_photo_root(self):
+        with tempfile.TemporaryDirectory() as legacy:
+            photo = Path(legacy) / "shared.jpg"
+            photo.write_bytes(b"shared legacy photo")
+            database.add_worker("Local", ENCODING, photo_paths=[str(photo)])
+            database.add_worker("Portal", ENCODING, server_id="portal-id", photo_paths=[str(photo)])
+            with mock.patch("builtins.print"):
+                self.assertEqual(enroll.remove_worker("Local"), 0)
+            self.assertIsNone(database.get_worker_by_name("Local"))
+            self.assertIsNotNone(database.get_worker_by_name("Portal"))
+            self.assertEqual(photo.read_bytes(), b"shared legacy photo")
+
 
 if __name__ == "__main__":
     unittest.main()

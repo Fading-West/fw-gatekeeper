@@ -318,7 +318,7 @@ def _finish_photo_cleanup(journaled: list[str], unjournaled=(), folder: Optional
     complete = True
     for photo_path in unjournaled:
         try:
-            Path(photo_path).unlink(missing_ok=True)
+            database.remove_unreferenced_legacy_photo(photo_path)
         except OSError as exc:
             print(f"Could not delete photo outside {config.PHOTO_DIR}; remove it manually: {exc}")
             complete = False

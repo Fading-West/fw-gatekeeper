@@ -488,6 +488,22 @@ def pending_removed_worker_cleanup(name: str) -> tuple[list[str], list[str]]:
     return [row["path"] for row in rows], sorted({row["owner_folder"] for row in rows if row["owner_folder"]})
 
 
+def remove_unreferenced_legacy_photo(path: str) -> None:
+    """Retire an external legacy path without deleting another worker's photo."""
+    conn = _get_conn()
+    with conn:
+        # Serialize the ownership recheck and unlink with worker publication.
+        conn.execute("BEGIN IMMEDIATE")
+        candidate = Path(path).resolve()
+        references = (
+            Path(value).resolve()
+            for row in conn.execute("SELECT photo_paths FROM workers")
+            for value in json.loads(row["photo_paths"] or "[]")
+        )
+        if not any(value == candidate for value in references):
+            Path(path).unlink(missing_ok=True)
+
+
 def remove_worker(name: str) -> bool:
     """Remove a local-only worker by name (see remove_local_worker)."""
     return remove_local_worker(name) is not None
