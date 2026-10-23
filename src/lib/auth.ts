@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 
 function getKioskApiKey(): string {
@@ -22,12 +23,18 @@ export function hasValidKioskKey(req: NextRequest): boolean {
     return process.env.FW_ALLOW_UNCONFIGURED_KIOSK_KEY === 'true' && process.env.NODE_ENV !== 'production';
   }
 
+  // Next.js Proxy and the API routes run on Node.js. Hash both keys so the
+  // constant-time comparison always receives equal-length buffers.
+  const configuredDigest = createHash('sha256').update(configuredKey).digest();
+  const matchesKey = (key: string | null): boolean => key !== null &&
+    timingSafeEqual(createHash('sha256').update(key).digest(), configuredDigest);
+
   const authHeader = req.headers.get('authorization');
-  if (authHeader?.startsWith('Bearer ') && authHeader.slice('Bearer '.length).trim() === configuredKey) {
+  if (authHeader?.startsWith('Bearer ') && matchesKey(authHeader.slice('Bearer '.length).trim())) {
     return true;
   }
 
-  return req.headers.get('x-kiosk-key') === configuredKey;
+  return matchesKey(req.headers.get('x-kiosk-key'));
 }
 
 export function unauthorizedApiResponse(message = 'Unauthorized'): NextResponse {
