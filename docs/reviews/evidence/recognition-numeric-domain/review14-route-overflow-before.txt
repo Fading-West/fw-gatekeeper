@@ -1,0 +1,75 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias bestScore before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias best_score before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias score before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias confidence before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias threshold before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias matchThreshold before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias brightness before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias imageQuality before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+stdout | review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias blur before dropping it
+next_secured_ingest_recognition { received: 1, ingested: 1, skipped: 0 }
+
+ ❯ review14-raw-overflow-route.test.ts (9 tests | 9 failed) 20ms
+   × rejects valid-JSON overflow in raw numeric alias bestScore before dropping it 12ms
+   × rejects valid-JSON overflow in raw numeric alias best_score before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias score before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias confidence before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias threshold before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias matchThreshold before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias brightness before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias imageQuality before dropping it 1ms
+   × rejects valid-JSON overflow in raw numeric alias blur before dropping it 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias bestScore before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias best_score before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias score before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias confidence before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias threshold before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias matchThreshold before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias brightness before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias imageQuality before dropping it
+ FAIL  review14-raw-overflow-route.test.ts > rejects valid-JSON overflow in raw numeric alias blur before dropping it
+AssertionError: expected 201 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 201
+
+ ❯ review14-raw-overflow-route.test.ts:11:26
+      9|  const body=`{"attempts":[{"timestamp":"2026-10-01T08:00:00","faceDete…
+     10|  const response=await POST(new NextRequest('https://synthetic.test/api…
+     11|  expect(response.status).toBe(400);expect(mocks.ingest).not.toHaveBeen…
+       |                          ^
+     12| });
+     13|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  9 failed (9)
+   Start at  02:43:01
+   Duration  329ms (transform 34ms, setup 0ms, import 132ms, tests 20ms, environment 0ms)

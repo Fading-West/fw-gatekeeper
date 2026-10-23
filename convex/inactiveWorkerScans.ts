@@ -1,3 +1,4 @@
+import { buildExceptionSourceFingerprint } from "./exceptionSourceFingerprint";
 import type { Doc } from "./_generated/dataModel";
 import { getFactoryLocalTimestamp } from "./localDate";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
@@ -6,6 +7,7 @@ const ENROLL_ACTION = "workers.enroll";
 const DEACTIVATION_ACTIONS = new Set(["workers.remove", "workers.purgeBiometrics"]);
 
 export type InactiveWorkerScanExceptionInput = {
+  sourceFingerprint: string;
   key: string;
   date: string;
   type: "inactive_worker_scan";
@@ -32,6 +34,7 @@ type DeactivationBoundary = {
   // is always after it; an approximate boundary can only miss earlier scans.
   at: string;
   exact: boolean;
+  auditId?: string;
 };
 
 function parseDetails(details?: string) {
@@ -62,7 +65,7 @@ async function findDeactivationBoundary(ctx: any, worker: Doc<"workers">): Promi
   if (deactivation) {
     const wasActive = deactivation.action === "workers.purgeBiometrics" &&
       parseDetails(deactivation.details)?.wasActive === true;
-    return { at: deactivation.createdAt, exact: lastEnrollIndex >= 0 || wasActive };
+    return { at: deactivation.createdAt, exact: lastEnrollIndex >= 0 || wasActive, auditId: String(deactivation._id) };
   }
 
   // Deactivated before audit rows existed: updatedAt is written on deactivation
@@ -154,6 +157,10 @@ export async function buildInactiveWorkerScanExceptions(
     const activityLog = input.activityLogHref(input.date, workerId, attendanceId);
 
     exceptions.push({
+      sourceFingerprint: buildExceptionSourceFingerprint({
+        date: input.date, type: "inactive_worker_scan", workerId,
+        attendanceEvents: [event], deactivation: boundary,
+      }),
       key: `${input.date}:inactive_worker_scan:${workerId}:${attendanceId}`,
       date: input.date,
       type: "inactive_worker_scan",

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { AttendanceWithWorker } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 
 export function attendanceRowId(id: string) {
   return `attendance-row-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
@@ -51,7 +52,7 @@ export default function AttendanceTable({
                 className={`border-b border-navy-700/30 table-row-hover transition-colors ${targeted ? 'bg-gold/5 ring-1 ring-inset ring-gold/30' : ''}`}
               >
                 <td className="py-3 px-4 font-mono text-xs text-slate-400 tabular-nums">
-                  {new Date(e.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  {formatFactoryLocalDateTime(e.timestamp, '—', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
                 </td>
                 <td className="py-3 px-4">
                   <div className="font-display font-medium text-slate-200 text-sm">{e.worker_name}</div>

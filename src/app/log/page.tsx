@@ -10,8 +10,9 @@ import AttendanceTable, { attendanceRowId } from '@/components/AttendanceTable';
 import AttendanceCorrectionDialog from '@/components/AttendanceCorrectionDialog';
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker, Worker } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
-import { csvField } from '@/lib/csv';
+import { buildAttendanceExportCSV, buildHoursExportCSV } from '@/lib/attendance-export';
 import { isValidLocalDateString } from '@/lib/date';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
@@ -343,11 +344,7 @@ function LogPageContent() {
   };
 
   const exportCSV = () => {
-    const header = 'Time,Worker,Department,Event,Kiosk,Source,Correction Reason,Note\n';
-    const rows = events.map((e) =>
-      [e.timestamp, e.worker_name, e.worker_department, e.event_type, e.kiosk_name || '', e.source || 'kiosk', e.correction_reason || '', e.note || ''].map(csvField).join(',')
-    ).join('\n');
-    downloadCSV(header + rows, `gatekeeper-${date}.csv`);
+    downloadCSV(buildAttendanceExportCSV(events), `gatekeeper-${date}.csv`);
   };
 
   const exportHoursCSV = async () => {
@@ -377,12 +374,7 @@ function LogPageContent() {
     if (hoursRows.some((row) => row.ambiguous)) {
       toast('Some workers need review: punches are missing, repeated, or exceed the maximum shift length. Their hours are blank in the CSV.', 'info');
     }
-    const rows = hoursRows.map((row) =>
-      [row.name, row.department, row.firstIn, row.lastOut, row.hours, row.note].map(csvField).join(',')
-    );
-
-    const header = 'Worker,Department,First In,Last Out,Hours,Note\n';
-    downloadCSV(header + rows.join('\n'), `gatekeeper-hours-${date}.csv`);
+    downloadCSV(buildHoursExportCSV(hoursRows), `gatekeeper-hours-${date}.csv`);
   };
 
   return (
@@ -396,6 +388,7 @@ function LogPageContent() {
             {events.length} effective events · {corrections.length} correction{corrections.length === 1 ? '' : 's'}
             {queryWorkerId ? ' · worker filtered' : ''}
           </p>
+          <p className="text-xs text-slate-400 mt-2">Exports include stable worker IDs. Employee IDs reflect the current roster.</p>
         </div>
         <div className="flex items-center gap-3">
           <input
@@ -537,11 +530,11 @@ function LogPageContent() {
                       <div className="text-[11px] font-mono text-slate-500">{correction.worker_department}</div>
                     </td>
                     <td className="px-5 py-3 font-mono text-xs text-slate-400">
-                      {new Date(correctionTimestamp(correction)).toLocaleString()}
+                      {formatFactoryLocalDateTime(correctionTimestamp(correction))}
                     </td>
                     <td className="px-5 py-3 text-slate-400">
                       {correction.reason}
-                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {correction.reversed_at ? new Date(correction.reversed_at).toLocaleString() : ''}</div>}
+                      {correction.reversal_id && <div className="mt-1 text-amber-200">Reversal: {correction.reversal_reason} · {formatFactoryLocalDateTime(correction.reversed_at, '')}</div>}
                     </td>
                     <td className="px-5 py-3 text-xs text-slate-500">
                       {correction.supervisor_name || 'Not recorded'}

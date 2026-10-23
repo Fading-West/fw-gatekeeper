@@ -23,8 +23,10 @@ assert.match(schema, /\.index\("by_date",\s*\["date"\]\)/, 'Exception reviews ne
 
 assert.match(exceptions, /export const summary\s*=\s*query/, 'Shift exceptions must expose a summary query.');
 assert.match(exceptions, /export const review\s*=\s*mutation/, 'Shift exceptions must expose a review mutation.');
-assert.match(exceptions, /getScheduleForWorker/, 'Shift exceptions should match workers against schedules.');
-assert.match(exceptions, /department[\s\S]*global|todaysSchedules\.find\(\(schedule\) => !normalizeText\(schedule\.department\)\)/, 'Schedule matching should prefer department schedules and fall back to global schedules.');
+assert.match(exceptions, /resolveScheduleAssignment/, 'Shift exceptions should share unique/none/ambiguous schedule matching.');
+const assignment = read('convex/scheduleAssignment.ts');
+assert.match(assignment, /departmentMatches\.length \? departmentMatches : today\.filter/, 'Matching must prefer the department tier and fall back to the default tier.');
+assert.match(assignment, /kind: 'ambiguous'/, 'Matching must preserve ambiguity rather than invent a priority.');
 assert.match(exceptions, /missing_arrival/, 'Shift exceptions must include missing arrivals.');
 assert.match(exceptions, /late_arrival/, 'Shift exceptions must include late arrivals.');
 assert.match(exceptions, /missing_clock_out/, 'Shift exceptions must include missing clock-out cases.');
@@ -132,7 +134,7 @@ assert.match(types, /interface ShiftExceptionsResponse/, 'Shared types must defi
 assert.match(inactiveWorkerScans, /export async function buildInactiveWorkerScanExceptions/, 'Deactivated-worker scan detection should live in its own builder module.');
 assert.match(inactiveWorkerScans, /type: "inactive_worker_scan"[\s\S]*severity: "critical"/, 'Deactivated-worker scans should be critical inactive_worker_scan exceptions.');
 assert.match(inactiveWorkerScans, /key: `\$\{input\.date\}:inactive_worker_scan:\$\{workerId\}:\$\{attendanceId\}`/, 'Deactivated-worker scan reviews should be keyed per attendance event.');
-assert.match(exceptions, /for \(const input of inactiveWorkerScans\) exceptions\.push\(createException\(input\)\)/, 'Shift exceptions should add deactivated-worker scans through createException.');
+assert.match(exceptions, /for \(const \{ sourceFingerprint, \.\.\.input \} of inactiveWorkerScans\) \{[\s\S]*?recognitionFingerprints\.set\(input\.key, sourceFingerprint\);[\s\S]*?exceptions\.push\(createException\(input\)\)/, 'Shift exceptions should add deactivated-worker scans through createException.');
 assert.match(exceptions, /exception\.type === "inactive_worker_scan"[\s\S]*action:\s*"review_only"[\s\S]*label:\s*"Review deactivated-worker scan"/, 'Deactivated-worker scans need an explicit review-only suggested resolution.');
 assert.match(page, /inactive_worker_scan:\s*'Deactivated worker scan'/, 'Exceptions page should label deactivated-worker scans.');
 assert.match(dashboard, /inactive_worker_scan:\s*'Deactivated worker scan'/, 'Dashboard exception labels should include deactivated-worker scans.');

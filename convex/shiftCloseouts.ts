@@ -64,6 +64,7 @@ function buildChecklist(input: {
   recognitionReviews: any[];
   kioskWarnings: number;
   unavailableWorkers: number;
+  notYetDueWorkers: number;
   acknowledgedBlockers: boolean;
 }) {
   const criticalClear = input.criticalExceptions.length === 0 || input.acknowledgedBlockers;
@@ -92,8 +93,19 @@ function buildChecklist(input: {
       status: input.acknowledgedBlockers ? "clear" : "blocked",
       count: input.unavailableWorkers,
       href: "/schedules",
-      proof: proof(input.unavailableWorkers, "workers with unsupported schedules", "/schedules", false),
-      description: `${input.unavailableWorkers} workers are excluded from attendance totals until their unsupported schedules are fixed.`,
+      proof: proof(input.unavailableWorkers, "workers without unique supported schedules", "/schedules", false),
+      description: `${input.unavailableWorkers} workers cannot be classified against a unique supported schedule for this date. Totals cover unique supported assignments only; review unavailable coverage before signoff.`,
+    }] : []),
+    // The signed snapshot has no not-yet-due field, so signing before a shift
+    // starts needs an acknowledgement note to explain the expected/present gap.
+    ...(input.notYetDueWorkers > 0 ? [{
+      id: "not_yet_due",
+      label: "Shifts not yet started acknowledged",
+      status: input.acknowledgedBlockers ? "clear" : "blocked",
+      count: input.notYetDueWorkers,
+      href: `/briefing?date=${input.date}`,
+      proof: proof(input.notYetDueWorkers, "scheduled workers not yet due", `/briefing?date=${input.date}`, false),
+      description: `${plural(input.notYetDueWorkers, "scheduled worker")} ${input.notYetDueWorkers === 1 ? "has" : "have"} not reached shift start; the signed record will not count them as present or missing.`,
     }] : []),
     {
       id: "critical_exceptions",
@@ -152,6 +164,7 @@ function buildSuggestedNote(input: {
     present: number;
     late: number;
     missing: number;
+    not_yet_due: number;
     open_exceptions: number;
     critical_exceptions: number;
     missing_clock_outs: number;
@@ -166,6 +179,8 @@ function buildSuggestedNote(input: {
     `${input.summary.present} present`,
     `${input.summary.late} late`,
     `${input.summary.missing} missing`,
+    // Closeout before a shift starts: keep expected = present + missing + not yet due.
+    ...(input.summary.not_yet_due > 0 ? [`${input.summary.not_yet_due} not yet due`] : []),
     `${input.summary.open_exceptions} open exceptions`,
     `${input.summary.critical_exceptions} critical exceptions`,
     `${input.summary.missing_clock_outs} missing clock-outs`,
@@ -192,6 +207,7 @@ function buildCloseoutDraft(input: {
     present: number;
     late: number;
     missing: number;
+    not_yet_due: number;
     open_exceptions: number;
     critical_exceptions: number;
     missing_clock_outs: number;
@@ -229,7 +245,7 @@ function buildCloseoutDraft(input: {
     buildDraftSection(
       "attendance_summary",
       "Attendance summary",
-      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.`,
+      `${input.date} attendance shows ${input.summary.present}/${input.summary.expected} expected workers attended during the day, ${input.summary.late} arrived late, and ${input.summary.missing} missing from effective attendance evidence.${input.summary.not_yet_due > 0 ? ` ${plural(input.summary.not_yet_due, "scheduled worker")} ${input.summary.not_yet_due === 1 ? "is" : "are"} not yet due because their shift has not started.` : ""}`,
       [
         {
           label: "briefing attendance evidence",
@@ -323,7 +339,30 @@ async function buildCloseoutPayload(ctx: any, date: string) {
   const missingClockOuts = openExceptions.filter((exception: any) => exception.type === "missing_clock_out");
   const recognitionReviews = openExceptions.filter((exception: any) => exception.type === "recognition_review");
   const kioskWarnings = briefing.summary.kiosk_warnings || 0;
-  const acknowledgedBlockers = closeout?.acknowledgedBlockers ?? false;
+  // Canonical, collision-free comparison evidence. Exclude names, notes and
+  // routine heartbeat times: those do not change the blocker being reviewed.
+  const kioskEvidence = await Promise.all(briefing.kiosks.rows
+    .filter(kiosk => kiosk.status !== "online" || kiosk.device_fault)
+    .map(async kiosk => {
+      const id = ctx.db.normalizeId("kiosks", kiosk.id);
+      const record = id ? await ctx.db.get(id) : null;
+      return [kiosk.id, kiosk.status, record?.health?.cameraOk ?? null,
+        record?.health?.modelOk ?? null, record?.health?.livenessAvailable ?? null,
+        record?.health?.degradedReason ?? null];
+    }));
+  const blockerEvidence = JSON.stringify({ version: 4, date,
+    // Composed schedule coverage remains a blocker after its exception is reviewed.
+    coverage: briefing.coverage_evidence,
+    exceptions: openExceptions.filter((exception: any) => exception.severity === "critical" ||
+      exception.type === "missing_clock_out" || exception.type === "recognition_review")
+      .map((exception: any) => [exception.key, exception.type, exception.severity, exception.first_seen,
+        exception.last_seen, exception.event_count, exception.scheduled_start, exception.scheduled_end,
+        exception.kiosk_id, exception.source_event_ids || [], exception.source_evidence || null])
+      .sort((a: any[], b: any[]) => String(a[0]).localeCompare(String(b[0]))),
+    kiosks: kioskEvidence.sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  });
+  if (blockerEvidence.length > 200_000) throw new ConvexError("Closeout blocker evidence exceeds the safe review limit.");
+  const acknowledgedBlockers = Boolean(closeout?.acknowledgedBlockers && closeout.acknowledgedBlockerEvidence === blockerEvidence);
   const checklist = buildChecklist({
     date,
     openExceptions,
@@ -332,6 +371,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     recognitionReviews,
     kioskWarnings,
     unavailableWorkers: briefing.coverage_unavailable,
+    notYetDueWorkers: briefing.daily_attendance.not_yet_due,
     acknowledgedBlockers,
   });
   const sourceBlockers = buildChecklist({
@@ -342,6 +382,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     recognitionReviews,
     kioskWarnings,
     unavailableWorkers: briefing.coverage_unavailable,
+    notYetDueWorkers: briefing.daily_attendance.not_yet_due,
     acknowledgedBlockers: false,
   }).filter((item) => item.status === "blocked");
   const blockers = checklist.filter((item) => item.status === "blocked");
@@ -351,6 +392,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     present: briefing.daily_attendance.present,
     late: briefing.daily_attendance.late,
     missing: briefing.daily_attendance.missing,
+    not_yet_due: briefing.daily_attendance.not_yet_due,
     open_exceptions: openExceptions.length,
     critical_exceptions: criticalExceptions.length,
     missing_clock_outs: missingClockOuts.length,
@@ -383,6 +425,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
   return {
     date,
     generated_at: generatedAt,
+    blocker_evidence: blockerEvidence,
     closeout: closeout
       ? {
           id: String(closeout._id),
@@ -390,7 +433,8 @@ async function buildCloseoutPayload(ctx: any, date: string) {
           status: closeout.status as CloseoutStatus,
           supervisor_name: closeout.supervisorName || null,
           notes: closeout.notes || "",
-          acknowledged_blockers: closeout.acknowledgedBlockers,
+          acknowledged_blockers: acknowledgedBlockers,
+          acknowledgement_stale: Boolean(closeout.acknowledgedBlockers && !acknowledgedBlockers),
           completed_at: closeout.completedAt || null,
           reopened_at: closeout.reopenedAt || null,
           updated_at: closeout.updatedAt,
@@ -431,6 +475,7 @@ export const save = mutation({
     supervisorName: v.optional(v.string()),
     notes: v.optional(v.string()),
     acknowledgedBlockers: v.optional(v.boolean()),
+    blockerEvidence: v.optional(v.string()),
   },
   returns: v.object({ id: v.id("shiftCloseouts"), status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")) }),
   handler: async (ctx, args) => {
@@ -455,22 +500,30 @@ export const save = mutation({
     const supervisorName = args.supervisorName === undefined ? existing?.supervisorName : normalizeText(args.supervisorName);
     const hasNotesArg = Object.prototype.hasOwnProperty.call(args, "notes");
     const notes = normalizeText(args.notes);
-    const acknowledgedBlockers = args.action === "reopen" ? false : args.acknowledgedBlockers ?? existing?.acknowledgedBlockers ?? false;
+    const acknowledgedBlockers = args.action === "reopen" ? false : args.acknowledgedBlockers ??
+      Boolean(existing?.acknowledgedBlockers && existing.acknowledgedBlockerEvidence === current.blocker_evidence);
     const nextNotes = notes || (hasNotesArg ? undefined : normalizeText(existing?.notes));
     const hasSourceBlockers = Boolean(
       current.checklist.some((item) => item.id === "schedule_coverage" && item.count > 0) ||
+      current.summary.not_yet_due ||
       current.summary.critical_exceptions ||
       current.summary.missing_clock_outs ||
       current.summary.recognition_reviews ||
       current.summary.kiosk_warnings
     );
 
+    if (args.action !== "reopen" && hasSourceBlockers && acknowledgedBlockers &&
+        args.acknowledgedBlockers === true && args.blockerEvidence !== current.blocker_evidence) {
+      throw new ConvexError({ code: "CLOSEOUT_BLOCKERS_CHANGED", message: "Closeout blockers changed. Refresh the evidence and explicitly acknowledge the current blockers." });
+    }
+
     if (hasSourceBlockers && acknowledgedBlockers && !nextNotes) {
-      throw new Error("Closeout has blockers. Add an acknowledgement note before acknowledging blockers.");
+      throw new ConvexError({ code: "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED", message: "Closeout has blockers. Add an acknowledgement note before acknowledging blockers." });
     }
 
     if (args.action === "complete" && hasSourceBlockers && (!acknowledgedBlockers || !nextNotes)) {
-      throw new Error("Closeout has blockers. Add an acknowledgement note before completing.");
+      throw new ConvexError({ code: args.blockerEvidence !== current.blocker_evidence ? "CLOSEOUT_BLOCKERS_CHANGED" : "CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED",
+        message: "Closeout has blockers. Refresh the evidence and add an acknowledgement note before completing." });
     }
 
     const status: CloseoutStatus =
@@ -482,6 +535,7 @@ export const save = mutation({
       supervisorName,
       notes: nextNotes,
       acknowledgedBlockers,
+      acknowledgedBlockerEvidence: acknowledgedBlockers ? current.blocker_evidence : undefined,
       expected: current.summary.expected,
       present: current.summary.present,
       late: current.summary.late,
@@ -496,7 +550,7 @@ export const save = mutation({
 
     const before = existing ? (({ _id, _creationTime, ...record }) => record)(existing) : undefined;
     const after = args.action === "reopen" && before
-      ? { ...before, status, acknowledgedBlockers: false, reopenedAt: now, updatedAt: now }
+      ? { ...before, status, acknowledgedBlockers: false, acknowledgedBlockerEvidence: undefined, reopenedAt: now, updatedAt: now }
       : { ...patch, createdAt: existing?.createdAt || now };
     const id = existing?._id || await ctx.db.insert("shiftCloseouts", after);
     if (existing) await ctx.db.patch(id, after);

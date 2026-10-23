@@ -41,7 +41,7 @@ it('withholds repeated clock-ins and excludes next-day-only workers', () => {
 
 it('includes an exit-only worker with hours withheld after a missed morning entry (a)', () => {
   expect(buildHoursExportRows([event(`${selected}T17:00:00`, 'clock_out')], [], selected)).toEqual([{
-    name: 'Worker', department: 'Assembly', firstIn: '', lastOut: `${selected}T17:00:00`,
+    workerId: 'worker', employeeId: '', name: 'Worker', department: 'Assembly', firstIn: '', lastOut: `${selected}T17:00:00`,
     hours: '', ambiguous: true, note: 'needs review: clock-out without clock-in; hours withheld',
   }]);
 });

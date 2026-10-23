@@ -6,6 +6,7 @@ import { getFactoryLocalDateString } from './date';
 export const MAX_PLAUSIBLE_SHIFT_HOURS = 16;
 
 export interface HoursExportRow {
+  workerId: string; employeeId: string;
   name: string; department: string; firstIn: string; lastOut: string;
   hours: string; note: string; ambiguous: boolean;
 }
@@ -26,7 +27,7 @@ export function buildHoursExportRows(
     localDays.set(event, day);
     return day;
   };
-  const byWorker = new Map<string, { name: string; department: string; events: AttendanceWithWorker[] }>();
+  const byWorker = new Map<string, { name: string; department: string; employeeId: string; events: AttendanceWithWorker[] }>();
   const orderedEvents = [...previousEvents, ...events, ...boundaryEvents].sort(clock.compare);
   // Anchor row order and labels to this day's punches. Neighboring history
   // supplies pairing evidence without changing an otherwise normal CSV row.
@@ -35,6 +36,7 @@ export function buildHoursExportRows(
     byWorker.set(event.worker_id, {
       name: event.worker_name || event.worker_id,
       department: event.worker_department || '',
+      employeeId: event.worker_employee_id || '',
       events: [],
     });
   }
@@ -43,7 +45,7 @@ export function buildHoursExportRows(
   }
 
   const rows: HoursExportRow[] = [];
-  for (const entry of byWorker.values()) {
+  for (const [workerId, entry] of byWorker) {
     let totalMs = 0;
     const reviewReasons = new Set<string>();
     const notes = new Set<string>();
@@ -103,6 +105,7 @@ export function buildHoursExportRows(
     const ambiguous = reviewReasons.size > 0;
     const hours = totalMs > 0 ? (totalMs / 3_600_000).toFixed(2) : '0.00';
     rows.push({
+      workerId, employeeId: entry.employeeId,
       name: entry.name, department: entry.department, firstIn: firstIn || '',
       lastOut: lastOut || '', hours: ambiguous ? '' : hours, ambiguous,
       // Withhold the entire row, including otherwise valid partial intervals.

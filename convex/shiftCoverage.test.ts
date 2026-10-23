@@ -31,7 +31,7 @@ describe('daily attendance and live coverage', () => {
     expect(closeout.summary).toMatchObject({ expected: 1, present: 1, late: 1, missing: 0 });
     expect(closeout.closeout_draft.source_counts).toMatchObject({ present: 1, late: 1 });
     expect(closeout.suggested_note).toContain('1 present, 1 late');
-    const saved = await admin.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Reviewed', acknowledgedBlockers: true });
+    const saved = await admin.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Reviewed', acknowledgedBlockers: true, blockerEvidence: closeout.blocker_evidence });
     expect((await admin.query(api.shiftCloseouts.get, { date })).closeout?.snapshot).toMatchObject({ present: 1, late: 1 });
     const history = await t.run(ctx => ctx.db.query('shiftCloseoutHistory').withIndex('by_closeout', q => q.eq('closeoutId', saved.id)).collect());
     expect(history[0].after).toMatchObject({ present: 1, late: 1 });

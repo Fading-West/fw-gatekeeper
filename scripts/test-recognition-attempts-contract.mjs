@@ -41,7 +41,7 @@ assert.match(attempts, /by_source_attempt_id/, 'Bulk ingest should support sourc
 assert.match(attempts, /timestampBelongsToFactoryLocalDate\(attempt\.timestamp,\s*args\.date\)/, 'Exact recognition attempt lookups should stay scoped to the requested factory day.');
 
 assert.match(auth, /\/api\/recognition-attempts\/bulk/, 'Kiosk auth allow-list must include recognition attempt bulk upload.');
-assert.match(bulkRoute, /await authenticateKiosk\(req, claims\)/, 'Bulk recognition upload must authenticate the device and every kiosk claim.');
+assert.match(bulkRoute, /await authenticateKiosk\(req, claims, \{ batchClaims: kioskClaims\(body\) \}\)/, 'Bulk recognition upload must authenticate the device and every kiosk claim.');
 assert.match(bulkRoute, /if \(!identity\) return unauthorizedApiResponse\(\)/, 'Unverified devices must be rejected before ingestion.');
 assert.match(bulkRoute, /ingestRecognitionAttemptBatch/, 'Bulk recognition attempt API must use secured Convex HTTP ingest.');
 assert.doesNotMatch(bulkRoute, /convex\.mutation/, 'Bulk recognition attempt API must not call a public Convex mutation.');
@@ -50,7 +50,7 @@ assert.match(apiRoute, /recognitionAttempts\.updateReview/, 'Recognition attempt
 assert.match(apiRoute, /hasValidPortalSession\(req,\s*\['admin',\s*'enrollment',\s*'viewer'\]\)/, 'Recognition attempt reads must allow viewer portal members.');
 assert.match(apiRoute, /hasValidPortalSession\(req,\s*\['admin',\s*'enrollment'\]\)/, 'Recognition attempt review writes must remain admin/enrollment only.');
 assert.match(apiRoute, /const attemptId = optionalString\(searchParams\.get\('attempt_id'\)\)/, 'Recognition attempt API should accept exact attempt-row links.');
-assert.match(apiRoute, /reviewed:\s*attemptId \? undefined : reviewStatus === 'unreviewed'/, 'Exact attempt links should not be narrowed by reviewed status.');
+assert.match(apiRoute, /reviewed:\s*attemptId \|\| reviewStatus === 'unreviewed' \? undefined/, 'Exact attempt links should not be narrowed by reviewed status.');
 assert.match(apiRoute, /recognitionAttempts\.getById/, 'Recognition attempt API should fetch exact target rows by id.');
 assert.match(apiRoute, /const rawAttempts = Array\.isArray\(result\) \? result : result\?\.attempts \|\| result\?\.rows \|\| \[\]/, 'Recognition attempt API should normalize dated rows before exact target merging.');
 assert.match(apiRoute, /targetAttempt \? \{ attempts: \[targetAttempt, \.\.\.rawAttempts\] \} : result/, 'Recognition attempt API should merge exact target rows into normal dated results.');
@@ -65,7 +65,7 @@ assert.match(lab, /return role === 'admin' \|\| role === 'enrollment'/, 'Recogni
 assert.match(lab, /if \(!canOperate\)[\s\S]*Only admin or enrollment roles can update recognition reviews/, 'Recognition review mutations should be guarded client-side for read-only roles.');
 assert.match(lab, /canOperate \?[\s\S]*Confirm[\s\S]*Ignore[\s\S]*Review-only/, 'Recognition Lab controls should render as review-only for viewers.');
 assert.match(lab, /searchParams\.get\('attempt_id'\)/, 'Recognition Lab should read exact attempt-row links.');
-assert.match(lab, /new URLSearchParams\(\{ date, limit: queryAttemptId \? '1000' : '150' \}\)/, 'Recognition Lab should widen direct-link fetches only when an attempt id is present.');
+assert.match(lab, /new URLSearchParams\(\{ date, limit: queryAttemptId \? '1000' : String\(displayLimit\) \}\)/, 'Recognition Lab should preserve direct-link fetches and allow revealing the full bounded scan window.');
 assert.match(lab, /params\.set\('attempt_id', queryAttemptId\)/, 'Recognition Lab should pass exact attempt ids to the API.');
 assert.match(lab, /function recognitionAttemptRowId/, 'Recognition Lab should create stable row ids for direct links.');
 assert.match(lab, /document\.getElementById\(recognitionAttemptRowId\(queryAttemptId\)\)\?\.scrollIntoView/, 'Recognition Lab should scroll exact attempt links to the targeted row.');
