@@ -72,7 +72,12 @@ export default function KiosksPage() {
   const credentialBusyRef = useRef(false);
   const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
   const [credentialStatusError, setCredentialStatusError] = useState(false);
-  const [unknownCredentialOutcome, setUnknownCredentialOutcome] = useState<string | null>(null);
+  const [unknownCredentialOutcomes, setUnknownCredentialOutcomes] = useState<Record<string, string>>({});
+  const clearUnknownCredentialOutcome = (id: string) => setUnknownCredentialOutcomes((previous) => {
+    const next = { ...previous };
+    delete next[id];
+    return next;
+  });
 
   const credentialStatusRequestRef = useRef(0);
   const readinessRequestRef = useRef(0);
@@ -103,7 +108,6 @@ export default function KiosksPage() {
     if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${label}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
     credentialBusyRef.current = true;
     setCredentialBusy(id);
-    setUnknownCredentialOutcome(null);
     let response: Response | null = null;
     let body: { error?: string; kiosk_id?: string; credential?: string } | null = null;
     try {
@@ -120,14 +124,16 @@ export default function KiosksPage() {
       const rejection = response && response.status >= 400 && response.status < 500 && body?.error ? body.error : null;
       if (method === 'POST') {
         if (response?.ok && typeof body?.credential === 'string') {
+          clearUnknownCredentialOutcome(id);
           setIssuedCredential({ kioskId: body.kiosk_id || label, value: body.credential });
         } else if (rejection) {
           toast(rejection, 'error');
         } else {
           // The old secret may already be dead. Never claim failure.
-          setUnknownCredentialOutcome(label);
+          setUnknownCredentialOutcomes((previous) => ({ ...previous, [id]: label }));
         }
       } else if (response?.ok) {
+        clearUnknownCredentialOutcome(id);
         toast('Kiosk credential revoked');
       } else if (rejection) {
         toast(rejection, 'error');
@@ -216,13 +222,13 @@ export default function KiosksPage() {
 
   return (
     <div className="animate-fade-in space-y-6 pb-24 md:pb-8">
-      {unknownCredentialOutcome && (
-        <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
-          <p className="text-amber-200 font-semibold">Credential change for {unknownCredentialOutcome}: outcome unknown.</p>
+      {Object.entries(unknownCredentialOutcomes).map(([id, label]) => (
+        <div key={id} role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
+          <p className="text-amber-200 font-semibold">Credential change for {label}: outcome unknown.</p>
           <p className="text-xs text-slate-400">The portal could not confirm the result, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. The credential status only shows what the server accepts, and the Online status can reflect an earlier sync. Verify a successful sync on this kiosk after this attempt. If you cannot confirm one, issue a new credential and install it on its device.</p>
-          <button type="button" className="btn-secondary" onClick={() => setUnknownCredentialOutcome(null)}>Dismiss</button>
+          <button type="button" className="btn-secondary" onClick={() => clearUnknownCredentialOutcome(id)}>Dismiss</button>
         </div>
-      )}
+      ))}
       {issuedCredential && (
         <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
           <p className="text-amber-200 font-semibold">Save this credential for {issuedCredential.kioskId}. It will only be shown once.</p>

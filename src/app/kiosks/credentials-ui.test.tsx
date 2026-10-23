@@ -364,3 +364,39 @@ it('does not let a slow initial readiness response hide a just-registered kiosk'
     expect(tree.root.findAllByType('button').some(node => node.children.includes('Issue / rotate credential'))).toBe(true);
   } finally { await act(async () => tree.unmount()); }
 });
+
+it('keeps unknown outcomes for other kiosks until individually dismissed', async () => {
+  vi.stubGlobal('confirm', vi.fn(() => true));
+  const statuses = [
+    { id: 'kiosk-a', credential_status: 'legacy' },
+    { id: 'kiosk-b', credential_status: 'legacy' },
+  ];
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/system-health?fresh=1') return { ok: true, json: async () => ({
+      kiosks: { total: 2, rows: [
+        { id: 'kiosk-a', name: 'Gate A', kiosk_id: 'a', status: 'online' },
+        { id: 'kiosk-b', name: 'Gate B', kiosk_id: 'b', status: 'online' },
+      ], counts: { online: 2, stale: 0, offline: 0, never_synced: 0 } },
+      sync: { ready_worker_count: 0 },
+    }) };
+    if (url === '/api/kiosks') return { ok: true, json: async () => statuses };
+    throw new TypeError('Lost response after possible commit');
+  }));
+  let tree!: ReturnType<typeof create>;
+  await act(async () => { tree = create(<KiosksPage />); });
+  const issue = (index: number) => tree.root.findAllByType('button').filter(node => node.children.includes('Issue / rotate credential'))[index];
+  const alerts = () => tree.root.findAll(node => node.type === 'div' && node.props.role === 'alert');
+  const alertText = () => alerts().flatMap(node => node.findAllByType('p')).flatMap(node => node.children).join('');
+  try {
+    await act(async () => issue(0).props.onClick());
+    expect(alertText()).toContain('Gate A');
+    await act(async () => issue(1).props.onClick());
+    expect(alertText()).toContain('Gate A');
+    expect(alertText()).toContain('Gate B');
+    expect(alerts()).toHaveLength(2);
+    await act(async () => alerts()[0].findByType('button').props.onClick());
+    expect(alertText()).not.toContain('Gate A');
+    expect(alertText()).toContain('Gate B');
+    expect(alerts()).toHaveLength(1);
+  } finally { await act(async () => tree.unmount()); }
+});
