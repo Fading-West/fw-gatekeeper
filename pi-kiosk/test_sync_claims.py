@@ -34,7 +34,7 @@ class KioskClaimQueueTests(unittest.TestCase):
         self.seen.append((claim, len(rows)))
         if claim not in (config.KIOSK_ID, 'authorized-alias'):
             return denial()
-        return mock.Mock(status_code=200, json=lambda: {'acknowledged': len(rows)})
+        return mock.Mock(status_code=200, json=lambda: {'acknowledged': len(rows), 'ingested': len(rows), 'skipped': 0})
 
     def streams(self):
         return [
@@ -113,7 +113,7 @@ class KioskClaimQueueTests(unittest.TestCase):
                 def server(*args, **kwargs):
                     rows = kwargs['json'].get('logs', kwargs['json'].get('attempts'))
                     if rows[0].get('kiosk_id', rows[0].get('kioskId')) == config.KIOSK_ID:
-                        return mock.Mock(status_code=200, json=lambda: {'acknowledged': len(rows)})
+                        return mock.Mock(status_code=200, json=lambda: {'acknowledged': len(rows), 'ingested': len(rows), 'skipped': 0})
                     return failure
                 with mock.patch.object(sync.requests, 'post', side_effect=server) as post:
                     self.assertFalse(upload())
@@ -137,7 +137,7 @@ class KioskClaimQueueTests(unittest.TestCase):
             database.set_sync_state(prefix + '_scan_after', '100')
             database.set_sync_state(prefix + '_current_scan_after', '100')
             retry(rejection['id'], 'Verified original kiosk ownership and restored its credential')
-            with mock.patch.object(config, 'KIOSK_ID', 'old-kiosk'), mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200, json=lambda: {'acknowledged': 1})) as post:
+            with mock.patch.object(config, 'KIOSK_ID', 'old-kiosk'), mock.patch.object(sync.requests, 'post', return_value=mock.Mock(status_code=200, json=lambda: {'acknowledged': 1, 'ingested': 1, 'skipped': 0})) as post:
                 self.assertTrue(upload())
             row = post.call_args.kwargs['json'].get('logs', post.call_args.kwargs['json'].get('attempts'))[0]
             self.assertEqual(row.get('kiosk_id', row.get('kioskId')), 'old-kiosk')
@@ -226,8 +226,9 @@ class KioskClaimQueueTests(unittest.TestCase):
         worker._running = True
         with mock.patch.object(sync, 'check_server', return_value=False), mock.patch.object(sync.time, 'sleep', side_effect=stop):
             worker._run()
-        self.assertEqual(reporter.call_args_list[-2].kwargs['rejected_logs'], 1)
-        self.assertEqual(reporter.call_args_list[-2].kwargs['rejected_attempts'], 1)
+        queue_report = next(call.kwargs for call in reversed(reporter.call_args_list) if 'rejected_logs' in call.kwargs)
+        self.assertEqual(queue_report['rejected_logs'], 1)
+        self.assertEqual(queue_report['rejected_attempts'], 1)
 
 
 if __name__ == '__main__':

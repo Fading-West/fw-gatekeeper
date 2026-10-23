@@ -2,6 +2,20 @@
 
 Raspberry Pi face recognition kiosk for factory clock-in/clock-out.
 
+The kiosk distinguishes public server reachability from protected sync
+authorization. A denied worker download, roster confirmation, attendance
+upload, or recognition upload remains visible in /health and the sync footer
+until that same protected workflow accepts the credential again. Ask a
+supervisor to check the local kiosk API-key configuration; queued evidence
+and local offline attendance remain available. Public health success alone
+does not clear a protected authorization fault.
+
+Only validated successful responses confirm protected sync. Observations are
+process-local: after restart every protected phase is unknown, and the footer
+says protected sync is not fully confirmed until all four phases have actually
+succeeded. Restarting does not establish that credentials have been repaired;
+idle phases can stay unknown until their next request.
+
 ## How It Works
 
 - `main.py` is the entry point (run by the `fw-gatekeeper-kiosk` systemd service).
@@ -63,6 +77,13 @@ Setup fails immediately if `KIOSK_API_KEY`, `KIOSK_UI_KEY`, or
 `KIOSK_SUPERVISOR_PIN` is missing. It writes them to `config_local.py`
 (imported by `config.py`, never committed), installs the systemd service and
 watchdog timer, and configures the Firefox kiosk display autostart.
+
+An existing `pi-kiosk/data` symlink may point to a dedicated data directory
+on a mounted USB drive. Its resolved target must be owned by the kiosk user
+(the login user, or `KIOSK_USER`). Setup checks this before changing packages,
+configuration or services; mount the drive or correct the directory ownership
+if validation fails. It tightens files and directories in the resolved target
+without following nested symlinks.
 
 By default setup **skips** the 97MB dlib shape predictor used for blink
 liveness. To install it, rerun setup with `ENABLE_LIVENESS=1`, then set
