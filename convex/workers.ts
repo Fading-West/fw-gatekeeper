@@ -489,7 +489,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
   const page = await query.paginate({ cursor, numItems: 200 });
   const result = await Promise.all(page.page.map(async (w: any) => {
     let photoUrl: string | null = null;
-    if (w.photoStorageIds) {
+    if (w.active && w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
         const url = await ctx.storage.getUrl(sid);
         if (url) {
@@ -504,7 +504,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
       employee_id: w.employeeId || "",
       department: w.department,
       photo_url: photoUrl,
-      face_encoding: w.faceEncoding || null,
+      face_encoding: w.active ? w.faceEncoding || null : null,
       enrolled_at: w.enrolledAt,
       updated_at: w.updatedAt || w.enrolledAt,
       active: w.active ? 1 : 0,
@@ -520,12 +520,4 @@ export const listForSyncFromHttp = internalQuery({
   args: { since: v.optional(v.string()), inclusive: v.optional(v.boolean()), cursor: v.optional(v.string()) },
   returns: v.object({ workers: workerSyncResult, isDone: v.boolean(), continueCursor: v.string() }),
   handler: listWorkersForSync,
-});
-
-export const generateUploadUrl = mutation({
-  args: {},
-  handler: async (ctx) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
-    return await ctx.storage.generateUploadUrl();
-  },
 });
