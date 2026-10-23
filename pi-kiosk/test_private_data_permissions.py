@@ -485,7 +485,8 @@ os.open, os.fchown = racing_open, racing_chown
                      'base_degraded_reason': mock.Mock()}
         exec(compile(ast.Module(body=[record], type_ignores=[]), 'main.py', 'exec'), namespace)
         private = 'private-name-url-token-encoding'
-        with self.assertLogs('main', level='INFO') as logs:
+        with mock.patch.object(database, 'get_attendance_action', return_value='clock_in'), \
+             self.assertLogs('main', level='INFO') as logs:
             self.assertTrue(namespace['record_clock']({}, 7, private, private, 0.9, False))
         self.assertIn('local_id=7', '\n'.join(logs.output))
         self.assertNotIn(private, '\n'.join(logs.output))
