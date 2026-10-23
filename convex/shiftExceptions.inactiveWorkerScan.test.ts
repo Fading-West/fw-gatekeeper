@@ -503,7 +503,7 @@ describe("inactive worker scans in shift trust workflows", () => {
     expect(blocked.can_complete).toBe(false);
     await expect(s.enrollment.mutation(api.shiftCloseouts.save, { date: DATE, action: "complete" }))
       .rejects.toThrow("acknowledgement note");
-    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { date: DATE, action: "complete", acknowledgedBlockers: true }))
+    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { date: DATE, action: "complete", blockerEvidence: blocked.blocker_evidence, acknowledgedBlockers: true }))
       .rejects.toThrow("acknowledgement note");
 
     const [exception] = await inactiveScans(s);

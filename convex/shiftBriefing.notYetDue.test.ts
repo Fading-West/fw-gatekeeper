@@ -177,7 +177,7 @@ describe('shift briefing does not mark workers missing before their shift starts
     expect(closeout.can_complete).toBe(false);
     expect(closeout.blockers).toContainEqual(expect.objectContaining({ id: 'not_yet_due', count: 1 }));
     await expect(admin.mutation(api.shiftCloseouts.save, { date: DATE, action: 'complete' })).rejects.toThrow('acknowledgement note');
-    await admin.mutation(api.shiftCloseouts.save, { date: DATE, action: 'complete', notes: 'Signed early; Blake not yet due', acknowledgedBlockers: true });
+    await admin.mutation(api.shiftCloseouts.save, { date: DATE, action: 'complete', blockerEvidence: closeout.blocker_evidence, notes: 'Signed early; Blake not yet due', acknowledgedBlockers: true });
     const signed = await admin.query(api.shiftCloseouts.get, { date: DATE });
     expect(signed.closeout).toMatchObject({ status: 'completed', notes: 'Signed early; Blake not yet due' });
     expect(signed.closeout?.snapshot).toMatchObject({ expected: 2, present: 1, missing: 0 });

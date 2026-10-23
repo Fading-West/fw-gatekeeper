@@ -74,7 +74,7 @@ describe("overnight shift attribution in exceptions and closeout", () => {
     });
     await expect(actor.mutation(api.shiftCloseouts.save, { date, action: "complete" })).rejects.toThrow("acknowledgement note");
     await expect(actor.mutation(api.shiftCloseouts.save, {
-      date, action: "complete", acknowledgedBlockers: true, notes: "Night worker confirmed still working; exit pending.",
+      date, action: "complete", blockerEvidence: (await actor.query(api.shiftCloseouts.get, { date })).blocker_evidence, acknowledgedBlockers: true, notes: "Night worker confirmed still working; exit pending.",
     })).resolves.toMatchObject({ status: "completed" });
   });
 
