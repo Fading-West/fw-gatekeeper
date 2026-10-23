@@ -5,7 +5,7 @@ import { ActivityBackendError, fetchActivityFeed } from '@/lib/activity-feed';
 
 const RESPONSE_HEADERS = {
   'content-type': 'application/json',
-  'cache-control': 'no-store',
+  'cache-control': 'private, no-store',
 };
 
 export async function GET(request: NextRequest) {
