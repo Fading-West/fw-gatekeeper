@@ -137,20 +137,32 @@ class AtomicClockActionTests(Fixture):
             finally:
                 self.close()
 
+        automatic_finished = threading.Event()
+        def automatic_thread():
+            try:
+                self.assertTrue(self.automatic())
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                self.close()
+                automatic_finished.set()
         thread = threading.Thread(target=manual_thread)
+        competitor = threading.Thread(target=automatic_thread)
         with mock.patch.object(database, "log_attendance", side_effect=pause_manual_write):
             thread.start()
             try:
                 self.assertTrue(paused.wait(2))
-                self.assertTrue(self.automatic())
+                competitor.start()
+                self.assertFalse(automatic_finished.wait(.05), "automatic write must wait for the manual receipt transaction")
             finally:
                 release.set()
                 thread.join(timeout=3)
+                competitor.join(timeout=3)
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual([row["action"] for row in database.get_unsynced_logs()],
                          ["clock_in", "clock_out"])
-        self.assertEqual(responses[0]["action"], "clock_out")
+        self.assertEqual(responses[0]["action"], "clock_in")
 
     def test_manual_inference_holds_write_lock_until_insert(self):
         writing, finished = threading.Event(), threading.Event()
