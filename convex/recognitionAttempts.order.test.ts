@@ -25,7 +25,7 @@ it("sorts mixed UTC, offset, and factory-local evidence before limiting", async 
   const rows = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15" }));
   expect(rows.map(row => row.timestamp)).toEqual([...timestamps].reverse());
   const limited = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15", limit: 1 }));
-  expect(limited[0].timestamp).toBe(timestamps.at(-1));
+  expect(limited[0].timestamp).toBe(timestamps[timestamps.length - 1]);
 });
 
 it("retains true instant order during fall-back and chooses the earlier legacy occurrence", () => {
