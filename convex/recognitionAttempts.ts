@@ -592,6 +592,6 @@ export const updateReview = mutation({
     await ctx.db.patch(args.id, updates);
 
     const updated = await ctx.db.get(args.id);
-    return updated ? serializeAttempt(updated) : null;
+    return updated ? withFactoryLocalDisplayTimestamp(serializeAttempt(updated)) : null;
   },
 });
