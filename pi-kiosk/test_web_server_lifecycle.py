@@ -73,6 +73,15 @@ RUN_KIOSK = textwrap.dedent("""
             class Connection:
                 def __getattr__(self, name):
                     return getattr(conn, name)
+                def __enter__(self):
+                    conn.__enter__()
+                    return self
+                def __exit__(self, kind, value, traceback):
+                    if kind is None:
+                        self.commit()
+                    else:
+                        conn.rollback()
+                    return False
                 def commit(self):
                     stop_server()
                     conn.commit()
@@ -250,6 +259,15 @@ class WebServerDrainTests(unittest.TestCase):
                 class Connection:
                     def __getattr__(self, name):
                         return getattr(conn, name)
+                    def __enter__(self):
+                        conn.__enter__()
+                        return self
+                    def __exit__(self, kind, value, traceback):
+                        if kind is None:
+                            self.commit()
+                        else:
+                            conn.rollback()
+                        return False
                     def commit(self):
                         entered.set()
                         if not finish.wait(5):

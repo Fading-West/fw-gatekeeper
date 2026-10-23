@@ -1,3 +1,4 @@
+import { getKioskSyncStatus } from "../src/lib/kiosk-sync-status";
 import { validateReceiptDigests } from "./attendance";
 import { ConvexError } from "convex/values";
 import { validateAttendanceBatch, validateAttendanceEvent } from "./attendanceValidation";
@@ -86,16 +87,13 @@ const activityFeedRead = httpAction(async (ctx, request) => {
 type PublicKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
 function publicKioskStatus(lastSync: string | null, now: number): PublicKioskStatus {
-  if (!lastSync) return 'never_synced';
-  const ageMs = now - new Date(lastSync).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= 15 * 60 * 1000) return 'online';
-  if (ageMs <= 60 * 60 * 1000) return 'stale';
-  return 'offline';
+  return getKioskSyncStatus(lastSync, now);
 }
 
 const publicKioskHealth = httpAction(async (ctx) => {
-  const checkedAtMs = Date.now();
   const kioskPage = await ctx.runQuery(internal.kiosks.internalHealthSnapshot, {});
+  // A sync committed during the read must not appear to be in the future.
+  const checkedAtMs = Date.now();
   const inventoryTruncated = kioskPage.length > 100;
   const kiosks = kioskPage.slice(0, 100);
   const counts = { online: 0, stale: 0, offline: 0, never_synced: 0 };
@@ -104,6 +102,7 @@ const publicKioskHealth = httpAction(async (ctx) => {
   let staleDeviceHealth = 0;
   let deviceIssues = 0;
   let queuedRecords = 0;
+  let rejectedRecognitionRecords = 0;
 
   for (const kiosk of kiosks) {
     counts[publicKioskStatus(kiosk.last_sync, checkedAtMs)] += 1;
@@ -118,6 +117,7 @@ const publicKioskHealth = httpAction(async (ctx) => {
     }
     if (kiosk.health.camera_ok === false || kiosk.health.model_ok === false || kiosk.health.degraded_reason) deviceIssues += 1;
     queuedRecords += Math.max(0, kiosk.health.queued_logs ?? 0) + Math.max(0, kiosk.health.queued_attempts ?? 0);
+    rejectedRecognitionRecords += Math.max(0, kiosk.health.rejected_attempts ?? 0);
     if (typeof kiosk.health.camera_ok !== 'boolean' || typeof kiosk.health.model_ok !== 'boolean') {
       missingDeviceHealth += 1;
       continue;
@@ -127,7 +127,7 @@ const publicKioskHealth = httpAction(async (ctx) => {
 
   const degraded = kiosks.length === 0 || inventoryTruncated
     || counts.stale + counts.offline + counts.never_synced > 0
-    || missingDeviceHealth + staleDeviceHealth > 0 || deviceIssues > 0 || queuedRecords > 0;
+    || missingDeviceHealth + staleDeviceHealth > 0 || deviceIssues > 0 || queuedRecords > 0 || rejectedRecognitionRecords > 0;
   return publicJsonResponse({
     status: degraded ? 'degraded' : 'healthy',
     timestamp: new Date(checkedAtMs).toISOString(),
@@ -139,6 +139,7 @@ const publicKioskHealth = httpAction(async (ctx) => {
       stale_device_health: staleDeviceHealth,
       device_issues: deviceIssues,
       queued_records: queuedRecords,
+      rejected_recognition_records: rejectedRecognitionRecords,
       inventory_truncated: inventoryTruncated,
     },
   });
@@ -182,6 +183,7 @@ function sanitizeKioskHealth(raw: unknown) {
     knownWorkers: asCount(source.knownWorkers),
     queuedLogs: asCount(source.queuedLogs),
     queuedAttempts: asCount(source.queuedAttempts),
+    rejectedAttempts: asCount(source.rejectedAttempts),
     degradedReason: asText(source.degradedReason),
     lastScanAt: asText(source.lastScanAt),
     reportedAt: new Date().toISOString(),
@@ -251,7 +253,7 @@ const attendanceIngest = httpAction(async (ctx, request) => {
     console.info('secured_ingest_attendance_single', { workerId: event.workerId });
     return jsonResponse(result, 201);
   } catch (error) {
-    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message }, 400);
+    if (error instanceof ConvexError) return jsonResponse({ error: error.data.message, code: error.data.code }, 400);
     throw error;
   }
 });
@@ -266,6 +268,11 @@ const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
     return jsonResponse({ error: 'attempts array required' }, 400);
   }
 
+  if (body.attempts.some((attempt: unknown) => !attempt || typeof attempt !== 'object' ||
+      typeof (attempt as { timestamp?: unknown }).timestamp !== 'string')) {
+    return jsonResponse({ error: 'Each recognition attempt requires its captured timestamp', code: 'INVALID_RECOGNITION_TIMESTAMP' }, 400);
+  }
+
   try {
     const result = await ctx.runMutation(internal.recognitionAttempts.bulkIngestFromHttp, {
       attempts: body.attempts,
@@ -277,6 +284,9 @@ const recognitionAttemptsBulkIngest = httpAction(async (ctx, request) => {
     });
     return jsonResponse(result, 201);
   } catch (error) {
+    if (error instanceof ConvexError && ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.data?.code)) {
+      return jsonResponse({ error: error.data.message, code: error.data.code }, 400);
+    }
     if (error instanceof ConvexError && error.data?.code === 'RECOGNITION_ATTEMPT_CONFLICT') {
       return jsonResponse({ error: error.data.message, code: error.data.code }, 409);
     }

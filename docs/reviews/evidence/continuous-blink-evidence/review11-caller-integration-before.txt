@@ -1,0 +1,26 @@
+test_actual_enrollment_face_dropout_resets_closed_eye_sequence (__main__.BlinkIntegrationQA.test_actual_enrollment_face_dropout_resets_closed_eye_sequence) ... FAIL
+test_consecutive_valid_identity_bound_blink_completes (__main__.BlinkIntegrationQA.test_consecutive_valid_identity_bound_blink_completes) ... ok
+test_dropouts_and_invalid_rectangles_cannot_complete_blink (__main__.BlinkIntegrationQA.test_dropouts_and_invalid_rectangles_cannot_complete_blink) ... ok
+test_nonfinite_or_degenerate_landmarks_cannot_complete_blink (__main__.BlinkIntegrationQA.test_nonfinite_or_degenerate_landmarks_cannot_complete_blink) ... ok
+test_one_degenerate_eye_cannot_supply_closed_eye_evidence (__main__.BlinkIntegrationQA.test_one_degenerate_eye_cannot_supply_closed_eye_evidence) ... FAIL
+
+======================================================================
+FAIL: test_actual_enrollment_face_dropout_resets_closed_eye_sequence (__main__.BlinkIntegrationQA.test_actual_enrollment_face_dropout_resets_closed_eye_sequence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/qa-notes/test_review11_blink_callers.py", line 35, in test_actual_enrollment_face_dropout_resets_closed_eye_sequence
+    self.assertFalse(context['live'])
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_one_degenerate_eye_cannot_supply_closed_eye_evidence (__main__.BlinkIntegrationQA.test_one_degenerate_eye_cannot_supply_closed_eye_evidence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/qa-notes/test_review11_blink_callers.py", line 19, in test_one_degenerate_eye_cannot_supply_closed_eye_evidence
+    self.assertFalse(self.feed(checker,.3))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.019s
+
+FAILED (failures=2)
