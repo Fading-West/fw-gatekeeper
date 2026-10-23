@@ -8,5 +8,7 @@ const crons = cronJobs();
 // delivery are documented in docs/alerting.md.
 crons.interval("kiosk alert check", { minutes: 15 }, internal.alerts.checkKiosks, {});
 crons.interval("new people alert retry", { minutes: 5 }, internal.peopleAlerts.deliverPending, {});
+// Session document deletion invalidates cached authorization subscriptions.
+crons.interval("expire portal sessions", { minutes: 1 }, internal.access.expireSessions, {});
 
 export default crons;
