@@ -451,6 +451,8 @@ export const getById = query({
   },
 });
 
+const REVIEW_LABELS = ["confirmed", "corrected", "ignored"];
+
 export const updateReview = mutation({
   args: {
     id: v.id("recognitionAttempts"),
@@ -473,7 +475,12 @@ export const updateReview = mutation({
       updatedAt: now,
     };
     if (args.reviewedLabel !== undefined) {
-      updates.reviewedLabel = normalizeOptionalText(args.reviewedLabel);
+      const label = normalizeOptionalText(args.reviewedLabel);
+      // Reads treat any other label as unreviewed, which would hide a "reviewed" attempt.
+      if (label === undefined || !REVIEW_LABELS.includes(label)) {
+        throw new ConvexError(`reviewedLabel must be one of ${REVIEW_LABELS.join(", ")}`);
+      }
+      updates.reviewedLabel = label;
     }
     if (args.reviewedNote !== undefined) {
       updates.reviewedNote = normalizeOptionalText(args.reviewedNote);
