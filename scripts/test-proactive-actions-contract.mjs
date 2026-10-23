@@ -1136,4 +1136,26 @@ const noActions = buildProactiveActions({
 assert.deepEqual(JSON.parse(JSON.stringify(noActions)), [], 'Clean payloads without closeout work should return no proactive actions.');
 assert.equal(buildProactiveShiftTrustPlan(noActions), null, 'Clean payloads should not invent a next-best action.');
 
+const inactiveWorkerScanActions = buildProactiveActions({
+  date: '2026-06-26',
+  shiftExceptions: {
+    date: '2026-06-26',
+    exceptions: [
+      { key: '2026-06-26:inactive_worker_scan:w9:a9', type: 'inactive_worker_scan', severity: 'critical', status: 'open' },
+    ],
+    summary: {
+      total: 1,
+      open: 1,
+      critical: 1,
+      warning: 0,
+      info: 0,
+      by_type: { inactive_worker_scan: 1 },
+      by_status: { open: 1 },
+    },
+  },
+});
+assert.equal(findAction(inactiveWorkerScanActions, 'shift-exceptions').priority, 'critical', 'An open deactivated-worker scan should raise a critical exception action.');
+assert.equal(findAction(inactiveWorkerScanActions, 'shift-exceptions').severity, 'critical', 'An open deactivated-worker scan should be a critical exception action.');
+assert.deepEqual(plain(findAction(inactiveWorkerScanActions, 'shift-exceptions').evidence.criticalExceptionKeys), ['2026-06-26:inactive_worker_scan:w9:a9'], 'Critical exception evidence should keep the deactivated-worker scan key.');
+
 console.log('Proactive actions contract passed');

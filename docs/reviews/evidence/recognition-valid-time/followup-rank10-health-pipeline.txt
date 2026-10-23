@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/10-recognition-valid-time
+
+
+ Test Files  2 passed (2)
+      Tests  7 passed (7)
+   Start at  03:36:20
+   Duration  633ms (transform 142ms, setup 0ms, import 294ms, tests 93ms, environment 0ms)
