@@ -23,7 +23,7 @@ class KioskPolicyTests(unittest.TestCase):
             "RECOGNITION_NEAR_MISS_MARGIN", "RECOGNITION_EMBEDDING_WINDOW",
             "RECOGNITION_UNKNOWN_STREAK", "LIVENESS_EAR_THRESHOLD", "LIVENESS_BLINK_FRAMES",
             "LIVENESS_TIMEOUT_SEC", "LIVENESS_WAIT_SEC", "CLOCK_DEBOUNCE_MINUTES",
-            "DISPLAY_TIME_SEC", "DISPLAY_TIME_SUCCESS_SEC")}
+            "DISPLAY_TIME_SEC", "DISPLAY_TIME_SUCCESS_SEC", "RECOGNITION_MIN_MARGIN")}
         values.update(overrides)
         return types.SimpleNamespace(**values)
 
@@ -38,6 +38,7 @@ class KioskPolicyTests(unittest.TestCase):
         for name, values in {
             "RECOGNITION_MATCH_THRESHOLD": [float("nan"), float("inf"), -1, 0, 1.1, "0.45", True, 10**1000],
             "RECOGNITION_NEAR_MISS_MARGIN": [-0.1, 1.1, float("nan")],
+            "RECOGNITION_MIN_MARGIN": [0, -0.1, 2.1, True, float("nan")],
             "RECOGNITION_EMBEDDING_WINDOW": [0, -1, 1.5, "3", True, sys.maxsize + 1, 10**1000],
             "RECOGNITION_UNKNOWN_STREAK": [0, False],
             "LIVENESS_REQUIRED": ["false", 0, None],
@@ -96,7 +97,7 @@ class KioskPolicyTests(unittest.TestCase):
         def forbidden(): raise AssertionError("Invalid policy initialized native recognition")
         namespace = {"config": config, "validate_kiosk_policy": validate_kiosk_policy,
                      "require_kiosk_ui_key": lambda: None, "require_kiosk_api_key": lambda: None,
-                     "os": types.SimpleNamespace(makedirs=lambda *args, **kwargs: None),
+                     "os": types.SimpleNamespace(makedirs=lambda *args, **kwargs: None, chmod=lambda *args, **kwargs: None),
                      "database": types.SimpleNamespace(init_db=lambda: calls.append("database")),
                      "web_app": web, "SyncWorker": Sync, "time": types.SimpleNamespace(sleep=stop_loop),
                      "logger": mock.Mock(), "recognition_model_ready": forbidden, "FaceRecognizer": forbidden}

@@ -54,6 +54,7 @@ def validate_kiosk_policy(settings: Any) -> KioskPolicy:
         recognition_errors.append("LIVENESS_REQUIRED")
     number("RECOGNITION_MATCH_THRESHOLD", maximum=1, positive=True)
     number("RECOGNITION_NEAR_MISS_MARGIN", maximum=1)
+    number("RECOGNITION_MIN_MARGIN", maximum=2, positive=True)
     # deque(maxlen=...) consumes Py_ssize_t, even though Python integers grow.
     positive_integer("RECOGNITION_EMBEDDING_WINDOW", maximum=sys.maxsize)
     positive_integer("RECOGNITION_UNKNOWN_STREAK")

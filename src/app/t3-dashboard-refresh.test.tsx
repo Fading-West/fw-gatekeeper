@@ -130,3 +130,31 @@ it.each(['invalid JSON', 'unexpected payload'])('retains good data and reports a
   expect(tree!.root.findByProps({ 'data-worker': 'Retained worker' }).props['data-stale']).toBe(true);
   expect(JSON.stringify(tree!.toJSON())).toContain('could not refresh');
 });
+
+const healthyKiosks = { checked_at: '2026-10-02T08:00:00Z', portal: { status: 'online' }, face_service: { status: 'online', model_ready: true }, kiosks: { total: 1, counts: { online: 1, offline: 0, stale: 0, never_synced: 0 }, rows: [] }, sync: {}, warnings: [] };
+it('does not claim there are no active workers when stats never loaded', async () => {
+  setupDocument();
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('/api/stats')
+    ? Response.json({ error: 'Stats outage' }, { status: 500 })
+    : Response.json(url.includes('/api/system-health') ? healthyKiosks : payload(url, 'Rostered worker'))));
+  await act(async () => { tree = create(<Dashboard />); });
+  const text = JSON.stringify(tree!.toJSON());
+  expect(tree!.root.findByProps({ 'data-worker': 'Rostered worker' })).toBeTruthy();
+  expect(text).not.toContain('No active workers are available');
+  expect(text).toContain('Dashboard stats are unavailable, so the active worker count cannot be confirmed.');
+  expect(text).toContain('stats unavailable');
+});
+it('keeps cached stats readiness when a later stats refresh fails', async () => {
+  const visible = setupDocument(); let refreshing = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.includes('/api/stats')) return refreshing ? Response.json({ error: 'Stats outage' }, { status: 500 }) : Response.json({ totalWorkers: 0, clockedIn: 0, clockedOut: 0, notArrived: 0, avgArrival: null });
+    return Response.json(url.includes('/api/system-health') ? healthyKiosks : payload(url, 'Rostered worker'));
+  }));
+  await act(async () => { tree = create(<Dashboard />); });
+  refreshing = true;
+  await act(async () => visible());
+  const text = JSON.stringify(tree!.toJSON());
+  expect(text).toContain('Stats cached from');
+  expect(text).toContain('No active workers are available');
+  expect(text).not.toContain('stats unavailable');
+});
