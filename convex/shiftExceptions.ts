@@ -4,8 +4,10 @@ import { listEffectiveAttendanceByFactoryDates } from "./attendance";
 import { createActiveKioskResolver } from "./kioskLookup";
 import { listAllRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
 import { assertPortalRole } from "./access";
+import { writeAuditLog } from "./audit";
 import { getFactoryLocalDateKey, getFactoryLocalTimestamp, getPreviousFactoryLocalDateKey, getNextFactoryLocalDateKey } from "./localDate";
 import { createShiftClock, MAX_PLAUSIBLE_SHIFT_HOURS, pairShiftEvents } from "./attendanceShifts";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 
 import { isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 
@@ -49,6 +51,8 @@ type ShiftException = {
   kiosk_name: string | null;
   first_seen: string | null;
   last_seen: string | null;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
   schedule_name: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
@@ -745,18 +749,36 @@ export async function buildShiftExceptions(ctx: any, date: string) {
   }
 
   const hydrated = exceptions.map((exception) => withReview(exception, reviewsByKey.get(exception.key)));
+  const timestampKey = createRecognitionTimestampSortKey();
+  const chronologicalKeys = new Map(hydrated.map(exception =>
+    [exception.key, timestampKey(exception.first_seen || "")],
+  ));
   hydrated.sort((a, b) => {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     const statusOrder = { open: 0, reviewed: 1, resolved: 2, ignored: 3 };
     return (
       statusOrder[a.status] - statusOrder[b.status] ||
       severityOrder[a.severity] - severityOrder[b.severity] ||
-      (a.first_seen || "").localeCompare(b.first_seen || "") ||
+      chronologicalKeys.get(a.key)!.localeCompare(chronologicalKeys.get(b.key)!) ||
       a.title.localeCompare(b.title)
     );
   });
 
-  return hydrated;
+  // Order by evidence instants, then expose factory wall time for all
+  // display/export consumers. Relative-time consumers still need the instant.
+  return hydrated.map(exception => {
+    if (exception.type !== "recognition_review") return exception;
+    const key = timestampKey(exception.first_seen || "");
+    const timestampUtc = key ? `${key}Z`.replace(".Z", "Z") : null;
+    const timestamp = getRecognitionDisplayTimestamp(exception.first_seen);
+    return {
+      ...exception,
+      first_seen: timestamp,
+      last_seen: timestamp,
+      first_seen_utc: timestampUtc,
+      last_seen_utc: timestampUtc,
+    };
+  });
 }
 
 export const summary = query({
@@ -782,8 +804,13 @@ export const review = mutation({
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
     note: v.optional(v.string()),
   },
+  returns: v.object({
+    id: v.id("exceptionReviews"), exceptionKey: v.optional(v.string()), date: v.string(), type: v.string(),
+    status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
+    note: v.optional(v.string()), reviewedAt: v.optional(v.string()), updatedAt: v.string(),
+  }),
   handler: async (ctx, args) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
+    const actor = await assertPortalRole(ctx, ["admin", "enrollment"]);
     const now = new Date().toISOString();
     const existing = await ctx.db
       .query("exceptionReviews")
@@ -800,15 +827,20 @@ export const review = mutation({
       updatedAt: now,
     };
 
-    if (existing) {
-      await ctx.db.patch(existing._id, patch);
-      return { id: existing._id, ...patch };
-    }
-
-    const id = await ctx.db.insert("exceptionReviews", {
+    const id = existing?._id ?? await ctx.db.insert("exceptionReviews", {
       exceptionKey: args.exceptionKey,
       ...patch,
     });
-    return { id, exceptionKey: args.exceptionKey, ...patch };
+    if (existing) await ctx.db.patch(existing._id, patch);
+    await writeAuditLog(ctx, {
+      actorUserId: actor.userId, action: "exception.review",
+      targetTable: "exceptionReviews", targetId: id,
+      details: JSON.stringify({ exceptionKey: args.exceptionKey, date: args.date, type: args.type,
+        before: existing ? { date: existing.date, type: existing.type, status: existing.status, note: existing.note ?? null,
+          reviewedAt: existing.reviewedAt ?? null, updatedAt: existing.updatedAt } : null,
+        after: { date: patch.date, type: patch.type, status: patch.status, note: patch.note ?? null,
+          reviewedAt: patch.reviewedAt ?? null, updatedAt: patch.updatedAt } }),
+    });
+    return existing ? { id, ...patch } : { id, exceptionKey: args.exceptionKey, ...patch };
   },
 });

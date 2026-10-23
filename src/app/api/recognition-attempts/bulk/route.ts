@@ -20,6 +20,22 @@ function optionalBoolean(value: unknown): boolean | undefined {
   return undefined;
 }
 
+const metricLimits: [string[], number, number][] = [
+  [['best_score', 'bestScore', 'score', 'confidence', 'second_best_score', 'secondBestScore', 'second_score', 'secondScore'], -1, 1],
+  [['score_margin', 'scoreMargin', 'margin'], -2, 2],
+  [['threshold', 'match_threshold', 'matchThreshold', 'image_quality', 'imageQuality', 'face_quality', 'faceQuality'], 0, 1],
+  [['brightness'], 0, 255], [['blur'], 0, Number.MAX_VALUE],
+];
+function invalidRawMetric(raw: Record<string, unknown>): string | undefined {
+  for (const [fields, minimum, maximum] of metricLimits) {
+    for (const field of fields) {
+      const value = raw[field];
+      if (value !== undefined && value !== null && (typeof value !== 'number' ||
+          !Number.isFinite(value) || value < minimum - 1e-12 || value > maximum + 1e-12)) return field;
+    }
+  }
+}
+
 function normalizeAttempt(raw: any, kioskId: string) {
   const bestScore = optionalNumber(raw.best_score) ?? optionalNumber(raw.bestScore) ?? optionalNumber(raw.score) ?? optionalNumber(raw.confidence);
   const secondBestScore = optionalNumber(raw.second_best_score) ?? optionalNumber(raw.secondBestScore) ?? optionalNumber(raw.second_score) ?? optionalNumber(raw.secondScore);
@@ -90,6 +106,11 @@ export async function POST(req: NextRequest) {
     const identity = await authenticateKiosk(req, claims);
     if (!identity) return unauthorizedApiResponse();
 
+    for (const attempt of attempts) {
+      const invalid = invalidRawMetric(attempt);
+      if (invalid) return NextResponse.json({ error: `Invalid recognition metric: ${invalid}`, code: 'INVALID_RECOGNITION_METRIC' }, { status: 400 });
+    }
+
     if (attempts.some((raw: any) => !(optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt)))) {
       return NextResponse.json({ error: 'Each recognition attempt requires its captured timestamp for safe retry.', code: 'INVALID_RECOGNITION_TIMESTAMP' }, { status: 400 });
     }
@@ -103,6 +124,10 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof SecuredIngestError && error.status === 400 &&
+        ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.code || '')) {
+      return NextResponse.json({ error: error.detail || 'Invalid recognition evidence', code: error.code }, { status: 400 });
+    }
     if (error instanceof SecuredIngestError && error.status === 409) {
       return NextResponse.json({ error: 'Recognition attempt ID was reused with different evidence.', code: 'RECOGNITION_ATTEMPT_CONFLICT' }, { status: 409 });
     }

@@ -1,0 +1,12 @@
+test_full_insert_and_duplicate_acknowledgements_drain_queue (test_kiosk_verified_gaps.RecognitionAcknowledgementTests.test_full_insert_and_duplicate_acknowledgements_drain_queue) ... ok
+test_malformed_or_partial_success_retains_every_unsynced_attempt (test_kiosk_verified_gaps.RecognitionAcknowledgementTests.test_malformed_or_partial_success_retains_every_unsynced_attempt) ... Recognition sync not acknowledged (status=200); keeping 2 attempts queued
+Recognition sync not acknowledged (status=201); keeping 2 attempts queued
+Recognition sync not acknowledged (status=204); keeping 2 attempts queued
+Recognition sync not acknowledged (status=200); keeping 2 attempts queued
+Recognition sync not acknowledged (status=200); keeping 2 attempts queued
+ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.039s
+
+OK

@@ -10,6 +10,7 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { usePortalRole } from '@/hooks/usePortalRole';
@@ -64,14 +65,7 @@ function formatScore(value: number | null | undefined) {
 }
 
 function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || '—';
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return formatFactoryLocalDateTime(value);
 }
 
 function titleCase(value: string) {
