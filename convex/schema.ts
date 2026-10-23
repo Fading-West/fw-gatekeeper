@@ -23,6 +23,9 @@ export const closeoutFields = {
 
 export default defineSchema({
   ...authTables,
+  // Preserve Convex Auth's fields and userId index while allowing bounded
+  // expiry cleanup to invalidate queries that depend on a session document.
+  authSessions: authTables.authSessions.index("by_expirationTime", ["expirationTime"]),
 
   portalMembers: defineTable({
     userId: v.id("users"),
@@ -86,7 +89,7 @@ export default defineSchema({
     delivered: v.boolean(),
     deliveredAt: v.optional(v.string()),
     claimedUntil: v.optional(v.number()),
-  }).index("by_delivered", ["delivered"]),
+  }).index("by_delivered_and_claimed_until", ["delivered", "claimedUntil"]),
 
   attendance: defineTable({
     workerId: v.string(),
