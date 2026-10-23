@@ -10,7 +10,8 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 
@@ -104,14 +105,14 @@ function recognitionAttemptRowId(id: string) {
 function RecognitionCalibrationLabContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date'));
   const queryDecision = validDecisionParam(searchParams.get('decision'));
   const queryReviewStatus = validReviewParam(searchParams.get('review_status'));
   const queryConfidenceBand = validConfidenceParam(searchParams.get('confidence_band'));
   const queryKioskId = searchParams.get('kiosk_id') || '';
   const queryAttemptId = searchParams.get('attempt_id') || '';
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
+  const { date, setDate, today, newDay } = useFactoryDateSelection(queryDate);
   const [decision, setDecision] = useState<RecognitionDecision | 'all'>(queryDecision);
   const [reviewStatus, setReviewStatus] = useState<RecognitionReviewStatus | 'all'>(queryReviewStatus);
   const [confidenceBand, setConfidenceBand] = useState<RecognitionConfidenceBand | 'all'>(queryConfidenceBand);
@@ -119,8 +120,9 @@ function RecognitionCalibrationLabContent() {
   const [isReviewPending, setIsReviewPending] = useState(false);
   const reviewPendingRef = useRef(false);
 
+  // Key filter resets on the raw URL only: a computed "today" fallback changes
+  // at factory midnight and must not discard the supervisor's chosen view.
   useEffect(() => {
-    setDate(queryDate);
     setDecision(queryDecision);
     setReviewStatus(queryReviewStatus);
     setConfidenceBand(queryConfidenceBand);
@@ -210,6 +212,8 @@ function RecognitionCalibrationLabContent() {
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
+
+      {newDay && <FactoryDayNotice date={date} today={today} />}
 
       <section className="glass-card p-5">
         <div className="grid gap-3 md:grid-cols-5">
