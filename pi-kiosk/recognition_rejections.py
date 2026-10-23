@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect and release locally quarantined recognition evidence after operator review."""
+"""Inspect and release locally quarantined recognition telemetry after operator review."""
 
 import argparse
 import json

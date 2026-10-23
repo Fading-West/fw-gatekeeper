@@ -106,7 +106,7 @@ class RecognitionPoisonQA(SyntheticKioskFixture):
             attempts=kwargs['json']['attempts'];invalid=any(a.get('bestScore')==2.0 for a in attempts)
             body={'code':'INVALID_RECOGNITION_METRIC','error':'Invalid bestScore'} if invalid else {'ingested':len(attempts),'skipped':0}
             return mock.Mock(status_code=400 if invalid else 201,json=lambda:body,text='synthetic')
-        with mock.patch.object(sync.requests,'post',side_effect=upload):self.assertTrue(sync.sync_recognition_attempts())
+        with mock.patch.object(sync.requests,'post',side_effect=upload):self.assertFalse(sync.sync_recognition_attempts())
         row=database._get_conn().execute('SELECT synced,best_score,source_attempt_id FROM recognition_attempts WHERE id=?',(bad,)).fetchone()
         self.assertEqual((row['synced'],row['best_score'],row['source_attempt_id']),(0,2.0,source))
         self.assertEqual(database.get_unsynced_recognition_attempts(),[])

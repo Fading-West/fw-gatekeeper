@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -65,6 +66,9 @@ _health = {
     "degraded_reason": None,
     "last_scan_at": None,
     "sync_online": None,  # None = sync disabled/unknown, True/False once known
+    "sync_auth_ok": None,
+    "sync_auth_faults": [],
+    "sync_auth_phases": {},
     "last_sync_at": None,
 }
 
@@ -140,15 +144,6 @@ def _mjpeg_stream():
                     b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
                 )
         time.sleep(0.05)
-
-
-def _manual_action_for_worker(worker_id: int) -> str:
-    if config.KIOSK_TYPE == "entry":
-        return "clock_in"
-    if config.KIOSK_TYPE == "exit":
-        return "clock_out"
-    last = database.get_last_action(worker_id)
-    return "clock_out" if last == "clock_in" else "clock_in"
 
 
 def _is_loopback_request() -> bool:
@@ -227,9 +222,11 @@ def video_feed_alias():
 
 @app.route("/health")
 def health():
-    """Report device faults and known clock uncertainty, even during offline use."""
+    """Report device faults, clock uncertainty and quarantined evidence."""
     snapshot = get_health_snapshot()
-    degraded = not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+    degraded = (not snapshot["camera_ok"] or not snapshot["model_ok"] or bool(snapshot["degraded_reason"])
+                or snapshot.get("sync_auth_ok") is False
+                or bool(snapshot["rejected_logs"]) or bool(snapshot["rejected_attempts"]))
     return jsonify({"status": "degraded" if degraded else "ok", **snapshot})
 
 
@@ -280,17 +277,22 @@ def manual_clock():
 
     action = payload.get("action")
     if action not in {"clock_in", "clock_out"}:
-        action = _manual_action_for_worker(worker["id"])
+        action = None
 
-    log_id = database.log_attendance(
-        worker_id=worker["id"],
-        worker_name=worker["name"],
-        action=action,
-        liveness_confirmed=False,
-        confidence=1.0,
-        note="manual_clock",
-        server_worker_id=worker.get("server_id"),
-    )
+    try:
+        log_id = database.log_attendance(
+            worker_id=worker["id"],
+            worker_name=worker["name"],
+            action=action,
+            liveness_confirmed=False,
+            confidence=1.0,
+            note="manual_clock",
+            server_worker_id=worker.get("server_id"),
+        )
+        action = database.get_attendance_action(log_id)
+    except sqlite3.OperationalError:
+        logger.exception("Failed to record manual attendance")
+        return jsonify({"success": False, "error": "Could not record attendance - please try again"}), 503
     action_label = "Clocked in" if action == "clock_in" else "Clocked out"
     update_status(
         state="CLOCKED_IN",

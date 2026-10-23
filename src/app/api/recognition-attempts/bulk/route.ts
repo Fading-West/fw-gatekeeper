@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestRecognitionAttemptBatch, SecuredIngestError } from '@/lib/convex-ingest';
 import { unauthorizedApiResponse } from '@/lib/auth';
-import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId, KioskClaimMismatchError } from '@/lib/kiosk-device-auth';
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
     }
     const claims = [...kioskClaims(body), ...attempts.flatMap((attempt: unknown) =>
       attempt && typeof attempt === 'object' && !Array.isArray(attempt) ? kioskClaims(attempt as Record<string, unknown>) : [])];
-    const identity = await authenticateKiosk(req, claims);
+    const identity = await authenticateKiosk(req, claims, { batchClaims: kioskClaims(body) });
     if (!identity) return unauthorizedApiResponse();
 
     for (const attempt of attempts) {
@@ -124,6 +124,9 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof KioskClaimMismatchError) {
+      return NextResponse.json({ error: error.message, code: 'KIOSK_CLAIM_MISMATCH' }, { status: 403 });
+    }
     if (error instanceof SecuredIngestError && error.status === 400 &&
         ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.code || '')) {
       return NextResponse.json({ error: error.detail || 'Invalid recognition evidence', code: error.code }, { status: 400 });
