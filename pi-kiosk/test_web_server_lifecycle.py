@@ -15,7 +15,7 @@ KIOSK_DIR = Path(__file__).resolve().parent
 # Run the real entry point without camera hardware or model downloads. Each
 # process owns its SQLite connections and web threads, just like a restart.
 RUN_KIOSK = textwrap.dedent("""
-    import sys, time, types
+    import socket, sys, time, types
     from pathlib import Path
     from urllib.request import urlopen
     import numpy as np
@@ -84,6 +84,20 @@ RUN_KIOSK = textwrap.dedent("""
         def stop(self):
             pass
     main.Camera = Camera
+    if mode == 'initialization_failure':
+        def fail_recognizer():
+            while not server:
+                time.sleep(0.01)
+            # Keep a real MJPEG request alive when recognizer setup raises.
+            # Non-daemon request workers otherwise strand the kiosk process.
+            main.web_app.set_frame(np.zeros((8, 8, 3), dtype=np.uint8))
+            client = socket.create_connection(server[0].server_address, timeout=2)
+            client.sendall(b'GET /feed HTTP/1.1\\r\\nHost: localhost\\r\\nX-Kiosk-UI-Key: synthetic-ui-key\\r\\n\\r\\n')
+            assert b'200' in client.recv(4096)
+            clients.append(client)
+            raise RuntimeError('Synthetic recognizer initialization failed')
+        clients = []
+        main.FaceRecognizer = fail_recognizer
     original_sleep = time.sleep
     main.time.sleep = lambda seconds: original_sleep(min(seconds, 0.01))
     main.run(types.SimpleNamespace(server=None, kiosk_id=None, camera='auto'))
@@ -130,6 +144,13 @@ class WebServerProcessTests(unittest.TestCase):
                     self.assertIn('ATTENDANCE_COMMITTED', failed.stdout)
                     expected.append(('clock_out', 0))
                 self.assertEqual(self.queued_actions(root), expected)
+
+    def test_initialization_failure_closes_live_feed_before_process_exit(self):
+        with tempfile.TemporaryDirectory() as root:
+            failed = self.run_kiosk(root, 0, 'initialization_failure')
+            self.assertEqual(failed.returncode, 1, failed.stderr)
+            self.assertIn('Synthetic recognizer initialization failed', failed.stderr)
+            self.assertEqual(self.queued_actions(root), [('clock_in', 0)])
 
     def test_systemd_retries_indefinitely_with_backoff(self):
         setup = (KIOSK_DIR / 'setup.sh').read_text()

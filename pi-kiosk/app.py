@@ -67,6 +67,7 @@ _health = {
 }
 
 _server_thread = None
+_server = None
 _server_stopped = threading.Event()
 _supervisor_attempt_limiter = SupervisorAttemptLimiter()
 
@@ -345,12 +346,13 @@ def supervisor_lock():
 
 def start_server():
     """Bind on the calling thread so startup failure exits the kiosk."""
-    global _server_thread
+    global _server_thread, _server
     if _server_thread and _server_thread.is_alive():
         return _server_thread
 
     _server_stopped.clear()
     server = _KioskServer(get_kiosk_ui_host(), config.KIOSK_PORT, app)
+    _server = server
 
     def _serve():
         try:
@@ -362,6 +364,14 @@ def start_server():
     _server_thread.start()
     logger.info("Web UI started at http://%s:%d", get_kiosk_ui_host(), config.KIOSK_PORT)
     return _server_thread
+
+
+def stop_server():
+    """Drain HTTP workers even when scanner startup or execution fails."""
+    _server_stopped.set()
+    if _server is not None and _server_thread is not None and _server_thread.is_alive():
+        _server.shutdown()
+        _server_thread.join()
 
 
 def check_server():

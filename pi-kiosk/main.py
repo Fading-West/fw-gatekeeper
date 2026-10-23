@@ -184,6 +184,15 @@ def _write_recognition_attempt(result, decision):
 
 
 def run(args):
+    try:
+        return _run(args)
+    finally:
+        # This also covers failures before the camera-loop try/finally exists,
+        # e.g. recognizer initialization with an active streaming HTTP client.
+        web_app.stop_server()
+
+
+def _run(args):
     if args.server:
         config.SERVER_URL = args.server
     if args.kiosk_id:
