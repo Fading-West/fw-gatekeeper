@@ -18,6 +18,7 @@ async function health(body: object, status = 200) {
   expect(response.status).toBe(200);
   expect(fetchMock).toHaveBeenCalledOnce();
   expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('headers');
+  expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe('/health');
   return response.json();
 }
 
@@ -43,4 +44,15 @@ it.each([
 it('does not report enrollment ready when the portal authentication is absent', async () => {
   vi.stubEnv('FACE_SERVICE_KEY', '');
   expect((await health({ status: 'ok', model_ready: true, auth_ready: true })).face_service.status).toBe('degraded');
+});
+
+it('keeps a responding service with HTTP 503 degraded rather than offline', async () => {
+  const payload = await health({
+    status: 'degraded', model_ready: false, auth_ready: true,
+    degraded_reason: 'model_unavailable',
+  }, 503);
+  expect(payload.face_service).toMatchObject({ status: 'degraded', http_status: 503, model_ready: false });
+  expect(payload.warnings).toContain('Face service is degraded. Enrollment or recognition may be unreliable.');
+  expect(payload.warnings).toContain('Face service models are not ready. Face enrollment may fail.');
+  expect(payload.warnings).not.toContain('Face service is offline or not responding. Enrollment may fail.');
 });
