@@ -1,4 +1,5 @@
-node_modules/
+# No trailing slash: also ignore a node_modules symlink, not just a directory.
+node_modules
 .next/
 data/
 *.tsbuildinfo
