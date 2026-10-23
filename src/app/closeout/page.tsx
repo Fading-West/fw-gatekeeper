@@ -44,14 +44,14 @@ function formatDateTime(value: string | null | undefined) {
   });
 }
 
-function checklistExportLine(item: ShiftCloseoutChecklistItem) {
+function checklistExportLine(item: ShiftCloseoutChecklistItem, role: PortalRole | undefined, date: string) {
   const proof = item.proof
-    ? ` Proof: ${item.proof.count} ${item.proof.label} (${item.proof.exact ? 'exact source' : 'source view'}: ${item.proof.href}).`
+    ? ` Proof: ${item.proof.count} ${item.proof.label} (${item.proof.exact ? 'exact source' : 'source view'}: ${roleSafeHref(item.proof.href, role, date)}).`
     : '';
   return `- ${item.label}: ${item.status} (${item.count}) - ${item.description}${proof}`;
 }
 
-function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string) {
+function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string, role: PortalRole | undefined) {
   const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
@@ -64,13 +64,14 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     `Present: ${summary.present}`,
     `Late: ${summary.late}`,
     `Missing: ${summary.missing}`,
+    ...(payload.closeout?.status !== 'completed' && payload.summary.not_yet_due ? [`Not yet due: ${payload.summary.not_yet_due}`] : []),
     `Open exceptions: ${summary.open_exceptions}`,
     `Critical exceptions: ${summary.critical_exceptions}`,
     `Kiosk warnings: ${summary.kiosk_warnings}`,
     `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
     '',
     'Current checklist',
-    ...payload.checklist.map(checklistExportLine),
+    ...payload.checklist.map((item) => checklistExportLine(item, role, payload.date)),
     '',
     'Current closeout draft',
     payload.closeout_draft?.narrative || 'No closeout draft available.',
@@ -97,6 +98,16 @@ function validDateParam(value: string | null) {
 
 function canOperateCloseout(role: PortalRole | undefined) {
   return role === 'admin' || role === 'enrollment';
+}
+
+// /kiosks is admin-only; the proxy sends other roles back to the dashboard.
+// The briefing shows the same kiosk trust signals to every role.
+function isKioskHref(href: string) {
+  return href === '/kiosks' || href.startsWith('/kiosks?');
+}
+
+function roleSafeHref(href: string, role: PortalRole | undefined, date: string) {
+  return role !== 'admin' && isKioskHref(href) ? `/briefing?date=${date}` : href;
 }
 
 function getCloseoutNextStep({
@@ -198,7 +209,8 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.missing_clock_outs || 0) +
     Number(payload?.summary.recognition_reviews || 0) +
     Number(payload?.summary.kiosk_warnings || 0) +
-    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0);
+    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0) +
+    Number(payload?.checklist.find((item) => item.id === 'not_yet_due')?.count || 0);
   const canComplete = Boolean(payload && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
@@ -233,6 +245,7 @@ function ShiftCloseoutPageContent() {
       ['Present', summary?.present ?? 0, 'text-emerald-300'],
       ['Late', summary?.late ?? 0, 'text-amber-300'],
       ['Missing', summary?.missing ?? 0, 'text-red-300'],
+      ...(summary?.not_yet_due ? [['Not Yet Due', summary.not_yet_due, 'text-sky-300']] : []),
       ['Open Exceptions', summary?.open_exceptions ?? 0, 'text-gold'],
       ['Clock-out Blockers', summary?.missing_clock_outs ?? 0, 'text-amber-300'],
       ['Recognition Reviews', summary?.recognition_reviews ?? 0, 'text-blue-300'],
@@ -299,7 +312,7 @@ function ShiftCloseoutPageContent() {
           <button type="button" onClick={() => dataReady && window.print()} disabled={!dataReady} className="btn-secondary">
             Print
           </button>
-          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes)} className="btn-primary" disabled={!dataReady}>
+          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes, currentRole)} className="btn-primary" disabled={!dataReady}>
             Export
           </button>
         </div>
@@ -353,7 +366,7 @@ function ShiftCloseoutPageContent() {
                 </div>
               </div>
               {nextStep.href ? (
-                <Link href={nextStep.href} className="btn-primary shrink-0 self-start text-xs md:self-auto">
+                <Link href={roleSafeHref(nextStep.href, currentRole, date)} className="btn-primary shrink-0 self-start text-xs md:self-auto">
                   {nextStep.cta}
                 </Link>
               ) : (
@@ -384,7 +397,7 @@ function ShiftCloseoutPageContent() {
                       <p className="text-sm text-slate-400 mt-2 leading-6">{item.description}</p>
                       {item.proof && (
                         <Link
-                          href={item.proof.href}
+                          href={roleSafeHref(item.proof.href, currentRole, date)}
                           className="mt-3 inline-flex flex-wrap items-center gap-2 rounded border border-navy-600/50 bg-navy-950/35 px-3 py-2 text-xs text-slate-300 hover:border-gold/30 hover:text-gold"
                         >
                           <span className="font-mono text-slate-500">Proof</span>
@@ -396,7 +409,7 @@ function ShiftCloseoutPageContent() {
                           )}
                         </Link>
                       )}
-                      <Link href={item.href} className="mt-3 inline-flex text-xs font-semibold text-gold hover:text-gold-light">
+                      <Link href={roleSafeHref(item.href, currentRole, date)} className="mt-3 inline-flex text-xs font-semibold text-gold hover:text-gold-light">
                         Open source view →
                       </Link>
                     </div>
@@ -464,7 +477,7 @@ function ShiftCloseoutPageContent() {
                           {section.source_links.map((link) => (
                             <Link
                               key={`${section.id}:${link.label}:${link.href}`}
-                              href={link.href}
+                              href={roleSafeHref(link.href, currentRole, date)}
                               className="rounded border border-navy-600/60 bg-navy-950/35 px-2.5 py-1 text-[11px] text-slate-300 hover:border-gold/30 hover:text-gold"
                             >
                               {link.count ? `${link.count} ` : ''}{link.label}{link.exact ? ' - exact' : ''}
@@ -573,7 +586,7 @@ function ShiftCloseoutPageContent() {
                 { label: 'Exceptions', href: `/exceptions?date=${date}` },
                 { label: 'Kiosks', href: '/kiosks' },
                 { label: 'Recognition Lab', href: `/calibration/recognition?date=${date}` },
-              ]).map((link) => (
+              ]).filter((link) => currentRole === 'admin' || !isKioskHref(link.href)).map((link) => (
                 <Link key={link.href} href={link.href} className="rounded-xl border border-navy-600/50 bg-navy-900/35 px-4 py-3 text-sm text-slate-300 hover:text-gold hover:border-gold/25 transition-all">
                   {link.label}
                 </Link>
