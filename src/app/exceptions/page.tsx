@@ -12,6 +12,7 @@ import { createLocalIsoTimestamp } from '@/lib/date';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 import {
   AttendanceCorrectionAction,
   ShiftException,
@@ -218,6 +219,7 @@ function ExceptionsPageContent() {
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load exceptions');
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    if (body.backend_unavailable) throw new Error(body.warning || 'Shift exception storage is waiting for deployment.');
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchExceptions } = useSelectedData(date, loadExceptions);
@@ -233,12 +235,12 @@ function ExceptionsPageContent() {
   const exceptions = payload?.exceptions ?? [];
   const departments = useMemo(() => {
     const values = exceptions.flatMap((exception) => (exception.department ? [exception.department] : []));
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [exceptions]);
+    return filterOptions(values, department);
+  }, [department, exceptions]);
   const types = useMemo(() => {
     const values = exceptions.map((exception) => exception.type);
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [exceptions]);
+    return filterOptions(values, type);
+  }, [exceptions, type]);
 
   const filtered = useMemo(() => {
     return exceptions.filter((exception) => {
@@ -256,6 +258,8 @@ function ExceptionsPageContent() {
       return;
     }
     if (!dataReady || exception.date !== date || reviewPendingRef.current || correctionPendingRef.current) return;
+    // Send the note exactly as shown. An empty draft is an explicit clear, not "keep the old note".
+    const noteDraft = noteDrafts[exception.key];
     reviewPendingRef.current = true;
     setIsPending(true);
     void (async () => {
@@ -268,11 +272,19 @@ function ExceptionsPageContent() {
             date: exception.date,
             type: exception.type,
             status: nextStatus,
-            note: noteDrafts[exception.key] || exception.review_note || undefined,
+            note: noteDraft ?? exception.review_note ?? '',
           }),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body?.error || 'Failed to update exception');
+        // Drop the draft (unless it was edited during the save) so the textarea shows the saved note
+        // from the refresh below, and later refreshes are not hidden behind a pinned copy.
+        setNoteDrafts((current) => {
+          if (!(exception.key in current) || current[exception.key] !== noteDraft) return current;
+          const next = { ...current };
+          delete next[exception.key];
+          return next;
+        });
         toast(`Exception marked ${titleCase(nextStatus)}`);
         await fetchExceptions();
       } catch (err) {
@@ -296,7 +308,7 @@ function ExceptionsPageContent() {
       toast(resolution.disabled_reason || 'This exception does not have a one-tap correction path.', 'error');
       return;
     }
-    const existingReason = noteDrafts[exception.key] || exception.review_note || '';
+    const existingReason = (noteDrafts[exception.key] ?? exception.review_note ?? '').trim();
     correctionTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setCorrectionDraft({
       exception,
@@ -495,7 +507,7 @@ function ExceptionsPageContent() {
         ].map(([label, value, tone]) => (
           <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
             <p className="text-xs text-slate-500">{label}</p>
-            <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+            <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
           </div>
         ))}
       </section>
@@ -560,7 +572,7 @@ function ExceptionsPageContent() {
 
       {loading && !payload ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading shift exceptions...</div>
-      ) : filtered.length === 0 ? (
+      ) : error ? null : filtered.length === 0 ? (
         <div className="glass-card p-8 text-center">
           <h2 className="font-display text-xl text-slate-100">No exceptions in this view</h2>
           <p className="mt-2 text-sm text-slate-400">Adjust filters or pick another date to inspect the daily breakdown sheet.</p>
@@ -625,7 +637,8 @@ function ExceptionsPageContent() {
                           {exception.links.recognition_lab && (
                             <Link href={exception.links.recognition_lab} className="text-xs text-gold hover:text-gold-light">Recognition Lab</Link>
                           )}
-                          {exception.links.kiosk && (
+                          {/* /kiosks is admin-only; the proxy sends other roles back to the dashboard. */}
+                          {exception.links.kiosk && currentRole === 'admin' && (
                             <Link href={exception.links.kiosk} className="text-xs text-gold hover:text-gold-light">Kiosks</Link>
                           )}
                         </div>

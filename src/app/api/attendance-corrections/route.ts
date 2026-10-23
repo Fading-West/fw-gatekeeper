@@ -61,7 +61,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const requestId = body.request_id ?? body.requestId;
     if (requestId !== undefined && (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 200)) {
       return NextResponse.json({ error: 'request_id must be a nonempty string of at most 200 characters' }, { status: 400 });
