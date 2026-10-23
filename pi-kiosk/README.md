@@ -255,6 +255,10 @@ lock-timeout messages.
 
 - `enroll.py` — local enrollment CLI (add/list/remove workers) with a
   loopback-only browser preview on `:5556`.
+  Its `enrollment_quality.py` policy is bundled in `pi-kiosk` so maintenance
+  commands also work inside immutable releases, including releases staged by
+  older updaters. Keep it byte-identical to `face-service/enrollment_quality.py`;
+  the enrollment tests enforce parity when either copy changes.
 - `tools/liveness_check.py` — field diagnostic for blink detection; serves a
   loopback-only preview on `:5599` (stop the kiosk service first to free the
   camera).
