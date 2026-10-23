@@ -14,6 +14,7 @@ import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { api } from '../../../../convex/_generated/api';
 
 const LOW_MARGIN_THRESHOLD = 0.08;
+const REVIEW_STATUSES: RecognitionReviewStatus[] = ['confirmed', 'corrected', 'ignored', 'unreviewed'];
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -219,11 +220,17 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const id = optionalString(body.id);
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-    const reviewStatus = optionalString(body.review_status) || optionalString(body.reviewStatus) || 'confirmed';
+    // Only an omitted status defaults to confirmed; a supplied non-string or blank value is rejected.
+    const suppliedStatus: unknown = body.review_status !== undefined ? body.review_status : body.reviewStatus;
+    const reviewStatus = suppliedStatus === undefined ? 'confirmed' : typeof suppliedStatus === 'string' ? suppliedStatus.trim() : '';
+    if (!REVIEW_STATUSES.includes(reviewStatus as RecognitionReviewStatus)) {
+      return NextResponse.json({ error: `review_status must be one of ${REVIEW_STATUSES.join(', ')}` }, { status: 400 });
+    }
     const result = await convex.mutation((api as any).recognitionAttempts.updateReview, {
       id: id as any,
       reviewed: reviewStatus !== 'unreviewed',

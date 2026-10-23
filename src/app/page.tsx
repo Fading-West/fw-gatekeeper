@@ -617,6 +617,8 @@ export default function Dashboard() {
   const workerCardFreshnessCopy = attendanceStaleCopy || rosterStaleCopy;
   const workerCardsAreStale = isSignalStale(signalFreshness, 'workers') || isSignalStale(signalFreshness, 'attendance');
   const systemHealthStaleCopy = getSignalFreshnessCopy(signalFreshness, 'system-health', 'System health cached');
+  // Stats failed with no earlier successful load today, so the zeroed defaults are not real counts.
+  const statsUnavailable = isSignalStale(signalFreshness, 'stats') && !signalFreshness.stats?.lastSuccessAt;
   const sentinelChangedCount = sentinelItems.filter((item) => item.changedSinceSeen).length;
   const sentinelCriticalCount = sentinelItems.filter((item) => item.priority === 'critical').length;
   const canOpenAdminOps = dashboardRole === 'admin';
@@ -670,11 +672,13 @@ export default function Dashboard() {
         ? 'System health is unavailable, so readiness cannot be confirmed.'
         : systemHealth.kiosks.total === 0
           ? 'No kiosks are registered, so employee clock-in cannot be confirmed.'
-          : stats.totalWorkers === 0
-            ? 'No active workers are available for today’s clock-in readiness.'
-            : offlineKioskCount > 0
-              ? `${offlineKioskCount} kiosk${offlineKioskCount === 1 ? '' : 's'} are offline or have never synced.`
-              : 'Face service is not fully ready for enrollment or recognition.',
+          : statsUnavailable
+            ? 'Dashboard stats are unavailable, so the active worker count cannot be confirmed.'
+            : stats.totalWorkers === 0
+              ? 'No active workers are available for today’s clock-in readiness.'
+              : offlineKioskCount > 0
+                ? `${offlineKioskCount} kiosk${offlineKioskCount === 1 ? '' : 's'} are offline or have never synced.`
+                : 'Face service is not fully ready for enrollment or recognition.',
       tone: 'border-red-400/25 bg-red-400/10 text-red-200',
     },
   }[readinessStatus];
@@ -835,8 +839,8 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 sm:grid-cols-4 xl:min-w-[560px] gap-3">
             <div className="rounded-2xl bg-navy-950/35 border border-white/10 p-3">
               <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Expected</p>
-              <p className="mt-1 text-2xl font-display font-bold text-slate-100">{trustBrief?.source_counts.expected ?? stats.totalWorkers}</p>
-              <p className="text-[11px] text-slate-500">workers today</p>
+              <p className="mt-1 text-2xl font-display font-bold text-slate-100">{trustBrief?.source_counts.expected ?? (statsUnavailable ? '—' : stats.totalWorkers)}</p>
+              <p className="text-[11px] text-slate-500">{!trustBrief && statsUnavailable ? 'stats unavailable' : 'workers today'}</p>
             </div>
             <div className="rounded-2xl bg-navy-950/35 border border-white/10 p-3">
               <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Open exceptions</p>
