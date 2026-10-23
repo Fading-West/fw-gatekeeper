@@ -202,6 +202,7 @@ def add_worker(name: str):
         while len(encodings) < SAMPLES_REQUIRED:
             ret, frame = cap.read()
             if not ret:
+                liveness.reset()
                 time.sleep(0.05)
                 continue
 
@@ -216,9 +217,9 @@ def add_worker(name: str):
             live = False
 
             if face_location is not None:
+                live = liveness.update(frame, face_location)
                 top, right, bottom, left = face_location
                 cv2.rectangle(display, (left, top), (right, bottom), (0, 180, 255), 2)
-                live = liveness.update(frame, face_location)
                 message = "Blink to verify"
 
                 if live and (time.monotonic() - last_capture) > 1.0:

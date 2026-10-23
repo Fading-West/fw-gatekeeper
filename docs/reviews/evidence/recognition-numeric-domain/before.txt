@@ -1,0 +1,39 @@
+
+ RUN  v4.1.10 <isolated-workspace>/worktrees/14-recognition-numeric-domain
+
+ ❯ convex/oct02-recognition-numeric-domain.test.ts (1 test | 1 failed) 38ms
+   × rejects invalid calibration metrics atomically and preserves negative cosine evidence 37ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  convex/oct02-recognition-numeric-domain.test.ts > rejects invalid calibration metrics atomically and preserves negative cosine evidence
+AssertionError: promise resolved "{ …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "ids": [
++     "0000000010002recognitionAttempts",
++   ],
++   "ingested": 1,
++   "skipped": 1,
+  }
+
+ ❯ convex/oct02-recognition-numeric-domain.test.ts:20:125
+     18|  const { t } = await setup();
+     19|  for (const bad of [{ bestScore: NaN }, { threshold: -0.1 }, { bestSco…
+     20|   await expect(t.mutation(internal.recognitionAttempts.bulkIngestFromH…
+       |                                                                                                                             ^
+     21|  }
+     22|  expect(await t.run(ctx => ctx.db.query('recognitionAttempts').collect…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  01:46:12
+   Duration  375ms (transform 70ms, setup 0ms, import 175ms, tests 38ms, environment 0ms)
