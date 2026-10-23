@@ -242,9 +242,11 @@ def init_db():
     _ensure_column(conn, "attendance_log", "note", "note TEXT")
     _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_server_worker ON attendance_log(server_worker_id)")
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
-    # server id onto that worker's queued attendance rows.
+    # server id onto that worker's attendance rows. Synced rows need it too:
+    # a restored worker gets a new local id and finds earlier events by it.
     # Replace the trigger on startup: the event's original identity is
     # immutable, so deletion only fills missing snapshots on legacy rows. A savepoint
     # keeps DROP + CREATE atomic even when init_db is called with no pending
@@ -259,7 +261,7 @@ def init_db():
             WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
             BEGIN
                 UPDATE attendance_log SET server_worker_id = OLD.server_id
-                WHERE worker_id = OLD.id AND synced = 0
+                WHERE worker_id = OLD.id
                   AND (server_worker_id IS NULL OR server_worker_id = '');
             END
             """
@@ -304,11 +306,13 @@ def init_db():
 
 
 def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
-    """Copy workers.server_id onto queued attendance rows that have no snapshot yet.
+    """Copy workers.server_id onto attendance rows that have no snapshot yet.
 
-    Only unsynced rows matter: synced rows never need the mapping again, so
-    this stays cheap no matter how much history the kiosk holds. Returns the
-    number of rows updated.
+    Queued rows need it to upload; synced rows need it so a worker restored
+    under a new local id keeps their clock direction and debounce. Local ids
+    are AUTOINCREMENT and never reused, so the mapping is the same person.
+    Once filled, rows are skipped on later startups. Returns the number of
+    rows updated.
     """
     cursor = conn.execute(
         """
@@ -316,8 +320,7 @@ def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
         SET server_worker_id = (
             SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
         )
-        WHERE synced = 0
-          AND (server_worker_id IS NULL OR server_worker_id = '')
+        WHERE (server_worker_id IS NULL OR server_worker_id = '')
           AND EXISTS (
             SELECT 1 FROM workers
             WHERE workers.id = attendance_log.worker_id
@@ -755,17 +758,32 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
         return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
 
 
+def _worker_attendance_filter(conn, worker_id: int) -> tuple[str, tuple]:
+    """Match a worker's attendance across local ids.
+
+    Roster sync deletes a deactivated or purged worker's row, and restoring
+    them inserts a new local id for the same Convex id. Their earlier events
+    keep that Convex id in server_worker_id.
+    """
+    row = conn.execute("SELECT server_id FROM workers WHERE id = ?", (int(worker_id),)).fetchone()
+    server_id = row["server_id"] if row else None
+    if server_id:
+        return "(worker_id = ? OR server_worker_id = ?)", (int(worker_id), server_id)
+    return "worker_id = ?", (int(worker_id),)
+
+
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
+    worker_filter, params = _worker_attendance_filter(conn, worker_id)
     row = conn.execute(
-        """
+        f"""
         SELECT id FROM attendance_log
-        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
+        WHERE {worker_filter} AND attendance_epoch(timestamp) >= ?
         LIMIT 1
         """,
-        (worker_id, threshold),
+        (*params, threshold),
     ).fetchone()
     return row is not None
 
@@ -773,10 +791,11 @@ def was_recently_clocked(worker_id: int, minutes: int) -> bool:
 def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
     conn = _get_conn()
+    worker_filter, params = _worker_attendance_filter(conn, worker_id)
     row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
+        f"""SELECT action FROM attendance_log WHERE {worker_filter}
         ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
-        (worker_id,),
+        params,
     ).fetchone()
     return row["action"] if row else None
 
