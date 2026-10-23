@@ -220,11 +220,14 @@ export function searchEmployeeDirectory(query: string, limit = 8) {
       const strictMatch = terms.every((term) => searchableParts.some((part) => part.includes(term)));
       if (!terms.every((term) => termMatches(term, searchableParts))) return null;
 
-      let score = 4;
+      // Number terms also match inside IDs and other departments ("4" is in
+      // F-24 and "Station 14"), so an exact department must outrank them.
+      let score = 5;
       if (normalizedId === normalizedQuery) score = 0;
       else if (normalizedName === normalizedQuery) score = 1;
-      else if (normalizedName.startsWith(normalizedQuery)) score = 2;
-      else if (terms.every((term) => normalizedName.split(' ').some((part) => part.startsWith(term)))) score = 3;
+      else if (normalizedDepartment === normalizedQuery) score = 2;
+      else if (normalizedName.startsWith(normalizedQuery)) score = 3;
+      else if (terms.every((term) => normalizedName.split(' ').some((part) => part.startsWith(term)))) score = 4;
 
       return { employee, index, score, strictMatch };
     })
