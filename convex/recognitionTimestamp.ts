@@ -1,4 +1,14 @@
-import { DEFAULT_FACTORY_TIME_ZONE, isValidFactoryLocalDateKey } from "./localDate";
+import { DEFAULT_FACTORY_TIME_ZONE, getFactoryLocalTimestamp, isValidFactoryLocalDateKey } from "./localDate";
+import type { FactoryLocalDateOptions } from "./localDate";
+
+export function getRecognitionDisplayTimestamp(timestamp: string | null | undefined, options: FactoryLocalDateOptions = {}) {
+  const localTimestamp = getFactoryLocalTimestamp(timestamp, options);
+  const fraction = timestamp?.match(/\.([0-9]+)/)?.[1];
+  // Match attendance display precision while keeping offsets out of wall time.
+  return localTimestamp && fraction && !localTimestamp.includes(".")
+    ? `${localTimestamp}.${fraction}`
+    : localTimestamp;
+}
 
 // Build once per query: reuse the formatter and each day's possible UTC offsets.
 export function createRecognitionTimestampSortKey() {
