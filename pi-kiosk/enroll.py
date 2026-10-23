@@ -323,7 +323,13 @@ def _finish_photo_cleanup(journaled: list[str], unjournaled=(), folder: Optional
             print(f"Could not delete photo outside {config.PHOTO_DIR}; remove it manually: {exc}")
             complete = False
     if folder is not None and folder.exists() and folder.is_dir():
-        shutil.rmtree(folder, ignore_errors=True)
+        # Sanitized names can share a capture folder (e.g. Alex and Alex!).
+        # Only the recorded photo paths belong to this removal; leave other
+        # workers' photos and in-flight captures intact.
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
     return complete
 
 

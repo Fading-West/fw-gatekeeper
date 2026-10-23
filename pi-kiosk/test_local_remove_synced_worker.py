@@ -305,6 +305,22 @@ class LocalRemovalOfSyncedWorkerTests(unittest.TestCase):
         self.assertFalse(capture.exists())
         self.assertEqual(database.count_pending_photo_cleanup(), 0)
 
+    def test_removing_local_worker_preserves_another_workers_shared_capture_folder(self):
+        folder = self.faces / "Alex"
+        folder.mkdir()
+        own_photo = folder / "local.jpg"
+        own_photo.write_bytes(b"local photo")
+        portal_photo = folder / "portal.jpg"
+        portal_photo.write_bytes(b"portal photo")
+        database.add_worker("Alex!", ENCODING, photo_paths=[str(own_photo)])
+        database.add_worker("Alex", ENCODING, server_id="portal-Alex", photo_paths=[str(portal_photo)])
+        with mock.patch("builtins.print"):
+            self.assertEqual(enroll.remove_worker("Alex!"), 0)
+        self.assertIsNone(database.get_worker_by_name("Alex!"))
+        self.assertIsNotNone(database.get_worker_by_name("Alex"))
+        self.assertFalse(own_photo.exists())
+        self.assertEqual(portal_photo.read_bytes(), b"portal photo")
+
 
 if __name__ == "__main__":
     unittest.main()
