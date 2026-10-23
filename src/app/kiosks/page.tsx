@@ -110,6 +110,7 @@ export default function KiosksPage() {
 
   const fetchReadiness = useCallback(async () => {
     const requestId = ++readinessRequestRef.current;
+    setHealth(null);
     setLoading(true);
     setError('');
     try {
@@ -119,7 +120,10 @@ export default function KiosksPage() {
       if (requestId === readinessRequestRef.current) setHealth(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load kiosk readiness';
-      if (requestId === readinessRequestRef.current) setError(message);
+      if (requestId === readinessRequestRef.current) {
+        setHealth(null);
+        setError(message);
+      }
     } finally {
       if (requestId === readinessRequestRef.current) setLoading(false);
     }
@@ -136,14 +140,14 @@ export default function KiosksPage() {
     [health],
   );
   const readinessLabel = useMemo(() => {
-    if (!health) return 'Checking readiness';
+    if (!health) return error ? 'Kiosk readiness unavailable' : 'Checking readiness';
     if (health.kiosks.total === 0) return 'No kiosks registered';
     if ((counts?.offline || 0) + (counts?.never_synced || 0) > 0) return 'Kiosks need attention';
     // A kiosk can be syncing (online) while its camera or model is broken.
     if (deviceIssueCount > 0) return 'Kiosks report device issues';
     if ((counts?.stale || 0) > 0) return 'Some kiosks are stale';
     return 'All kiosks online';
-  }, [counts, deviceIssueCount, health]);
+  }, [counts, deviceIssueCount, error, health]);
 
   const handleSubmit = async () => {
     const trimmedName = name.trim();
@@ -219,14 +223,14 @@ export default function KiosksPage() {
             </p>
           </div>
           <span className="badge bg-gold/10 text-gold border border-gold/20">
-            {health?.sync.ready_worker_count ?? 0} Expected worker records
+            {health?.sync.ready_worker_count ?? '—'} Expected worker records
           </span>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
           {(['online', 'stale', 'offline', 'never_synced'] as KioskReadinessStatus[]).map((status) => (
             <div key={status} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
               <p className="text-xs text-slate-500">{statusLabels[status]}</p>
-              <p className="font-display text-2xl text-slate-100 mt-1">{counts?.[status] ?? 0}</p>
+              <p className="font-display text-2xl text-slate-100 mt-1">{health ? (counts?.[status] ?? 0) : '—'}</p>
             </div>
           ))}
         </div>
@@ -278,7 +282,7 @@ export default function KiosksPage() {
 
       {loading && !health ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading kiosk readiness…</div>
-      ) : (
+      ) : error && !health ? null : (
         <section className="space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <h2 className="font-display font-semibold text-slate-100">Registered kiosks</h2>

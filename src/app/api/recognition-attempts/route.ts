@@ -14,6 +14,7 @@ import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { api } from '../../../../convex/_generated/api';
 
 const LOW_MARGIN_THRESHOLD = 0.08;
+const REVIEW_STATUSES: RecognitionReviewStatus[] = ['confirmed', 'corrected', 'ignored', 'unreviewed'];
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -104,6 +105,10 @@ function normalizeResponse(payload: any): RecognitionAttemptsResponse {
 
   return {
     attempts,
+    truncated: payload?.truncated === true,
+    summary_limited: payload?.summary_limited === true,
+    summary_limited_fields: payload?.summary_limited_fields,
+    next_scan_cursor: payload?.next_scan_cursor ?? null,
     summary: {
       accepted: summary.accepted ?? computedSummary.accepted,
       rejected: summary.rejected ?? computedSummary.rejected,
@@ -111,7 +116,7 @@ function normalizeResponse(payload: any): RecognitionAttemptsResponse {
       near_miss: summary.near_miss ?? summary.nearMiss ?? computedSummary.near_miss,
       low_margin_accepted:
         summary.low_margin_accepted ?? summary.lowMarginAccepted ?? computedSummary.low_margin_accepted,
-      median_score: summary.median_score ?? summary.medianScore ?? computedSummary.median_score,
+      median_score: payload?.summary_limited ? null : summary.median_score ?? summary.medianScore ?? computedSummary.median_score,
       review_backlog: summary.review_backlog ?? summary.reviewBacklog ?? computedSummary.review_backlog,
       total: summary.total ?? computedSummary.total,
     },
@@ -156,17 +161,24 @@ export async function GET(req: NextRequest) {
     const result = await convex.query((api as any).recognitionAttempts.listByDate, {
       date,
       kioskId: optionalString(searchParams.get('kiosk_id')),
-      reviewed: attemptId ? undefined : reviewStatus === 'unreviewed' ? false : reviewStatus && reviewStatus !== 'all' ? true : undefined,
+      // Invalid legacy review labels are also unresolved, even with reviewed=true.
+      reviewed: attemptId || reviewStatus === 'unreviewed' ? undefined : reviewStatus && reviewStatus !== 'all' ? true : undefined,
       limit: attemptId ? 1000 : Number(searchParams.get('limit') || 100),
       decision: attemptId ? undefined : optionalString(searchParams.get('decision')),
       confidenceBand: attemptId ? undefined : optionalString(searchParams.get('confidence_band')),
       reviewStatus: attemptId ? undefined : reviewStatus,
+      scanCursor: attemptId ? undefined : optionalString(searchParams.get('scan_cursor')),
     });
     const targetAttempt = attemptId
       ? await convex.query((api as any).recognitionAttempts.getById, { id: attemptId, date })
       : null;
 
     const rawAttempts = Array.isArray(result) ? result : result?.attempts || result?.rows || [];
+    // During a staggered rollout the old backend returns only a capped array.
+    // Treat its counts as lower bounds instead of silently claiming completeness.
+    const requestedLimit = Number(searchParams.get('limit') || 100);
+    const displayLimit = !requestedLimit || !Number.isFinite(requestedLimit) ? 250 : Math.max(1, Math.min(1000, Math.floor(requestedLimit)));
+    const legacyLimited = Array.isArray(result) && rawAttempts.length >= displayLimit;
     let response = normalizeResponse(targetAttempt ? { attempts: [targetAttempt, ...rawAttempts] } : result);
     if (attemptId) {
       const deduped = new Map(response.attempts.map((attempt) => [attempt.id, attempt]));
@@ -175,6 +187,7 @@ export async function GET(req: NextRequest) {
     const decision = optionalString(searchParams.get('decision'));
     const confidenceBand = optionalString(searchParams.get('confidence_band'));
     response = {
+      ...response,
       attempts: response.attempts.filter((attempt) => {
         const decisionMatches =
           attemptId ||
@@ -198,7 +211,19 @@ export async function GET(req: NextRequest) {
       }),
       summary: response.summary,
     };
-    response.summary = summarize(response.attempts);
+    if (Array.isArray(result)) {
+      response.summary = summarize(response.attempts);
+      response.truncated = legacyLimited;
+      response.summary_limited = legacyLimited;
+      if (legacyLimited) response.summary.median_score = null;
+    }
+    if (attemptId) {
+      response.summary = summarize(response.attempts);
+      response.truncated = false;
+      response.summary_limited = false;
+      response.summary_limited_fields = [];
+      response.next_scan_cursor = null;
+    }
 
     return NextResponse.json(response);
   } catch (error) {
@@ -219,11 +244,17 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const id = optionalString(body.id);
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-    const reviewStatus = optionalString(body.review_status) || optionalString(body.reviewStatus) || 'confirmed';
+    // Only an omitted status defaults to confirmed; a supplied non-string or blank value is rejected.
+    const suppliedStatus: unknown = body.review_status !== undefined ? body.review_status : body.reviewStatus;
+    const reviewStatus = suppliedStatus === undefined ? 'confirmed' : typeof suppliedStatus === 'string' ? suppliedStatus.trim() : '';
+    if (!REVIEW_STATUSES.includes(reviewStatus as RecognitionReviewStatus)) {
+      return NextResponse.json({ error: `review_status must be one of ${REVIEW_STATUSES.join(', ')}` }, { status: 400 });
+    }
     const result = await convex.mutation((api as any).recognitionAttempts.updateReview, {
       id: id as any,
       reviewed: reviewStatus !== 'unreviewed',

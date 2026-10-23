@@ -24,7 +24,8 @@ export async function POST(req: NextRequest) {
 
   const storageIds: string[] = [];
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const { name, employeeId, department, photos, workerId, consent, consentAt: legacyConsentAt, consentAgeMs } = body as {
       name?: string;
       employeeId?: string;

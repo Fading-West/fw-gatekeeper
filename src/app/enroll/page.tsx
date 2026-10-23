@@ -69,8 +69,6 @@ function EnrollPageContent() {
   const [statusFilter, setStatusFilter] = useState<EmployeeEnrollmentStatus | 'all' | 'remaining'>('remaining');
   const [directorySummary, setDirectorySummary] = useState<EmployeeDirectorySummary | null>(null);
   const [completionSummary, setCompletionSummary] = useState<EmployeeDirectorySummary | null>(null);
-  const [directoryLoading, setDirectoryLoading] = useState(false);
-  const [directoryError, setDirectoryError] = useState('');
   const [manualEntry, setManualEntry] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
@@ -91,7 +89,23 @@ function EnrollPageContent() {
   const employeeIdRef = useRef(employeeId);
   const departmentRef = useRef(department);
   const workerIdRef = useRef(workerId);
-  const [suggestions, setSuggestions] = useState<EmployeeDirectoryEnrollmentEntry[]>([]);
+  const [directoryResult, setDirectoryResult] = useState<{
+    query: string;
+    suggestions: EmployeeDirectoryEnrollmentEntry[];
+    error: string;
+  } | null>(null);
+  const directoryQuery = JSON.stringify([name.trim(), name.trim() ? 'all' : statusFilter]);
+  const currentDirectoryQueryRef = useRef(directoryQuery);
+  currentDirectoryQueryRef.current = directoryQuery;
+  const rosterSelectable = canEnroll && !workerId && !selectedEmployee && !manualEntry && showSuggestions;
+  const rosterSelectableRef = useRef(rosterSelectable);
+  rosterSelectableRef.current = rosterSelectable;
+  // Previously loaded identities must stop being selectable on the first
+  // render of a new search, before its debounce or network request completes.
+  const currentDirectoryResult = directoryResult?.query === directoryQuery ? directoryResult : null;
+  const suggestions = currentDirectoryResult?.suggestions ?? [];
+  const directoryError = currentDirectoryResult?.error ?? '';
+  const directoryLoading = canEnroll && !workerId && !currentDirectoryResult;
   nameRef.current = name;
   employeeIdRef.current = employeeId;
   departmentRef.current = department;
@@ -99,13 +113,11 @@ function EnrollPageContent() {
 
   useEffect(() => {
     if (workerId || !canEnroll) {
-      setSuggestions([]);
+      setDirectoryResult(null);
       return;
     }
     const controller = new AbortController();
     const timer = setTimeout(async () => {
-      setDirectoryLoading(true);
-      setDirectoryError('');
       try {
         const effectiveStatus = name.trim() ? 'all' : statusFilter;
         const res = await fetch(`/api/employee-directory?q=${encodeURIComponent(name.trim())}&status=${effectiveStatus}`, {
@@ -114,21 +126,20 @@ function EnrollPageContent() {
         if (!res.ok) throw new Error('Roster unavailable');
         const body = await res.json();
         if (controller.signal.aborted || !accessRef.current) return;
-        setSuggestions(Array.isArray(body?.suggestions) ? body.suggestions : []);
+        setDirectoryResult({ query: directoryQuery, suggestions: Array.isArray(body?.suggestions) ? body.suggestions : [], error: '' });
         if (body?.summary) setDirectorySummary(body.summary);
       } catch {
-        if (!controller.signal.aborted) setDirectoryError('Unable to load the employee roster. Try again in a moment.');
-      } finally {
-        if (!controller.signal.aborted) setDirectoryLoading(false);
+        if (!controller.signal.aborted) setDirectoryResult({ query: directoryQuery, suggestions: [], error: 'Unable to load the employee roster. Try again in a moment.' });
       }
     }, 200);
     return () => {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [name, statusFilter, workerId, canEnroll]);
+  }, [name, statusFilter, workerId, canEnroll, directoryQuery]);
 
   const selectEmployee = (employee: EmployeeDirectoryEnrollmentEntry) => {
+    if (!rosterSelectableRef.current || currentDirectoryQueryRef.current !== directoryQuery || !suggestions.includes(employee)) return;
     setConsentConfirmed(false);
     setConsentStartedAt(null);
     setName(employee.name);
@@ -155,7 +166,7 @@ function EnrollPageContent() {
   };
 
   const handleNameKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showSuggestions || suggestions.length === 0) return;
+    if (!rosterSelectable || suggestions.length === 0) return;
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -210,7 +221,7 @@ function EnrollPageContent() {
     setPhotos([]);
     setCaptureCount(0);
     setSelectedEmployee(null);
-    setSuggestions([]);
+    setDirectoryResult(null);
     setDirectorySummary(null);
     setCompletionSummary(null);
     setName('');
@@ -584,9 +595,9 @@ function EnrollPageContent() {
                 readOnly={Boolean(selectedEmployee) || Boolean(workerId)}
                 role="combobox"
                 aria-autocomplete="list"
-                aria-expanded={showSuggestions && suggestions.length > 0}
+                aria-expanded={rosterSelectable && suggestions.length > 0}
                 aria-controls="employee-suggestions"
-                aria-activedescendant={showSuggestions && suggestions.length > 0 ? `employee-suggestion-${activeSuggestion}` : undefined}
+                aria-activedescendant={rosterSelectable && suggestions.length > 0 ? `employee-suggestion-${activeSuggestion}` : undefined}
                 className="input-field text-lg py-3"
               />
               {!workerId && !selectedEmployee && !manualEntry && showSuggestions && suggestions.length > 0 && (
