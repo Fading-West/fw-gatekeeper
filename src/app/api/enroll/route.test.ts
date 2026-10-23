@@ -66,3 +66,24 @@ it('does not mask a successful save when immediate cleanup is unavailable', asyn
   mocks.mutation.mockResolvedValueOnce({ id: 'worker' }).mockRejectedValueOnce(new Error('Cleanup unavailable'));
   expect((await POST(request())).status).toBe(201);
 });
+
+it('preserves a busy face service message, 503 status and Retry-After', async () => {
+  const message = 'Recognition service is busy. Please try again shortly.';
+  mocks.fetch.mockResolvedValueOnce(Response.json({ detail: message }, { status: 503, headers: { 'Retry-After': '5' } }));
+  const response = await POST(request());
+  expect(response.status).toBe(503);
+  expect(response.headers.get('Retry-After')).toBe('5');
+  expect(await response.json()).toEqual({ error: message });
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
+
+it('preserves face quality messages and per-photo evidence at 422', async () => {
+  const detail = { message: 'Enrollment needs at least 2 clear, matching photos of one face: 1 of 3 photos could not be used (no face detected). Retake the photos facing the camera in good light.', photos: [{ index: 0, ok: false, reason: 'no_face' }], disagreeing_pairs: [] };
+  mocks.fetch.mockResolvedValueOnce(Response.json({ detail }, { status: 422 }));
+  const response = await POST(request());
+  expect(response.status).toBe(422);
+  expect(await response.json()).toEqual({ error: detail.message, photos: detail.photos, disagreeing_pairs: [] });
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
