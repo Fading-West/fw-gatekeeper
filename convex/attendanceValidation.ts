@@ -1,5 +1,10 @@
 import { ConvexError } from "convex/values";
-import { isValidFactoryLocalDateKey } from "./localDate";
+import {
+  getFactoryLocalDateKey,
+  getNextFactoryLocalDateKey,
+  getPreviousFactoryLocalDateKey,
+  isValidFactoryLocalDateKey,
+} from "./localDate";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
 
 export const MAX_ATTENDANCE_BATCH_SIZE = 500;
@@ -37,12 +42,19 @@ function isValidTimestamp(timestamp: string, resolveLocalTimestamp?: (timestamp:
   // enter attendance and disappear from daily reports.
   const match = /^(\d{4}-\d{2}-\d{2})[T ]([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
   if (!match || !isValidFactoryLocalDateKey(match[1])) return false;
-  if (match[5]) return Number.isFinite(Date.parse(timestamp));
   // A syntactically valid factory wall time can fall in the missing hour at
   // spring-forward. Use the same instant resolution as attendance sorting so
   // accepted evidence always has a chronological key. Repeated fall-back
   // times retain the legacy convention of choosing the earlier occurrence.
-  return Boolean((resolveLocalTimestamp ?? createRecognitionTimestampSortKey())(timestamp));
+  if (!match[5]) return Boolean((resolveLocalTimestamp ?? createRecognitionTimestampSortKey())(timestamp));
+  if (!Number.isFinite(Date.parse(timestamp))) return false;
+  // Daily reads scan stored strings from the day before to the day after the
+  // factory date, so an offset may not move the factory date further than that.
+  const storedDate = match[1];
+  const factoryDate = getFactoryLocalDateKey(timestamp);
+  return factoryDate === storedDate
+    || factoryDate === getPreviousFactoryLocalDateKey(storedDate)
+    || factoryDate === getNextFactoryLocalDateKey(storedDate);
 }
 
 export function isValidAttendanceTimestamp(timestamp: string): boolean {

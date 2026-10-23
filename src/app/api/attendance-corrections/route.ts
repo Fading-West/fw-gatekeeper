@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { ConvexError } from 'convex/values';
 import { NextRequest, NextResponse } from 'next/server';
 import convex from '@/lib/convex';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { api } from '../../../../convex/_generated/api';
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest) {
         warning: 'Attendance correction storage is waiting for the Convex functions to deploy.',
       });
     }
-    console.error('Attendance corrections GET error:', error);
+    logApiError('Attendance corrections GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch attendance corrections' }, { status: 500 });
   }
 }
@@ -60,7 +61,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const requestId = body.request_id ?? body.requestId;
     if (requestId !== undefined && (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 200)) {
       return NextResponse.json({ error: 'request_id must be a nonempty string of at most 200 characters' }, { status: 400 });
@@ -107,9 +109,22 @@ export async function POST(req: NextRequest) {
     if (error instanceof ConvexError && error.data?.code === 'INVALID_CORRECTION_TIMESTAMP') {
       return NextResponse.json({ error: error.data.message }, { status: 400 });
     }
-    console.error('Attendance corrections POST error:', error);
+    const knownError = knownApiErrorResponse(error, {
+      'Correction reason is required.': 400,
+      'requestId must be a nonempty string of at most 200 characters.': 400,
+      'Worker not found.': 400,
+      'originalAttendanceId is required when voiding an event.': 400,
+      'Original attendance event not found.': 400,
+      'Original attendance event belongs to a different worker.': 400,
+      'Original attendance event is not on the correction date.': 400,
+      'correctedTimestamp is required when adding an event.': 400,
+      'Correction requestId was already used with different details.': 409,
+      'This attendance event already has an active void; reverse that correction before voiding it again': 409,
+    });
+    if (knownError) return knownError;
+    logApiError('Attendance corrections POST error:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to create attendance correction' },
+      { error: 'Failed to create attendance correction' },
       { status: 500 },
     );
   }
@@ -142,7 +157,7 @@ export async function PATCH(req: NextRequest) {
     if (error instanceof Error && (error.message.includes('ArgumentValidationError') || error.message.includes('Expected ID for table "attendanceCorrections"'))) {
       return NextResponse.json({ error: 'Invalid correction ID.' }, { status: 400 });
     }
-    console.error('Attendance correction reversal failed:', error);
+    logApiError('Attendance correction reversal failed:', error);
     return NextResponse.json({ error: 'Failed to reverse correction' }, { status: 500 });
   }
 }

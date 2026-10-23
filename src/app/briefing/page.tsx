@@ -1,12 +1,15 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
+import { FactoryDatePage } from '@/components/FactoryDatePage';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 import {
   DepartmentCoverageStatus,
   ShiftBriefingActionItem,
@@ -204,25 +207,24 @@ function getRoleSafeRiskHref(risk: ShiftTrustBriefRisk, role: PortalRole | undef
 
 function ShiftBriefingPageContent() {
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  const { date, setDate, today, newDay } = useFactoryDateSelection(validDateParam(searchParams.get('date')));
   const queryDepartment = searchParams.get('department') || 'all';
   const queryStatus = validWorkerStatusParam(searchParams.get('status'));
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
   const [department, setDepartment] = useState(queryDepartment);
   const [status, setStatus] = useState<WorkerCoverageStatus | 'all'>(queryStatus);
 
   useEffect(() => {
-    setDate(queryDate);
     setDepartment(queryDepartment);
     setStatus(queryStatus);
-  }, [queryDate, queryDepartment, queryStatus]);
+  }, [queryDepartment, queryStatus]);
 
   const loadBriefing = useCallback(async (signal: AbortSignal): Promise<ShiftBriefingResponse> => {
     const res = await fetch(`/api/shift-briefing?date=${date}`, { cache: 'no-store', signal });
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load shift briefing');
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    if (body.backend_unavailable) throw new Error(body.warning || 'Shift briefing is waiting for deployment.');
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchBriefing } = useSelectedData(date, loadBriefing);
@@ -231,8 +233,8 @@ function ShiftBriefingPageContent() {
 
   const departments = useMemo(() => {
     const values = payload?.departments.map((row) => row.department) || [];
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [payload]);
+    return filterOptions(values, department);
+  }, [department, payload]);
 
   const filteredDepartments = useMemo(() => {
     const rows = payload?.departments || [];
@@ -281,7 +283,7 @@ function ShiftBriefingPageContent() {
   const trustBrief = payload?.shift_trust_brief;
   const sourceCounts = trustBrief?.source_counts;
   const riskLabel = !payload
-    ? 'Loading briefing'
+    ? (error ? 'Briefing unavailable' : 'Loading briefing')
     : summary?.expected === 0
       ? 'No scheduled coverage'
       : summary?.critical_actions
@@ -319,6 +321,8 @@ function ShiftBriefingPageContent() {
         </div>
       </div>
 
+      {newDay && <FactoryDayNotice date={date} today={today} />}
+
       <section className="glass-card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
@@ -335,7 +339,7 @@ function ShiftBriefingPageContent() {
                 Generated {formatGeneratedAt(trustBrief?.generated_at || payload?.generated_at)}
               </span>
               <span className="badge border border-navy-500/60 bg-navy-950/35 text-[10px] text-slate-400">
-                {payload?.schedules.active_today ?? 0} active schedule{payload?.schedules.active_today === 1 ? '' : 's'}
+                {payload ? `${payload.schedules.active_today} active schedule${payload.schedules.active_today === 1 ? '' : 's'}` : 'Schedule count unavailable'}
               </span>
             </div>
           </div>
@@ -358,7 +362,7 @@ function ShiftBriefingPageContent() {
           ].map(([label, value, tone]) => (
             <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
               <p className="text-xs text-slate-500">{label}</p>
-              <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+              <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
             </div>
           ))}
         </div>
@@ -492,11 +496,11 @@ function ShiftBriefingPageContent() {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-display font-semibold text-slate-100">Coverage by department</h2>
-            <span className="text-xs font-mono text-slate-500">{filteredDepartments.length} groups</span>
+            <span className="text-xs font-mono text-slate-500">{payload ? filteredDepartments.length : '—'} groups</span>
           </div>
           {loading && !payload ? (
             <div className="glass-card p-6 text-sm text-slate-400">Loading coverage briefing...</div>
-          ) : filteredDepartments.length ? (
+          ) : error ? null : filteredDepartments.length ? (
             filteredDepartments.map((row) => (
               <article key={`${row.department}-${row.schedule_name}-${row.scheduled_start}`} className="glass-card-hover p-5 space-y-4">
                 <div className="flex items-start justify-between gap-3">
@@ -539,9 +543,11 @@ function ShiftBriefingPageContent() {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-display font-semibold text-slate-100">First actions</h2>
-            <span className="text-xs font-mono text-slate-500">{payload?.action_items.length ?? 0} items</span>
+            <span className="text-xs font-mono text-slate-500">{payload ? payload.action_items.length : '—'} items</span>
           </div>
-          {payload?.action_items.length ? (
+          {loading && !payload ? (
+            <div className="glass-card p-6 text-sm text-slate-400">Loading first actions...</div>
+          ) : error ? null : payload?.action_items.length ? (
             <div className="space-y-3">
               {payload.action_items.slice(0, 10).map((item) => {
                 const canOperateAction = canOperateBriefingAction(currentRole, item.href);
@@ -612,7 +618,7 @@ function ShiftBriefingPageContent() {
               ))}
             </tbody>
           </table>
-          {filteredWorkers.length === 0 && (
+          {payload && filteredWorkers.length === 0 && (
             <div className="p-6 text-sm text-slate-400">No workers match the selected briefing filters.</div>
           )}
         </div>
@@ -624,7 +630,7 @@ function ShiftBriefingPageContent() {
             <div>
               <h2 className="font-display font-semibold text-slate-100">Kiosk trust</h2>
               <p className="text-sm text-slate-400 mt-2">
-                {payload?.kiosks.total ?? 0} registered kiosk{payload?.kiosks.total === 1 ? '' : 's'} contribute to today&apos;s briefing confidence.
+                {payload ? `${payload.kiosks.total} registered kiosk${payload.kiosks.total === 1 ? '' : 's'} contribute to today’s briefing confidence.` : 'Kiosk count unavailable.'}
               </p>
             </div>
             <Link href={getKioskTrustHref(currentRole, date)} className="btn-ghost text-xs">
@@ -640,7 +646,7 @@ function ShiftBriefingPageContent() {
             ].map(([label, value, tone]) => (
               <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
                 <p className="text-xs text-slate-500">{label}</p>
-                <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+                <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
               </div>
             ))}
           </div>
@@ -668,8 +674,8 @@ function ShiftBriefingPageContent() {
 
 export default function ShiftBriefingPage() {
   return (
-    <Suspense fallback={null}>
+    <FactoryDatePage>
       <ShiftBriefingPageContent />
-    </Suspense>
+    </FactoryDatePage>
   );
 }

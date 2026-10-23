@@ -5,6 +5,7 @@ import convex from '@/lib/convex';
 import { api } from '../../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
+import { systemHealthCache } from '@/lib/system-health-cache';
 
 async function requireAdmin(req: NextRequest) {
   return (await hasValidPortalSession(req, ['admin'])) ? null : unauthorizedApiResponse();
@@ -25,9 +26,13 @@ export async function POST(req: NextRequest) {
   const unauthorized = await requireAdmin(req);
   if (unauthorized) return unauthorized;
 
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
   const { name, kiosk_id, kioskId, type, location } = body;
   if (!name || !type) return NextResponse.json({ error: 'name and type required' }, { status: 400 });
+  if (typeof name !== 'string' || [kiosk_id, kioskId, location].some(value => value != null && typeof value !== 'string')) {
+    return NextResponse.json({ error: 'name, kiosk_id and location must be text' }, { status: 400 });
+  }
   if (type !== 'entry' && type !== 'exit') {
     return NextResponse.json({ error: 'type must be entry or exit' }, { status: 400 });
   }
@@ -39,6 +44,7 @@ export async function POST(req: NextRequest) {
       type,
       location: location || undefined,
     });
+    systemHealthCache.invalidate();
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof ConvexError) {
