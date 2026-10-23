@@ -188,8 +188,8 @@ describe("recognition review notes", () => {
     }));
     const exceptionKey = `${DATE}:recognition_review:${id}`;
     const row = async () => (await admin.query(api.shiftExceptions.summary, { date: DATE })).exceptions.find(item => item.key === exceptionKey);
-    const review = (status: "open" | "reviewed" | "resolved", note?: string) =>
-      admin.mutation(api.shiftExceptions.review, { exceptionKey, date: DATE, type: "recognition_review", status, ...(note === undefined ? {} : { note }) });
+    const review = async (status: "open" | "reviewed" | "resolved", note?: string) =>
+      admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await row())!.source_fingerprint, date: DATE, type: "recognition_review", status, ...(note === undefined ? {} : { note }) });
 
     await review("open", "Recheck");
     expect(await row()).toMatchObject({ status: "open", review_note: "Recheck" });

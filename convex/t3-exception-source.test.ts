@@ -21,6 +21,18 @@ async function setup() {
   return { t, actor, input: { ...input, sourceFingerprint: source.source_fingerprint }, ...ids };
 }
 describe('reviews bind to current exception sources', () => {
+  it('does not restore a stale review note when new evidence is reviewed without a note', async () => {
+    const { t, actor, input, workerId } = await setup();
+    await actor.mutation(api.shiftExceptions.review, input);
+    await t.run(ctx => ctx.db.insert('attendance', { workerId, eventType: 'clock_out', timestamp: `${date}T19:00:00`, synced: true }));
+    const current = async () => (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.key === input.exceptionKey)!;
+    const source = await current();
+    expect(source).toMatchObject({ status: 'open', review_note: null });
+    expect(source.source_fingerprint).not.toBe(input.sourceFingerprint);
+    const { note: _oldNote, ...withoutNote } = input;
+    await actor.mutation(api.shiftExceptions.review, { ...withoutNote, sourceFingerprint: source.source_fingerprint });
+    expect(await current()).toMatchObject({ status: 'reviewed', review_note: null });
+  });
   it('accepts repeated current-source dispositions and preserves every audit through reopen', async () => {
     const { t, actor, input, attendanceId, userId } = await setup();
     const statuses = ['reviewed', 'reviewed', 'ignored', 'resolved', 'open', 'reviewed'] as const;

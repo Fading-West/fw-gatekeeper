@@ -770,7 +770,9 @@ export const review = mutation({
       status: args.status,
       // An omitted note keeps the note currently shown (for recognition reviews, a newer
       // Recognition Lab note wins over an older exceptions note); an empty or whitespace-only note clears it.
-      note: args.note === undefined ? await currentReviewNote(ctx, args, existing) : normalizeText(args.note),
+      note: args.note === undefined
+        ? await currentReviewNote(ctx, args, existing?.sourceFingerprint === source.source_fingerprint ? existing : null)
+        : normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,
       updatedAt: now,
     };

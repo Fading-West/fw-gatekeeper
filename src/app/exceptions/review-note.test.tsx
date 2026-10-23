@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import schema from '../../../convex/schema';
+import { api } from '../../../convex/_generated/api';
 import convex from '@/lib/convex';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { PATCH } from '../api/shift-exceptions/route';
@@ -18,7 +19,6 @@ vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
 
 const modules = import.meta.glob('../../../convex/**/*.ts');
 const date = '2026-09-01';
-const key = 'missing-worker';
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
 let tree: ReactTestRenderer;
 
@@ -40,10 +40,14 @@ async function renderWithSavedNote(note: string) {
   const userId = await t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'supervisor@example.test' });
     await ctx.db.insert('portalMembers', { userId, role: 'admin', active: true, createdAt: date });
-    await ctx.db.insert('exceptionReviews', { exceptionKey: key, date, type: 'missing_arrival', status: 'open', note, updatedAt: date });
+    await ctx.db.insert('workers', { name: 'Worker', department: 'Operations', active: true, enrolledAt: date });
+    await ctx.db.insert('schedules', { name: 'Day', days: '[1,2,3,4,5]', startTime: '08:00', endTime: '17:00', active: true, createdAt: date });
     return userId;
   });
   const actor = t.withIdentity({ subject: userId });
+  const source = (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.type === 'missing_arrival')!;
+  const key = source.key;
+  await t.run(ctx => ctx.db.insert('exceptionReviews', { exceptionKey: key, date, type: source.type, sourceFingerprint: source.source_fingerprint, status: 'open', note, updatedAt: date }));
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
     return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
@@ -73,7 +77,7 @@ async function renderWithSavedNote(note: string) {
     return {
       ok: true,
       json: async () => ({ date, summary: {}, exceptions: [{
-        key, date, worker_id: 'worker', worker_name: 'Worker', department: 'Operations',
+        key, date, source_fingerprint: source.source_fingerprint, worker_id: source.worker_id, worker_name: 'Worker', department: 'Operations',
         type: 'missing_arrival', severity: 'warning', status: review?.status ?? 'open', review_note: review?.note || null,
         description: 'No clock-in', links: {}, title: 'Missed scan',
         suggested_resolution: { can_apply: true, action: 'add_clock_in', corrected_time: '08:00',
