@@ -132,7 +132,7 @@ assert.match(types, /interface ShiftExceptionsResponse/, 'Shared types must defi
 assert.match(inactiveWorkerScans, /export async function buildInactiveWorkerScanExceptions/, 'Deactivated-worker scan detection should live in its own builder module.');
 assert.match(inactiveWorkerScans, /type: "inactive_worker_scan"[\s\S]*severity: "critical"/, 'Deactivated-worker scans should be critical inactive_worker_scan exceptions.');
 assert.match(inactiveWorkerScans, /key: `\$\{input\.date\}:inactive_worker_scan:\$\{workerId\}:\$\{attendanceId\}`/, 'Deactivated-worker scan reviews should be keyed per attendance event.');
-assert.match(exceptions, /for \(const input of inactiveWorkerScans\) exceptions\.push\(createException\(input\)\)/, 'Shift exceptions should add deactivated-worker scans through createException.');
+assert.match(exceptions, /for \(const \{ sourceFingerprint, \.\.\.input \} of inactiveWorkerScans\) \{[\s\S]*?recognitionFingerprints\.set\(input\.key, sourceFingerprint\);[\s\S]*?exceptions\.push\(createException\(input\)\)/, 'Shift exceptions should add deactivated-worker scans through createException.');
 assert.match(exceptions, /exception\.type === "inactive_worker_scan"[\s\S]*action:\s*"review_only"[\s\S]*label:\s*"Review deactivated-worker scan"/, 'Deactivated-worker scans need an explicit review-only suggested resolution.');
 assert.match(page, /inactive_worker_scan:\s*'Deactivated worker scan'/, 'Exceptions page should label deactivated-worker scans.');
 assert.match(dashboard, /inactive_worker_scan:\s*'Deactivated worker scan'/, 'Dashboard exception labels should include deactivated-worker scans.');
