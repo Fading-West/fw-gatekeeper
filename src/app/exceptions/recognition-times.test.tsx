@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -50,7 +51,7 @@ it.each([
     return userId;
   });
   const viewer = t.withIdentity({ subject: userId });
-  vi.mocked(convex.query).mockImplementation((name, args = {}) => viewer.query(name, args));
+  vi.mocked(convex.query).mockImplementation((name, args = {}) => viewer.query(name as FunctionReference<'query'>, args));
   const recognitionResponse = await GET(new NextRequest(`https://example.test/api/recognition-attempts?date=${date}`));
   expect(recognitionResponse.status).toBe(200);
   const recognition = await recognitionResponse.json();

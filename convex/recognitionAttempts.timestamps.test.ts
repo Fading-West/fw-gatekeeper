@@ -58,7 +58,7 @@ it.each([
   const attendance = await viewer.query(api.attendance.list, { date });
   expect(attempts.map(row => row.timestamp)).toEqual(attendance.map(row => row.timestamp));
   expect(attempts.map(row => row.timestamp_utc)).toEqual(attendance.map(row => row.timestamp_utc));
-  expect((await viewer.query(api.recognitionAttempts.listByDate, { date, limit: 1 })).attempts[0].id).toBe(ids.at(-1));
+  expect((await viewer.query(api.recognitionAttempts.listByDate, { date, limit: 1 })).attempts[0].id).toBe(ids[ids.length - 1]);
   for (const [index, id] of ids.entries()) {
     expect(await viewer.query(api.recognitionAttempts.getById, { id, date })).toMatchObject({ timestamp: localTimes[index], timestamp_utc: attendance[timestamps.length - 1 - index].timestamp_utc });
     expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ timestamp: timestamps[index] });

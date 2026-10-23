@@ -32,7 +32,7 @@ it('audits actor and effective before/after state across recognition exception c
  const details=audits.map(a=>JSON.parse(a.details!));
  expect(details[0]).toMatchObject({after:{status:'reviewed',note:'Checked evidence',reviewedAt:first.reviewedAt}});
  expect(details.find(d=>d.after?.note==='Corrected review note')).toMatchObject({before:{status:'reviewed',note:'Checked evidence',reviewedAt:first.reviewedAt},after:{status:'reviewed',note:'Corrected review note',reviewedAt:edited.reviewedAt}});
- expect(details.at(-1)).toMatchObject({before:{status:'reviewed',note:'Corrected review note',reviewedAt:edited.reviewedAt},after:{status:'open',note:'Needs another check',reviewedAt:null}});
+ expect(details[details.length - 1]).toMatchObject({before:{status:'reviewed',note:'Corrected review note',reviewedAt:edited.reviewedAt},after:{status:'open',note:'Needs another check',reviewedAt:null}});
  expect(reopened.reviewedAt).toBeUndefined();
  const summary=await admin.query(api.shiftExceptions.summary,{date});expect(summary.exceptions.find(row=>row.key===key)).toMatchObject({status:'open',review_note:'Needs another check'});
 });

@@ -2,6 +2,7 @@
 import { convexTest } from 'convex-test';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { api } from '../../../../convex/_generated/api';
 import schema from '../../../../convex/schema';
 import convex from '@/lib/convex';
 import { GET } from './route';
@@ -22,7 +23,9 @@ beforeEach(async () => {
     return userId;
   });
   const viewer = test.withIdentity({ subject: user });
-  vi.mocked(convex.query).mockImplementation((name, args = {}) => viewer.query(name, args));
+  // This route uses a generated reference, not the HTTP client's future references.
+  vi.mocked(convex.query).mockImplementation((name, args = {}) =>
+    viewer.query(name as typeof api.recognitionAttempts.listByDate, args));
 });
 async function get(params: string) {
   const search = new URLSearchParams(params);
