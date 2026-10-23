@@ -60,7 +60,7 @@ class Camera:
             except Exception as e:
                 if self._mode == "pi":
                     raise RuntimeError(f"Pi Camera failed: {e}")
-                logger.info(f"Pi Camera not available ({e}), trying USB...")
+                logger.info("Pi Camera not available (error=%s), trying USB...", type(e).__name__)
 
         self._cam = cv2.VideoCapture(config.CAMERA_INDEX)
         self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
@@ -161,7 +161,7 @@ def _log_recognition_attempt(result, decision):
         _write_recognition_attempt(result, decision)
     except Exception as e:
         # Telemetry writes must never take the scan loop down.
-        logger.error("Failed to log recognition attempt (%s): %s", decision, e)
+        logger.error("Failed to log recognition attempt (error=%s)", type(e).__name__)
 
 
 def _write_recognition_attempt(result, decision):
@@ -194,21 +194,21 @@ def run(args):
     except RuntimeError as exc:
         sync_enabled = False
         logger.critical(
-            "%s Server synchronization is disabled; local attendance and recognition records will remain queued.",
-            exc,
+            "Server synchronization is disabled; configure KIOSK_API_KEY. Local records will remain queued (error=%s).",
+            type(exc).__name__,
         )
 
     try:
         require_kiosk_ui_key()
     except RuntimeError as exc:
         logger.critical(
-            "%s Protected kiosk web routes will remain unavailable; face scanning and local logging will continue.",
-            exc,
+            "Protected kiosk web routes are unavailable; configure KIOSK_UI_KEY. Face scanning and local logging will continue (error=%s).",
+            type(exc).__name__,
         )
 
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    os.makedirs(config.FACES_DIR, exist_ok=True)
-    os.makedirs(config.MODEL_DIR, exist_ok=True)
+    for directory in (config.DATA_DIR, config.FACES_DIR, config.MODEL_DIR):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
     database.init_db()
 
     # Download and load the MobileFaceNet model, but continue booting if it
@@ -297,7 +297,7 @@ def run(args):
         except RuntimeError as e:
             camera.stop()
             camera_attempts += 1
-            logger.error("Camera error during startup (attempt %d): %s", camera_attempts, e)
+            logger.error("Camera error during startup (attempt=%d error=%s)", camera_attempts, type(e).__name__)
             if camera_attempts >= 10 and not critical_logged:
                 logger.critical("Camera failed to initialize after %d attempts; continuing to retry every 30 seconds", camera_attempts)
                 critical_logged = True
@@ -317,6 +317,7 @@ def run(args):
     box_color = GOLD
     box_label = None
     unknown_streak = 0
+    unknown_embedding = None
 
     def detection_loop():
         logger.info("Detection thread started")
@@ -343,7 +344,7 @@ def run(args):
 
                 if not locs:
                     embedding_history.clear()
-                    current_result[0] = None
+                    current_result[0] = _empty_recognition_result(None)
                     continue
 
                 # Scale to full resolution
@@ -355,7 +356,7 @@ def run(args):
                 try:
                     embedding = embed_face(bgr_frame, face_loc)
                 except Exception as e:
-                    logger.error("ONNX encoding error: %s", e)
+                    logger.error("ONNX encoding error (error=%s)", type(e).__name__)
                     embedding_history.clear()
                     current_result[0] = _empty_recognition_result(face_loc, decision="rejected_model_error")
                     continue
@@ -404,7 +405,7 @@ def run(args):
                     if len(scores) > 1:
                         second_score = scores[1][0]
                     conf = best_sim
-                    logger.info("Match: sim=%.3f name=%s window=%d", conf, known_names[best_idx], len(embedding_history))
+                    logger.info("Match: sim=%.3f local_id=%d window=%d", conf, known_ids[best_idx], len(embedding_history))
                     if frame_accepted:
                         matched = known_names[best_idx]
 
@@ -434,6 +435,7 @@ def run(args):
                     "candidate_worker_name": candidate_worker_name,
                     "server_worker_id": candidate_server_worker_id,
                     "candidate_encoding": candidate_encoding,
+                    "face_embedding": embedding,
                     "best_score": conf if best_idx is not None else None,
                     "second_best_score": second_score,
                     "score_margin": margin,
@@ -444,7 +446,7 @@ def run(args):
                 }
 
             except Exception as e:
-                logger.error("Detection error: %s", e, exc_info=True)
+                logger.error("Detection error (error=%s)", type(e).__name__)
                 embedding_history.clear()
                 current_result[0] = None
 
@@ -461,27 +463,20 @@ def run(args):
     def record_clock(result, worker_id, display_name, display_id, confidence, liveness_confirmed,
                      server_worker_id=None):
         """Log the clock event + telemetry, update the display. Returns True on success."""
-        if config.KIOSK_TYPE == "entry":
-            action = "clock_in"
-        elif config.KIOSK_TYPE == "exit":
-            action = "clock_out"
-        else:
-            last_action = database.get_last_action(worker_id)
-            action = "clock_out" if last_action == "clock_in" else "clock_in"
-
         result["liveness_confirmed"] = liveness_confirmed
         try:
-            recognizer.liveness_policy.record(
+            log_id = recognizer.liveness_policy.record(
                 database.log_recognized_attendance,
                 expected_encoding=result.get("candidate_encoding"),
                 worker_id=worker_id, worker_name=display_name,
-                action=action, liveness_confirmed=liveness_confirmed, confidence=confidence,
+                liveness_confirmed=liveness_confirmed, confidence=confidence,
                 server_worker_id=server_worker_id,
             )
+            action = database.get_attendance_action(log_id)
             _log_recognition_attempt(result, "accepted")
         except Exception as e:
             # A busy/locked SQLite must never take the kiosk down.
-            logger.error("Failed to record attendance for %s: %s", display_name, e, exc_info=True)
+            logger.error("Failed to record attendance (local_id=%d error=%s)", worker_id, type(e).__name__)
             web_app.update_status(state="ERROR", message="Could not record scan - please try again",
                                   worker_name=display_name, worker_id=display_id, face_detected=True,
                                   confidence=confidence, known_workers=recognizer.known_count)
@@ -503,8 +498,8 @@ def run(args):
                               confidence=confidence, face_detected=True,
                               liveness_confirmed=liveness_confirmed,
                               known_workers=recognizer.known_count)
-        logger.info("%s: %s id=%s (confidence: %.2f, liveness=%s)",
-                    action.replace("_", " ").title(), display_name, display_id or "n/a",
+        logger.info("%s: local_id=%d (confidence: %.2f, liveness=%s)",
+                    action.replace("_", " ").title(), worker_id,
                     confidence, liveness_confirmed)
         return True
 
@@ -528,7 +523,9 @@ def run(args):
             try:
                 bgr_frame, rgb_frame = camera.capture()
             except Exception as e:
-                logger.error("Capture error: %s", e)
+                logger.error("Capture error (error=%s)", type(e).__name__)
+                unknown_streak = 0
+                unknown_embedding = None
                 if camera_healthy:
                     camera_healthy = False
                     web_app.update_health(camera_ok=False, degraded_reason="camera_error")
@@ -539,7 +536,9 @@ def run(args):
                 camera_healthy = True
                 web_app.update_health(camera_ok=True, degraded_reason=base_degraded_reason())
 
-            now = time.time()
+            # One monotonic domain for display holds, blink deadlines and
+            # frame ordering (including FreshFaceMatcher). NTP may step UTC.
+            now = time.monotonic()
 
             # 1. Push BGR frame to MJPEG stream (always, never blocks)
             web_app.set_frame(draw_box(bgr_frame, box_loc, box_color, box_label))
@@ -610,7 +609,7 @@ def run(args):
                     box_label = None
                     box_color = GOLD
                     web_app.update_status(state="IDLE", message="Hold steady...",
-                                          worker_id=None, face_detected=True,
+                                          worker_id=None, face_detected=fresh.get("face_loc") is not None,
                                           known_workers=recognizer.known_count)
                     continue
 
@@ -624,7 +623,7 @@ def run(args):
                         try:
                             emb = embed_face(check_frame, check_loc)
                         except Exception as e:
-                            logger.warning("Blink-frame embedding failed: %s", e)
+                            logger.warning("Blink-frame embedding failed (error=%s)", type(e).__name__)
                             return False
                         if (
                             emb is None
@@ -701,16 +700,21 @@ def run(args):
                 web_app.update_health(degraded_reason=expected_roster_fault or base_degraded_reason())
 
             if result is None:
-                if box_loc is not None:
-                    unknown_streak = 0
-                    box_loc = None
-                    box_label = None
-                    web_app.update_status(state="IDLE", message="Step toward camera",
-                                          worker_id=None, face_detected=False, known_workers=recognizer.known_count)
+                # The detector is still working; this is not a no-face frame.
                 time.sleep(0.05)
                 continue
 
             face_loc = result.get("face_loc")
+            if face_loc is None:
+                unknown_streak = 0
+                unknown_embedding = None
+                box_loc = None
+                box_label = None
+                web_app.update_status(state="IDLE", message="Step toward camera",
+                                      worker_id=None, face_detected=False, known_workers=recognizer.known_count)
+                time.sleep(0.05)
+                continue
+
             name = result.get("name")
             confidence = result.get("confidence") or 0.0
             decision = result.get("decision")
@@ -745,6 +749,8 @@ def run(args):
                 web_app.update_health(degraded_reason=base_degraded_reason())
 
             if degraded_fault:
+                unknown_streak = 0
+                unknown_embedding = None
                 box_color = RED
                 box_label = None
                 _log_recognition_attempt(result, decision or "rejected_unknown")
@@ -756,6 +762,19 @@ def run(args):
                 continue
 
             if name is None:
+                # Compare live faces, not the nearest (unmatched) roster worker.
+                embedding = result.get("face_embedding")
+                # A failed crop cannot establish continuity between two faces.
+                # Consecutive failed crops still get their own rejection streak.
+                if (unknown_embedding is None) != (embedding is None):
+                    unknown_streak = 0
+                elif unknown_embedding is not None:
+                    if (
+                        len(unknown_embedding) != len(embedding)
+                        or cosine_sim(unknown_embedding, embedding) < config.RECOGNITION_MATCH_THRESHOLD
+                    ):
+                        unknown_streak = 0
+                unknown_embedding = embedding
                 # unknown_streak counts consumed detection results, so this is
                 # N real recognition attempts, not N camera frames.
                 unknown_streak += 1
@@ -775,6 +794,7 @@ def run(args):
                 continue
 
             unknown_streak = 0
+            unknown_embedding = None
             box_color = GREEN
 
             worker_id = result.get("candidate_worker_id")

@@ -55,7 +55,8 @@ class AttendanceOrderTests(SyntheticKioskFixture):
         database.log_attendance(self.worker_id, "Synthetic Employee", "clock_in", timestamp=timestamp)
         database.log_attendance(self.worker_id, "Synthetic Employee", "clock_out", timestamp=timestamp)
         self.assertEqual(database.get_last_action(self.worker_id), "clock_out")
-        self.assertEqual(app._manual_action_for_worker(self.worker_id), "clock_in")
+        log_id = database.log_attendance(self.worker_id, "Synthetic Employee", timestamp=timestamp)
+        self.assertEqual(database.get_attendance_action(log_id), "clock_in")
 
 
 class RecognitionAcknowledgementTests(SyntheticKioskFixture):
