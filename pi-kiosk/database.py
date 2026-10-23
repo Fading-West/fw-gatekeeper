@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -58,14 +60,29 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
+        # Keep this process-wide restriction: SQLite can recreate WAL/SHM
+        # files on later connections, including in background threads.
+        os.umask(0o077)
         db_path = Path(config.DB_PATH)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        db_path.parent.chmod(0o700)
+        _secure_db_files(db_path)
         _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA foreign_keys=OFF")
+        _secure_db_files(db_path)
     return _local.conn
+
+
+def _secure_db_files(db_path: Path):
+    """Tighten existing databases and sidecars before SQLite opens them."""
+    for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        try:
+            path.chmod(0o600)
+        except FileNotFoundError:
+            pass  # Sidecars are absent until WAL is opened, or after a checkpoint.
 
 
 def _migrate_sync_state(conn: sqlite3.Connection):
@@ -93,7 +110,7 @@ def _migrate_sync_state(conn: sqlite3.Connection):
             "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_worker_sync', ?)",
             (old_value,),
         )
-    logger.info("Migrated sync_state to keyed schema (last_worker_sync=%s)", old_value)
+    logger.info("Migrated sync_state to keyed schema")
 
 
 def _migrate_worker_identity(conn: sqlite3.Connection):
@@ -126,6 +143,69 @@ def _migrate_worker_identity(conn: sqlite3.Connection):
                 conn.execute("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'workers'", (sequence[0],))
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workers_name ON workers(name COLLATE NOCASE)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workers_server_id ON workers(server_id) WHERE server_id IS NOT NULL AND server_id != ''")
+
+
+def _migrate_original_workers(conn: sqlite3.Connection):
+    """Upgrade the original JSON face_encoding workers table in place.
+
+    That schema has face_encoding TEXT NOT NULL and no enrolled_at. SQLite
+    cannot ADD a column with an expression default to a populated table, and
+    the legacy NOT NULL column rejects every current insert, so convert the
+    encodings, backfill enrolled_at, and drop face_encoding in one savepoint.
+    Local ids and all other columns are kept.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)")}
+    if "face_encoding" not in columns:
+        return
+    conn.execute("SAVEPOINT migrate_original_workers")
+    try:
+        if "encoding_blob" not in columns:
+            conn.execute("ALTER TABLE workers ADD COLUMN encoding_blob BLOB")
+        if "enrolled_at" not in columns:
+            conn.execute("ALTER TABLE workers ADD COLUMN enrolled_at TEXT")
+            created = "created_at, " if "created_at" in columns else ""
+            conn.execute(f"UPDATE workers SET enrolled_at = COALESCE({created}datetime('now'))")
+        rows = conn.execute(
+            "SELECT id, face_encoding FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
+        ).fetchall()
+        for row in rows:
+            try:
+                converted = _serialize_encoding(np.array(json.loads(row["face_encoding"]), dtype=np.float64))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                logger.warning("Worker %s has an unreadable legacy face encoding; re-enroll them", row["id"])
+                continue
+            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
+        conn.execute("ALTER TABLE workers DROP COLUMN face_encoding")
+        conn.execute("RELEASE SAVEPOINT migrate_original_workers")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_original_workers")
+        conn.execute("RELEASE SAVEPOINT migrate_original_workers")
+        raise
+    logger.info("Migrated original workers table (face_encoding -> encoding_blob)")
+
+
+def _migrate_attendance_action(conn: sqlite3.Connection):
+    """Rename the original event column, preserving its values and constraint."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)")}
+    if "event_type" not in columns:
+        return
+    # The old upgrader added action DEFAULT 'clock_in', then copied only into
+    # empty actions. Its default masked every original clock_out. event_type
+    # remains the source of truth: the legacy NOT NULL constraint prevented
+    # current writers (which only supply action) from adding any new rows.
+    # Remove that faulty duplicate and rename the source, so future inserts
+    # satisfy the original NOT NULL/CHECK constraint too. Keep both DDL steps
+    # atomic, including when startup has no pending DML transaction.
+    conn.execute("SAVEPOINT migrate_attendance_action")
+    try:
+        if "action" in columns:
+            conn.execute("ALTER TABLE attendance_log DROP COLUMN action")
+        conn.execute("ALTER TABLE attendance_log RENAME COLUMN event_type TO action")
+        conn.execute("RELEASE SAVEPOINT migrate_attendance_action")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_attendance_action")
+        conn.execute("RELEASE SAVEPOINT migrate_attendance_action")
+        raise
 
 
 def init_db():
@@ -198,6 +278,18 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_active_rejection
             ON attendance_rejections(log_id) WHERE released_at IS NULL;
 
+        CREATE TABLE IF NOT EXISTS recognition_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            original_attempt_json TEXT NOT NULL,
+            rejected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            released_at TEXT,
+            release_note TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_recognition_active_rejection
+            ON recognition_rejections(attempt_id) WHERE released_at IS NULL;
+
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
@@ -206,45 +298,35 @@ def init_db():
     )
 
     # Migration support for previous schema versions.
+    _migrate_original_workers(conn)
     _ensure_column(conn, "workers", "encoding_blob", "encoding_blob BLOB")
     _ensure_column(conn, "workers", "employee_id", "employee_id TEXT")
     _ensure_column(conn, "workers", "enrolled_at", "enrolled_at TEXT DEFAULT (datetime('now'))")
     _ensure_column(conn, "workers", "photo_count", "photo_count INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "workers", "photo_paths", "photo_paths TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(conn, "workers", "server_id", "server_id TEXT")
-    worker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)").fetchall()}
-    if "face_encoding" in worker_columns:
-        rows = conn.execute(
-            "SELECT id, face_encoding, encoding_blob FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
-        ).fetchall()
-        for row in rows:
-            old_value = row["face_encoding"]
-            if old_value is None:
-                continue
-            try:
-                converted = _serialize_encoding(np.array(json.loads(old_value), dtype=np.float64))
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
 
     _migrate_worker_identity(conn)
 
-    _ensure_column(
-        conn,
-        "attendance_log",
-        "action",
-        "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
-    )
     _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
     _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "attendance_log", "note", "note TEXT")
     _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
+    _migrate_attendance_action(conn)
+    _ensure_column(
+        conn,
+        "attendance_log",
+        "action",
+        "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_server_worker ON attendance_log(server_worker_id)")
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
-    # server id onto that worker's queued attendance rows.
+    # server id onto that worker's attendance rows. Synced rows need it too:
+    # a restored worker gets a new local id and finds earlier events by it.
     # Replace the trigger on startup: the event's original identity is
     # immutable, so deletion only fills missing snapshots on legacy rows. A savepoint
     # keeps DROP + CREATE atomic even when init_db is called with no pending
@@ -259,7 +341,7 @@ def init_db():
             WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
             BEGIN
                 UPDATE attendance_log SET server_worker_id = OLD.server_id
-                WHERE worker_id = OLD.id AND synced = 0
+                WHERE worker_id = OLD.id
                   AND (server_worker_id IS NULL OR server_worker_id = '');
             END
             """
@@ -287,11 +369,6 @@ def init_db():
     _ensure_column(conn, "recognition_attempts", "legacy_source_attempt_id", "legacy_source_attempt_id TEXT")
     _ensure_column(conn, "recognition_attempts", "candidate_server_worker_id", "candidate_server_worker_id TEXT")
 
-    # Copy old attendance event_type to action if needed.
-    attendance_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)").fetchall()}
-    if "event_type" in attendance_columns:
-        conn.execute("UPDATE attendance_log SET action = event_type WHERE action IS NULL OR action = ''")
-
     # Rows written before server_worker_id existed still resolve through the
     # workers table today; freeze that mapping now so a later deactivation
     # cannot strand them.
@@ -300,15 +377,17 @@ def init_db():
         logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
 
     conn.commit()
-    logger.info("Database initialized at %s", config.DB_PATH)
+    logger.info("Database initialized")
 
 
 def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
-    """Copy workers.server_id onto queued attendance rows that have no snapshot yet.
+    """Copy workers.server_id onto attendance rows that have no snapshot yet.
 
-    Only unsynced rows matter: synced rows never need the mapping again, so
-    this stays cheap no matter how much history the kiosk holds. Returns the
-    number of rows updated.
+    Queued rows need it to upload; synced rows need it so a worker restored
+    under a new local id keeps their clock direction and debounce. Local ids
+    are AUTOINCREMENT and never reused, so the mapping is the same person.
+    Once filled, rows are skipped on later startups. Returns the number of
+    rows updated.
     """
     cursor = conn.execute(
         """
@@ -316,8 +395,7 @@ def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
         SET server_worker_id = (
             SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
         )
-        WHERE synced = 0
-          AND (server_worker_id IS NULL OR server_worker_id = '')
+        WHERE (server_worker_id IS NULL OR server_worker_id = '')
           AND EXISTS (
             SELECT 1 FROM workers
             WHERE workers.id = attendance_log.worker_id
@@ -408,7 +486,8 @@ def add_worker(
         worker_id = int(cursor.lastrowid)
 
     conn.commit()
-    logger.info("Saved worker: %s (id=%d, server_id=%s)", normalized_name, worker_id, stored_server_id)
+    # Sync values may contain private data even when their JSON type is valid.
+    logger.info("Saved worker (local_id=%d)", worker_id)
     return worker_id
 
 
@@ -451,8 +530,14 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     except (OSError, ValueError) as exc:
         if strict_cleanup:
             raise
-        logger.warning("Worker deactivated; thumbnail cleanup remains pending: %s", exc)
+        logger.warning("Worker deactivated; thumbnail cleanup remains pending (error=%s)", type(exc).__name__)
     return cursor.rowcount > 0
+
+
+def get_worker_id_by_server_id(server_id: str) -> Optional[int]:
+    """Resolve a server identity to an operator-safe local row number."""
+    row = _get_conn().execute("SELECT id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
+    return int(row["id"]) if row else None
 
 
 def get_synced_server_ids() -> set[str]:
@@ -689,7 +774,7 @@ def _normalize_action(action: str) -> str:
 def log_attendance(
     worker_id: int,
     worker_name: str,
-    action: str,
+    action: Optional[str] = None,
     liveness_confirmed: bool = False,
     confidence: float = 0.0,
     timestamp: Optional[str] = None,
@@ -702,35 +787,48 @@ def log_attendance(
     event can still be synced if the local worker row is later removed.
     Callers that already hold the id (recognizer roster, manual clock) pass
     it in; otherwise it is looked up from the workers table.
+    Omit action to apply the kiosk's entry/exit/toggle behavior while holding
+    the same write transaction as the insert. Recognition already owns that
+    transaction so its enrollment check remains atomic with this write.
     """
     conn = _get_conn()
-    normalized_action = _normalize_action(action)
-    timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    server_worker_id = server_worker_id or get_server_id(worker_id) or None
-    cursor = conn.execute(
-        """
-        INSERT INTO attendance_log
-            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
-             server_worker_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        """,
-        (
-            int(worker_id),
-            worker_name,
-            normalized_action,
-            timestamp,
-            1 if liveness_confirmed else 0,
-            float(confidence),
-            config.KIOSK_ID,
-            note,
-            server_worker_id,
-        ),
-    )
-    conn.commit()
+    owns_transaction = not conn.in_transaction
+    with conn if owns_transaction else nullcontext():
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if action is None:
+            if config.KIOSK_TYPE == "entry":
+                action = "clock_in"
+            elif config.KIOSK_TYPE == "exit":
+                action = "clock_out"
+            else:
+                action = "clock_out" if get_last_action(worker_id) == "clock_in" else "clock_in"
+        normalized_action = _normalize_action(action)
+        timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        server_worker_id = server_worker_id or get_server_id(worker_id) or None
+        cursor = conn.execute(
+            """
+            INSERT INTO attendance_log
+                (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
+                 server_worker_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                int(worker_id),
+                worker_name,
+                normalized_action,
+                timestamp,
+                1 if liveness_confirmed else 0,
+                float(confidence),
+                config.KIOSK_ID,
+                note,
+                server_worker_id,
+            ),
+        )
     log_id = int(cursor.lastrowid)
     logger.info(
-        "Gatekeeper logged: worker=%s action=%s confidence=%.3f live=%s",
-        worker_name,
+        "Gatekeeper logged: local_id=%d action=%s confidence=%.3f live=%s",
+        int(worker_id),
         normalized_action,
         confidence,
         liveness_confirmed,
@@ -742,7 +840,7 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
     """Reject a removed or re-enrolled face before committing automatic attendance.
 
     BEGIN IMMEDIATE prevents a concurrent sync deletion/replacement between the
-    identity check and insert. Existing offline rows remain untouched.
+    identity check, action inference, and insert. Existing offline rows remain untouched.
     """
     conn = _get_conn()
     with conn:
@@ -755,17 +853,42 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
         return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
 
 
+def get_attendance_action(log_id: int) -> str:
+    """Return the action actually inserted, independent of subsequent clocks."""
+    row = _get_conn().execute(
+        "SELECT action FROM attendance_log WHERE id = ?", (log_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Attendance log {log_id} does not exist")
+    return row["action"]
+
+
+def _worker_attendance_filter(conn, worker_id: int) -> tuple[str, tuple]:
+    """Match a worker's attendance across local ids.
+
+    Roster sync deletes a deactivated or purged worker's row, and restoring
+    them inserts a new local id for the same Convex id. Their earlier events
+    keep that Convex id in server_worker_id.
+    """
+    row = conn.execute("SELECT server_id FROM workers WHERE id = ?", (int(worker_id),)).fetchone()
+    server_id = row["server_id"] if row else None
+    if server_id:
+        return "(worker_id = ? OR server_worker_id = ?)", (int(worker_id), server_id)
+    return "worker_id = ?", (int(worker_id),)
+
+
 def was_recently_clocked(worker_id: int, minutes: int) -> bool:
     """Return True if worker has any recent clock event within N minutes."""
     conn = _get_conn()
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
+    worker_filter, params = _worker_attendance_filter(conn, worker_id)
     row = conn.execute(
-        """
+        f"""
         SELECT id FROM attendance_log
-        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
+        WHERE {worker_filter} AND attendance_epoch(timestamp) >= ?
         LIMIT 1
         """,
-        (worker_id, threshold),
+        (*params, threshold),
     ).fetchone()
     return row is not None
 
@@ -773,10 +896,11 @@ def was_recently_clocked(worker_id: int, minutes: int) -> bool:
 def get_last_action(worker_id: int) -> Optional[str]:
     """Return last clock action for a worker."""
     conn = _get_conn()
+    worker_filter, params = _worker_attendance_filter(conn, worker_id)
     row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
+        f"""SELECT action FROM attendance_log WHERE {worker_filter}
         ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
-        (worker_id,),
+        params,
     ).fetchone()
     return row["action"] if row else None
 
@@ -806,22 +930,33 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     return logs
 
 
-def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0) -> list[dict]:
+def _kiosk_queue_filter(current_kiosk_only: Optional[bool]) -> tuple[str, tuple]:
+    if current_kiosk_only is None:
+        return "", ()
+    comparison = "=" if current_kiosk_only else "!="
+    # Match the server's case/whitespace alias normalization; empty legacy
+    # claims retain the existing current-KIOSK_ID fallback behavior.
+    return (f"AND LOWER(TRIM(COALESCE(NULLIF(kiosk_id, ''), ?))) {comparison} LOWER(TRIM(?))",
+            (config.KIOSK_ID, config.KIOSK_ID))
+
+
+def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0, current_kiosk_only: Optional[bool] = None) -> list[dict]:
     """Return unsynced gatekeeper logs for optional server sync."""
     conn = _get_conn()
+    claim_filter, claim_args = _kiosk_queue_filter(current_kiosk_only)
     rows = conn.execute(
-        """
+        f"""
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note,
                server_worker_id
         FROM attendance_log
-        WHERE synced = 0 AND id > ? AND NOT EXISTS (
+        WHERE synced = 0 AND id > ? {claim_filter} AND NOT EXISTS (
             SELECT 1 FROM attendance_rejections r
             WHERE r.log_id = attendance_log.id AND r.released_at IS NULL
         )
         ORDER BY id ASC
         LIMIT ?
         """,
-        (int(after_id), max(1, int(limit)) if limit is not None else -1),
+        (int(after_id), *claim_args, max(1, int(limit)) if limit is not None else -1),
     ).fetchall()
     logs = []
     for row in rows:
@@ -904,13 +1039,57 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
         if result.rowcount != 1:
             raise ValueError(f"Active rejection {rejection_id} does not exist")
+        conn.execute("DELETE FROM sync_state WHERE key IN ('attendance_current_scan_after', 'attendance_scan_after')")
 
 
 def count_unsynced_recognition_attempts() -> int:
     """Count recognition telemetry rows still waiting to sync."""
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0").fetchone()
+    row = conn.execute("""SELECT
+        (SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0) +
+        (SELECT COUNT(*) FROM recognition_rejections r
+         LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+         WHERE r.released_at IS NULL AND a.id IS NULL)""").fetchone()
     return int(row[0]) if row else 0
+
+
+def count_rejected_attempts() -> int:
+    return int(_get_conn().execute(
+        "SELECT COUNT(*) FROM recognition_rejections WHERE released_at IS NULL"
+    ).fetchone()[0])
+
+
+def reject_recognition_attempt(attempt_id: int, reason: str) -> None:
+    conn = _get_conn()
+    with conn:
+        row = conn.execute("SELECT * FROM recognition_attempts WHERE id = ? AND synced = 0", (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unsynced recognition attempt {attempt_id} does not exist")
+        conn.execute("""INSERT INTO recognition_rejections (attempt_id, reason, original_attempt_json)
+            VALUES (?, ?, ?)""", (attempt_id, reason[:2000], json.dumps(dict(row), default=str)))
+
+
+def list_recognition_rejections() -> list[dict]:
+    return [dict(row) for row in _get_conn().execute("""SELECT r.*, a.synced, a.kiosk_id, a.timestamp
+        FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+        WHERE r.released_at IS NULL ORDER BY r.id""")]
+
+
+def retry_recognition_rejection(rejection_id: int, note: str) -> None:
+    if not note.strip():
+        raise ValueError("A reason for retry is required")
+    conn = _get_conn()
+    with conn:
+        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id
+            FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+            WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
+        if rejection is None:
+            raise ValueError(f"Active recognition rejection {rejection_id} does not exist")
+        if rejection["existing_attempt_id"] is None:
+            raise ValueError("Recognition attempt is missing; restore the original evidence before retry")
+        conn.execute("""UPDATE recognition_rejections SET released_at = datetime('now'), release_note = ?
+            WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
+        conn.execute("DELETE FROM sync_state WHERE key IN ('recognition_current_scan_after', 'recognition_scan_after')")
 
 
 def _optional_float(value) -> Optional[float]:
@@ -976,30 +1155,34 @@ def log_recognition_attempt(
     conn.commit()
     attempt_id = int(cursor.lastrowid)
     logger.info(
-        "Recognition attempt logged: decision=%s candidate=%s score=%s threshold=%s",
+        "Recognition attempt logged: decision=%s local_id=%s score=%s threshold=%s",
         decision,
-        candidate_worker_name or "unknown",
+        int(candidate_worker_id) if candidate_worker_id is not None else "unknown",
         f"{best_score:.3f}" if best_score is not None else "n/a",
         f"{threshold:.3f}" if threshold is not None else "n/a",
     )
     return attempt_id
 
 
-def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
+def get_unsynced_recognition_attempts(limit: int = 100, after_id: int = 0, current_kiosk_only: Optional[bool] = None) -> list[dict]:
     """Return unsynced recognition telemetry rows without any face image data."""
     conn = _get_conn()
+    claim_filter, claim_args = _kiosk_queue_filter(current_kiosk_only)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             id, timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
             best_score, second_best_score, score_margin, decision, threshold,
             liveness_confirmed, model_version, source_attempt_id, legacy_source_attempt_id, candidate_server_worker_id
         FROM recognition_attempts
-        WHERE synced = 0
+        WHERE synced = 0 AND id > ? {claim_filter} AND NOT EXISTS (
+            SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL
+        )
         ORDER BY id ASC
         LIMIT ?
         """,
-        (int(limit),),
+        (int(after_id), *claim_args, int(limit)),
     ).fetchall()
     # Legacy queued attempts may have reached the server before an acknowledgement
     # was lost. Keep their old identity as a migration alias, but persist a UUID

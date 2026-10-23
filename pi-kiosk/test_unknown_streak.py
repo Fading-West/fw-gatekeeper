@@ -82,7 +82,7 @@ class UnknownStreakTests(unittest.TestCase):
             "config": config, "database": database, "np": np,
             "datetime": datetime, "timedelta": timedelta, "timezone": timezone,
             "logger": logging.getLogger(__name__), "web_app": web_app,
-            "os": mock.Mock(), "time": SimpleNamespace(time=lambda: clock, sleep=sleep),
+            "os": mock.Mock(), "time": SimpleNamespace(time=lambda: clock, monotonic=lambda: clock, sleep=sleep),
             "threading": SimpleNamespace(Lock=mock.MagicMock, Thread=start_thread),
             "Camera": mock.Mock(return_value=SimpleNamespace(
                 start=lambda: None, capture=capture, stop=lambda: None)),
