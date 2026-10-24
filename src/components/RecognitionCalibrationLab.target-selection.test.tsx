@@ -3,7 +3,7 @@ import { convexTest } from 'convex-test';
 import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import schema from '../../convex/schema';
 import convex from '@/lib/convex';
 import { GET, PATCH } from '@/app/api/recognition-attempts/route';
@@ -21,7 +21,7 @@ const date = '2026-09-14';
 let tree: ReactTestRenderer | undefined;
 let targetId: string;
 let otherId: string;
-let fetchMock: ReturnType<typeof vi.fn>;
+let fetchMock: Mock<(url: string, init?: RequestInit) => Promise<Response>>;
 let requests: Promise<Response>[];
 let scrollIntoView: ReturnType<typeof vi.fn>;
 const text = (node: ReactTestInstance | null | string): string => typeof node === 'string' ? node : (node?.children || []).map(text).join('');
@@ -60,11 +60,14 @@ beforeEach(async () => {
   otherId = ids.otherId;
   const admin = test.withIdentity({ subject: ids.userId });
   vi.mocked(convex.query).mockImplementation((name, args = {}) => admin.query(name as FunctionReference<'query'>, args));
-  vi.mocked(convex.mutation).mockImplementation((name, args = {}) => admin.mutation(name as FunctionReference<'mutation'>, args));
+  vi.mocked(convex.mutation).mockImplementation((...call) => {
+    const [name, args = {}] = call;
+    return admin.mutation(name as FunctionReference<'mutation'>, args);
+  });
   // The actual HTTP routes and Convex readers apply exact-target/filter semantics.
   requests = [];
   fetchMock = vi.fn((url: string, init?: RequestInit) => {
-    const request = new NextRequest(`https://example.test${url}`, init);
+    const request = new NextRequest(`https://example.test${url}`, { ...init, signal: init?.signal ?? undefined });
     const response = init?.method === 'PATCH' ? PATCH(request) : GET(request);
     requests.push(response);
     return response;
@@ -185,6 +188,44 @@ it('restores exact targeting on URL navigation and when navigating back', async 
   navigation.query = originalUrl;
   await act(async () => tree!.update(<RecognitionCalibrationLab />));
   await settle();
+  expect(lastRead().searchParams.get('attempt_id')).toBe(targetId);
+  expect(names()).toEqual([expect.stringContaining('Exact reviewed target')]);
+});
+
+it('restores the linked date after manually browsing another day', async () => {
+  await act(async () => field('Date').props.onChange({ target: { value: '2026-09-15' } }));
+  await settle();
+  expect(names()).toEqual([expect.stringContaining('Next day evidence')]);
+  navigation.query = `date=${date}&attempt_id=${otherId}`;
+  await act(async () => tree!.update(<RecognitionCalibrationLab />));
+  await settle();
+  expect(field('Date').props.value).toBe(date);
+  expect(lastRead().searchParams.get('date')).toBe(date);
+  expect(names()).toEqual([expect.stringContaining('Unreviewed backlog')]);
+});
+
+it('keeps a manual date and released target through same-URL refresh', async () => {
+  await act(async () => field('Date').props.onChange({ target: { value: '2026-09-15' } }));
+  await settle();
+  await act(async () => tree!.update(<RecognitionCalibrationLab />));
+  await act(async () => button('Refresh').props.onClick());
+  await settle();
+  expect(field('Date').props.value).toBe('2026-09-15');
+  expect(lastRead().searchParams.has('attempt_id')).toBe(false);
+  expect(names()).toEqual([expect.stringContaining('Next day evidence')]);
+});
+
+it('restores the linked date when navigating Back after another manual date selection', async () => {
+  const originalUrl = navigation.query;
+  navigation.query = `date=${date}&attempt_id=${otherId}`;
+  await act(async () => tree!.update(<RecognitionCalibrationLab />));
+  await settle();
+  await act(async () => field('Date').props.onChange({ target: { value: '2026-09-15' } }));
+  await settle();
+  navigation.query = originalUrl;
+  await act(async () => tree!.update(<RecognitionCalibrationLab />));
+  await settle();
+  expect(field('Date').props.value).toBe(date);
   expect(lastRead().searchParams.get('attempt_id')).toBe(targetId);
   expect(names()).toEqual([expect.stringContaining('Exact reviewed target')]);
 });

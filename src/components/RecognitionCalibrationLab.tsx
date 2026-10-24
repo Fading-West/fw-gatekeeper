@@ -10,7 +10,7 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
-import { formatFactoryLocalDateTime } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { usePortalRole } from '@/hooks/usePortalRole';
@@ -114,6 +114,11 @@ function RecognitionCalibrationLabContent() {
   const clearTarget = () => setTarget({ urlKey, id: '' });
   const currentRole = usePortalRole();
   const { date, setDate, today, newDay } = useFactoryDateSelection(queryDate);
+  // A new source link owns its date even when its date parameter matches the
+  // previous URL and the operator has since browsed a different day locally.
+  useEffect(() => {
+    if (queryAttemptId) setDate(queryDate || getFactoryLocalDateString());
+  }, [queryAttemptId, queryDate, setDate, urlKey]);
   const [decision, setDecision] = useState<RecognitionDecision | 'all'>(queryDecision);
   const [reviewStatus, setReviewStatus] = useState<RecognitionReviewStatus | 'all'>(queryReviewStatus);
   const [confidenceBand, setConfidenceBand] = useState<RecognitionConfidenceBand | 'all'>(queryConfidenceBand);
