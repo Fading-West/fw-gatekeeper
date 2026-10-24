@@ -6,6 +6,6 @@ fastapi==0.143.0
 uvicorn[standard]==0.54.0
 pydantic==2.14.1
 numpy==1.26.4
-Pillow==12.3.0
+Pillow==13.0.0
 opencv-python-headless==4.11.0.86
 onnxruntime==1.31.0
