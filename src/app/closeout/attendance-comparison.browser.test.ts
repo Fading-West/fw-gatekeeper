@@ -100,7 +100,7 @@ async function setup(role = 'enrollment', viewport = { width: 1360, height: 1000
     } else if (url.pathname === '/fixture.css') {
       await route.fulfill({ contentType: 'text/css', body: css });
     } else {
-      await route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><link rel="stylesheet" href="/fixture.css"></head><body class="bg-navy-950 text-slate-100"><div id="root"></div><script src="/fixture.js"></script></body></html>' });
+      await route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"></head><body class="bg-navy-950 text-slate-100"><div id="root"></div><script src="/fixture.js"></script></body></html>' });
     }
   });
   await page.goto(`https://fixture.test/closeout?date=${date}&role=${role}`);
@@ -110,7 +110,7 @@ async function setup(role = 'enrollment', viewport = { width: 1360, height: 1000
 
 async function snap(page: Page, name: string) { await page.screenshot({ path: `${output}/${name}.png`, fullPage: true }); }
 async function complete(page: Page) {
-  await page.getByLabel('Closeout notes', { exact: true }).fill('Synthetic attendance evidence reviewed.');
+  await page.getByRole('textbox', { name: /^Closeout notes/ }).fill('Synthetic attendance evidence reviewed.');
   const acknowledgement = page.locator('input[type="checkbox"]');
   if (await acknowledgement.count()) await acknowledgement.check();
   await page.getByRole('button', { name: 'Complete closeout', exact: true }).click();
@@ -170,7 +170,7 @@ it('shows viewer review controls, denies writes, and keeps legacy/failed loads f
     await page.getByRole('heading', { name: 'Attendance comparison unavailable', exact: true }).waitFor();
     expect(await page.getByRole('button', { name: 'Reopen', exact: true }).count()).toBe(0);
     expect(await page.getByRole('button', { name: 'Review-only', exact: true }).isDisabled()).toBe(true);
-    expect(await page.getByLabel('Closeout notes', { exact: true }).getAttribute('readonly')).not.toBeNull();
+    expect(await page.getByRole('textbox', { name: /^Closeout notes/ }).getAttribute('readonly')).not.toBeNull();
     const result = await page.evaluate(async ({ date }) => {
       const response = await fetch('/api/shift-closeout', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, action: 'reopen' }) });
       return response.status;
@@ -178,6 +178,7 @@ it('shows viewer review controls, denies writes, and keeps legacy/failed loads f
     expect(result).toBe(401);
     await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen' })).rejects.toThrow();
     await snap(page, '05-viewer-legacy-mobile');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     bridge.mode = 'failure';
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     await page.getByRole('heading', { name: 'Closeout unavailable', exact: true }).waitFor();
@@ -186,6 +187,41 @@ it('shows viewer review controls, denies writes, and keeps legacy/failed loads f
     expect((await t.run(ctx => ctx.db.get(id)))?.notes).toBe('Original legacy note');
     expect(errors).toEqual([]);
     await snap(page, '06-failed-load-mobile');
+  } finally { await page.close(); }
+}, 90_000);
+
+it('retains changed evidence after correction reversal and preserves signed data with an older backend response', async () => {
+  const { page, t, actor, workerId, errors } = await setup();
+  try {
+    await t.mutation(internal.attendance.bulkCreateFromHttp, { events: [{ workerId, eventType: 'clock_in', timestamp: `${date}T13:00:00Z`, kioskId: 'synthetic-browser', idempotencyKey: 'correction-control' }] });
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.getByRole('button', { name: 'Complete closeout', exact: true }).waitFor();
+    await complete(page);
+    const original = await t.run(ctx => ctx.db.query('shiftCloseouts').withIndex('by_date', q => q.eq('date', date)).first());
+    const effective = await actor.query(api.attendance.list, { date });
+    const attendance = await t.run(ctx => ctx.db.query('attendance').first());
+    const correction = await actor.mutation(api.attendanceCorrections.create, { date, workerId, action: 'void_event', originalAttendanceId: attendance!._id, reason: 'Synthetic correction review' });
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.getByRole('heading', { name: 'Attendance changed since signoff', exact: true }).first().waitFor();
+    await actor.mutation(api.attendanceCorrections.reverse, { correctionId: correction.id, reason: 'Synthetic reversal control', requestId: 'browser-correction-reversal' });
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.getByText('Current evidence: 1 raw punches, 1 corrections, 1 reversals', { exact: true }).waitFor();
+    expect(await actor.query(api.attendance.list, { date })).toEqual(effective);
+    expect(await t.run(ctx => ctx.db.get(original!._id))).toEqual(original);
+    await snap(page, '07-correction-reversed-still-changed');
+    bridge.mode = 'legacy';
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.getByRole('heading', { name: 'Attendance comparison unavailable', exact: true }).waitFor();
+    expect(await page.locator('[aria-label="Signed summary"]').count()).toBe(1);
+    expect(await page.getByRole('textbox', { name: /^Closeout notes/ }).inputValue()).toBe('Synthetic attendance evidence reviewed.');
+    expect(await page.getByText('No attendance evidence changes detected', { exact: true }).count()).toBe(0);
+    expect(await t.run(ctx => ctx.db.get(original!._id))).toEqual(original);
+    await snap(page, '08-older-backend-retains-signature');
+    bridge.mode = 'normal';
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.getByRole('heading', { name: 'Attendance changed since signoff', exact: true }).first().waitFor();
+    expect(errors).toEqual([]);
+    await writeFile(`${output}/correction-journey.json`, JSON.stringify({ revision, timestamp: new Date().toISOString(), kind: 'synthetic browser with real closeout routes and in-memory Convex; correction mutations invoked by test actor', status: 'passed', effectiveAttendanceRestored: true, signaturePreserved: true, olderBackendUnknown: true }, null, 2));
   } finally { await page.close(); }
 }, 90_000);
 
