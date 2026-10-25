@@ -65,11 +65,11 @@ assert.match(lab, /return role === 'admin' \|\| role === 'enrollment'/, 'Recogni
 assert.match(lab, /if \(!canOperate\)[\s\S]*Only admin or enrollment roles can update recognition reviews/, 'Recognition review mutations should be guarded client-side for read-only roles.');
 assert.match(lab, /canOperate \?[\s\S]*Confirm[\s\S]*Ignore[\s\S]*Review-only/, 'Recognition Lab controls should render as review-only for viewers.');
 assert.match(lab, /searchParams\.get\('attempt_id'\)/, 'Recognition Lab should read exact attempt-row links.');
-assert.match(lab, /new URLSearchParams\(\{ date, limit: queryAttemptId \? '1000' : String\(displayLimit\) \}\)/, 'Recognition Lab should preserve direct-link fetches and allow revealing the full bounded scan window.');
-assert.match(lab, /params\.set\('attempt_id', queryAttemptId\)/, 'Recognition Lab should pass exact attempt ids to the API.');
+assert.match(lab, /new URLSearchParams\(\{ date, limit: attemptId \? '1000' : String\(displayLimit\) \}\)/, 'Recognition Lab should preserve active direct-link fetches and allow revealing the full bounded scan window.');
+assert.match(lab, /params\.set\('attempt_id', attemptId\)/, 'Recognition Lab should pass the active exact attempt id to the API.');
 assert.match(lab, /function recognitionAttemptRowId/, 'Recognition Lab should create stable row ids for direct links.');
-assert.match(lab, /document\.getElementById\(recognitionAttemptRowId\(queryAttemptId\)\)\?\.scrollIntoView/, 'Recognition Lab should scroll exact attempt links to the targeted row.');
-assert.match(lab, /queryAttemptId === attempt\.id/, 'Recognition Lab should highlight the targeted attempt row.');
+assert.match(lab, /document\.getElementById\(recognitionAttemptRowId\(attemptId\)\)\?\.scrollIntoView/, 'Recognition Lab should scroll active exact attempt links to the targeted row.');
+assert.match(lab, /attemptId === attempt\.id/, 'Recognition Lab should highlight the active targeted attempt row.');
 assert.match(sidebar, /\/calibration\/recognition/, 'Sidebar must link to the recognition calibration lab.');
 
 console.log('Recognition attempts contract passed');
