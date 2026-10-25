@@ -1,3 +1,4 @@
+import { compareSignedAttendanceEvidence, readSignedAttendanceEvidence } from "./signedAttendanceEvidence";
 import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -426,6 +427,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     date,
     generated_at: generatedAt,
     blocker_evidence: blockerEvidence,
+    attendance_comparison: await compareSignedAttendanceEvidence(ctx, date, closeout),
     closeout: closeout
       ? {
           id: String(closeout._id),
@@ -536,6 +538,10 @@ export const save = mutation({
       notes: nextNotes,
       acknowledgedBlockers,
       acknowledgedBlockerEvidence: acknowledgedBlockers ? current.blocker_evidence : undefined,
+      // Only a successful new completion captures a server-derived baseline.
+      // Throws roll back the whole transaction; retries return before this read.
+      signedAttendanceEvidence: args.action === "complete"
+        ? await readSignedAttendanceEvidence(ctx, args.date) : existing?.signedAttendanceEvidence,
       expected: current.summary.expected,
       present: current.summary.present,
       late: current.summary.late,
