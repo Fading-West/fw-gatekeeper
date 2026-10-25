@@ -187,11 +187,13 @@ function RecognitionCalibrationLabContent() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: attempt.id,
+            review_version: attempt.review_version,
             review_status: nextStatus,
             decision: attempt.decision,
           }),
         });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409) await fetchAttempts();
         if (!res.ok) throw new Error(body?.error || 'Failed to update review');
         toast(`Attempt marked ${titleCase(nextStatus)}`);
         await fetchAttempts();

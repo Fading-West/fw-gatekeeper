@@ -39,7 +39,7 @@ it('audits actor and effective before/after state across recognition exception c
 it('does not invent an open prior override when the first shift action reopens a Recognition Lab review',async()=>{
  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date(`${date}T15:00:00Z`));
  const {t,admin:uid,attempt,key,sourceFingerprint}=await fixture();const admin=t.withIdentity({subject:uid});
- vi.advanceTimersByTime(1000);await admin.mutation(api.recognitionAttempts.updateReview,{id:attempt,reviewed:true,reviewedLabel:'confirmed',reviewedNote:'Lab verified'});
+ vi.advanceTimersByTime(1000);await admin.mutation(api.recognitionAttempts.updateReview,{id:attempt, expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id: attempt }))!.review_version,reviewed:true,reviewedLabel:'confirmed',reviewedNote:'Lab verified'});
  const before=await admin.query(api.shiftExceptions.summary,{date});expect(before.exceptions.find(row=>row.key===key)).toMatchObject({status:'reviewed'});
  expect(await t.run(ctx=>ctx.db.query('exceptionReviews').collect())).toHaveLength(0);
  vi.advanceTimersByTime(1000);const reopened=await admin.mutation(api.shiftExceptions.review,{exceptionKey:key,sourceFingerprint,date,type:'recognition_review',status:'open',note:'Recheck lab decision'});

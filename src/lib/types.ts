@@ -68,6 +68,7 @@ export type RecognitionReviewStatus = 'unreviewed' | 'confirmed' | 'corrected' |
 export type RecognitionConfidenceBand = 'high' | 'medium' | 'low';
 
 export interface RecognitionAttempt {
+  review_version?: string;
   id: string;
   kiosk_id: string | null;
   kiosk_name?: string | null;

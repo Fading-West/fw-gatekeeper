@@ -28,7 +28,7 @@ it.each([false, true])("rolls back a Recognition Lab review when its audit fails
   });
   const before = await t.run(ctx => ctx.db.get(attemptId));
   await expect(t.withIdentity({ subject: userId }).mutation(api.recognitionAttempts.updateReview, {
-    id: attemptId, reviewed: !reviewed, reviewedLabel: "ignored", reviewedNote: "New note",
+    id: attemptId, expectedReviewVersion: (await t.withIdentity({ subject: userId }).query(api.recognitionAttempts.getById, { id: attemptId }))!.review_version, reviewed: !reviewed, reviewedLabel: "ignored", reviewedNote: "New note",
   })).rejects.toThrow("Audit persistence unavailable");
   expect(audit.write).toHaveBeenCalledOnce();
   expect(audit.write).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
