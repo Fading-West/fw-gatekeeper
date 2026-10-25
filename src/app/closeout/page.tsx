@@ -239,7 +239,11 @@ function ShiftCloseoutPageContent() {
       : attendanceComparison.status === 'unknown' ? 'Signed closeout — attendance comparison unavailable' : 'Shift closeout complete'
     : blockerCount ? 'Closeout needs acknowledgement' : 'Ready to close shift';
   const closeoutDescription = !dataReady ? 'Wait for this shift record to load before signing off.' : completed
-    ? `Completed ${formatDateTime(payload?.closeout?.completed_at)}. The original signature is preserved. Review current attendance in Activity Log; an authorized supervisor can Reopen, review, then Complete closeout.`
+    ? `Completed ${formatDateTime(payload?.closeout?.completed_at)}. The original signature is preserved. ${attendanceComparison.status === 'unchanged'
+      ? (canOperate ? 'Reopen if a supervisor needs to correct the record.' : 'An admin or enrollment user can reopen it if the record needs correction.')
+      : canOperate
+        ? 'Review current attendance in Activity Log, then Reopen, review, and Complete closeout to sign the current evidence.'
+        : 'Review current attendance in Activity Log; an admin or enrollment user can Reopen, review, and Complete closeout to sign the current evidence.'}`
     : blockerCount
       ? 'Review the blocked checklist items or add an acknowledgement note before completing the closeout.'
       : 'Checklist is clear. Add supervisor notes and complete the daily record.';

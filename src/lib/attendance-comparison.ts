@@ -7,7 +7,6 @@ function evidence(value: unknown): SignedAttendanceEvidence | null {
   const item = value as Record<string, unknown>;
   if (item.version !== 1 || typeof item.digest !== 'string' || !/^[a-f0-9]{64}$/.test(item.digest)) return null;
   if (![item.raw_punches, item.corrections, item.reversals].every(count => Number.isSafeInteger(count) && (count as number) >= 0)) return null;
-  if ((item.raw_punches as number) + (item.corrections as number) + (item.reversals as number) > 4000) return null;
   return { version: 1, digest: item.digest, raw_punches: item.raw_punches as number, corrections: item.corrections as number, reversals: item.reversals as number };
 }
 

@@ -32,8 +32,11 @@ correction followed by reversal remains changed even if effective totals return
 to their previous values. Only digest/counts are returned, not audit identities
 or reasons. No duplicate ledger is stored.
 
-Date-indexed reads are bounded to 4,000 combined evidence rows and 2,000,000
-canonical UTF-8 bytes. A truncated conservative timestamp range or ambiguous
+The conservative timestamp scan (three calendar-date prefixes, filtered by
+factory-date membership) is bounded to 16,000 rows; the date-owned evidence is
+bounded to 8,000 combined rows and 4,000,000 canonical UTF-8 bytes, which covers
+a 1,000-worker day. These caps bound capture and comparison only; a stored
+baseline is not invalidated by a later cap change. A truncated conservative timestamp range or ambiguous
 reversal cannot establish equality. Comparison failure returns unknown while
 preserving the signed record; failure to capture a new baseline aborts completion
 atomically. The existing briefing/exception read costs are unchanged.

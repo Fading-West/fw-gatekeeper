@@ -13,8 +13,12 @@ export type SignedAttendanceEvidence = {
   version: number; digest: string; raw_punches: number; corrections: number; reversals: number;
 };
 export const ATTENDANCE_EVIDENCE_SCOPE = 'Attendance evidence for this factory date only';
-export const MAX_ATTENDANCE_EVIDENCE_ROWS = 4000;
-const MAX_CANONICAL_BYTES = 2_000_000;
+// The conservative timestamp scan spans three calendar-date prefixes, so it is
+// bounded separately from the date-owned evidence. Both sit well below Convex's
+// per-transaction read limits while covering a 1,000-worker factory day.
+export const MAX_ATTENDANCE_SCAN_ROWS = 16_000;
+export const MAX_ATTENDANCE_EVIDENCE_ROWS = 8_000;
+export const MAX_CANONICAL_BYTES = 4_000_000;
 type EvidenceInput = {
   raw: readonly Doc<'attendance'>[];
   corrections: readonly Doc<'attendanceCorrections'>[];
@@ -60,9 +64,9 @@ export async function readSignedAttendanceEvidence(ctx: Pick<QueryCtx, 'db'>, da
   for (const range of buildConservativeFactoryLocalTimestampRanges(date)) {
     const rows = await ctx.db.query('attendance').withIndex('by_timestamp', q =>
       q.gte('timestamp', range.startTimestamp).lt('timestamp', range.endTimestamp))
-      .take(MAX_ATTENDANCE_EVIDENCE_ROWS + 1);
+      .take(MAX_ATTENDANCE_SCAN_ROWS + 1);
     // A truncated conservative range cannot establish complete evidence.
-    if (rows.length > MAX_ATTENDANCE_EVIDENCE_ROWS) throw new Error('Attendance evidence range exceeds the safe comparison limit.');
+    if (rows.length > MAX_ATTENDANCE_SCAN_ROWS) throw new Error('Attendance evidence range exceeds the safe comparison limit.');
     for (const row of rows) if (timestampBelongsToFactoryLocalDate(row.timestamp, date)) rawById.set(String(row._id), row);
   }
   const corrections = await ctx.db.query('attendanceCorrections')
@@ -82,8 +86,8 @@ export function isSignedAttendanceEvidence(value: unknown): value is SignedAtten
   if (!value || typeof value !== 'object') return false;
   const evidence = value as SignedAttendanceEvidence;
   return evidence.version === 1 && /^[a-f0-9]{64}$/.test(evidence.digest) &&
-    [evidence.raw_punches, evidence.corrections, evidence.reversals].every(count => Number.isSafeInteger(count) && count >= 0) &&
-    evidence.raw_punches + evidence.corrections + evidence.reversals <= MAX_ATTENDANCE_EVIDENCE_ROWS;
+    // Row caps bound capture, not validity: a baseline signed under an older cap stays comparable.
+    [evidence.raw_punches, evidence.corrections, evidence.reversals].every(count => Number.isSafeInteger(count) && count >= 0);
 }
 
 export async function compareSignedAttendanceEvidence(

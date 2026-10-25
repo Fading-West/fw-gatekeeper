@@ -44,6 +44,7 @@ it('warns on equal-count evidence changes, keeps signed/current totals distinct 
   expect(label(tree.root.findByProps({ 'aria-label': 'Current summary' }))).toContain('Expected12');
   expect(tree.root.findAllByType('a').some(node => node.props.href === '/log?date=2026-09-02' && label(node).includes('Review attendance'))).toBe(true);
   expect(button('Reopen').props.disabled).toBe(false);
+  expect(text()).toContain('then Reopen, review, and Complete closeout to sign the current evidence');
   let exported!: Blob;
   vi.stubGlobal('URL', { createObjectURL: (blob: Blob) => { exported = blob; return 'blob:test'; }, revokeObjectURL: vi.fn() });
   vi.stubGlobal('document', { createElement: () => ({ click: vi.fn() }) });
@@ -91,6 +92,7 @@ it('keeps viewer review links and hides reopen and write controls', async () => 
   expect(text()).toContain('Attendance changed since signoff');
   expect(button('Review-only')).toBeTruthy();
   expect(button('Reopen')).toBeUndefined();
+  expect(text()).toContain('an admin or enrollment user can Reopen, review, and Complete closeout');
   expect(tree.root.findByType('textarea').props.readOnly).toBe(true);
   expect(fetchMock.mock.calls).toHaveLength(1);
 });

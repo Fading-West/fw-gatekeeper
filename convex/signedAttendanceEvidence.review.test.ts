@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import schema from './schema';
 import { api } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
-import { buildSignedAttendanceEvidence, compareSignedAttendanceEvidence, MAX_ATTENDANCE_EVIDENCE_ROWS } from './signedAttendanceEvidence';
+import { buildSignedAttendanceEvidence, compareSignedAttendanceEvidence, MAX_ATTENDANCE_SCAN_ROWS, MAX_CANONICAL_BYTES } from './signedAttendanceEvidence';
 
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-02';
@@ -44,7 +44,7 @@ describe('independent signed-attendance audit probes', () => {
 
   it('treats a truncated conservative range as unknown and preserves its signed baseline', async () => {
     const signed = buildSignedAttendanceEvidence(date, { raw: [], corrections: [], reversals: [] });
-    const db = { query: vi.fn(() => ({ withIndex: () => ({ take: () => Array.from({ length: MAX_ATTENDANCE_EVIDENCE_ROWS + 1 }, () => ({})) }) })) };
+    const db = { query: vi.fn(() => ({ withIndex: () => ({ take: () => Array.from({ length: MAX_ATTENDANCE_SCAN_ROWS + 1 }, () => ({})) }) })) };
     const result = await compareSignedAttendanceEvidence({ db } as unknown as Parameters<typeof compareSignedAttendanceEvidence>[0], date, { status: 'completed', signedAttendanceEvidence: signed } as Doc<'shiftCloseouts'>);
     expect(result).toMatchObject({ status: 'unknown', signed, current: null, compared_at: null });
     expect(db.query).toHaveBeenCalledOnce();
@@ -68,7 +68,7 @@ describe('independent signed-attendance audit probes', () => {
     const { id } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Original signed note' });
     const original = await t.run(ctx => ctx.db.get(id));
     await t.run(async ctx => {
-      for (let i = 0; i < 3; i++) await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T12:00:0${i}Z`, synced: true, note: 'x'.repeat(700000) });
+      for (let i = 0; i <= MAX_CANONICAL_BYTES / 700000; i++) await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T12:00:${String(i).padStart(2, '0')}Z`, synced: true, note: 'x'.repeat(700000) });
     });
     const result = await actor.query(api.shiftCloseouts.get, { date });
     expect(result.closeout?.notes).toBe('Original signed note');

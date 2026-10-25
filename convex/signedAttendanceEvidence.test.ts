@@ -3,7 +3,7 @@ import { convexTest } from 'convex-test';
 import { describe, expect, it, vi } from 'vitest';
 import { api, internal } from './_generated/api';
 import schema from './schema';
-import { buildSignedAttendanceEvidence, compareSignedAttendanceEvidence, isSignedAttendanceEvidence, MAX_ATTENDANCE_EVIDENCE_ROWS } from './signedAttendanceEvidence';
+import { buildSignedAttendanceEvidence, compareSignedAttendanceEvidence, isSignedAttendanceEvidence, MAX_ATTENDANCE_EVIDENCE_ROWS, MAX_CANONICAL_BYTES } from './signedAttendanceEvidence';
 import type { Doc } from './_generated/dataModel';
 
 const modules = import.meta.glob('./**/*.ts');
@@ -51,7 +51,9 @@ describe('versioned signed attendance evidence', () => {
   it('normalizes missing optionals and rejects malformed or unsupported baselines', () => {
     const signed = buildSignedAttendanceEvidence(date, { raw: [], corrections: [], reversals: [] });
     expect(isSignedAttendanceEvidence(signed)).toBe(true);
-    for (const bad of [null, {}, { ...signed, version: 2 }, { ...signed, digest: 'bad' }, { ...signed, raw_punches: -1 }, { ...signed, corrections: 1.5 }, { ...signed, reversals: MAX_ATTENDANCE_EVIDENCE_ROWS + 1 }]) expect(isSignedAttendanceEvidence(bad)).toBe(false);
+    for (const bad of [null, {}, { ...signed, version: 2 }, { ...signed, digest: 'bad' }, { ...signed, raw_punches: -1 }, { ...signed, corrections: 1.5 }, { ...signed, reversals: Number.MAX_SAFE_INTEGER + 1 }]) expect(isSignedAttendanceEvidence(bad)).toBe(false);
+    // Capture caps are not validity rules: a baseline signed under another cap stays comparable.
+    expect(isSignedAttendanceEvidence({ ...signed, raw_punches: MAX_ATTENDANCE_EVIDENCE_ROWS + 1 })).toBe(true);
     expect(digest({ ...raw, note: undefined })).toBe(digest());
   });
 
@@ -153,11 +155,26 @@ describe('versioned signed attendance evidence', () => {
     const { t, actor, complete, workerId } = await setup();
     // Each row remains under the document limit; the combined signature input exceeds its bound.
     await t.run(async ctx => {
-      for (let i = 0; i < 3; i++) await ctx.db.insert('attendance', { workerId, timestamp: `2026-09-02T08:00:0${i}`, eventType: 'clock_in', synced: true, note: 'x'.repeat(700000) });
+      for (let i = 0; i <= MAX_CANONICAL_BYTES / 700000; i++) await ctx.db.insert('attendance', { workerId, timestamp: `2026-09-02T08:00:${String(i).padStart(2, '0')}`, eventType: 'clock_in', synced: true, note: 'x'.repeat(700000) });
     });
     await expect(complete()).rejects.toThrow('safe comparison size');
     expect((await actor.query(api.shiftCloseouts.get, { date })).closeout).toBeNull();
     expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
   });
+
+  it('does not let busy adjacent dates in the conservative scan block a new signature', async () => {
+    const { t, actor, complete, workerId } = await setup();
+    // Neighboring factory dates share the scanned timestamp prefixes but are not evidence for this date.
+    await t.run(async ctx => {
+      for (let i = 0; i <= MAX_ATTENDANCE_EVIDENCE_ROWS; i++) {
+        await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', synced: true,
+          timestamp: `2026-09-0${i % 2 ? 1 : 3}T12:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.${i}Z` });
+      }
+      await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', synced: true, timestamp: '2026-09-02T08:00:00' });
+    });
+    const { id } = await complete();
+    expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 1 });
+    expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
+  }, 60_000);
 
 });
