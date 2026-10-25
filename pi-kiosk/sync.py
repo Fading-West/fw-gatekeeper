@@ -168,6 +168,13 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
         logger.warning("Attendance isolation limit reached; remaining rows stay queued")
         return False
     budget[0] -= 1
+    # Requests rejects nonfinite persisted confidence before HTTP. Isolate it
+    # locally: retrying the same batch cannot reach the server validator.
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (ValueError, TypeError):
+        return _isolate_attendance(log_ids, payload, budget, deadline,
+                                   "Attendance evidence cannot be encoded as finite JSON")
     try:
         response = requests.post(
             f"{config.SERVER_URL}/api/attendance/bulk",
@@ -193,15 +200,20 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
         return True
     reason = _rejection_reason(response)
     if reason:
-        if len(log_ids) == 1:
-            database.reject_attendance(log_ids[0], reason)
-            logger.error("Quarantined attendance log %d; inspect its stored rejection reason", log_ids[0])
-            return True
-        midpoint = len(log_ids) // 2
-        return (_upload_attendance(log_ids[:midpoint], payload[:midpoint], budget, deadline)
-                and _upload_attendance(log_ids[midpoint:], payload[midpoint:], budget, deadline))
+        return _isolate_attendance(log_ids, payload, budget, deadline, reason)
     logger.error("Attendance batch not acknowledged (status=%d); keeping %d rows queued", response.status_code, len(payload))
     return False
+
+
+def _isolate_attendance(log_ids: list[int], payload: list[dict], budget: list[int],
+                        deadline: float, reason: str) -> bool:
+    if len(log_ids) == 1:
+        database.reject_attendance(log_ids[0], reason)
+        logger.error("Quarantined attendance log %d; inspect its stored rejection reason", log_ids[0])
+        return True
+    midpoint = len(log_ids) // 2
+    return (_upload_attendance(log_ids[:midpoint], payload[:midpoint], budget, deadline)
+            and _upload_attendance(log_ids[midpoint:], payload[midpoint:], budget, deadline))
 
 
 def _attendance_acknowledged(response, submitted: int) -> bool:
