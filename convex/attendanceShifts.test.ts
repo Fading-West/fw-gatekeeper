@@ -56,7 +56,7 @@ describe("overnight shift attribution in exceptions and closeout", () => {
     expect(closeout.blockers).toEqual([]);
     expect(closeout.can_complete).toBe(true);
     expect(closeout.closeout_draft.source_counts.missing_clock_outs).toBe(0);
-    await expect(actor.mutation(api.shiftCloseouts.save, { date: clockInDate, action: "complete" })).resolves.toMatchObject({ status: "completed" });
+    await expect(actor.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null, date: clockInDate, action: "complete" })).resolves.toMatchObject({ status: "completed" });
   });
 
   it("keeps an in-progress shift as a warning and acknowledgement blocker without inventing an exit", async () => {
@@ -72,8 +72,8 @@ describe("overnight shift attribution in exceptions and closeout", () => {
       summary: { missing_clock_outs: 1 }, can_complete: false,
       blockers: [{ id: "missing_clock_outs", count: 1 }],
     });
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: "complete" })).rejects.toThrow("acknowledgement note");
-    await expect(actor.mutation(api.shiftCloseouts.save, {
+    await expect(actor.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null, date, action: "complete" })).rejects.toThrow("acknowledgement note");
+    await expect(actor.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null,
       date, action: "complete", blockerEvidence: (await actor.query(api.shiftCloseouts.get, { date })).blocker_evidence, acknowledgedBlockers: true, notes: "Night worker confirmed still working; exit pending.",
     })).resolves.toMatchObject({ status: "completed" });
   });
