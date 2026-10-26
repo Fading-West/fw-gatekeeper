@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { api } from '../../../../convex/_generated/api';
@@ -41,7 +42,7 @@ async function setup(blocked = false) {
   });
   vi.mocked(convex.query).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.query(ref, JSON.parse(JSON.stringify(args)));
+    return actor.query(ref as FunctionReference<'query'>, JSON.parse(JSON.stringify(args)));
   });
   let request = 0;
   const patch = async (fields: Record<string, unknown>) => {

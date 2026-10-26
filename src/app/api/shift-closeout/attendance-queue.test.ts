@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import schema from '../../../../convex/schema';
@@ -33,11 +34,11 @@ async function setup() {
   // Match Convex HTTP serialization: undefined fields disappear on the wire.
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+    return actor.mutation(ref as FunctionReference<'mutation'>, JSON.parse(JSON.stringify(args)));
   });
   vi.mocked(convex.query).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.query(ref, JSON.parse(JSON.stringify(args)));
+    return actor.query(ref as FunctionReference<'query'>, JSON.parse(JSON.stringify(args)));
   });
   let request = 0;
   const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
@@ -145,12 +146,12 @@ it('recovers a lost completion receipt after a later reopen when reads lack queu
   const actor = t.withIdentity({ subject: userId });
   vi.mocked(convex.mutation).mockImplementation((...call) => {
     const [ref, args = {}] = call;
-    return actor.mutation(ref, JSON.parse(JSON.stringify(args)));
+    return actor.mutation(ref as FunctionReference<'mutation'>, JSON.parse(JSON.stringify(args)));
   });
   // Simulate a backend that predates queue evidence: reads omit the field.
   vi.mocked(convex.query).mockImplementation(async (...call) => {
     const [ref, args = {}] = call;
-    const { attendance_queue: _omitted, ...rest } = await actor.query(ref, JSON.parse(JSON.stringify(args)));
+    const { attendance_queue: _omitted, ...rest } = await actor.query(ref as FunctionReference<'query'>, JSON.parse(JSON.stringify(args)));
     return rest;
   });
   const send = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
