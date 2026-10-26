@@ -25,7 +25,7 @@ describe('independent signed-attendance audit probes', () => {
   it('detects persisted timestamp spelling changes even when display and instant match', async () => {
     const { t, actor, workerId } = await setup();
     const id = await t.run(ctx => ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T05:30:00.123456Z`, synced: true }));
-    const { id: closeoutId } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' });
+    const { id: closeoutId } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'review-complete', expectedRevision: null });
     const original = await t.run(ctx => ctx.db.get(closeoutId));
     await t.run(ctx => ctx.db.patch(id, { timestamp: `${date}T00:30:00.123456-05:00` }));
     const result = await actor.query(api.shiftCloseouts.get, { date });
@@ -37,7 +37,7 @@ describe('independent signed-attendance audit probes', () => {
     const { t, actor, workerId } = await setup();
     const punch = { workerId, eventType: 'clock_in', timestamp: `${date}T12:00:00Z`, synced: true };
     const oldId = await t.run(ctx => ctx.db.insert('attendance', punch));
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' });
+    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'review-complete', expectedRevision: null });
     await t.run(async ctx => { await ctx.db.delete(oldId); await ctx.db.insert('attendance', punch); });
     expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({ status: 'changed', signed: { raw_punches: 1 }, current: { raw_punches: 1 } });
   });
@@ -53,7 +53,7 @@ describe('independent signed-attendance audit probes', () => {
 
   it('keeps a valid signature available when malformed duplicate reversal evidence appears later', async () => {
     const { t, actor, workerId, userId } = await setup();
-    const { id } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' });
+    const { id } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'review-complete', expectedRevision: null });
     const original = await t.run(ctx => ctx.db.get(id));
     await t.run(async ctx => {
       const correctionId = await ctx.db.insert('attendanceCorrections', { date, workerId, action: 'add_clock_out', eventType: 'clock_out', correctedTimestamp: `${date}T17:00:00`, reason: 'audit reason', actorUserId: userId, createdAt: 'created', updatedAt: 'updated' });
@@ -66,7 +66,7 @@ describe('independent signed-attendance audit probes', () => {
 
   it('preserves the signed record through the full query when comparison byte limits are reached', async () => {
     const { t, actor, workerId } = await setup();
-    const { id } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Original signed note' });
+    const { id } = await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'review-complete', expectedRevision: null, notes: 'Original signed note' });
     const original = await t.run(ctx => ctx.db.get(id));
     await t.run(async ctx => {
       for (let i = 0; i <= MAX_CANONICAL_BYTES / 700000; i++) await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T12:00:${String(i).padStart(2, '0')}Z`, synced: true, note: 'x'.repeat(700000) });
@@ -80,7 +80,7 @@ describe('independent signed-attendance audit probes', () => {
   it('returns only digest/counts rather than attendance audit identities or notes', async () => {
     const { t, actor, workerId } = await setup();
     await t.run(ctx => ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T12:00:00Z`, synced: true, note: 'Private raw evidence note' }));
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' });
+    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'review-complete', expectedRevision: null });
     const result = await actor.query(api.shiftCloseouts.get, { date });
     expect(result.attendance_comparison.status).toBe('unchanged');
     for (const side of [result.attendance_comparison.signed, result.attendance_comparison.current]) {

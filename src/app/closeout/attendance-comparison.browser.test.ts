@@ -47,7 +47,7 @@ beforeAll(async () => {
     oxc: { jsx: { runtime: 'automatic', development: false } },
     resolve: { alias: [
       { find: 'next/navigation', replacement: runtime }, { find: 'next/link', replacement: runtime },
-      { find: '@/hooks/usePortalRole', replacement: runtime }, { find: '@/components/Toast', replacement: runtime },
+      { find: '@/hooks/usePortalRole', replacement: runtime }, { find: '@/hooks/useCloseoutActor', replacement: runtime }, { find: '@/components/Toast', replacement: runtime },
       { find: '@', replacement: fileURLToPath(new URL('../..', import.meta.url)) },
     ] },
     define: { 'process.env.NODE_ENV': JSON.stringify('production') },
@@ -103,7 +103,7 @@ async function setup(role = 'enrollment', viewport = { width: 1360, height: 1000
       await route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"></head><body class="bg-navy-950 text-slate-100"><div id="root"></div><script src="/fixture.js"></script></body></html>' });
     }
   });
-  await page.goto(`https://fixture.test/closeout?date=${date}&role=${role}`);
+  await page.goto(`https://fixture.test/closeout?date=${date}&role=${role}&actor=${encodeURIComponent(ids.userId)}`);
   await page.getByRole('heading', { name: role === 'viewer' ? 'Ready to close shift' : 'Ready to close shift', exact: true }).waitFor();
   return { t, actor, page, errors, ...ids };
 }
@@ -176,7 +176,7 @@ it('shows viewer review controls, denies writes, and keeps legacy/failed loads f
       return response.status;
     }, { date });
     expect(result).toBe(401);
-    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen' })).rejects.toThrow();
+    await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'viewer-reopen', expectedRevision: 0 })).rejects.toThrow();
     await snap(page, '05-viewer-legacy-mobile');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     bridge.mode = 'failure';
