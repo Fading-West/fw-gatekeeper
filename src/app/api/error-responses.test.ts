@@ -103,8 +103,17 @@ it.each(['encoding', 'upload', 'cleanup'])('enrollment %s failure logs no payloa
   if (stage === 'upload') mocks.action.mockRejectedValueOnce(error);
   if (stage === 'cleanup') mocks.mutation.mockResolvedValueOnce({ id: 'worker' }).mockRejectedValueOnce(error);
   const response = await enroll(request(routes[2]));
-  expect(response.status).toBe(stage === 'encoding' ? 503 : 201);
-  expect(console.error).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ type: 'ConvexError' }));
+  expect(response.status).toBe(stage === 'cleanup' ? 201 : 503);
+  if (stage === 'upload') {
+    expect(await response.json()).toEqual({
+      error: 'Unable to store all accepted enrollment photos. Worker was not changed. Retry enrollment.',
+      code: 'ENROLLMENT_PHOTO_STORAGE_UNAVAILABLE',
+    });
+    expect(mocks.mutation).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith('Enrollment photo storage is unavailable');
+  } else {
+    expect(console.error).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ type: 'ConvexError' }));
+  }
   expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/PRIVATE_|photos|secret/);
 });
 
