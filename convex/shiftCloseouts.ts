@@ -1,3 +1,5 @@
+import { listCorrectionsByDateRange, shareAttendanceReads } from "./attendanceReads";
+import { compareSignedAttendanceEvidence, readSignedAttendanceEvidence } from "./signedAttendanceEvidence";
 import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -329,7 +331,9 @@ function buildCloseoutDraft(input: {
   };
 }
 
-async function buildCloseoutPayload(ctx: any, date: string) {
+// Saves never return the read-only attendance comparison; with no closeout it is
+// not_applicable and reads nothing.
+async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance = true } = {}) {
   const generatedAt = new Date().toISOString();
   const [briefing, exceptions, closeout] = await Promise.all([
     buildShiftBriefing(ctx, date),
@@ -339,10 +343,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
       .withIndex("by_date", (q: any) => q.eq("date", date))
       .first(),
   ]);
-  const attendanceCorrections = await ctx.db
-    .query("attendanceCorrections")
-    .withIndex("by_date", (q: any) => q.eq("date", date))
-    .collect();
+  const attendanceCorrections = await listCorrectionsByDateRange(ctx, date);
 
   const openExceptions = exceptions.filter((exception: any) => exception.status === "open");
   const criticalExceptions = openExceptions.filter((exception: any) => exception.severity === "critical");
@@ -436,6 +437,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     date,
     generated_at: generatedAt,
     blocker_evidence: blockerEvidence,
+    attendance_comparison: await compareSignedAttendanceEvidence(ctx, date, compareAttendance ? closeout : null),
     closeout: closeout
       ? {
           id: String(closeout._id),
@@ -475,6 +477,8 @@ export const get = query({
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
     const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
+    // Read-only: the payload's builders and comparison share attendance reads.
+    shareAttendanceReads(ctx);
     return buildCloseoutPayload(ctx, date);
   },
 });
@@ -529,7 +533,10 @@ export const save = mutation({
     if (args.action === "reopen" && existing?.status !== "completed") {
       throw new ConvexError("Only a completed closeout can be reopened.");
     }
-    const current = await buildCloseoutPayload(ctx, args.date);
+    // The payload builders and baseline capture share attendance reads; the
+    // scope ends before this transaction writes.
+    const endSharedReads = shareAttendanceReads(ctx);
+    const current = await buildCloseoutPayload(ctx, args.date, { compareAttendance: false });
     const now = new Date().toISOString();
     const supervisorName = args.supervisorName === undefined ? existing?.supervisorName : normalizeText(args.supervisorName);
     const hasNotesArg = Object.prototype.hasOwnProperty.call(args, "notes");
@@ -563,6 +570,12 @@ export const save = mutation({
     const status: CloseoutStatus =
       args.action === "complete" ? "completed" : args.action === "reopen" ? "reopened" : existing?.status || "open";
 
+    // Only a successful new completion captures a server-derived baseline.
+    // Throws roll back the whole transaction; retries return before this read.
+    const signedAttendanceEvidence = args.action === "complete"
+      ? await readSignedAttendanceEvidence(ctx, args.date) : existing?.signedAttendanceEvidence;
+    endSharedReads();
+
     const patch = {
       revision: (existing?.revision ?? 0) + 1,
       date: args.date,
@@ -571,6 +584,7 @@ export const save = mutation({
       notes: nextNotes,
       acknowledgedBlockers,
       acknowledgedBlockerEvidence: acknowledgedBlockers ? current.blocker_evidence : undefined,
+      signedAttendanceEvidence,
       expected: current.summary.expected,
       present: current.summary.present,
       late: current.summary.late,

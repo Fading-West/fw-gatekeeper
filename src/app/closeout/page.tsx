@@ -11,10 +11,12 @@ import { usePortalRole } from '@/hooks/usePortalRole';
 import { useCloseoutActor } from '@/hooks/useCloseoutActor';
 import { useSelectedData } from '@/hooks/useSelectedData';
 import { beginCloseoutAction, loadCloseoutAction, acknowledgeCloseoutAction, rejectCloseoutAction, reconcileRejectedCloseoutAction, closeoutActionStored, type PendingCloseoutAction } from '@/lib/closeout-request';
+import { attendanceComparisonLabel, attendanceEvidenceCounts, normalizeAttendanceComparison } from '@/lib/attendance-comparison';
 import {
   ShiftCloseoutChecklistItem,
   ShiftCloseoutResponse,
   ShiftCloseoutStatus,
+  ShiftCloseoutSnapshot,
 } from '@/lib/types';
 
 const closeoutStyles: Record<ShiftCloseoutStatus, string> = {
@@ -54,22 +56,31 @@ function checklistExportLine(item: ShiftCloseoutChecklistItem, role: PortalRole 
 }
 
 function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string, role: PortalRole | undefined) {
-  const summary = payload.closeout?.status === 'completed' ? payload.closeout.snapshot : payload.summary;
+  const completed = payload.closeout?.status === 'completed';
+  const comparison = normalizeAttendanceComparison(payload.attendance_comparison, payload.date, completed, payload.backend_unavailable);
+  const summaryLines = (summary: ShiftCloseoutSnapshot) => [
+    `Expected: ${summary.expected}`, `Present: ${summary.present}`, `Late: ${summary.late}`, `Missing: ${summary.missing}`,
+    `Open exceptions: ${summary.open_exceptions}`, `Critical exceptions: ${summary.critical_exceptions}`, `Kiosk warnings: ${summary.kiosk_warnings}`,
+  ];
   const lines = [
     `FW Gatekeeper shift closeout - ${payload.date}`,
     `Status: ${payload.closeout?.status || 'open'}`,
     `Supervisor: ${supervisorName || payload.closeout?.supervisor_name || 'Not set'}`,
     `Completed: ${formatDateTime(payload.closeout?.completed_at)}`,
     '',
-    payload.closeout?.status === 'completed' ? 'Signed summary' : 'Current summary',
-    `Expected: ${summary.expected}`,
-    `Present: ${summary.present}`,
-    `Late: ${summary.late}`,
-    `Missing: ${summary.missing}`,
-    ...(payload.closeout?.status !== 'completed' && payload.summary.not_yet_due ? [`Not yet due: ${payload.summary.not_yet_due}`] : []),
-    `Open exceptions: ${summary.open_exceptions}`,
-    `Critical exceptions: ${summary.critical_exceptions}`,
-    `Kiosk warnings: ${summary.kiosk_warnings}`,
+    'Attendance comparison',
+    attendanceComparisonLabel(comparison),
+    comparison.scope,
+    ...(comparison.reason ? [comparison.reason] : []),
+    `Compared: ${comparison.compared_at || 'Unavailable'}`,
+    `Signed evidence: ${attendanceEvidenceCounts(comparison.signed)}`,
+    `Current evidence: ${attendanceEvidenceCounts(comparison.current)}`,
+    `Review attendance: ${comparison.activity_log_href}`,
+    '',
+    ...(completed && payload.closeout ? ['Signed summary', ...summaryLines(payload.closeout.snapshot), ''] : []),
+    'Current summary',
+    ...summaryLines(payload.summary),
+    ...(payload.summary.not_yet_due ? [`Not yet due: ${payload.summary.not_yet_due}`] : []),
     `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
     '',
     'Current checklist',
@@ -208,7 +219,7 @@ function ShiftCloseoutPageContent() {
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchCloseout } = useSelectedData(JSON.stringify([actorId, date]), loadCloseout);
-  const dataReady = Boolean(payload && !loading && !error);
+  const dataReady = Boolean(payload && !loading && !error && !payload.backend_unavailable);
 
   useEffect(() => {
     const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
@@ -226,6 +237,7 @@ function ShiftCloseoutPageContent() {
 
   const status = payload?.closeout?.status || 'open';
   const completed = status === 'completed';
+  const attendanceComparison = normalizeAttendanceComparison(payload?.attendance_comparison, date, completed, !dataReady || payload?.backend_unavailable);
   const blockerCount = payload?.blockers.length || 0;
   const sourceBlockerCount = Number(payload?.summary.critical_exceptions || 0) +
     Number(payload?.summary.missing_clock_outs || 0) +
@@ -238,9 +250,16 @@ function ShiftCloseoutPageContent() {
       ? acknowledgedBlockers && notes.trim()
       : payload.can_complete
   ));
-  const closeoutLabel = !dataReady ? (error ? 'Closeout unavailable' : 'Loading closeout') : completed ? 'Shift closeout complete' : blockerCount ? 'Closeout needs acknowledgement' : 'Ready to close shift';
+  const closeoutLabel = !dataReady ? (error || payload?.backend_unavailable ? 'Closeout unavailable' : 'Loading closeout') : completed
+    ? attendanceComparison.status === 'changed' ? 'Attendance changed since signoff'
+      : attendanceComparison.status === 'unknown' ? 'Signed closeout — attendance comparison unavailable' : 'Shift closeout complete'
+    : blockerCount ? 'Closeout needs acknowledgement' : 'Ready to close shift';
   const closeoutDescription = !dataReady ? 'Wait for this shift record to load before signing off.' : completed
-    ? `Completed ${formatDateTime(payload?.closeout?.completed_at)}. Reopen if a supervisor needs to correct the record.`
+    ? `Completed ${formatDateTime(payload?.closeout?.completed_at)}. The original signature is preserved. ${attendanceComparison.status === 'unchanged'
+      ? (canOperate ? 'Reopen if a supervisor needs to correct the record.' : 'An admin or enrollment user can reopen it if the record needs correction.')
+      : canOperate
+        ? 'Review current attendance in Activity Log, then Reopen, review, and Complete closeout to sign the current evidence.'
+        : 'Review current attendance in Activity Log; an admin or enrollment user can Reopen, review, and Complete closeout to sign the current evidence.'}`
     : blockerCount
       ? 'Review the blocked checklist items or add an acknowledgement note before completing the closeout.'
       : 'Checklist is clear. Add supervisor notes and complete the daily record.';
@@ -262,7 +281,7 @@ function ShiftCloseoutPageContent() {
 
   const summaryRows = useMemo(() => {
     const summary = payload?.summary;
-    return [
+    const rows = [
       ['Expected', summary?.expected ?? 0, 'text-slate-100'],
       ['Present', summary?.present ?? 0, 'text-emerald-300'],
       ['Late', summary?.late ?? 0, 'text-amber-300'],
@@ -274,7 +293,8 @@ function ShiftCloseoutPageContent() {
       ['Kiosk Warnings', summary?.kiosk_warnings ?? 0, 'text-blue-300'],
       ['Corrections', summary?.attendance_corrections ?? 0, 'text-gold'],
     ];
-  }, [payload]);
+    return dataReady ? rows : rows.map(([label, , tone]) => [label, '—', tone]);
+  }, [payload, dataReady]);
 
   function updateCloseout(action: 'save' | 'complete' | 'reopen') {
     if (!dataReady || mutationPendingRef.current || selectedPendingAction || !actorId) return;
@@ -359,7 +379,7 @@ function ShiftCloseoutPageContent() {
           <button type="button" onClick={() => dataReady && window.print()} disabled={!dataReady} className="btn-secondary">
             Print
           </button>
-          <button type="button" onClick={() => payload && exportText(payload, supervisorName, notes, currentRole)} className="btn-primary" disabled={!dataReady}>
+          <button type="button" onClick={() => dataReady && payload && exportText(payload, supervisorName, notes, currentRole)} className="btn-primary" disabled={!dataReady}>
             Export
           </button>
         </div>
@@ -388,7 +408,31 @@ function ShiftCloseoutPageContent() {
           </div>
           <span className={`badge border ${closeoutStyles[status]}`}>{titleCase(status)}</span>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mt-5">
+        {completed && (
+          <section aria-label="Attendance comparison" role={attendanceComparison.status === 'changed' ? 'alert' : 'status'} className={`mt-5 rounded-xl border p-4 ${attendanceComparison.status === 'changed' || attendanceComparison.status === 'unknown' ? 'border-amber-400/50 bg-amber-400/10' : 'border-navy-500 bg-navy-900/35'}`}>
+            <h3 className="font-display font-semibold text-slate-100">{attendanceComparisonLabel(attendanceComparison)}</h3>
+            <p className="mt-2 text-sm text-slate-300">{attendanceComparison.scope}. This does not compare schedules, kiosk health, or other shift trust sources.</p>
+            {attendanceComparison.reason && <p className="mt-2 text-sm text-amber-200">{attendanceComparison.reason}</p>}
+            <p className="mt-2 text-sm text-slate-300">Signed evidence: {attendanceEvidenceCounts(attendanceComparison.signed)}</p>
+            <p className="mt-1 text-sm text-slate-300">Current evidence: {attendanceEvidenceCounts(attendanceComparison.current)}</p>
+            <p className="mt-1 text-xs text-slate-400">Compared: {formatDateTime(attendanceComparison.compared_at)}</p>
+            <Link href={attendanceComparison.activity_log_href} className="mt-3 inline-flex font-semibold text-gold hover:text-gold-light">Review attendance in Activity Log →</Link>
+          </section>
+        )}
+        {completed && payload?.closeout && (
+          <section aria-label="Signed summary" className="mt-5">
+            <h3 className="font-display font-semibold text-slate-100">Signed summary</h3>
+            <p className="mt-1 text-xs text-slate-400">Recorded with the original signoff.</p>
+            <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {Object.entries({ Expected: payload.closeout.snapshot.expected, Present: payload.closeout.snapshot.present, Late: payload.closeout.snapshot.late, Missing: payload.closeout.snapshot.missing, 'Open exceptions': payload.closeout.snapshot.open_exceptions, 'Critical exceptions': payload.closeout.snapshot.critical_exceptions, 'Kiosk warnings': payload.closeout.snapshot.kiosk_warnings }).map(([label, value]) => (
+                <div key={label} className="rounded-xl border border-navy-600 bg-navy-950/40 p-3"><dt className="text-xs text-slate-400">{label}</dt><dd className="mt-1 font-display text-xl text-slate-100">{value}</dd></div>
+              ))}
+            </dl>
+          </section>
+        )}
+        <h3 className="mt-5 font-display font-semibold text-slate-100">Current summary</h3>
+        <p className="mt-1 text-xs text-slate-400">{dataReady ? 'Calculated from the currently loaded sources.' : 'Unavailable until this date finishes loading successfully.'}</p>
+        <div aria-label="Current summary" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mt-3">
           {summaryRows.map(([label, value, tone]) => (
             <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
               <p className="text-xs text-slate-500">{label}</p>

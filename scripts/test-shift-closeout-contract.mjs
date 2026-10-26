@@ -147,6 +147,12 @@ assert.match(page, /Complete closeout/, 'Closeout page must support completion.'
 assert.match(page, /Reopen/, 'Closeout page must support reopening.');
 assert.match(page, /window\.print\(\)/, 'Closeout page must support print output.');
 assert.match(page, /Export/, 'Closeout page must support export.');
+assert.match(page, /Attendance changed since signoff/, 'Changed attendance must take precedence over the completed headline.');
+assert.match(page, /aria-label="Signed summary"/, 'Completed records must expose their immutable signed summary.');
+assert.match(page, /aria-label="Current summary"/, 'Live totals must be labeled separately.');
+assert.match(page, /normalizeAttendanceComparison/, 'Mixed-version and malformed comparison data must be normalized before display.');
+assert.match(apiRoute, /normalizeAttendanceComparison/, 'The read API must normalize mixed-version comparison data.');
+assert.match(types, /interface AttendanceComparison/, 'Shared types must describe attendance comparison states.');
 
 assert.match(sidebar, /href:\s*'\/closeout'[\s\S]*label:\s*'Closeout'/, 'Sidebar must link to the Closeout page.');
 assert.match(dashboard, /\/api\/shift-closeout/, 'Dashboard must fetch shift closeout state.');

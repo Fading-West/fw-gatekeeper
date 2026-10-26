@@ -8,6 +8,7 @@ import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { api } from '../../../../convex/_generated/api';
+import { normalizeAttendanceComparison } from '@/lib/attendance-comparison';
 
 const VALID_ACTIONS = new Set(['save', 'complete', 'reopen']);
 
@@ -31,6 +32,7 @@ function emptyResponse(date: string) {
     date,
     generated_at: generatedAt,
     closeout: null,
+    attendance_comparison: normalizeAttendanceComparison(null, date, false, true),
     summary: {
       expected: 0,
       present: 0,
@@ -85,7 +87,9 @@ export async function GET(req: NextRequest) {
   }
   try {
     const payload = await convex.query((api as any).shiftCloseouts.get, { date });
-    return NextResponse.json(payload);
+    return NextResponse.json({ ...payload, attendance_comparison: normalizeAttendanceComparison(
+      payload.attendance_comparison, date, payload.closeout?.status === 'completed', Boolean(payload.backend_unavailable),
+    ) });
   } catch (error) {
     if (isMissingConvexFunction(error)) {
       return NextResponse.json(emptyResponse(date));
