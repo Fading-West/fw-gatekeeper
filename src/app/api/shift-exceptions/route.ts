@@ -130,7 +130,8 @@ export async function PATCH(req: NextRequest) {
     const sourceFingerprint = optionalString(body.source_fingerprint) || optionalString(body.sourceFingerprint);
     const date = optionalString(body.date);
     const type = optionalString(body.type);
-    const status = optionalString(body.status) || 'reviewed';
+    // Only an omitted status defaults to reviewed; malformed input must not dismiss an exception.
+    const status = body.status === undefined ? 'reviewed' : typeof body.status === 'string' ? body.status.trim() : '';
 
     if (!exceptionKey || !date || !type) {
       return NextResponse.json({ error: 'exception_key, date, and type required' }, { status: 400 });
