@@ -630,7 +630,12 @@ session policy. This ensures a sign-in that verified an old password before
 rotation cannot create an authorized session after the revocation cutoff.
 Tokens issued later for that revoked session still fail the portal gates.
 
-Deploy the Convex schema/functions together with the portal update. The schema
+For the eventual merge, follow the [coordinated release procedure](docs/legacy-kiosk-rollout.md#coordinated-production-release)
+and use `[skip render]` to defer portal auto-deployment. Deploy the matching
+Convex schema/functions before the portal, then reload existing tabs. Avoid
+creating accounts or resetting passwords between those deploys: the new backend
+requires rotation, but an older portal cannot offer the matching change form.
+Existing members without the flag keep their access during this transition. The schema
 adds optional `portalMembers.mustChangePassword`; existing records without the
 field are treated as false and require no migration. Existing members are
 unaffected until their next admin reset. While true, backend role gates, portal

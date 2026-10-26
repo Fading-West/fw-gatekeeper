@@ -359,7 +359,7 @@ export const resetPortalAccountPassword = action({
 
 // Self-service password change.
 //
-// In @convex-dev/auth 0.0.95, signIn is an action whose Password provider calls
+// In @convex-dev/auth 0.0.96, signIn is an action whose Password provider calls
 // retrieveAccount/modifyAccountCredentials. Those helpers are thin action-side
 // wrappers around the auth:store mutation, and the scrypt verify or hash runs
 // inside that mutation: one scrypt operation per transaction. A password change
