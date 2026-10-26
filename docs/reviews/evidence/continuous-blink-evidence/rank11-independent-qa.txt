@@ -1,0 +1,8 @@
+test_consecutive_valid_identity_bound_blink_completes (__main__.BlinkTests.test_consecutive_valid_identity_bound_blink_completes) ... ok
+test_dropouts_and_invalid_rectangles_cannot_complete_blink (__main__.BlinkTests.test_dropouts_and_invalid_rectangles_cannot_complete_blink) ... ok
+test_nonfinite_or_degenerate_landmarks_cannot_complete_blink (__main__.BlinkTests.test_nonfinite_or_degenerate_landmarks_cannot_complete_blink) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.008s
+
+OK

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '@/components/Toast';
 import { describeAttendanceQueue } from '@/components/AttendanceQueueEvidence';
 import type { AttendanceQueueObservation } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 
 type KioskReadinessStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
@@ -74,44 +75,88 @@ export default function KiosksPage() {
   const [credentialBusy, setCredentialBusy] = useState<string | null>(null);
   const credentialBusyRef = useRef(false);
   const [credentialStatus, setCredentialStatus] = useState<Record<string, 'device' | 'legacy' | 'revoked'>>({});
+  const [credentialStatusError, setCredentialStatusError] = useState(false);
+  const [unknownCredentialOutcomes, setUnknownCredentialOutcomes] = useState<Record<string, string>>({});
+  const clearUnknownCredentialOutcome = (id: string) => setUnknownCredentialOutcomes((previous) => {
+    const next = { ...previous };
+    delete next[id];
+    return next;
+  });
+
+  const credentialStatusRequestRef = useRef(0);
   const readinessRequestRef = useRef(0);
 
+
   const fetchCredentialStatus = useCallback(async () => {
+    // Only the latest request may apply, so a slow earlier read cannot
+    // overwrite the status fetched after a credential change.
+    const request = ++credentialStatusRequestRef.current;
     try {
       const response = await fetch('/api/kiosks', { cache: 'no-store' });
-      if (!response.ok) return;
-      const rows = await response.json();
-      if (Array.isArray(rows)) setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
+      const rows = response.ok ? await response.json() : null;
+      if (!Array.isArray(rows)) throw new Error('Credential status unavailable');
+      if (request !== credentialStatusRequestRef.current) return;
+      setCredentialStatus(Object.fromEntries(rows.map(row => [row.id, row.credential_status])));
+      setCredentialStatusError(false);
     } catch {
-      // Readiness remains available if the credential status request fails.
+      if (request !== credentialStatusRequestRef.current) return;
+      // Readiness remains available; cards show an explicit unavailable state with a retry.
+      setCredentialStatusError(true);
     }
   }, []);
 
   const manageCredential = async (id: string, method: 'POST' | 'DELETE', kioskName?: string) => {
     if (credentialBusyRef.current || issuedCredential) return;
-    if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${kioskName || id}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
+    const label = kioskName || id;
+    if (method === 'POST' && !globalThis.confirm(`Issue a new credential for ${label}? Any credential or shared migration key it uses now stops working immediately. ${label} will stop syncing until the new credential is installed on its device.`)) return;
+    if (method === 'DELETE' && !globalThis.confirm(`Revoke access for ${label}? This kiosk will stop syncing immediately, including if it still uses the shared migration key. To restore sync, issue a new device credential and install it on the Pi.`)) return;
     credentialBusyRef.current = true;
     setCredentialBusy(id);
+    let response: Response | null = null;
+    let body: { error?: string; kiosk_id?: string; credential?: string } | null = null;
     try {
-      const response = await fetch('/api/kiosks/credentials', {
-        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...(method === 'DELETE' ? { confirmStopSync: true } : {}) }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || 'Credential change failed');
-      if (method === 'POST') setIssuedCredential({ kioskId: body.kiosk_id, value: body.credential });
-      else toast('Kiosk credential revoked');
-      fetchReadiness();
-      fetchCredentialStatus();
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Credential change failed', 'error');
+      try {
+        response = await fetch('/api/kiosks/credentials', {
+          method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...(method === 'DELETE' ? { confirmStopSync: true } : {}) }),
+        });
+        body = await response.json().catch(() => null);
+      } catch {
+        // Network failure: the request may still have reached the server.
+      }
+      // Only a 4xx with a JSON error is a definite rejection. A lost or unreadable
+      // response, or a server error, can follow a committed Convex write.
+      const rejection = response && response.status >= 400 && response.status < 500 && body?.error ? body.error : null;
+      if (method === 'POST') {
+        if (response?.ok && typeof body?.credential === 'string') {
+          clearUnknownCredentialOutcome(id);
+          setIssuedCredential({ kioskId: body.kiosk_id || label, value: body.credential });
+        } else if (rejection) {
+          toast(rejection, 'error');
+        } else {
+          // The old secret may already be dead. Never claim failure.
+          setUnknownCredentialOutcomes((previous) => ({ ...previous, [id]: label }));
+        }
+      } else if (response?.ok) {
+        clearUnknownCredentialOutcome(id);
+        toast('Kiosk credential revoked');
+      } else if (rejection) {
+        toast(rejection, 'error');
+      } else {
+        // The refetch below shows whether the revoke took effect.
+        toast(`Could not confirm whether access for ${label} was revoked. Check its credential status.`, 'error');
+      }
+
     } finally {
       credentialBusyRef.current = false;
       setCredentialBusy(null);
+      fetchReadiness();
+      fetchCredentialStatus();
     }
   };
 
   const fetchReadiness = useCallback(async () => {
     const requestId = ++readinessRequestRef.current;
+    setHealth(null);
     setLoading(true);
     setError('');
     try {
@@ -121,7 +166,10 @@ export default function KiosksPage() {
       if (requestId === readinessRequestRef.current) setHealth(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load kiosk readiness';
-      if (requestId === readinessRequestRef.current) setError(message);
+      if (requestId === readinessRequestRef.current) {
+        setHealth(null);
+        setError(message);
+      }
     } finally {
       if (requestId === readinessRequestRef.current) setLoading(false);
     }
@@ -138,14 +186,14 @@ export default function KiosksPage() {
     [health],
   );
   const readinessLabel = useMemo(() => {
-    if (!health) return 'Checking readiness';
+    if (!health) return error ? 'Kiosk readiness unavailable' : 'Checking readiness';
     if (health.kiosks.total === 0) return 'No kiosks registered';
     if ((counts?.offline || 0) + (counts?.never_synced || 0) > 0) return 'Kiosks need attention';
     // A kiosk can be syncing (online) while its camera or model is broken.
     if (deviceIssueCount > 0) return 'Kiosks report device issues';
     if ((counts?.stale || 0) > 0) return 'Some kiosks are stale';
     return 'All kiosks online';
-  }, [counts, deviceIssueCount, health]);
+  }, [counts, deviceIssueCount, error, health]);
 
   const handleSubmit = async () => {
     const trimmedName = name.trim();
@@ -182,6 +230,13 @@ export default function KiosksPage() {
 
   return (
     <div className="animate-fade-in space-y-6 pb-24 md:pb-8">
+      {Object.entries(unknownCredentialOutcomes).map(([id, label]) => (
+        <div key={id} role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
+          <p className="text-amber-200 font-semibold">Credential change for {label}: outcome unknown.</p>
+          <p className="text-xs text-slate-400">The portal could not confirm the result, so a new credential may have been issued and the old one may no longer work. The new credential could not be shown. The credential status only shows what the server accepts, and the Online status can reflect an earlier sync. Verify a successful sync on this kiosk after this attempt. If you cannot confirm one, issue a new credential and install it on its device.</p>
+          <button type="button" className="btn-secondary" onClick={() => clearUnknownCredentialOutcome(id)}>Dismiss</button>
+        </div>
+      ))}
       {issuedCredential && (
         <div role="alert" className="glass-card p-5 border border-amber-400/30 space-y-2">
           <p className="text-amber-200 font-semibold">Save this credential for {issuedCredential.kioskId}. It will only be shown once.</p>
@@ -221,14 +276,14 @@ export default function KiosksPage() {
             </p>
           </div>
           <span className="badge bg-gold/10 text-gold border border-gold/20">
-            {health?.sync.ready_worker_count ?? 0} Expected worker records
+            {health?.sync.ready_worker_count ?? '—'} Expected worker records
           </span>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
           {(['online', 'stale', 'offline', 'never_synced'] as KioskReadinessStatus[]).map((status) => (
             <div key={status} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
               <p className="text-xs text-slate-500">{statusLabels[status]}</p>
-              <p className="font-display text-2xl text-slate-100 mt-1">{counts?.[status] ?? 0}</p>
+              <p className="font-display text-2xl text-slate-100 mt-1">{health ? (counts?.[status] ?? 0) : '—'}</p>
             </div>
           ))}
         </div>
@@ -280,7 +335,7 @@ export default function KiosksPage() {
 
       {loading && !health ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading kiosk readiness…</div>
-      ) : (
+      ) : error && !health ? null : (
         <section className="space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <h2 className="font-display font-semibold text-slate-100">Registered kiosks</h2>
@@ -298,9 +353,12 @@ export default function KiosksPage() {
                     <span className={`badge border ${statusStyles[kiosk.status]}`}>{statusLabels[kiosk.status]}</span>
                   </div>
                   <div className="flex gap-2">
-                    <span className="badge border border-slate-500/30 text-slate-300">{credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
+                    <span className="badge border border-slate-500/30 text-slate-300">{credentialStatusError ? 'Credential status unavailable' : credentialStatus[kiosk.id] === 'device' ? 'Device credential active' : credentialStatus[kiosk.id] === 'revoked' ? 'Credential revoked' : credentialStatus[kiosk.id] === 'legacy' ? 'Shared key migration' : 'Checking credential'}</span>
+                    {credentialStatusError && (
+                      <button type="button" className="btn-secondary text-xs" onClick={fetchCredentialStatus}>Retry</button>
+                    )}
                     <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
-                      onClick={() => manageCredential(kiosk.id, 'POST')}>Issue / rotate credential</button>
+                      onClick={() => manageCredential(kiosk.id, 'POST', kiosk.name)}>Issue / rotate credential</button>
                     <button type="button" className="btn-secondary text-xs" disabled={credentialBusy !== null || issuedCredential !== null}
                       onClick={() => manageCredential(kiosk.id, 'DELETE', kiosk.name)}>Revoke access</button>
                   </div>
@@ -329,7 +387,7 @@ export default function KiosksPage() {
                     </div>
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className="text-xs text-slate-500">Last attendance upload</p>
-                      <p className="text-slate-200 mt-1">{formatTimestamp(kiosk.last_attendance_upload)}</p>
+                      <p className="text-slate-200 mt-1">{formatFactoryLocalDateTime(kiosk.last_attendance_upload, 'No data yet')}</p>
                     </div>
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3 sm:col-span-2">
                       <p className="text-xs text-slate-500">Attendance not yet uploaded</p>

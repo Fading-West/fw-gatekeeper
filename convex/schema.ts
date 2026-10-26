@@ -42,6 +42,9 @@ export const closeoutFields = {
 
 export default defineSchema({
   ...authTables,
+  // Preserve Convex Auth's fields and userId index while allowing bounded
+  // expiry cleanup to invalidate queries that depend on a session document.
+  authSessions: authTables.authSessions.index("by_expirationTime", ["expirationTime"]),
 
   portalMembers: defineTable({
     userId: v.id("users"),
@@ -105,7 +108,7 @@ export default defineSchema({
     delivered: v.boolean(),
     deliveredAt: v.optional(v.string()),
     claimedUntil: v.optional(v.number()),
-  }).index("by_delivered", ["delivered"]),
+  }).index("by_delivered_and_claimed_until", ["delivered", "claimedUntil"]),
 
   attendance: defineTable({
     workerId: v.string(),
@@ -139,6 +142,7 @@ export default defineSchema({
     correctedTimestamp: v.optional(v.string()),
     originalAttendanceId: v.optional(v.id("attendance")),
     relatedExceptionKey: v.optional(v.string()),
+    sourceFingerprint: v.optional(v.string()),
     reason: v.string(),
     supervisorName: v.optional(v.string()),
     actorUserId: v.optional(v.id("users")),
@@ -198,6 +202,7 @@ export default defineSchema({
 
   exceptionReviews: defineTable({
     exceptionKey: v.string(),
+    sourceFingerprint: v.optional(v.string()),
     date: v.string(),
     type: v.string(),
     status: v.union(v.literal("open"), v.literal("reviewed"), v.literal("ignored"), v.literal("resolved")),
@@ -248,6 +253,7 @@ export default defineSchema({
       knownWorkers: v.optional(v.float64()),
       queuedLogs: v.optional(v.float64()),
       queuedAttempts: v.optional(v.float64()),
+      rejectedAttempts: v.optional(v.float64()),
       degradedReason: v.optional(v.string()),
       lastScanAt: v.optional(v.string()),
       reportedAt: v.string(),

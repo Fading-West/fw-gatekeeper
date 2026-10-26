@@ -3,21 +3,87 @@
 from __future__ import annotations
 
 import json
+import os
+import fcntl
+from contextlib import contextmanager
 import logging
 import sqlite3
 import threading
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
 import config
+from kiosk_policy import require_kiosk_action_type
 
 logger = logging.getLogger(__name__)
 _local = threading.local()
 _IDENTITY_NOT_CAPTURED = object()
+_HISTORY_PRUNE_BATCH_SIZE = 100
+_EPOCH_BACKFILL_BATCH_SIZE = 100
+_history_thread = None
+_history_lock = threading.Lock()
+_history_stop = None
+_HISTORY_RETRY_SECONDS = 30
+_event_write_lock = threading.Lock()
+_event_writers = 0
+_event_write_pending = threading.Event()
+
+
+class _HistoryMigrationStopped(Exception):
+    pass
+
+
+class _HistoryMigrationYielded(Exception):
+    pass
+
+
+def _prioritize_event_write(write):
+    """Interrupt a history index build before a UI-loop write waits on it."""
+    @wraps(write)
+    def prioritized(*args, **kwargs):
+        global _event_writers
+        with _event_write_lock:
+            _event_writers += 1
+            _event_write_pending.set()
+        try:
+            return write(*args, **kwargs)
+        except sqlite3.Error:
+            conn = getattr(_local, "conn", None)
+            if conn is not None:
+                conn.rollback()
+            raise
+        finally:
+            with _event_write_lock:
+                _event_writers -= 1
+                if _event_writers == 0:
+                    _event_write_pending.clear()
+    return prioritized
+
+
+def _create_history_index(conn, sql):
+    """SQLite has no online CREATE INDEX; yield its lock to incoming events."""
+    if _event_write_pending.is_set():
+        raise _HistoryMigrationYielded()
+    stop = _history_stop if threading.current_thread() is _history_thread else None
+    def stopped():
+        return stop is not None and stop.is_set()
+    conn.set_progress_handler(lambda: int(stopped() or _event_write_pending.is_set()), 1000)
+    try:
+        conn.execute(sql)
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT and not stopped():
+            # CREATE INDEX is rolled back atomically. Keep completed indexes
+            # and all backfill markers, and retry when the door is quieter.
+            raise _HistoryMigrationYielded() from exc
+        raise
+    finally:
+        conn.set_progress_handler(lambda: int(stopped()), 1000)
 
 
 def _attendance_epoch(value: str) -> Optional[float]:
@@ -55,17 +121,154 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str):
         logger.info("Added column %s.%s", table, column)
 
 
-def _get_conn() -> sqlite3.Connection:
+def _prepare_event_epoch(conn: sqlite3.Connection, table: str):
+    """Add the column and durable cursor without visiting historical rows.
+
+    Column creation and its progress marker are atomic.
+    The initial high-water id excludes new inserts, which already cache epochs.
+    Call only after committing the other startup schema migrations.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("Epoch migration requires its own transactions")
+    key = f"epoch_backfill:{table}"
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if "timestamp_epoch" not in columns:
+        conn.execute("SAVEPOINT migrate_event_epoch")
+        try:
+            _ensure_column(conn, table, "timestamp_epoch", "timestamp_epoch REAL")
+            high_water = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0]
+            conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                         (key, json.dumps([0, high_water])))
+            conn.execute("RELEASE SAVEPOINT migrate_event_epoch")
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT migrate_event_epoch")
+            conn.execute("RELEASE SAVEPOINT migrate_event_epoch")
+            raise
+
+
+def _migrate_event_epoch(conn: sqlite3.Connection, table: str, pause=None):
+    """Resume committed 100-row batches, parsing and yielding outside write locks."""
+    _prepare_event_epoch(conn, table)
+    key = f"epoch_backfill:{table}"
+    progress = conn.execute("SELECT value FROM sync_state WHERE key = ?", (key,)).fetchone()
+    if progress is None:
+        # Includes devices that completed the original atomic backfill.
+        return
+    after_id, high_water = json.loads(progress[0])
+    while True:
+        rows = conn.execute(f"SELECT id, timestamp FROM {table} WHERE id > ? AND id <= ? "
+                            "ORDER BY id LIMIT ?",
+                            (after_id, high_water, _EPOCH_BACKFILL_BATCH_SIZE)).fetchall()
+        if not rows:
+            with conn:
+                conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
+            return
+        epochs = [(_attendance_epoch(row["timestamp"]), row["id"]) for row in rows]
+        after_id = rows[-1]["id"]
+        with conn:
+            conn.executemany(f"UPDATE {table} SET timestamp_epoch = ? "
+                             "WHERE id = ? AND timestamp_epoch IS NULL", epochs)
+            conn.execute("UPDATE sync_state SET value = ? WHERE key = ?",
+                         (json.dumps([after_id, high_water]), key))
+        if pause is not None:
+            pause()
+
+
+def _migrate_history(pause=None):
+    """Build indexes before filling epochs; run off the kiosk startup path."""
+    conn = _get_conn()
+    # Exclude NULLs so a first upgrade scans the tables but does not sort/write
+    # hundreds of thousands of empty index entries. Existing indexes are valid.
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_worker_id ON attendance_log(worker_id, id)")
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_epoch ON attendance_log(timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_worker_epoch ON attendance_log(worker_id, timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_attendance_server_worker_epoch ON attendance_log(server_worker_id, timestamp_epoch, id) "
+                 "WHERE timestamp_epoch IS NOT NULL")
+    for table in ("attendance_log", "recognition_attempts"):
+        _create_history_index(conn, f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
+                     f"ON {table}(timestamp_epoch, id) WHERE synced = 1 AND timestamp_epoch IS NOT NULL")
+    for table in ("attendance_log", "recognition_attempts"):
+        _migrate_event_epoch(conn, table, pause=pause)
+    logger.info("Local history epoch migration complete")
+
+
+def start_history_migration():
+    """Start one resumable worker after the UI and detection have started."""
+    global _history_thread, _history_stop
+    def pause():
+        if stop.wait(0.01):
+            raise _HistoryMigrationStopped()
+
+    def run():
+        try:
+            while not stop.is_set():
+                try:
+                    conn = _get_conn(timeout=5.0)
+                    # Interrupt CREATE INDEX on shutdown too. SQLite rolls back
+                    # the interrupted statement atomically.
+                    conn.set_progress_handler(lambda: int(stop.is_set()), 1000)
+                    _migrate_history(pause=pause)
+                    return
+                except _HistoryMigrationYielded:
+                    logger.info("Local history index deferred for event write; retrying in 30 seconds")
+                    stop.wait(_HISTORY_RETRY_SECONDS)
+                except Exception:
+                    if stop.is_set():
+                        return
+                    logger.exception("Local history migration paused; retrying in 30 seconds")
+                    stop.wait(_HISTORY_RETRY_SECONDS)
+        finally:
+            conn = getattr(_local, "conn", None)
+            if conn is not None:
+                conn.close()
+                _local.conn = None
+
+    with _history_lock:
+        if _history_thread is None or not _history_thread.is_alive():
+            stop = _history_stop = threading.Event()
+            _history_thread = threading.Thread(target=run, daemon=True, name="history-migration")
+            _history_thread.start()
+        return _history_thread
+
+
+def stop_history_migration():
+    """Finish/roll back active work and close the worker's connection before exit."""
+    with _history_lock:
+        if _history_thread is not None:
+            _history_stop.set()
+            _history_thread.join()
+
+
+def _get_conn(timeout: float = 10.0) -> sqlite3.Connection:
     """Get a thread-local SQLite connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
+        # Keep this process-wide restriction: SQLite can recreate WAL/SHM
+        # files on later connections, including in background threads.
+        os.umask(0o077)
         db_path = Path(config.DB_PATH)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        _local.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        db_path.parent.chmod(0o700)
+        _secure_db_files(db_path)
+        # Index builds yield to event writes. Bound waits for other writers;
+        # the background worker uses five seconds so shutdown stays bounded.
+        _local.conn = sqlite3.connect(str(db_path), timeout=timeout, check_same_thread=False)
         _local.conn.row_factory = sqlite3.Row
         _local.conn.create_function("attendance_epoch", 1, _attendance_epoch)
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA foreign_keys=OFF")
+        _secure_db_files(db_path)
     return _local.conn
+
+
+def _secure_db_files(db_path: Path):
+    """Tighten existing databases and sidecars before SQLite opens them."""
+    for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        try:
+            path.chmod(0o600)
+        except FileNotFoundError:
+            pass  # Sidecars are absent until WAL is opened, or after a checkpoint.
 
 
 def _migrate_sync_state(conn: sqlite3.Connection):
@@ -93,7 +296,7 @@ def _migrate_sync_state(conn: sqlite3.Connection):
             "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_worker_sync', ?)",
             (old_value,),
         )
-    logger.info("Migrated sync_state to keyed schema (last_worker_sync=%s)", old_value)
+    logger.info("Migrated sync_state to keyed schema")
 
 
 def _migrate_worker_identity(conn: sqlite3.Connection):
@@ -126,6 +329,69 @@ def _migrate_worker_identity(conn: sqlite3.Connection):
                 conn.execute("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'workers'", (sequence[0],))
     conn.execute("CREATE INDEX IF NOT EXISTS idx_workers_name ON workers(name COLLATE NOCASE)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workers_server_id ON workers(server_id) WHERE server_id IS NOT NULL AND server_id != ''")
+
+
+def _migrate_original_workers(conn: sqlite3.Connection):
+    """Upgrade the original JSON face_encoding workers table in place.
+
+    That schema has face_encoding TEXT NOT NULL and no enrolled_at. SQLite
+    cannot ADD a column with an expression default to a populated table, and
+    the legacy NOT NULL column rejects every current insert, so convert the
+    encodings, backfill enrolled_at, and drop face_encoding in one savepoint.
+    Local ids and all other columns are kept.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)")}
+    if "face_encoding" not in columns:
+        return
+    conn.execute("SAVEPOINT migrate_original_workers")
+    try:
+        if "encoding_blob" not in columns:
+            conn.execute("ALTER TABLE workers ADD COLUMN encoding_blob BLOB")
+        if "enrolled_at" not in columns:
+            conn.execute("ALTER TABLE workers ADD COLUMN enrolled_at TEXT")
+            created = "created_at, " if "created_at" in columns else ""
+            conn.execute(f"UPDATE workers SET enrolled_at = COALESCE({created}datetime('now'))")
+        rows = conn.execute(
+            "SELECT id, face_encoding FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
+        ).fetchall()
+        for row in rows:
+            try:
+                converted = _serialize_encoding(np.array(json.loads(row["face_encoding"]), dtype=np.float64))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                logger.warning("Worker %s has an unreadable legacy face encoding; re-enroll them", row["id"])
+                continue
+            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
+        conn.execute("ALTER TABLE workers DROP COLUMN face_encoding")
+        conn.execute("RELEASE SAVEPOINT migrate_original_workers")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_original_workers")
+        conn.execute("RELEASE SAVEPOINT migrate_original_workers")
+        raise
+    logger.info("Migrated original workers table (face_encoding -> encoding_blob)")
+
+
+def _migrate_attendance_action(conn: sqlite3.Connection):
+    """Rename the original event column, preserving its values and constraint."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)")}
+    if "event_type" not in columns:
+        return
+    # The old upgrader added action DEFAULT 'clock_in', then copied only into
+    # empty actions. Its default masked every original clock_out. event_type
+    # remains the source of truth: the legacy NOT NULL constraint prevented
+    # current writers (which only supply action) from adding any new rows.
+    # Remove that faulty duplicate and rename the source, so future inserts
+    # satisfy the original NOT NULL/CHECK constraint too. Keep both DDL steps
+    # atomic, including when startup has no pending DML transaction.
+    conn.execute("SAVEPOINT migrate_attendance_action")
+    try:
+        if "action" in columns:
+            conn.execute("ALTER TABLE attendance_log DROP COLUMN action")
+        conn.execute("ALTER TABLE attendance_log RENAME COLUMN event_type TO action")
+        conn.execute("RELEASE SAVEPOINT migrate_attendance_action")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_attendance_action")
+        conn.execute("RELEASE SAVEPOINT migrate_attendance_action")
+        raise
 
 
 def init_db():
@@ -180,6 +446,12 @@ def init_db():
             value TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS manual_attendance_receipts (
+            request_id TEXT PRIMARY KEY,
+            request_json TEXT NOT NULL,
+            result_json TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS photo_cleanup_journal (
             path TEXT PRIMARY KEY,
             kind TEXT NOT NULL CHECK(kind IN ('published', 'retired'))
@@ -198,53 +470,61 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_active_rejection
             ON attendance_rejections(log_id) WHERE released_at IS NULL;
 
+        CREATE TABLE IF NOT EXISTS recognition_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            original_attempt_json TEXT NOT NULL,
+            rejected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            released_at TEXT,
+            release_note TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_recognition_active_rejection
+            ON recognition_rejections(attempt_id) WHERE released_at IS NULL;
+
         CREATE INDEX IF NOT EXISTS idx_attendance_worker_time ON attendance_log(worker_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_log(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_recognition_rejections_active
+            ON recognition_rejections(attempt_id, released_at);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_sync ON recognition_attempts(synced, id);
         CREATE INDEX IF NOT EXISTS idx_recognition_attempts_time ON recognition_attempts(timestamp);
         """
     )
 
     # Migration support for previous schema versions.
+    _migrate_original_workers(conn)
     _ensure_column(conn, "workers", "encoding_blob", "encoding_blob BLOB")
     _ensure_column(conn, "workers", "employee_id", "employee_id TEXT")
     _ensure_column(conn, "workers", "enrolled_at", "enrolled_at TEXT DEFAULT (datetime('now'))")
     _ensure_column(conn, "workers", "photo_count", "photo_count INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "workers", "photo_paths", "photo_paths TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(conn, "workers", "server_id", "server_id TEXT")
-    worker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workers)").fetchall()}
-    if "face_encoding" in worker_columns:
-        rows = conn.execute(
-            "SELECT id, face_encoding, encoding_blob FROM workers WHERE encoding_blob IS NULL OR length(encoding_blob) = 0"
-        ).fetchall()
-        for row in rows:
-            old_value = row["face_encoding"]
-            if old_value is None:
-                continue
-            try:
-                converted = _serialize_encoding(np.array(json.loads(old_value), dtype=np.float64))
-            except (json.JSONDecodeError, ValueError, TypeError):
-                continue
-            conn.execute("UPDATE workers SET encoding_blob = ? WHERE id = ?", (converted, row["id"]))
 
     _migrate_worker_identity(conn)
 
+    _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
+    # Which removed local worker owns a retired photo; NULL for sync's entries.
+    _ensure_column(conn, "photo_cleanup_journal", "owner_worker_id", "owner_worker_id INTEGER")
+    _ensure_column(conn, "photo_cleanup_journal", "owner_name", "owner_name TEXT")
+    _ensure_column(conn, "photo_cleanup_journal", "owner_folder", "owner_folder TEXT")
+    _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
+    _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "attendance_log", "note", "note TEXT")
+    _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
+    _migrate_attendance_action(conn)
     _ensure_column(
         conn,
         "attendance_log",
         "action",
         "action TEXT CHECK(action IN ('clock_in', 'clock_out')) DEFAULT 'clock_in'",
     )
-    _ensure_column(conn, "attendance_log", "liveness_confirmed", "liveness_confirmed INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(conn, "attendance_log", "confidence", "confidence REAL NOT NULL DEFAULT 0.0")
-    _ensure_column(conn, "attendance_log", "kiosk_id", "kiosk_id TEXT NOT NULL DEFAULT ''")
-    _ensure_column(conn, "attendance_log", "synced", "synced INTEGER NOT NULL DEFAULT 0")
-    _ensure_column(conn, "attendance_log", "note", "note TEXT")
-    _ensure_column(conn, "attendance_log", "server_worker_id", "server_worker_id TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_sync ON attendance_log(synced, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attendance_server_worker ON attendance_log(server_worker_id)")
     # Enforced in the schema, not by convention: any DELETE FROM workers
     # (sync deactivation, enroll.py, hand-run sqlite3) first freezes the
-    # server id onto that worker's queued attendance rows.
+    # server id onto that worker's attendance rows. Synced rows need it too:
+    # a restored worker gets a new local id and finds earlier events by it.
     # Replace the trigger on startup: the event's original identity is
     # immutable, so deletion only fills missing snapshots on legacy rows. A savepoint
     # keeps DROP + CREATE atomic even when init_db is called with no pending
@@ -259,7 +539,7 @@ def init_db():
             WHEN OLD.server_id IS NOT NULL AND OLD.server_id != ''
             BEGIN
                 UPDATE attendance_log SET server_worker_id = OLD.server_id
-                WHERE worker_id = OLD.id AND synced = 0
+                WHERE worker_id = OLD.id
                   AND (server_worker_id IS NULL OR server_worker_id = '');
             END
             """
@@ -287,11 +567,6 @@ def init_db():
     _ensure_column(conn, "recognition_attempts", "legacy_source_attempt_id", "legacy_source_attempt_id TEXT")
     _ensure_column(conn, "recognition_attempts", "candidate_server_worker_id", "candidate_server_worker_id TEXT")
 
-    # Copy old attendance event_type to action if needed.
-    attendance_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attendance_log)").fetchall()}
-    if "event_type" in attendance_columns:
-        conn.execute("UPDATE attendance_log SET action = event_type WHERE action IS NULL OR action = ''")
-
     # Rows written before server_worker_id existed still resolve through the
     # workers table today; freeze that mapping now so a later deactivation
     # cannot strand them.
@@ -300,15 +575,21 @@ def init_db():
         logger.info("Backfilled server_worker_id on %d attendance rows", backfilled)
 
     conn.commit()
-    logger.info("Database initialized at %s", config.DB_PATH)
+    # Only install columns/cursors here. Historical reads use a fallback until
+    # the worker finishes; neither backfill nor index creation blocks startup.
+    for table in ("attendance_log", "recognition_attempts"):
+        _prepare_event_epoch(conn, table)
+    logger.info("Database initialized")
 
 
 def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
-    """Copy workers.server_id onto queued attendance rows that have no snapshot yet.
+    """Copy workers.server_id onto attendance rows that have no snapshot yet.
 
-    Only unsynced rows matter: synced rows never need the mapping again, so
-    this stays cheap no matter how much history the kiosk holds. Returns the
-    number of rows updated.
+    Queued rows need it to upload; synced rows need it so a worker restored
+    under a new local id keeps their clock direction and debounce. Local ids
+    are AUTOINCREMENT and never reused, so the mapping is the same person.
+    Once filled, rows are skipped on later startups. Returns the number of
+    rows updated.
     """
     cursor = conn.execute(
         """
@@ -316,8 +597,7 @@ def _backfill_attendance_server_ids(conn: sqlite3.Connection) -> int:
         SET server_worker_id = (
             SELECT workers.server_id FROM workers WHERE workers.id = attendance_log.worker_id
         )
-        WHERE synced = 0
-          AND (server_worker_id IS NULL OR server_worker_id = '')
+        WHERE (server_worker_id IS NULL OR server_worker_id = '')
           AND EXISTS (
             SELECT 1 FROM workers
             WHERE workers.id = attendance_log.worker_id
@@ -375,58 +655,151 @@ def add_worker(
     enrolled_at = enrolled_at or datetime.now().isoformat(timespec="seconds")
     normalized_employee_id = employee_id.strip() if isinstance(employee_id, str) else ""
 
-    row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
-    stored_server_id = server_id
-    if row:
-        worker_id = int(row["id"])
-        stored_server_id = server_id if server_id is not None else row["server_id"]
-        conn.execute(
-            """
-            UPDATE workers
-            SET name = ?, employee_id = ?, encoding_blob = ?, enrolled_at = ?, photo_count = ?, photo_paths = ?, server_id = ?
-            WHERE id = ?
-            """,
-            (
-                normalized_name,
-                normalized_employee_id,
-                payload_blob,
-                enrolled_at,
-                len(photo_paths),
-                photo_paths_json,
-                stored_server_id,
-                worker_id,
-            ),
-        )
-    else:
-        cursor = conn.execute(
-            """
-            INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (normalized_name, normalized_employee_id, payload_blob, enrolled_at, len(photo_paths), photo_paths_json, server_id),
-        )
-        worker_id = int(cursor.lastrowid)
+    # Resolve and write the row in one write transaction: a local removal
+    # committed between the lookup and the UPDATE would otherwise make the
+    # UPDATE match nothing and silently drop a synced worker.
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _find_worker_update_row(conn, normalized_name, server_id, normalized_employee_id)
+        stored_server_id = server_id
+        if row:
+            worker_id = int(row["id"])
+            stored_server_id = server_id if server_id is not None else row["server_id"]
+            conn.execute(
+                """
+                UPDATE workers
+                SET name = ?, employee_id = ?, encoding_blob = ?, enrolled_at = ?, photo_count = ?, photo_paths = ?, server_id = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_name,
+                    normalized_employee_id,
+                    payload_blob,
+                    enrolled_at,
+                    len(photo_paths),
+                    photo_paths_json,
+                    stored_server_id,
+                    worker_id,
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO workers (name, employee_id, encoding_blob, enrolled_at, photo_count, photo_paths, server_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (normalized_name, normalized_employee_id, payload_blob, enrolled_at, len(photo_paths), photo_paths_json, server_id),
+            )
+            worker_id = int(cursor.lastrowid)
 
-    conn.commit()
-    logger.info("Saved worker: %s (id=%d, server_id=%s)", normalized_name, worker_id, stored_server_id)
+    logger.info("Saved worker (local_id=%d)", worker_id)
     return worker_id
 
 
-def remove_worker(name: str) -> bool:
-    """Remove a worker by case-insensitive name.
+PORTAL_MANAGED_WORKER_MESSAGE = (
+    "{name} is managed by the Gatekeeper portal. Deactivate or purge the worker "
+    "in the portal; the kiosk removes them on its next roster sync."
+)
 
-    The attendance_keep_server_id_before_worker_delete trigger snapshots the
-    worker's server id onto queued attendance rows before the row goes."""
+
+def remove_local_worker(name: str, owner_folder: Optional[str] = None) -> Optional[list[str]]:
+    with _photo_publication_lock():
+        return _remove_local_worker_unlocked(name, owner_folder)
+
+
+def _remove_local_worker_unlocked(name: str, owner_folder: Optional[str] = None) -> Optional[list[str]]:
+    """Remove a local-only worker by case-insensitive name.
+
+    Returns the deleted row's photo paths, or None when no worker matches.
+    Portal-managed rows raise ValueError: roster receipts only resend changed
+    workers, so a synced worker deleted here would stay missing while the
+    kiosk certifies the roster. The ownership check and the DELETE share one
+    write transaction, so a concurrent roster sync cannot adopt the row in
+    between. The attendance_keep_server_id_before_worker_delete trigger
+    snapshots the worker's server id onto queued attendance rows."""
     conn = _get_conn()
-    worker = get_worker_by_name(name)
-    if worker is None:
-        return False
-    cursor = conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
-    conn.commit()
-    return cursor.rowcount > 0
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        worker = get_worker_by_name(name)
+        if worker is None:
+            return None
+        photo_root = Path(config.PHOTO_DIR).resolve()
+        for path in worker["photo_paths"]:
+            if is_journaled_photo_path(path):
+                _owned_photo_path(Path(path), photo_root)
+        cursor = conn.execute(
+            "DELETE FROM workers WHERE id = ? AND (server_id IS NULL OR server_id = '')", (worker["id"],)
+        )
+        if worker.get("server_id") or cursor.rowcount != 1:
+            raise ValueError(PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
+        # Persist cleanup ownership in the same transaction as the delete, so
+        # a failed unlink or a crash before cleanup is finished by
+        # recover_photo_cleanup (every roster sync, or rerunning the removal)
+        # instead of leaving an unreferenced file that blocks roster receipts.
+        # The owner identity lets a rerun of the removal find this cleanup by
+        # the same case-insensitive name lookup, never by a sanitized folder.
+        conn.executemany(
+            "INSERT OR REPLACE INTO photo_cleanup_journal (path, kind, owner_worker_id, owner_name, owner_folder) "
+            "VALUES (?, 'retired', ?, ?, ?)",
+            ((path, worker["id"], worker["name"], owner_folder)
+             for path in worker["photo_paths"] if is_journaled_photo_path(path)),
+        )
+    return worker["photo_paths"]
+
+
+def is_journaled_photo_path(path) -> bool:
+    """Only files under PHOTO_DIR can be journaled; recover_photo_cleanup refuses others."""
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    candidate = Path(path).resolve()
+    return candidate != photo_root and candidate.is_relative_to(photo_root)
+
+
+def count_pending_photo_cleanup() -> int:
+    conn = _get_conn()
+    return int(conn.execute("SELECT COUNT(*) FROM photo_cleanup_journal").fetchone()[0])
+
+
+def pending_removed_worker_cleanup(name: str) -> tuple[list[str], list[str]]:
+    """Retired photos and capture folders owed by removed local workers named name.
+
+    Matches the stored owner name the way get_worker_by_name matches workers.
+    Entries without an owner (sync's own) are left to sync's recovery."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT path, owner_folder FROM photo_cleanup_journal "
+        "WHERE kind = 'retired' AND owner_name = ? COLLATE NOCASE ORDER BY path",
+        (name.strip(),),
+    ).fetchall()
+    return [row["path"] for row in rows], sorted({row["owner_folder"] for row in rows if row["owner_folder"]})
+
+
+def remove_unreferenced_legacy_photo(path: str) -> None:
+    """Retire an external legacy path without deleting another worker's photo."""
+    conn = _get_conn()
+    with conn:
+        # Serialize the ownership recheck and unlink with worker publication.
+        conn.execute("BEGIN IMMEDIATE")
+        candidate = Path(path).resolve()
+        references = (
+            Path(value).resolve()
+            for row in conn.execute("SELECT photo_paths FROM workers")
+            for value in json.loads(row["photo_paths"] or "[]")
+        )
+        if not any(value == candidate for value in references):
+            Path(path).unlink(missing_ok=True)
+
+
+def remove_worker(name: str) -> bool:
+    """Remove a local-only worker by name (see remove_local_worker)."""
+    return remove_local_worker(name) is not None
 
 
 def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) -> bool:
+    with _photo_publication_lock():
+        return _remove_worker_by_server_id_unlocked(server_id, strict_cleanup=strict_cleanup)
+
+
+def _remove_worker_by_server_id_unlocked(server_id: str, *, strict_cleanup: bool = False) -> bool:
     """Remove a worker by server_id (see remove_worker for the attendance snapshot)."""
     conn = _get_conn()
     rows = conn.execute("SELECT photo_paths FROM workers WHERE server_id = ?", (server_id,)).fetchall()
@@ -447,12 +820,18 @@ def remove_worker_by_server_id(server_id: str, *, strict_cleanup: bool = False) 
     cursor = conn.execute("DELETE FROM workers WHERE server_id = ?", (server_id,))
     conn.commit()
     try:
-        recover_photo_cleanup()
+        _recover_photo_cleanup_unlocked()
     except (OSError, ValueError) as exc:
         if strict_cleanup:
             raise
-        logger.warning("Worker deactivated; thumbnail cleanup remains pending: %s", exc)
+        logger.warning("Worker deactivated; thumbnail cleanup remains pending (error=%s)", type(exc).__name__)
     return cursor.rowcount > 0
+
+
+def get_worker_id_by_server_id(server_id: str) -> Optional[int]:
+    """Resolve a server identity to an operator-safe local row number."""
+    row = _get_conn().execute("SELECT id FROM workers WHERE server_id = ?", (server_id,)).fetchone()
+    return int(row["id"]) if row else None
 
 
 def get_synced_server_ids() -> set[str]:
@@ -476,10 +855,8 @@ def replaced_worker_photo_paths(name: str, server_id: str, employee_id: Optional
     referenced = {Path(path).resolve() for other in others for path in json.loads(other[0] or "[]")}
     retired = []
     for path in owned:
-        candidate = path.resolve()
-        if candidate == photo_root or not candidate.is_relative_to(photo_root):
-            raise ValueError(f"Worker photo path needs manual cleanup: {path}")
-        if candidate not in keep and candidate not in referenced:
+        candidate = _owned_photo_path(path, photo_root)
+        if candidate.resolve() not in keep and candidate.resolve() not in referenced:
             retired.append(candidate)
     return retired
 
@@ -496,8 +873,46 @@ def record_photo_cleanup(paths: list[Path], kind: str) -> None:
     conn.commit()
 
 
-def recover_photo_cleanup() -> None:
+@contextmanager
+def _photo_publication_lock():
+    """Serialize short publication/cleanup phases across scanner and CLI processes."""
+    lock_path = Path(config.DB_PATH).parent / ".local-photo-publication.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def recover_photo_cleanup(paths: Optional[list[str]] = None) -> None:
     """Remove only journaled, unreferenced files; unknown files stay untouched."""
+    with _photo_publication_lock():
+        _recover_photo_cleanup_unlocked(paths)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _owned_photo_path(path: Path, root: Path) -> Path:
+    """Retain the owned directory entry; never turn a symlink into its target."""
+    candidate = path.absolute()
+    resolved = candidate.resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError(f"Worker photo path needs manual cleanup: {path}")
+    if any(part.is_symlink() for part in (candidate, *candidate.parents) if part != root):
+        raise ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+    return candidate
+
+
+def _recover_photo_cleanup_unlocked(paths: Optional[list[str]] = None) -> None:
     conn = _get_conn()
     photo_root = Path(config.PHOTO_DIR).resolve()
     references = {
@@ -506,10 +921,16 @@ def recover_photo_cleanup() -> None:
         for path in json.loads(row["photo_paths"] or "[]")
     }
     journal = conn.execute("SELECT path, kind FROM photo_cleanup_journal ORDER BY path").fetchall()
+    if paths is not None:
+        owned = {str(path) for path in paths}
+        journal = [entry for entry in journal if entry["path"] in owned]
     first_error = None
     for entry in journal:
         path = Path(entry["path"])
         candidate = path.resolve()
+        if any(part.is_symlink() for part in (path, *path.parents) if part != photo_root):
+            first_error = first_error or ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+            continue
         if entry["kind"] == "published" and candidate in references:
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
@@ -517,6 +938,12 @@ def recover_photo_cleanup() -> None:
         if entry["kind"] == "retired" and candidate in references:
             continue
         if not path.exists() and not path.is_symlink():
+            if path.parent.exists():
+                try:
+                    _fsync_directory(path.parent)
+                except OSError as exc:
+                    first_error = first_error or exc
+                    continue
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
             continue
@@ -524,7 +951,8 @@ def recover_photo_cleanup() -> None:
             first_error = first_error or ValueError(f"Worker photo path needs manual cleanup: {path}")
             continue
         try:
-            candidate.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            _fsync_directory(path.parent)
         except OSError as exc:
             first_error = first_error or exc
             continue
@@ -532,6 +960,117 @@ def recover_photo_cleanup() -> None:
         conn.commit()
     if first_error:
         raise first_error
+
+
+def publish_local_enrollment(name: str, encoding: np.ndarray, photo_bytes: list[bytes]) -> int:
+    """Journal owned files before creating them, then publish their worker reference.
+
+    Capture stays in memory until this short phase. Recovery cannot delete an
+    in-flight publication, and a process exit releases the lock automatically.
+    """
+    if not photo_bytes or any(not isinstance(photo, bytes) or not photo for photo in photo_bytes):
+        raise ValueError("Every accepted capture must have encoded photo bytes")
+    return _publish_worker_photos(name, encoding, photo_bytes)
+
+
+def publish_synced_worker(name: str, encoding: np.ndarray, photo_bytes: list[bytes], *,
+                          enrolled_at: Optional[str], server_id: str,
+                          employee_id: Optional[str]) -> int:
+    """Publish downloaded bytes using the same ownership lock as local capture."""
+    if any(not isinstance(photo, bytes) or not photo for photo in photo_bytes):
+        raise ValueError("Downloaded photos must contain bytes")
+    return _publish_worker_photos(name, encoding, photo_bytes, enrolled_at=enrolled_at,
+                                 server_id=server_id, employee_id=employee_id)
+
+
+def _publish_worker_photos(name: str, encoding: np.ndarray, photo_bytes: list[bytes], *,
+                           enrolled_at: Optional[str] = None, server_id: Optional[str] = None,
+                           employee_id: Optional[str] = None) -> int:
+    conn = _get_conn()
+    photo_root = Path(config.PHOTO_DIR).resolve()
+    with _photo_publication_lock():
+        missing = []
+        parent = photo_root
+        while not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        photo_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(photo_root, 0o700)
+        for created in reversed(missing):
+            _fsync_directory(created.parent)
+        old = _find_worker_update_row(conn, name.strip(), server_id, employee_id or "")
+        retired = []
+        if old:
+            retired = [_owned_photo_path(Path(path), photo_root) for path in json.loads(old["photo_paths"] or "[]")
+                       if Path(path).resolve() != photo_root and Path(path).resolve().is_relative_to(photo_root)]
+        identity = uuid.uuid4().hex
+        prefix = "sync" if server_id else "local"
+        paths = [photo_root / f"{prefix}-{identity}-{index + 1}.jpg" for index in range(len(photo_bytes))]
+        if server_id:
+            retired = replaced_worker_photo_paths(name, server_id, employee_id,
+                                                  [str(path) for path in paths])
+        if any(path.exists() or path.is_symlink() for path in paths):
+            raise ValueError("Capture destination exists; retry with a new enrollment intent")
+        # This commit precedes any photo write; interrupted writes remain attributable.
+        record_photo_cleanup(paths, "published")
+        record_photo_cleanup(retired, "retired")
+        try:
+            for path, photo in zip(paths, photo_bytes):
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(photo)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            _fsync_directory(photo_root)
+            worker_id = add_worker(name, encoding, photo_paths=[str(path) for path in paths],
+                                   enrolled_at=enrolled_at, server_id=server_id, employee_id=employee_id)
+        except BaseException:
+            conn.rollback()
+            try:
+                _recover_photo_cleanup_unlocked()
+            except (OSError, ValueError):
+                logger.warning("Local enrollment photo cleanup remains journaled for recovery")
+            raise
+        try:
+            _recover_photo_cleanup_unlocked()
+        except (OSError, ValueError):
+            logger.warning("Local enrollment committed; owned photo cleanup remains pending")
+        return worker_id
+
+
+def remove_local_worker_owned(name: str) -> bool:
+    """Remove a selected row before retiring its unshared owned files; never infer a folder."""
+    conn = _get_conn()
+    root = Path(config.PHOTO_DIR).resolve()
+    with _photo_publication_lock():
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            worker = get_worker_by_name(name)
+            if worker is None:
+                conn.rollback()
+                return False
+            # A local CLI cannot revoke a portal-managed roster identity.
+            # Keep the check inside the same transaction as the deletion so
+            # a concurrent sync cannot adopt the row between check and write.
+            if worker.get("server_id"):
+                raise ValueError(
+                    f"{worker['name']} is managed by the Gatekeeper portal. "
+                    "Deactivate or purge the worker in the portal."
+                )
+            owned = [_owned_photo_path(Path(path), root) for path in worker["photo_paths"]
+                     if Path(path).resolve() != root and Path(path).resolve().is_relative_to(root)]
+            conn.executemany("INSERT OR REPLACE INTO photo_cleanup_journal (path, kind) VALUES (?, 'retired')",
+                             ((str(path),) for path in owned))
+            conn.execute("DELETE FROM workers WHERE id = ?", (worker["id"],))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        try:
+            _recover_photo_cleanup_unlocked()
+        except (OSError, ValueError):
+            logger.warning("Local removal committed; owned photo cleanup remains pending")
+        return True
 
 
 def count_unmanaged_local_workers() -> int:
@@ -686,15 +1225,48 @@ def _normalize_action(action: str) -> str:
     return value
 
 
+class ClockInferenceError(ValueError):
+    """The scan timestamp cannot establish an automatic direction."""
+
+
+def _infer_clock_action(worker_id: int, timestamp: str) -> str:
+    """Infer inside the attendance write transaction shared by both writers."""
+    kiosk_type = require_kiosk_action_type(config)
+    if kiosk_type == "entry":
+        return "clock_in"
+    if kiosk_type == "exit":
+        return "clock_out"
+    last = _get_last_attendance(worker_id)
+    scan_epoch = _attendance_epoch(timestamp)
+    if scan_epoch is None:
+        raise ClockInferenceError("Auto clock inference requires a valid timestamp")
+    if last is None or last["epoch"] is None:
+        return "clock_in"
+    age_seconds = scan_epoch - last["epoch"]
+    # After a power cut an offline Pi may restore an earlier saved clock.
+    # Negative age cannot establish staleness: keep toggling from the last
+    # inserted event so attendance stays available without repeating outs.
+    if last["action"] != "clock_in":
+        return "clock_in"
+    # Compare elapsed seconds, not local dates: 22:00 -> 06:00 is one shift,
+    # even across DST. Exactly the configured window still permits clock-out.
+    # An unreadable legacy timestamp cannot establish an active shift.
+    if age_seconds > config.AUTO_CLOCK_STALE_HOURS * 3600:
+        return "clock_in"
+    return "clock_out"
+
+
+@_prioritize_event_write
 def log_attendance(
     worker_id: int,
     worker_name: str,
-    action: str,
+    action: Optional[str] = None,
     liveness_confirmed: bool = False,
     confidence: float = 0.0,
     timestamp: Optional[str] = None,
     note: Optional[str] = None,
     server_worker_id: Optional[str] = None,
+    _commit: bool = True,
 ) -> int:
     """Create a gatekeeper log entry and return log id.
 
@@ -702,35 +1274,44 @@ def log_attendance(
     event can still be synced if the local worker row is later removed.
     Callers that already hold the id (recognizer roster, manual clock) pass
     it in; otherwise it is looked up from the workers table.
+    Omit action to apply the kiosk's entry/exit/toggle behavior while holding
+    the same write transaction as the insert. Recognition already owns that
+    transaction so its enrollment check remains atomic with this write.
     """
     conn = _get_conn()
-    normalized_action = _normalize_action(action)
-    timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    server_worker_id = server_worker_id or get_server_id(worker_id) or None
-    cursor = conn.execute(
-        """
-        INSERT INTO attendance_log
-            (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
-             server_worker_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        """,
-        (
-            int(worker_id),
-            worker_name,
-            normalized_action,
-            timestamp,
-            1 if liveness_confirmed else 0,
-            float(confidence),
-            config.KIOSK_ID,
-            note,
-            server_worker_id,
-        ),
-    )
-    conn.commit()
+    owns_transaction = not conn.in_transaction
+    with conn if owns_transaction else nullcontext():
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if action is None:
+            action = _infer_clock_action(worker_id, timestamp)
+        normalized_action = _normalize_action(action)
+        server_worker_id = server_worker_id or get_server_id(worker_id) or None
+        cursor = conn.execute(
+            """
+            INSERT INTO attendance_log
+                (worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, synced, note,
+                 server_worker_id, timestamp_epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                int(worker_id),
+                worker_name,
+                normalized_action,
+                timestamp,
+                1 if liveness_confirmed else 0,
+                float(confidence),
+                config.KIOSK_ID,
+                note,
+                server_worker_id,
+                _attendance_epoch(timestamp),
+            ),
+        )
     log_id = int(cursor.lastrowid)
     logger.info(
-        "Gatekeeper logged: worker=%s action=%s confidence=%.3f live=%s",
-        worker_name,
+        "Gatekeeper logged: local_id=%d action=%s confidence=%.3f live=%s",
+        int(worker_id),
         normalized_action,
         confidence,
         liveness_confirmed,
@@ -738,11 +1319,55 @@ def log_attendance(
     return log_id
 
 
+class ManualAttendancePolicyError(ValueError):
+    """The configured kiosk action cannot be inferred safely."""
+
+
+@_prioritize_event_write
+def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=None, action=None,
+                             action_for_worker=None) -> dict:
+    """Commit the current worker, toggle, attendance and replay receipt together."""
+    request_json = json.dumps({"worker_id": worker_id, "name": worker_name, "action": action}, sort_keys=True)
+    conn = _get_conn()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        receipt = conn.execute("SELECT request_json, result_json FROM manual_attendance_receipts WHERE request_id = ?", (request_id,)).fetchone()
+        if receipt:
+            if receipt["request_json"] != request_json:
+                raise ValueError("A manual request ID cannot be reused for another action")
+            return json.loads(receipt["result_json"])
+        worker = get_worker_by_id(worker_id) if worker_id is not None else get_worker_by_name(worker_name)
+        if worker is None:
+            raise LookupError("Worker not found")
+        if action is None and action_for_worker is not None:
+            try:
+                action = action_for_worker(worker["id"])
+            except ValueError as exc:
+                raise ManualAttendancePolicyError(str(exc)) from exc
+        if action is None:
+            try:
+                require_kiosk_action_type(config)
+            except ValueError as exc:
+                raise ManualAttendancePolicyError(str(exc)) from exc
+        log_id = log_attendance(
+            worker_id=worker["id"], worker_name=worker["name"], action=action,
+            liveness_confirmed=False, confidence=1.0, note="manual_clock",
+            server_worker_id=worker.get("server_id"), _commit=False,
+        )
+        action = get_attendance_action(log_id)
+        result = {"success": True, "log_id": log_id, "worker_name": worker["name"],
+                  "worker_id": worker["employee_id"] or str(worker["id"]), "action": action}
+        conn.execute("INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)",
+                     (request_id, request_json, json.dumps(result)))
+        return result
+
+
+@_prioritize_event_write
 def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_encoding=None, **fields):
     """Reject a removed or re-enrolled face before committing automatic attendance.
 
     BEGIN IMMEDIATE prevents a concurrent sync deletion/replacement between the
-    identity check and insert. Existing offline rows remain untouched.
+    identity check, action inference, and insert. Existing offline rows remain untouched.
     """
     conn = _get_conn()
     with conn:
@@ -755,29 +1380,58 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
         return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
 
 
-def was_recently_clocked(worker_id: int, minutes: int) -> bool:
-    """Return True if worker has any recent clock event within N minutes."""
-    conn = _get_conn()
-    threshold = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).timestamp()
-    row = conn.execute(
-        """
-        SELECT id FROM attendance_log
-        WHERE worker_id = ? AND attendance_epoch(timestamp) >= ?
-        LIMIT 1
-        """,
-        (worker_id, threshold),
+def get_attendance_action(log_id: int) -> str:
+    """Return the action actually inserted, independent of subsequent clocks."""
+    row = _get_conn().execute(
+        "SELECT action FROM attendance_log WHERE id = ?", (log_id,),
     ).fetchone()
-    return row is not None
+    if row is None:
+        raise ValueError(f"Attendance log {log_id} does not exist")
+    return row["action"]
+
+
+def _worker_attendance_scopes(conn, worker_id: int) -> list[tuple[str, int | str]]:
+    """Match local events and earlier local ids for the same restored identity."""
+    scopes = [("worker_id", int(worker_id))]
+    row = conn.execute("SELECT server_id FROM workers WHERE id = ?", (int(worker_id),)).fetchone()
+    if row and row["server_id"]:
+        scopes.append(("server_worker_id", row["server_id"]))
+    return scopes
+
+
+def was_recently_clocked(worker_id: int, minutes: int) -> bool:
+    """Debounce the last recorded scan, without blocking on a future clock."""
+    last = _get_last_attendance(worker_id)
+    if last is None or last["epoch"] is None:
+        return False
+    age_seconds = datetime.now(timezone.utc).timestamp() - last["epoch"]
+    return 0 <= age_seconds <= minutes * 60
+
+
+def _get_last_attendance(worker_id: int) -> Optional[sqlite3.Row]:
+    """Read the last inserted local event, independent of wall-clock jumps.
+
+    This table contains local writes, not downloaded portal history. A new
+    scan must advance the toggle even if its timestamp precedes an old row.
+    """
+    conn = _get_conn()
+    scopes = _worker_attendance_scopes(conn, worker_id)
+    # During migration only the selected final event may need legacy parsing.
+    # Once completed, a NULL epoch is known-invalid evidence, not a backfill gap.
+    epoch = ("COALESCE(timestamp_epoch, attendance_epoch(timestamp))"
+             if get_sync_state("epoch_backfill:attendance_log") is not None else "timestamp_epoch")
+    # Each identity index supplies one greatest-ID row. Compare at most two
+    # rows in one statement, so restored identities retain physical scan order
+    # without sorting their full history or following a future-dated event.
+    branches = [f"""SELECT * FROM (SELECT action, {epoch} AS epoch, id FROM attendance_log
+        WHERE {column} = ? ORDER BY id DESC LIMIT 1)""" for column, _ in scopes]
+    return conn.execute("SELECT action, epoch, id FROM (" + " UNION ALL ".join(branches) +
+                        ") ORDER BY id DESC LIMIT 1", [value for _, value in scopes]).fetchone()
 
 
 def get_last_action(worker_id: int) -> Optional[str]:
-    """Return last clock action for a worker."""
-    conn = _get_conn()
-    row = conn.execute(
-        """SELECT action FROM attendance_log WHERE worker_id = ?
-        ORDER BY attendance_epoch(timestamp) DESC, id DESC LIMIT 1""",
-        (worker_id,),
-    ).fetchone()
+    """Return the last physically recorded action across restored local IDs."""
+    row = _get_last_attendance(worker_id)
     return row["action"] if row else None
 
 
@@ -787,16 +1441,36 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     # Convert each local midnight separately: DST days can be 23 or 25 hours.
     start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
     end = start + timedelta(days=1)
-    rows = conn.execute(
-        """
+    sql = """
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, note
         FROM attendance_log
-        WHERE attendance_epoch(timestamp) >= ? AND attendance_epoch(timestamp) < ?
-        ORDER BY attendance_epoch(timestamp) DESC, id DESC
+        WHERE timestamp_epoch >= ? AND timestamp_epoch < ?
+        ORDER BY timestamp_epoch DESC, id DESC
         LIMIT ?
-        """,
-        (start.timestamp(), end.timestamp(), limit),
-    ).fetchall()
+        """
+    args = (start.timestamp(), end.timestamp(), limit)
+    progress = get_sync_state("epoch_backfill:attendance_log")
+    if progress is not None:
+        after_id, high_water = json.loads(progress)
+        # One SQLite statement/snapshot: a concurrently migrated row is in
+        # exactly one branch, so it cannot disappear or be returned twice.
+        # The fallback scans only the remaining high-water ID range, excludes
+        # cached rows and ignores already-processed malformed timestamps.
+        sql = """SELECT id, worker_id, worker_name, action, timestamp,
+            liveness_confirmed, confidence, note FROM (
+                SELECT id, worker_id, worker_name, action, timestamp,
+                    liveness_confirmed, confidence, note, timestamp_epoch AS epoch
+                FROM attendance_log WHERE timestamp_epoch >= ? AND timestamp_epoch < ?
+                UNION ALL
+                SELECT id, worker_id, worker_name, action, timestamp,
+                    liveness_confirmed, confidence, note, attendance_epoch(timestamp) AS epoch
+                FROM attendance_log
+                WHERE id > ? AND id <= ? AND timestamp_epoch IS NULL
+                  AND attendance_epoch(timestamp) >= ? AND attendance_epoch(timestamp) < ?
+            ) ORDER BY epoch DESC, id DESC LIMIT ?"""
+        args = (start.timestamp(), end.timestamp(), after_id, high_water,
+                start.timestamp(), end.timestamp(), limit)
+    rows = conn.execute(sql, args).fetchall()
     logs: list[dict] = []
     for row in rows:
         item = dict(row)
@@ -806,22 +1480,33 @@ def get_today_logs(limit: int = 50) -> list[dict]:
     return logs
 
 
-def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0) -> list[dict]:
+def _kiosk_queue_filter(current_kiosk_only: Optional[bool]) -> tuple[str, tuple]:
+    if current_kiosk_only is None:
+        return "", ()
+    comparison = "=" if current_kiosk_only else "!="
+    # Match the server's case/whitespace alias normalization; empty legacy
+    # claims retain the existing current-KIOSK_ID fallback behavior.
+    return (f"AND LOWER(TRIM(COALESCE(NULLIF(kiosk_id, ''), ?))) {comparison} LOWER(TRIM(?))",
+            (config.KIOSK_ID, config.KIOSK_ID))
+
+
+def get_unsynced_logs(limit: Optional[int] = None, after_id: int = 0, current_kiosk_only: Optional[bool] = None) -> list[dict]:
     """Return unsynced gatekeeper logs for optional server sync."""
     conn = _get_conn()
+    claim_filter, claim_args = _kiosk_queue_filter(current_kiosk_only)
     rows = conn.execute(
-        """
+        f"""
         SELECT id, worker_id, worker_name, action, timestamp, liveness_confirmed, confidence, kiosk_id, note,
                server_worker_id
         FROM attendance_log
-        WHERE synced = 0 AND id > ? AND NOT EXISTS (
+        WHERE synced = 0 AND id > ? {claim_filter} AND NOT EXISTS (
             SELECT 1 FROM attendance_rejections r
             WHERE r.log_id = attendance_log.id AND r.released_at IS NULL
         )
         ORDER BY id ASC
         LIMIT ?
         """,
-        (int(after_id), max(1, int(limit)) if limit is not None else -1),
+        (int(after_id), *claim_args, max(1, int(limit)) if limit is not None else -1),
     ).fetchall()
     logs = []
     for row in rows:
@@ -892,25 +1577,94 @@ def retry_attendance_rejection(rejection_id: int, note: str) -> None:
         raise ValueError("A reason for retry is required")
     conn = _get_conn()
     with conn:
-        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id
+        rejection = conn.execute("""SELECT r.log_id, l.id AS existing_log_id, l.timestamp
             FROM attendance_rejections r LEFT JOIN attendance_log l ON l.id = r.log_id
             WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
         if rejection is None:
             raise ValueError(f"Active rejection {rejection_id} does not exist")
         if rejection["existing_log_id"] is None:
             raise ValueError(f"Attendance log {rejection['log_id']} is missing; restore the original evidence before retry")
+        # The supported repair procedure updates timestamp with a plain SQLite
+        # client before retry. Refresh the derived cache in the same transaction
+        # that releases the evidence so history/debounce/retention see the repair.
+        conn.execute("UPDATE attendance_log SET timestamp_epoch = ? WHERE id = ?",
+                     (_attendance_epoch(rejection["timestamp"]), rejection["log_id"]))
         result = conn.execute("""UPDATE attendance_rejections
             SET released_at = datetime('now'), release_note = ?
             WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
         if result.rowcount != 1:
             raise ValueError(f"Active rejection {rejection_id} does not exist")
+        conn.execute("DELETE FROM sync_state WHERE key IN ('attendance_current_scan_after', 'attendance_scan_after')")
 
 
 def count_unsynced_recognition_attempts() -> int:
-    """Count recognition telemetry rows still waiting to sync."""
+    """Count all unsynced telemetry, including retained quarantine evidence."""
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0").fetchone()
+    row = conn.execute("""SELECT
+        (SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0) +
+        (SELECT COUNT(*) FROM recognition_rejections r
+         LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+         WHERE r.released_at IS NULL AND a.id IS NULL)""").fetchone()
     return int(row[0]) if row else 0
+
+
+def count_retryable_recognition_attempts() -> int:
+    row = _get_conn().execute("""SELECT COUNT(*) FROM recognition_attempts WHERE synced = 0
+        AND NOT EXISTS (SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL)""").fetchone()
+    return int(row[0])
+
+
+def count_rejected_recognition_attempts() -> int:
+    return count_rejected_attempts()
+
+
+def count_rejected_attempts() -> int:
+    return int(_get_conn().execute(
+        "SELECT COUNT(*) FROM recognition_rejections WHERE released_at IS NULL"
+    ).fetchone()[0])
+
+
+def reject_recognition_attempt(attempt_id: int, reason: str) -> None:
+    conn = _get_conn()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT id FROM recognition_rejections WHERE attempt_id = ? AND released_at IS NULL", (attempt_id,)).fetchone():
+            return
+        row = conn.execute("SELECT * FROM recognition_attempts WHERE id = ? AND synced = 0", (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unsynced recognition attempt {attempt_id} does not exist")
+        conn.execute("""INSERT INTO recognition_rejections (attempt_id, reason, original_attempt_json)
+            VALUES (?, ?, ?)""", (attempt_id, reason[:2000], json.dumps(dict(row), default=str)))
+
+
+def list_recognition_rejections() -> list[dict]:
+    return [dict(row) for row in _get_conn().execute("""SELECT r.*, a.synced, a.kiosk_id, a.timestamp
+        FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+        WHERE r.released_at IS NULL ORDER BY r.id""")]
+
+
+def retry_recognition_rejection(rejection_id: int, note: str) -> None:
+    if not note.strip():
+        raise ValueError("A reason for retry is required")
+    conn = _get_conn()
+    with conn:
+        rejection = conn.execute("""SELECT r.attempt_id, a.id AS existing_attempt_id, a.synced, a.timestamp
+            FROM recognition_rejections r LEFT JOIN recognition_attempts a ON a.id = r.attempt_id
+            WHERE r.id = ? AND r.released_at IS NULL""", (rejection_id,)).fetchone()
+        if rejection is None:
+            raise ValueError(f"Active recognition rejection {rejection_id} does not exist")
+        if rejection["existing_attempt_id"] is None:
+            raise ValueError("Recognition attempt is missing; restore the original evidence before retry")
+        if rejection["synced"]:
+            raise ValueError("Original unsynced evidence is required")
+        # Match attendance retry: a raw SQLite timestamp repair must update
+        # its derived retention index atomically with the audited release.
+        conn.execute("UPDATE recognition_attempts SET timestamp_epoch = ? WHERE id = ?",
+                     (_attendance_epoch(rejection["timestamp"]), rejection["attempt_id"]))
+        conn.execute("""UPDATE recognition_rejections SET released_at = datetime('now'), release_note = ?
+            WHERE id = ? AND released_at IS NULL""", (note.strip(), rejection_id))
+        conn.execute("DELETE FROM sync_state WHERE key IN ('recognition_current_scan_after', 'recognition_scan_after')")
 
 
 def _optional_float(value) -> Optional[float]:
@@ -919,6 +1673,7 @@ def _optional_float(value) -> Optional[float]:
     return float(value)
 
 
+@_prioritize_event_write
 def log_recognition_attempt(
     *,
     decision: str,
@@ -952,9 +1707,9 @@ def log_recognition_attempt(
             (
                 timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
                 best_score, second_best_score, score_margin, decision, threshold,
-                liveness_confirmed, model_version, source_attempt_id, candidate_server_worker_id, synced
+                liveness_confirmed, model_version, source_attempt_id, candidate_server_worker_id, timestamp_epoch, synced
             )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         """,
         (
             timestamp,
@@ -971,35 +1726,40 @@ def log_recognition_attempt(
             model_version,
             str(uuid.uuid4()),
             candidate_server_worker_id,
+            _attendance_epoch(timestamp),
         ),
     )
     conn.commit()
     attempt_id = int(cursor.lastrowid)
     logger.info(
-        "Recognition attempt logged: decision=%s candidate=%s score=%s threshold=%s",
+        "Recognition attempt logged: decision=%s local_id=%s score=%s threshold=%s",
         decision,
-        candidate_worker_name or "unknown",
+        int(candidate_worker_id) if candidate_worker_id is not None else "unknown",
         f"{best_score:.3f}" if best_score is not None else "n/a",
         f"{threshold:.3f}" if threshold is not None else "n/a",
     )
     return attempt_id
 
 
-def get_unsynced_recognition_attempts(limit: int = 100) -> list[dict]:
+def get_unsynced_recognition_attempts(limit: int = 100, after_id: int = 0, current_kiosk_only: Optional[bool] = None) -> list[dict]:
     """Return unsynced recognition telemetry rows without any face image data."""
     conn = _get_conn()
+    claim_filter, claim_args = _kiosk_queue_filter(current_kiosk_only)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             id, timestamp, kiosk_id, face_detected, candidate_worker_id, candidate_worker_name,
             best_score, second_best_score, score_margin, decision, threshold,
             liveness_confirmed, model_version, source_attempt_id, legacy_source_attempt_id, candidate_server_worker_id
         FROM recognition_attempts
-        WHERE synced = 0
+        WHERE synced = 0 AND id > ? {claim_filter} AND NOT EXISTS (
+            SELECT 1 FROM recognition_rejections r
+            WHERE r.attempt_id = recognition_attempts.id AND r.released_at IS NULL
+        )
         ORDER BY id ASC
         LIMIT ?
         """,
-        (int(limit),),
+        (int(after_id), *claim_args, int(limit)),
     ).fetchall()
     # Legacy queued attempts may have reached the server before an acknowledgement
     # was lost. Keep their old identity as a migration alias, but persist a UUID
@@ -1040,6 +1800,93 @@ def mark_recognition_attempts_synced(attempt_ids: list[int]):
     placeholders = ",".join("?" for _ in attempt_ids)
     conn.execute(f"UPDATE recognition_attempts SET synced = 1 WHERE id IN ({placeholders})", attempt_ids)
     conn.commit()
+
+
+def prune_synced_history() -> dict[str, int]:
+    """Delete at most one small batch per table, after sync acknowledgement.
+
+    Keep queued/rejected evidence and each worker's latest instant and last
+    inserted event, even for removed workers and backward clocks. Invalid timestamps are
+    retained because their age is unknown. Each table commits separately.
+    """
+    config.validate_history_retention()
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=config.LOCAL_HISTORY_RETENTION_DAYS)).timestamp()
+    # An operator can configure debounce longer than the retention period.
+    attendance_cutoff = min(cutoff, (now - timedelta(minutes=config.CLOCK_DEBOUNCE_MINUTES)).timestamp())
+    conn = _get_conn()
+    # Incomplete epochs cannot establish the latest action safely, and the
+    # background worker may not have installed the forced age indexes yet.
+    if any(get_sync_state(f"epoch_backfill:{table}") is not None
+           for table in ("attendance_log", "recognition_attempts")):
+        return {"attendance_log": 0, "recognition_attempts": 0}
+    if conn.execute("""SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+        AND name IN ('idx_attendance_log_retention', 'idx_recognition_attempts_retention',
+                     'idx_attendance_worker_epoch', 'idx_attendance_worker_id')""").fetchone()[0] != 4:
+        return {"attendance_log": 0, "recognition_attempts": 0}
+    deleted = {}
+    # Bound candidates BEFORE checking protected evidence. A LIMIT on deletable
+    # rows could scan every old latest/rejected row while holding a write lock.
+    # A persisted keyset cursor skips protected prefixes and wraps each sweep;
+    # newly acknowledged older rows will be revisited on the next sweep.
+    key = "attendance_prune_after"
+    progress = get_sync_state(key)
+    after = json.loads(progress) if progress else None
+    candidates = []
+    if after is not None:
+        # SQLite seeks only the epoch for a tuple range when id aliases rowid,
+        # then rescans earlier ids at that epoch. Separate equality/id and
+        # later-epoch ranges so even a large tied prefix has bounded scan work.
+        candidates = conn.execute("""SELECT id, timestamp_epoch FROM attendance_log
+            INDEXED BY idx_attendance_log_retention
+            WHERE synced = 1 AND timestamp_epoch = ? AND id > ? AND timestamp_epoch < ?
+            ORDER BY timestamp_epoch, id LIMIT ?""",
+            [*after, attendance_cutoff, _HISTORY_PRUNE_BATCH_SIZE]).fetchall()
+    remaining = _HISTORY_PRUNE_BATCH_SIZE - len(candidates)
+    if remaining:
+        sql = """SELECT id, timestamp_epoch FROM attendance_log
+            INDEXED BY idx_attendance_log_retention
+            WHERE synced = 1 AND timestamp_epoch < ?"""
+        args = [attendance_cutoff]
+        if after is not None:
+            sql += " AND timestamp_epoch > ?"
+            args.append(after[0])
+        sql += " ORDER BY timestamp_epoch, id LIMIT ?"
+        args.append(remaining)
+        candidates.extend(conn.execute(sql, args).fetchall())
+    with conn:
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            cursor = conn.execute(f"""DELETE FROM attendance_log WHERE id IN (
+                SELECT l.id FROM attendance_log l
+                WHERE l.id IN ({placeholders})
+                  AND l.synced = 1 AND l.timestamp_epoch < ?
+                  AND l.id != (SELECT latest.id FROM attendance_log latest
+                      WHERE latest.worker_id = l.worker_id AND latest.timestamp_epoch IS NOT NULL
+                      ORDER BY latest.timestamp_epoch DESC, latest.id DESC LIMIT 1)
+                  AND l.id != (SELECT latest.id FROM attendance_log latest
+                      WHERE latest.worker_id = l.worker_id
+                      ORDER BY latest.id DESC LIMIT 1)
+                  AND NOT EXISTS (SELECT 1 FROM attendance_rejections r
+                      WHERE r.log_id = l.id AND r.released_at IS NULL)
+            )""", [row["id"] for row in candidates] + [attendance_cutoff])
+            deleted["attendance_log"] = cursor.rowcount
+            last = candidates[-1]
+            conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                         (key, json.dumps([last["timestamp_epoch"], last["id"]])))
+        else:
+            conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
+            deleted["attendance_log"] = 0
+    with conn:
+        cursor = conn.execute("""DELETE FROM recognition_attempts WHERE id IN (
+            SELECT id FROM recognition_attempts INDEXED BY idx_recognition_attempts_retention
+            WHERE synced = 1 AND timestamp_epoch < ?
+            ORDER BY timestamp_epoch, id LIMIT ?
+        )""", (cutoff, _HISTORY_PRUNE_BATCH_SIZE))
+        deleted["recognition_attempts"] = cursor.rowcount
+    if any(deleted.values()):
+        logger.info("Pruned synced local history: %s", deleted)
+    return deleted
 
 
 def get_sync_state(key: str) -> Optional[str]:

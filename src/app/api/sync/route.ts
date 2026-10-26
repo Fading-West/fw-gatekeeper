@@ -27,6 +27,7 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
     // stay unknown rather than reporting an empty queue.
     queuedLogs: parseQueueCount(params.get('queued_logs')),
     queuedAttempts: parseQueueCount(params.get('queued_attempts')),
+    rejectedAttempts: count('rejected_attempts'),
     degradedReason: text('degraded_reason'),
     lastScanAt: text('last_scan_at'),
   };

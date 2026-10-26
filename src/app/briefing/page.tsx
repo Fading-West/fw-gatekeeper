@@ -4,12 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { AttendanceQueueEvidencePanel } from '@/components/AttendanceQueueEvidence';
 import { useSearchParams } from 'next/navigation';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { FactoryDatePage } from '@/components/FactoryDatePage';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
+import { filterOptions } from '@/lib/filter-options';
 import {
   DepartmentCoverageStatus,
   ShiftBriefingActionItem,
@@ -26,6 +28,7 @@ const coverageStyles: Record<DepartmentCoverageStatus, string> = {
   covered: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/20',
   short: 'bg-amber-400/10 text-amber-300 border-amber-400/20',
   critical: 'bg-red-400/10 text-red-300 border-red-400/20',
+  not_yet_due: 'bg-sky-400/10 text-sky-300 border-sky-400/20',
   unscheduled: 'bg-slate-400/10 text-slate-300 border-slate-400/20',
 };
 
@@ -33,6 +36,7 @@ const workerStyles: Record<WorkerCoverageStatus, string> = {
   present: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/20',
   late: 'bg-amber-400/10 text-amber-300 border-amber-400/20',
   missing: 'bg-red-400/10 text-red-300 border-red-400/20',
+  not_yet_due: 'bg-sky-400/10 text-sky-300 border-sky-400/20',
   clocked_out: 'bg-slate-400/10 text-slate-300 border-slate-400/20',
   still_clocked_in: 'bg-blue-400/10 text-blue-300 border-blue-400/20',
 };
@@ -56,10 +60,7 @@ function titleCase(value: string) {
 }
 
 function formatTime(value: string | null) {
-  if (!value) return 'No scan';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return formatFactoryLocalDateTime(value, 'No scan', { hour: 'numeric', minute: '2-digit' });
 }
 
 function formatGeneratedAt(value?: string) {
@@ -123,7 +124,7 @@ function validDateParam(value: string | null) {
 }
 
 function validWorkerStatusParam(value: string | null): WorkerCoverageStatus | 'all' {
-  return value === 'missing' || value === 'late' || value === 'present' || value === 'clocked_out' || value === 'still_clocked_in'
+  return value === 'missing' || value === 'late' || value === 'present' || value === 'not_yet_due' || value === 'clocked_out' || value === 'still_clocked_in'
     ? value
     : 'all';
 }
@@ -224,6 +225,7 @@ function ShiftBriefingPageContent() {
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load shift briefing');
     if (body.date !== date) throw new Error('The server returned a different shift date. Refresh to try again.');
+    if (body.backend_unavailable) throw new Error(body.warning || 'Shift briefing is waiting for deployment.');
     return body;
   }, [date]);
   const { data: payload, loading, error, refresh: fetchBriefing } = useSelectedData(date, loadBriefing);
@@ -232,8 +234,8 @@ function ShiftBriefingPageContent() {
 
   const departments = useMemo(() => {
     const values = payload?.departments.map((row) => row.department) || [];
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
-  }, [payload]);
+    return filterOptions(values, department);
+  }, [department, payload]);
 
   const filteredDepartments = useMemo(() => {
     const rows = payload?.departments || [];
@@ -282,7 +284,7 @@ function ShiftBriefingPageContent() {
   const trustBrief = payload?.shift_trust_brief;
   const sourceCounts = trustBrief?.source_counts;
   const riskLabel = !payload
-    ? 'Loading briefing'
+    ? (error ? 'Briefing unavailable' : 'Loading briefing')
     : summary?.expected === 0
       ? 'No scheduled coverage'
       : summary?.critical_actions
@@ -338,7 +340,7 @@ function ShiftBriefingPageContent() {
                 Generated {formatGeneratedAt(trustBrief?.generated_at || payload?.generated_at)}
               </span>
               <span className="badge border border-navy-500/60 bg-navy-950/35 text-[10px] text-slate-400">
-                {payload?.schedules.active_today ?? 0} active schedule{payload?.schedules.active_today === 1 ? '' : 's'}
+                {payload ? `${payload.schedules.active_today} active schedule${payload.schedules.active_today === 1 ? '' : 's'}` : 'Schedule count unavailable'}
               </span>
             </div>
           </div>
@@ -346,12 +348,13 @@ function ShiftBriefingPageContent() {
             {readinessLabel}
           </span>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5 mt-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mt-5">
           {[
             ['Expected', sourceCounts?.expected ?? summary?.expected ?? 0, 'text-slate-100'],
             ['Present', sourceCounts?.present ?? summary?.present ?? 0, 'text-emerald-300'],
             ['Late', sourceCounts?.late ?? summary?.late ?? 0, 'text-amber-300'],
             ['Missing', sourceCounts?.missing ?? summary?.missing ?? 0, 'text-red-300'],
+            ['Not Yet Due', sourceCounts?.not_yet_due ?? summary?.not_yet_due ?? 0, 'text-sky-300'],
             ['Open Exceptions', sourceCounts?.open_exceptions ?? summary?.open_exceptions ?? 0, 'text-gold'],
             ['Critical Exceptions', sourceCounts?.critical_exceptions ?? 0, 'text-red-300'],
             ['Recognition Reviews', sourceCounts?.recognition_reviews ?? summary?.recognition_reviews ?? 0, 'text-blue-300'],
@@ -361,7 +364,7 @@ function ShiftBriefingPageContent() {
           ].map(([label, value, tone]) => (
             <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
               <p className="text-xs text-slate-500">{label}</p>
-              <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+              <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
             </div>
           ))}
         </div>
@@ -483,6 +486,7 @@ function ShiftBriefingPageContent() {
             <select value={status} onChange={(event) => setStatus(event.target.value as WorkerCoverageStatus | 'all')} className="input-field">
               <option value="all">All statuses</option>
               <option value="missing">Missing</option>
+              <option value="not_yet_due">Not yet due</option>
               <option value="late">Late</option>
               <option value="present">Present</option>
               <option value="clocked_out">Clocked out</option>
@@ -491,15 +495,30 @@ function ShiftBriefingPageContent() {
         </div>
       </section>
 
+      {payload?.schedule_assignment_warnings?.length ? (
+        <section className="glass-card p-5 space-y-3" aria-label="Unavailable schedule assignments">
+          <h2 className="font-display font-semibold text-slate-100">Schedule coverage unavailable</h2>
+          <p className="text-sm text-slate-400">Attendance classifications and totals cover unique supported assignments. Unmatched workers are not presumed missing. Their scans remain in the activity log.</p>
+          {payload.schedule_assignment_warnings.map(row => (
+            <div key={row.worker_id} className="border-t border-navy-600/50 pt-3 text-sm">
+              <p className="text-amber-200">{row.worker_name} ({row.department}): {row.kind === 'none' ? 'No matching schedule for this date' : row.kind === 'ambiguous' ? `Multiple ${row.tier} schedules match` : 'Unsupported schedule time range'}</p>
+              {row.candidates.length > 0 && <p className="text-slate-400">{row.candidates.map(candidate => `${candidate.name} (${candidate.start}–${candidate.end})`).join(', ')}</p>}
+              <Link href={`/log?date=${payload.date}&worker_id=${encodeURIComponent(row.worker_id)}`} className="text-gold">{row.event_count} effective scans — open worker activity</Link>
+              <Link href="/schedules" className="ml-3 text-gold">Review schedules</Link>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-display font-semibold text-slate-100">Coverage by department</h2>
-            <span className="text-xs font-mono text-slate-500">{filteredDepartments.length} groups</span>
+            <span className="text-xs font-mono text-slate-500">{payload ? filteredDepartments.length : '—'} groups</span>
           </div>
           {loading && !payload ? (
             <div className="glass-card p-6 text-sm text-slate-400">Loading coverage briefing...</div>
-          ) : filteredDepartments.length ? (
+          ) : error ? null : filteredDepartments.length ? (
             filteredDepartments.map((row) => (
               <article key={`${row.department}-${row.schedule_name}-${row.scheduled_start}`} className="glass-card-hover p-5 space-y-4">
                 <div className="flex items-start justify-between gap-3">
@@ -511,12 +530,13 @@ function ShiftBriefingPageContent() {
                   </div>
                   <span className={`badge border ${coverageStyles[row.status]}`}>{titleCase(row.status)}</span>
                 </div>
-                <div className="grid grid-cols-4 gap-2 text-center">
+                <div className={`grid ${row.not_yet_due ? 'grid-cols-5' : 'grid-cols-4'} gap-2 text-center`}>
                   {[
                     ['Present', row.present, 'text-emerald-300'],
                     ['Expected', row.expected, 'text-slate-200'],
                     ['Late', row.late, 'text-amber-300'],
                     ['Missing', row.missing, 'text-red-300'],
+                    ...(row.not_yet_due ? [['Not Yet Due', row.not_yet_due, 'text-sky-300']] : []),
                   ].map(([label, value, tone]) => (
                     <div key={label} className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className={`font-display text-xl ${tone}`}>{value}</p>
@@ -526,7 +546,7 @@ function ShiftBriefingPageContent() {
                 </div>
                 <div className="h-2 rounded-full bg-navy-900/70 overflow-hidden">
                   <div
-                    className={`h-full ${departmentRisk(row) >= 50 ? 'bg-red-400' : departmentRisk(row) > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                    className={`h-full ${row.status === 'not_yet_due' ? 'bg-sky-400/60' : departmentRisk(row) >= 50 ? 'bg-red-400' : departmentRisk(row) > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`}
                     style={{ width: `${Math.min(100, Math.max(0, 100 - departmentRisk(row)))}%` }}
                   />
                 </div>
@@ -542,9 +562,11 @@ function ShiftBriefingPageContent() {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-display font-semibold text-slate-100">First actions</h2>
-            <span className="text-xs font-mono text-slate-500">{payload?.action_items.length ?? 0} items</span>
+            <span className="text-xs font-mono text-slate-500">{payload ? payload.action_items.length : '—'} items</span>
           </div>
-          {payload?.action_items.length ? (
+          {loading && !payload ? (
+            <div className="glass-card p-6 text-sm text-slate-400">Loading first actions...</div>
+          ) : error ? null : payload?.action_items.length ? (
             <div className="space-y-3">
               {payload.action_items.slice(0, 10).map((item) => {
                 const canOperateAction = canOperateBriefingAction(currentRole, item.href);
@@ -615,7 +637,7 @@ function ShiftBriefingPageContent() {
               ))}
             </tbody>
           </table>
-          {filteredWorkers.length === 0 && (
+          {payload && filteredWorkers.length === 0 && (
             <div className="p-6 text-sm text-slate-400">No workers match the selected briefing filters.</div>
           )}
         </div>
@@ -627,7 +649,7 @@ function ShiftBriefingPageContent() {
             <div>
               <h2 className="font-display font-semibold text-slate-100">Kiosk trust</h2>
               <p className="text-sm text-slate-400 mt-2">
-                {payload?.kiosks.total ?? 0} registered kiosk{payload?.kiosks.total === 1 ? '' : 's'} contribute to today&apos;s briefing confidence.
+                {payload ? `${payload.kiosks.total} registered kiosk${payload.kiosks.total === 1 ? '' : 's'} contribute to today’s briefing confidence.` : 'Kiosk count unavailable.'}
               </p>
             </div>
             <Link href={getKioskTrustHref(currentRole, date)} className="btn-ghost text-xs">
@@ -643,7 +665,7 @@ function ShiftBriefingPageContent() {
             ].map(([label, value, tone]) => (
               <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
                 <p className="text-xs text-slate-500">{label}</p>
-                <p className={`mt-1 font-display text-2xl ${tone}`}>{value}</p>
+                <p className={`mt-1 font-display text-2xl ${tone}`}>{payload ? value : '—'}</p>
               </div>
             ))}
           </div>

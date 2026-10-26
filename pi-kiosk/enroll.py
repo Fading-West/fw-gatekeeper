@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 import threading
 import time
 from datetime import datetime
@@ -25,6 +24,7 @@ from flask import Flask, Response, jsonify
 import config
 import database
 from embeddings import embed_face, model_ready, normalize_embedding
+from enrollment_samples import competing_faces, samples_agree
 from liveness import LivenessChecker
 from kiosk_ui_auth import get_enroll_preview_host
 
@@ -142,19 +142,25 @@ def _largest_face(locations: list[tuple[int, int, int, int]]) -> tuple[int, int,
     return max(locations, key=lambda loc: (loc[2] - loc[0]) * (loc[1] - loc[3]))
 
 
+class CompetingEnrollmentFaces(ValueError):
+    """The operator must isolate one enrollment subject before capture."""
+
+
 def _detect_primary_face(frame) -> Optional[tuple[int, int, int, int]]:
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     small_rgb = cv2.resize(rgb, (0, 0), fx=0.5, fy=0.5)
     small_locations = face_recognition.face_locations(small_rgb, model="hog")
     if not small_locations:
         return None
+    if competing_faces(small_locations):
+        raise CompetingEnrollmentFaces("Only one worker may be in the enrollment frame")
     top, right, bottom, left = _largest_face(small_locations)
     return int(top * 2), int(right * 2), int(bottom * 2), int(left * 2)
 
 
 def add_worker(name: str):
     database.init_db()
-    Path(config.FACES_DIR).mkdir(parents=True, exist_ok=True)
+    database.recover_photo_cleanup()
 
     worker_name = name.strip()
     if not worker_name:
@@ -184,30 +190,31 @@ def add_worker(name: str):
     print(f"Enrollment preview running at http://localhost:{PREVIEW_PORT}")
     print("Look at the camera and blink naturally. 3 live captures are required.")
 
-    folder = Path(config.FACES_DIR) / _safe_name(worker_name)
-    folder.mkdir(parents=True, exist_ok=True)
-
     encodings: list[np.ndarray] = []
-    photo_paths: list[str] = []
+    photo_bytes: list[bytes] = []
     last_capture = 0.0
 
     try:
         while len(encodings) < SAMPLES_REQUIRED:
             ret, frame = cap.read()
             if not ret:
+                liveness.reset()
                 time.sleep(0.05)
                 continue
 
             display = frame.copy()
-            face_location = _detect_primary_face(frame)
-
             message = "Step into frame"
-            live = False
+            try:
+                face_location = _detect_primary_face(frame)
+            except CompetingEnrollmentFaces:
+                face_location = None
+                liveness.reset()
+                message = "More than one face: keep only the enrolled worker in frame"
+            live = liveness.update(frame, face_location)
 
             if face_location is not None:
                 top, right, bottom, left = face_location
                 cv2.rectangle(display, (left, top), (right, bottom), (0, 180, 255), 2)
-                live = liveness.update(frame, face_location)
                 message = "Blink to verify"
 
                 if live and (time.monotonic() - last_capture) > 1.0:
@@ -216,18 +223,27 @@ def add_worker(name: str):
                     except Exception as exc:
                         print(f"Encoding failed: {exc}")
                         encoding = None
+                    if encoding is not None and not samples_agree(encodings + [encoding]):
+                        encoding = None
+                        liveness.reset()
+                        live = False
+                        message = "Samples do not match: retake with the same worker, or cancel to start again"
                     if encoding is not None:
                         capture_index = len(encodings) + 1
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        photo_path = folder / f"capture_{capture_index}_{timestamp}.jpg"
-                        cv2.imwrite(str(photo_path), frame)
+                        ok, photo = cv2.imencode(".jpg", frame)
+                        if not ok:
+                            liveness.reset()
+                            _set_preview(display, "Photo encoding failed; retake this capture", len(encodings), liveness.get_ear(), False)
+                            continue
+                        # No biometric files are published while the operator is
+                        # still capturing or can cancel this enrollment.
                         encodings.append(encoding)
-                        photo_paths.append(str(photo_path))
+                        photo_bytes.append(photo.tobytes())
                         message = f"Captured sample {capture_index}/{SAMPLES_REQUIRED}"
                         liveness.reset()
                         live = False
                         last_capture = time.monotonic()
-                    else:
+                    elif not message.startswith("Samples do not match"):
                         message = "Face encoding failed, keep looking at camera"
 
             cv2.rectangle(display, (0, 0), (display.shape[1], 90), (10, 10, 10), -1)
@@ -272,16 +288,18 @@ def add_worker(name: str):
         print("Enrollment failed before all required captures were collected.")
         return 1
 
+    if not samples_agree(encodings):
+        print("Enrollment samples do not identify one consistent worker; retake them.")
+        return 1
     average_encoding = normalize_embedding(np.mean(np.vstack(encodings), axis=0))
-    worker_id = database.add_worker(
-        name=worker_name,
-        encoding=average_encoding,
-        photo_paths=photo_paths,
-        enrolled_at=datetime.now().isoformat(timespec="seconds"),
-    )
+    try:
+        worker_id = database.publish_local_enrollment(worker_name, average_encoding, photo_bytes)
+    except (OSError, ValueError):
+        print("Enrollment could not be saved; owned captures are journaled for cleanup. Retry enrollment.")
+        return 1
 
     print(f"Enrolled '{worker_name}' (id={worker_id})")
-    print(f"Saved {len(photo_paths)} photos under: {folder}")
+    print(f"Saved {len(photo_bytes)} owned photos under: {config.PHOTO_DIR}")
     return 0
 
 
@@ -301,28 +319,80 @@ def list_workers():
     return 0
 
 
+def _capture_folder(name: str) -> Optional[Path]:
+    """The local enrollment folder for name, never the photo root itself."""
+    folder = Path(config.FACES_DIR) / _safe_name(name)
+    return None if folder.resolve() == Path(config.FACES_DIR).resolve() else folder
+
+
+def _finish_photo_cleanup(journaled: list[str], unjournaled=(), folder: Optional[Path] = None) -> bool:
+    """Finish this removal's own cleanup; sync's in-flight entries are not ours."""
+    try:
+        database.recover_photo_cleanup(journaled)
+    except (OSError, ValueError) as exc:
+        print("Photo cleanup is pending; the next roster sync or rerunning this command "
+              f"will finish it: {exc}")
+        return False
+    complete = True
+    for photo_path in unjournaled:
+        try:
+            database.remove_unreferenced_legacy_photo(photo_path)
+        except OSError as exc:
+            print(f"Could not delete photo outside {config.PHOTO_DIR}; remove it manually: {exc}")
+            complete = False
+    if folder is not None and folder.exists() and folder.is_dir():
+        # Sanitized names can share a capture folder (e.g. Alex and Alex!).
+        # Only the recorded photo paths belong to this removal; leave other
+        # workers' photos and in-flight captures intact.
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+    return complete
+
+
 def remove_worker(name: str):
     database.init_db()
     worker = database.get_worker_by_name(name)
     if worker is None:
-        print(f"Worker not found: {name}")
+        # A removal whose photo cleanup failed or was interrupted already
+        # deleted the row; rerunning it finishes the cleanup that removal
+        # journaled for the same (case-insensitive) worker name.
+        pending, folders = database.pending_removed_worker_cleanup(name)
+        if not pending:
+            print(f"Worker not found: {name}")
+            return 1
+        if not _finish_photo_cleanup(pending):
+            return 1
+        for folder in folders:
+            # Another worker's name may sanitize to the same folder: only
+            # remove it once nothing is left in it.
+            try:
+                Path(folder).rmdir()
+            except OSError:
+                pass
+        print(f"Worker not found: {name}. Finished pending photo cleanup.")
+        return 0
+    if worker.get("server_id"):
+        print(database.PORTAL_MANAGED_WORKER_MESSAGE.format(name=worker["name"]))
         return 1
 
-    for photo_path in worker.get("photo_paths", []):
-        path = Path(photo_path)
-        if path.exists():
-            path.unlink()
+    # Delete the row first: the ownership check is only final inside the
+    # removal transaction, which also journals the photos it releases.
+    folder = _capture_folder(worker["name"])
+    try:
+        photo_paths = database.remove_local_worker(worker["name"], str(folder) if folder is not None else None)
+    except ValueError as exc:
+        print(exc)
+        return 1
+    if photo_paths is None:
+        print(f"Failed to remove worker: {worker['name']}")
+        return 1
 
-    folder = Path(config.FACES_DIR) / _safe_name(worker["name"])
-    if folder.exists() and folder.is_dir():
-        shutil.rmtree(folder, ignore_errors=True)
-
-    if database.remove_worker(worker["name"]):
-        print(f"Removed worker: {worker['name']}")
-        return 0
-
-    print(f"Failed to remove worker: {worker['name']}")
-    return 1
+    print(f"Removed worker: {worker['name']}")
+    journaled = [path for path in photo_paths if database.is_journaled_photo_path(path)]
+    unjournaled = [path for path in photo_paths if path not in journaled]
+    return 0 if _finish_photo_cleanup(journaled, unjournaled, folder) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -334,7 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list", help="List enrolled workers")
 
-    remove_parser = subparsers.add_parser("remove", help="Remove a worker")
+    remove_parser = subparsers.add_parser("remove", help="Remove a local-only worker (portal workers are removed by roster sync)")
     remove_parser.add_argument("name", type=str, help="Worker full name")
 
     return parser

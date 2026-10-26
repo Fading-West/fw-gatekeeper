@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
+import { ConvexError } from 'convex/values';
 import convex from '@/lib/convex';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { hasValidPortalSession } from '@/lib/portal-auth';
@@ -123,32 +124,46 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A JSON object is required' }, { status: 400 });
     const exceptionKey = optionalString(body.exception_key) || optionalString(body.exceptionKey);
+    const sourceFingerprint = optionalString(body.source_fingerprint) || optionalString(body.sourceFingerprint);
     const date = optionalString(body.date);
     const type = optionalString(body.type);
-    const status = optionalString(body.status) || 'reviewed';
+    // Only an omitted status defaults to reviewed; malformed input must not dismiss an exception.
+    const status = body.status === undefined ? 'reviewed' : typeof body.status === 'string' ? body.status.trim() : '';
 
     if (!exceptionKey || !date || !type) {
       return NextResponse.json({ error: 'exception_key, date, and type required' }, { status: 400 });
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isValidLocalDateString(date)) {
       return NextResponse.json({ error: 'date must use YYYY-MM-DD format' }, { status: 400 });
     }
     if (!VALID_STATUSES.has(status)) {
       return NextResponse.json({ error: 'status must be open, reviewed, ignored, or resolved' }, { status: 400 });
     }
+    // Empty strings explicitly clear the note; an omitted note preserves the saved value.
+    if (body.note !== undefined && typeof body.note !== 'string') {
+      return NextResponse.json({ error: 'note must be a string' }, { status: 400 });
+    }
 
     const result = await convex.mutation((api as any).shiftExceptions.review, {
       exceptionKey,
+      sourceFingerprint,
       date,
       type,
       status,
-      note: optionalString(body.note),
+      note: body.note?.trim(),
     });
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'EXCEPTION_SOURCE_CONFLICT') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
+    }
+    if (error instanceof ConvexError && error.data?.code === 'INVALID_EXCEPTION_SOURCE') {
+      return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 400 });
+    }
     console.error('Shift exceptions PATCH error:', error);
     return NextResponse.json({ error: 'Failed to review shift exception' }, { status: 500 });
   }
