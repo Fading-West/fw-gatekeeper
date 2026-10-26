@@ -32,6 +32,8 @@ function emptyResponse(date: string) {
     date,
     generated_at: generatedAt,
     closeout: null,
+    // Unavailable, never an empty (clear) queue.
+    attendance_queue: null,
     attendance_comparison: normalizeAttendanceComparison(null, date, false, true),
     summary: {
       expected: 0,
@@ -74,6 +76,26 @@ function emptyResponse(date: string) {
     backend_unavailable: true,
     warning: 'Shift closeout is waiting for the Convex functions to deploy.',
   };
+}
+
+async function mayCompleteWithoutQueueGate(date: string, expectedRevision: number | null) {
+  try {
+    const current = await convex.query((api as any).shiftCloseouts.get, { date });
+    const queue = current?.attendance_queue;
+    if (queue && typeof queue === 'object' && Number.isSafeInteger(queue.affected_kiosks) && Array.isArray(queue.kiosks)) return true;
+    const closeout = current?.closeout;
+    if (!closeout) return false;
+    // Revisions only grow, so a null or older expected revision can only
+    // replay its receipt or fail the revision check. Completing the completed
+    // revision that was read is a no-op receipt (#132); if it is reopened
+    // first, the revision check fails. Any other revision could sign.
+    const currentRevision = Number.isSafeInteger(closeout.revision) ? closeout.revision : 0;
+    return expectedRevision === null || expectedRevision < currentRevision ||
+      (closeout.status === 'completed' && expectedRevision === currentRevision);
+  } catch (error) {
+    logApiError('Shift closeout queue evidence check failed:', error);
+    return false;
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -140,6 +162,14 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'acknowledged blockers must be a boolean' }, { status: 400 });
     }
 
+    // A backend that predates attendance queue evidence would sign without
+    // requiring acknowledgement of unsynced attendance. Refuse new signoffs
+    // there. Requests that cannot write a signature still reach the receipt
+    // and revision checks so lost responses stay recoverable.
+    if (action === 'complete' && !(await mayCompleteWithoutQueueGate(date, revision))) {
+      return NextResponse.json({ error: 'Closeout signoff is unavailable until the backend reports attendance queue evidence. Deploy the current Convex functions, then retry.', code: 'CLOSEOUT_QUEUE_EVIDENCE_UNAVAILABLE' }, { status: 503 });
+    }
+
     const result = await convex.mutation((api as any).shiftCloseouts.save, {
       requestId,
       expectedRevision: revision,
@@ -170,6 +200,7 @@ export async function PATCH(req: NextRequest) {
       'date must use YYYY-MM-DD format': 400,
       'Reopen the completed closeout before changing notes.': 409,
       'Only a completed closeout can be reopened.': 409,
+      // Plain-text messages from deployments that predate structured codes.
       'Closeout has blockers. Add an acknowledgement note before acknowledging blockers.': 400,
       'Closeout has blockers. Add an acknowledgement note before completing.': 400,
     });

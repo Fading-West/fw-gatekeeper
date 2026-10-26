@@ -318,6 +318,31 @@ export interface ShiftTrustBrief {
   source_labels: string[];
 }
 
+export type AttendanceQueueStatus = 'pending' | 'clear' | 'unknown';
+
+// Server observation of a kiosk's attendance upload queue. `observed_at` is
+// when the last valid count arrived, not the latest heartbeat.
+export interface AttendanceQueueObservation {
+  status: AttendanceQueueStatus;
+  last_valid_count: number | null;
+  observed_at: string | null;
+  caveat: boolean;
+}
+
+// Fleet-wide queue evidence. Queue dates are unknown, so the same evidence
+// applies to every selected shift date and is not assigned to any one shift.
+export interface AttendanceQueueEvidence {
+  scope: 'current_fleet';
+  attendance_dates_known: false;
+  captured_at: string;
+  affected_kiosks: number;
+  pending_records: number;
+  unknown_kiosks: number;
+  omitted_kiosks?: number;
+  note: string;
+  kiosks: Array<AttendanceQueueObservation & { id: string; name: string; kiosk_id: string | null }>;
+}
+
 export interface ShiftBriefingKiosk {
   id: string;
   name: string;
@@ -326,6 +351,9 @@ export interface ShiftBriefingKiosk {
   location: string;
   last_sync: string | null;
   status: ShiftBriefingKioskStatus;
+  device_fault?: boolean;
+  attendance_queue?: AttendanceQueueObservation;
+  warning_reasons?: string[];
 }
 
 export interface ShiftBriefingResponse {
@@ -363,6 +391,8 @@ export interface ShiftBriefingResponse {
     total: number;
     counts: Record<ShiftBriefingKioskStatus, number>;
     rows: ShiftBriefingKiosk[];
+    // Absent from older backends and null in deployment fallbacks: unknown.
+    attendance_queue?: AttendanceQueueEvidence | null;
   };
   schedules: {
     active_today: number;
@@ -417,6 +447,8 @@ export interface ShiftCloseoutRecord {
   reopened_at: string | null;
   updated_at: string;
   snapshot: ShiftCloseoutSnapshot;
+  // Null when the record was signed before queue evidence was captured.
+  signed_attendance_queue?: AttendanceQueueEvidence | null;
 }
 
 export interface ShiftCloseoutChecklistItem {
@@ -472,6 +504,7 @@ export interface ShiftCloseoutResponse {
   // Optional while portal and backend versions roll out independently.
   attendance_comparison?: AttendanceComparison;
   closeout: ShiftCloseoutRecord | null;
+  attendance_queue?: AttendanceQueueEvidence | null;
   summary: ShiftCloseoutSnapshot & {
     // Live only (not in the signed snapshot); optional for older deployments.
     not_yet_due?: number;

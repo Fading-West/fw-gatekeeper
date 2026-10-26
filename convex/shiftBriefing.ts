@@ -8,6 +8,7 @@ import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { listCorrectionsByDateRange } from "./attendanceReads";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
+import { ATTENDANCE_QUEUE_SCOPE_NOTE, observeAttendanceQueue, type AttendanceQueueObservation } from "./attendanceQueue";
 import { createScheduleMinutesElapsed, createScheduleTimeHasPassed, isSupportedScheduleTimeRange } from "./scheduleTimes";
 import { resolveScheduleAssignment, scheduleDays } from "./scheduleAssignment";
 
@@ -19,6 +20,16 @@ type ActionPriority = "critical" | "warning" | "info";
 type KioskStatus = "online" | "stale" | "offline" | "never_synced";
 type ShiftTrustBriefStatus = "ready" | "attention" | "blocked";
 type ShiftTrustRiskCategory = "kiosk" | "enrollment" | "schedule" | "exception" | "correction" | "attendance";
+
+type KioskWarningReason = "never_synced" | "offline" | "stale" | "device_fault" | "attendance_queue";
+
+const KIOSK_WARNING_REASON_LABELS: Record<KioskWarningReason, string> = {
+  never_synced: "never synced",
+  offline: "offline",
+  stale: "stale",
+  device_fault: "reporting a device fault",
+  attendance_queue: "holding attendance not yet uploaded",
+};
 
 type ShiftTrustRisk = {
   id: string;
@@ -94,7 +105,7 @@ function plural(count: number, singular: string, pluralValue?: string) {
 
 function getPrimaryActionSourceLabel(action: any) {
   if (String(action.id || "").startsWith("coverage:")) return "Schedule and effective attendance";
-  if (String(action.id || "").startsWith("kiosk:")) return "Kiosk sync evidence";
+  if (String(action.id || "").startsWith("kiosk:") || String(action.id || "").startsWith("kiosk-queue:")) return "Kiosk sync evidence";
   if (String(action.id || "").startsWith("recognition:")) return "Recognition review exceptions";
   if (String(action.id || "").startsWith("schedules:")) return "Active schedule coverage";
   if (action.href?.startsWith("/exceptions")) return "Open shift exceptions";
@@ -144,6 +155,45 @@ function hasScanBlockingDeviceFault(health: any): boolean {
   return getKioskDegradedReasons(health.degradedReason).some(reason => SCAN_BLOCKING_DEGRADED_REASONS.has(reason));
 }
 
+function getKioskWarningReasons(status: KioskStatus, deviceFault: boolean, queue: AttendanceQueueObservation): KioskWarningReason[] {
+  return [
+    ...(status !== "online" ? [status] : []),
+    ...(deviceFault ? ["device_fault" as const] : []),
+    ...(queue.caveat ? ["attendance_queue" as const] : []),
+  ];
+}
+
+// One kiosk can have several reasons; it still counts as one kiosk warning.
+export function describeKioskWarningReasons(rows: Array<{ warning_reasons: KioskWarningReason[] }>) {
+  const counts = new Map<KioskWarningReason, number>();
+  for (const row of rows) for (const reason of row.warning_reasons) counts.set(reason, (counts.get(reason) || 0) + 1);
+  return (Object.keys(KIOSK_WARNING_REASON_LABELS) as KioskWarningReason[])
+    .filter((reason) => counts.has(reason))
+    .map((reason) => `${counts.get(reason)} ${KIOSK_WARNING_REASON_LABELS[reason]}`)
+    .join(", ");
+}
+
+export function summarizeAttendanceQueue(rows: Array<{ id: string; name: string; kiosk_id: string | null; attendance_queue: AttendanceQueueObservation }>, capturedAt: string) {
+  const affected = rows.filter((row) => row.attendance_queue.caveat);
+  // Retained positives first, then kiosks whose latest report is unknown.
+  const listed = rows.filter((row) => row.attendance_queue.caveat || row.attendance_queue.status === "unknown")
+    .sort((a, b) => Number(b.attendance_queue.caveat) - Number(a.attendance_queue.caveat) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return {
+    scope: "current_fleet" as const,
+    attendance_dates_known: false as const,
+    captured_at: capturedAt,
+    affected_kiosks: affected.length,
+    pending_records: affected.reduce((total, row) => total + (row.attendance_queue.last_valid_count || 0), 0),
+    unknown_kiosks: rows.filter((row) => row.attendance_queue.status === "unknown").length,
+    note: ATTENDANCE_QUEUE_SCOPE_NOTE,
+    kiosks: listed.map((row) => ({ id: row.id, name: row.name, kiosk_id: row.kiosk_id, ...row.attendance_queue })),
+  };
+}
+
+function attendanceQueueSentence(queue: ReturnType<typeof summarizeAttendanceQueue>) {
+  return `${plural(queue.affected_kiosks, "kiosk")} last reported ${plural(queue.pending_records, "attendance record")} not yet uploaded. ${ATTENDANCE_QUEUE_SCOPE_NOTE}`;
+}
+
 function buildShiftTrustBrief(input: {
   date: string;
   generatedAt: string;
@@ -168,16 +218,15 @@ function buildShiftTrustBrief(input: {
   missingClockOuts: any[];
   recognitionReviews: any[];
   kioskCounts: Record<KioskStatus, number>;
-  // All kiosks reporting a scan-blocking fault (drives blockers/severity)…
+  // All kiosks reporting a scan-blocking fault (drives blockers/severity).
   deviceFaultKiosks: number;
-  // …vs. only those not already counted as stale/offline warnings (count math).
-  deviceFaultWarningKiosks: number;
+  kioskWarningReasons: string;
+  attendanceQueue: ReturnType<typeof summarizeAttendanceQueue>;
   attendanceCorrections: any[];
 }) {
   const invalidEnrollment = input.workers.filter((worker) => getEncodingStatus(worker.faceEncoding) === "invalid");
   const missingEnrollment = input.workers.filter((worker) => getEncodingStatus(worker.faceEncoding) === "missing");
   const offlineKioskWarnings = input.kioskCounts.offline + input.kioskCounts.never_synced;
-  const staleKioskWarnings = input.kioskCounts.stale;
   const firstCriticalException = input.criticalExceptions.find((exception) => exception.key);
   const firstMissingClockOut = input.missingClockOuts.find((exception) => exception.key);
   const firstRecognitionReview = input.recognitionReviews.find((exception) => exception.key);
@@ -234,6 +283,17 @@ function buildShiftTrustBrief(input: {
       "Kiosk hardware faults block scanning",
       `${plural(input.deviceFaultKiosks, "kiosk")} report a camera, model, roster, or required blink-verification fault that prevents face scans.`,
       input.deviceFaultKiosks,
+      "/kiosks",
+    ));
+  }
+  if (input.attendanceQueue.affected_kiosks > 0) {
+    readinessBlockers.push(risk(
+      "kiosk:attendance-queue",
+      "kiosk",
+      "warning",
+      "Attendance evidence is incomplete",
+      attendanceQueueSentence(input.attendanceQueue),
+      input.attendanceQueue.affected_kiosks,
       "/kiosks",
     ));
   }
@@ -298,14 +358,14 @@ function buildShiftTrustBrief(input: {
       Boolean(firstRecognitionReview?.key),
     ));
   }
-  const totalKioskWarnings = staleKioskWarnings + offlineKioskWarnings + input.deviceFaultWarningKiosks;
+  const totalKioskWarnings = input.summary.kiosk_warnings;
   if (totalKioskWarnings > 0) {
     closeoutRisks.push(risk(
       "closeout:kiosk-warnings",
       "kiosk",
       offlineKioskWarnings + input.deviceFaultKiosks > 0 ? "critical" : "warning",
       "Kiosk warnings affect closeout trust",
-      `${plural(totalKioskWarnings, "kiosk warning")} may affect today’s attendance confidence.`,
+      `${plural(totalKioskWarnings, "kiosk warning")} (${input.kioskWarningReasons}) may affect today’s attendance confidence.${input.attendanceQueue.affected_kiosks ? ` ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`,
       totalKioskWarnings,
       "/kiosks",
     ));
@@ -589,16 +649,23 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       return order[a.status] - order[b.status] || a.worker_name.localeCompare(b.worker_name);
     });
 
-    const kioskRows = kiosks.map((kiosk) => ({
-      id: String(kiosk._id),
-      name: kiosk.name,
-      kiosk_id: kiosk.kioskId || null,
-      type: kiosk.type,
-      location: kiosk.location,
-      last_sync: kiosk.lastSync || null,
-      status: getKioskStatus(kiosk.lastSync),
-      device_fault: hasScanBlockingDeviceFault(kiosk.health),
-    }));
+    const kioskRows = kiosks.map((kiosk) => {
+      const status = getKioskStatus(kiosk.lastSync);
+      const deviceFault = hasScanBlockingDeviceFault(kiosk.health);
+      const attendanceQueue = observeAttendanceQueue(kiosk);
+      return {
+        id: String(kiosk._id),
+        name: kiosk.name,
+        kiosk_id: kiosk.kioskId || null,
+        type: kiosk.type,
+        location: kiosk.location,
+        last_sync: kiosk.lastSync || null,
+        status,
+        device_fault: deviceFault,
+        attendance_queue: attendanceQueue,
+        warning_reasons: getKioskWarningReasons(status, deviceFault, attendanceQueue),
+      };
+    });
     const kioskCounts = kioskRows.reduce(
       (acc, kiosk) => {
         acc[kiosk.status] += 1;
@@ -609,11 +676,10 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     // Every reported scan-blocking fault drives blockers/severity — a stale
     // kiosk whose last report says the camera is broken still cannot scan.
     const deviceFaultKiosks = kioskRows.filter((kiosk) => kiosk.device_fault).length;
-    // But only otherwise-healthy rows add to the warning total: stale/offline/
-    // never-synced rows are already counted once (no double counting).
-    const deviceFaultWarningKiosks = kioskRows.filter(
-      (kiosk) => kiosk.device_fault && kiosk.status === "online",
-    ).length;
+    // Each kiosk counts once in the warning total, whatever its reasons.
+    const warningKiosks = kioskRows.filter((kiosk) => kiosk.warning_reasons.length > 0);
+    const generatedAt = new Date().toISOString();
+    const attendanceQueue = summarizeAttendanceQueue(kioskRows, generatedAt);
 
     const openExceptions = exceptions.filter((exception) => exception.status === "open");
     const recognitionReviews = openExceptions.filter((exception) => exception.type === "recognition_review");
@@ -683,6 +749,15 @@ export async function buildShiftBriefing(ctx: any, date: string) {
           description: `${kiosk.location || "No location set"} cannot scan faces until the reported camera, model, or roster fault is fixed.`,
           href: "/kiosks",
         })),
+      ...kioskRows
+        .filter((kiosk) => kiosk.attendance_queue.caveat)
+        .map((kiosk) => ({
+          id: `kiosk-queue:${kiosk.id}`,
+          priority: "warning" as ActionPriority,
+          label: `${kiosk.name} ${kiosk.attendance_queue.status === "pending" ? "reports" : "last reported"} ${plural(kiosk.attendance_queue.last_valid_count || 0, "attendance record")} not yet uploaded`,
+          description: `${kiosk.attendance_queue.status === "unknown" ? "Its latest report did not include a valid queue count. " : ""}${ATTENDANCE_QUEUE_SCOPE_NOTE}`,
+          href: "/kiosks",
+        })),
       ...(todaysSchedules.length === 0
         ? [{
             id: "schedules:none-today",
@@ -693,7 +768,6 @@ export async function buildShiftBriefing(ctx: any, date: string) {
           }]
         : []),
     ].sort((a, b) => actionRank(a.priority) - actionRank(b.priority) || a.label.localeCompare(b.label));
-    const generatedAt = new Date().toISOString();
     const summary = {
       expected,
       present,
@@ -705,7 +779,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       open_exceptions: openExceptions.length,
       recognition_reviews: recognitionReviews.length,
       critical_actions: actionItems.filter((item) => item.priority === "critical").length,
-      kiosk_warnings: kioskCounts.stale + kioskCounts.offline + kioskCounts.never_synced + deviceFaultWarningKiosks,
+      kiosk_warnings: warningKiosks.length,
     };
     const shiftTrustBrief = buildShiftTrustBrief({
       date,
@@ -723,7 +797,8 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       recognitionReviews,
       kioskCounts,
       deviceFaultKiosks,
-      deviceFaultWarningKiosks,
+      kioskWarningReasons: describeKioskWarningReasons(warningKiosks),
+      attendanceQueue,
       attendanceCorrections,
     });
 
@@ -744,6 +819,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
         total: kioskRows.length,
         counts: kioskCounts,
         rows: kioskRows,
+        attendance_queue: attendanceQueue,
       },
       schedules: {
         active_today: todaysSchedules.length,

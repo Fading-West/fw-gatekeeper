@@ -15,7 +15,7 @@ const routes = [
   { path: 'workers/purge-biometrics', method: 'POST', handler: purge, body: { id: 'worker', reason: 'Retention request' }, generic: 'Failed to purge face data', log: 'Biometric purge failed:', validation: 'Worker not found' },
   { path: 'attendance-corrections', method: 'POST', handler: correct, body: { date: '2026-09-01', worker_id: 'worker', action: 'add_clock_in', corrected_timestamp: '2026-09-01T08:00:00', reason: 'Missed scan' }, generic: 'Failed to create attendance correction', log: 'Attendance corrections POST error:', validation: 'Original attendance event not found.' },
   { path: 'enroll', method: 'POST', handler: enroll, body: { name: 'Test Worker', photos: Array(3).fill('data:image/jpeg;base64,YQ=='), consent: true, consentAgeMs: 0 }, generic: 'Internal server error', log: 'Enrollment error:', validation: 'Employee must be selected from the company roster' },
-  { path: 'shift-closeout', method: 'PATCH', handler: closeout, body: { date: '2026-09-01', action: 'complete', request_id: 'synthetic-closeout', expected_revision: null }, generic: 'Failed to update shift closeout', log: 'Shift closeout PATCH error:', validation: 'Closeout has blockers. Add an acknowledgement note before completing.' },
+  { path: 'shift-closeout', method: 'PATCH', handler: closeout, body: { date: '2026-09-01', action: 'save', request_id: 'synthetic-request', expected_revision: null }, generic: 'Failed to update shift closeout', log: 'Shift closeout PATCH error:', validation: 'Closeout has blockers. Add an acknowledgement note before completing.' },
 ];
 
 beforeEach(() => {

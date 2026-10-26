@@ -7,6 +7,7 @@ import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { FactoryDatePage } from '@/components/FactoryDatePage';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
+import { AttendanceQueueEvidencePanel, attendanceQueueExportLines } from '@/components/AttendanceQueueEvidence';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useCloseoutActor } from '@/hooks/useCloseoutActor';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -55,8 +56,16 @@ function checklistExportLine(item: ShiftCloseoutChecklistItem, role: PortalRole 
   return `- ${item.label}: ${item.status} (${item.count}) - ${item.description}${proof}`;
 }
 
+const SIGNED_QUEUE_MISSING = 'Not recorded: this closeout was signed before attendance queue evidence was captured.';
+const CURRENT_QUEUE_MISSING = 'Current attendance queue evidence is unavailable. Do not treat the queue as clear.';
+
+function currentAttendanceQueue(payload: ShiftCloseoutResponse | null) {
+  return payload && !payload.backend_unavailable ? payload.attendance_queue : null;
+}
+
 function exportText(payload: ShiftCloseoutResponse, supervisorName: string, notes: string, role: PortalRole | undefined) {
   const completed = payload.closeout?.status === 'completed';
+  const signed = completed;
   const comparison = normalizeAttendanceComparison(payload.attendance_comparison, payload.date, completed, payload.backend_unavailable);
   const summaryLines = (summary: ShiftCloseoutSnapshot) => [
     `Expected: ${summary.expected}`, `Present: ${summary.present}`, `Late: ${summary.late}`, `Missing: ${summary.missing}`,
@@ -82,6 +91,14 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     ...summaryLines(payload.summary),
     ...(payload.summary.not_yet_due ? [`Not yet due: ${payload.summary.not_yet_due}`] : []),
     `Attendance corrections (current): ${payload.summary.attendance_corrections}`,
+    '',
+    ...(signed ? [
+      'Signed attendance queue evidence',
+      ...attendanceQueueExportLines(payload.closeout?.signed_attendance_queue, SIGNED_QUEUE_MISSING),
+      '',
+    ] : []),
+    'Current attendance queue observations',
+    ...attendanceQueueExportLines(currentAttendanceQueue(payload), CURRENT_QUEUE_MISSING),
     '',
     'Current checklist',
     ...payload.checklist.map((item) => checklistExportLine(item, role, payload.date)),
@@ -245,7 +262,10 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.kiosk_warnings || 0) +
     Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0) +
     Number(payload?.checklist.find((item) => item.id === 'not_yet_due')?.count || 0);
-  const canComplete = Boolean(payload && (
+  // Without queue evidence the backend cannot enforce acknowledgement of
+  // unsynced attendance, so signoff stays disabled (the API also refuses).
+  const queueEvidenceMissing = Boolean(payload && !completed && !currentAttendanceQueue(payload));
+  const canComplete = Boolean(payload && !queueEvidenceMissing && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
       : payload.can_complete
@@ -300,6 +320,10 @@ function ShiftCloseoutPageContent() {
     if (!dataReady || mutationPendingRef.current || selectedPendingAction || !actorId) return;
     if (!canOperate) {
       toast('Only admin or enrollment roles can update shift closeout.', 'error');
+      return;
+    }
+    if (action === 'complete' && queueEvidenceMissing) {
+      toast('Closeout signoff is unavailable until attendance queue evidence loads.', 'error');
       return;
     }
     if (action === 'complete' && !canComplete) {
@@ -533,6 +557,18 @@ function ShiftCloseoutPageContent() {
           ) : (
             <div className="glass-card p-6 text-sm text-slate-400">No checklist is available for this date yet.</div>
           )}
+          {payload && (
+            <section className="glass-card p-5 space-y-3" aria-label="Attendance queue evidence">
+              <div>
+                <h2 className="font-display font-semibold text-slate-100">Attendance queue evidence</h2>
+                <p className="text-sm text-slate-400 mt-2 leading-6">Kiosk-reported attendance not yet uploaded. Signed evidence is kept separately from current observations.</p>
+              </div>
+              {completed && (
+                <AttendanceQueueEvidencePanel title="Signed with this closeout" evidence={payload.closeout?.signed_attendance_queue} missing={SIGNED_QUEUE_MISSING} testId="signed-attendance-queue" />
+              )}
+              <AttendanceQueueEvidencePanel title="Current observation" evidence={currentAttendanceQueue(payload)} missing={CURRENT_QUEUE_MISSING} testId="current-attendance-queue" />
+            </section>
+          )}
         </div>
 
         <aside className="space-y-4">
@@ -658,6 +694,9 @@ function ShiftCloseoutPageContent() {
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
+            {queueEvidenceMissing && (
+              <p role="alert" data-testid="queue-evidence-signoff-blocked" className="text-sm text-amber-300">Signoff is unavailable until the backend reports attendance queue evidence.</p>
+            )}
             {payload?.closeout?.acknowledgement_stale && !completed && (
               <p role="alert" className="text-sm text-amber-300">The blockers changed since the saved acknowledgement. Review and acknowledge the current evidence.</p>
             )}

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { AttendanceQueueEvidencePanel } from '@/components/AttendanceQueueEvidence';
 import { useSearchParams } from 'next/navigation';
 import { formatFactoryLocalDateTime } from '@/lib/date';
 import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
@@ -668,6 +669,16 @@ function ShiftBriefingPageContent() {
               </div>
             ))}
           </div>
+          {(payload || error) && (
+            <div className="mt-4">
+              <AttendanceQueueEvidencePanel
+                title="Attendance queue evidence"
+                evidence={dataReady ? payload?.kiosks.attendance_queue : null}
+                missing="Attendance queue evidence is unavailable. Do not treat the queue as clear."
+                testId="briefing-attendance-queue"
+              />
+            </div>
+          )}
         </div>
 
         <div className="glass-card p-5">

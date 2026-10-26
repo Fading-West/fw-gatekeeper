@@ -1,3 +1,4 @@
+import { parseQueueCount } from '@/lib/attendance-queue';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
@@ -22,8 +23,10 @@ function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefine
     modelOk: bool('model_ok'),
     livenessAvailable: bool('liveness_available'),
     knownWorkers: count('known_workers'),
-    queuedLogs: count('queued_logs'),
-    queuedAttempts: count('queued_attempts'),
+    // Queue counts accept canonical integers only: blank or malformed values
+    // stay unknown rather than reporting an empty queue.
+    queuedLogs: parseQueueCount(params.get('queued_logs')),
+    queuedAttempts: parseQueueCount(params.get('queued_attempts')),
     rejectedAttempts: count('rejected_attempts'),
     degradedReason: text('degraded_reason'),
     lastScanAt: text('last_scan_at'),

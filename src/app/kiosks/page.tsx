@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '@/components/Toast';
+import { describeAttendanceQueue } from '@/components/AttendanceQueueEvidence';
+import type { AttendanceQueueObservation } from '@/lib/types';
 import { formatFactoryLocalDateTime } from '@/lib/date';
 
 type KioskReadinessStatus = 'online' | 'stale' | 'offline' | 'never_synced';
@@ -18,6 +20,7 @@ type KioskHealthRow = {
   status: KioskReadinessStatus;
   expected_worker_count: number;
   last_attendance_upload: string | null;
+  attendance_queue?: AttendanceQueueObservation;
   device_issues?: string[];
 };
 
@@ -385,6 +388,11 @@ export default function KiosksPage() {
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className="text-xs text-slate-500">Last attendance upload</p>
                       <p className="text-slate-200 mt-1">{formatFactoryLocalDateTime(kiosk.last_attendance_upload, 'No data yet')}</p>
+                    </div>
+                    <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3 sm:col-span-2">
+                      <p className="text-xs text-slate-500">Attendance not yet uploaded</p>
+                      <p className={kiosk.attendance_queue?.caveat ? 'text-amber-300 mt-1' : 'text-slate-200 mt-1'}>{describeAttendanceQueue(kiosk.attendance_queue)}</p>
+                      <p className="text-[11px] text-slate-500 mt-1">Server observation time of the last valid count. Contact alone does not refresh it.</p>
                     </div>
                   </div>
                   {(kiosk.device_issues?.length || 0) > 0 && (

@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
+import type { FunctionReference } from 'convex/server';
 import { NextRequest } from 'next/server';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { api } from '../../../../convex/_generated/api';
@@ -8,7 +9,7 @@ import convex from '@/lib/convex';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { PATCH } from './route';
 
-vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn() } }));
+vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn(), query: vi.fn() } }));
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
 const modules = import.meta.glob('../../../../convex/**/*.ts');
 const date = '2026-09-10';
@@ -38,6 +39,10 @@ async function setup(blocked = false) {
     const [ref, args = {}] = call;
     // PATCH uses a generated reference, not the HTTP client's future references.
     return actor.mutation(ref as typeof api.shiftCloseouts.save, JSON.parse(JSON.stringify(args)));
+  });
+  vi.mocked(convex.query).mockImplementation((...call) => {
+    const [ref, args = {}] = call;
+    return actor.query(ref as FunctionReference<'query'>, JSON.parse(JSON.stringify(args)));
   });
   let request = 0;
   const patch = async (fields: Record<string, unknown>) => {

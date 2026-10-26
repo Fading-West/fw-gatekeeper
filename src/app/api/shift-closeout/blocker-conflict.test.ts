@@ -3,7 +3,8 @@ import { NextRequest } from 'next/server';
 import { expect, it, vi } from 'vitest';
 import convex from '@/lib/convex';
 import { PATCH } from './route';
-vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn() } }));
+// The backend reports attendance queue evidence, so completion is attempted.
+vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn(), query: vi.fn(async () => ({ attendance_queue: { affected_kiosks: 0, kiosks: [] } })) } }));
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn(async () => true) }));
 it('forwards the reviewed blocker token and returns a refreshable conflict', async () => {
   vi.mocked(convex.mutation).mockRejectedValue(new ConvexError({ code: 'CLOSEOUT_BLOCKERS_CHANGED', message: 'Review new blockers' }));

@@ -19,7 +19,7 @@ const button = (text: string) => tree.root.findAllByType('button').find(node => 
 it('renders while actor identity is loading without selecting a missing receipt', async () => {
   context.actor = undefined;
   const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ date: '2026-09-03', closeout: null,
-    blocker_evidence: 'current-evidence', summary: {}, checklist: [], blockers: [], action_links: [], can_complete: true }) }));
+    blocker_evidence: 'current-evidence', summary: {}, checklist: [], blockers: [], action_links: [], attendance_queue: { affected_kiosks: 0, kiosks: [] }, can_complete: true }) }));
   vi.stubGlobal('fetch', fetchMock);
   await act(async () => { tree = create(<CloseoutPage />); });
   expect(tree.root.findAllByProps({ 'data-testid': 'saved-closeout-action' })).toHaveLength(0);
@@ -43,7 +43,7 @@ it.each(['lost response', 'malformed acknowledgement', 'untyped 500'])('restores
     }
     reads++;
     return { ok: true, json: async () => ({ date: '2026-09-03', closeout: reads === 1 ? null : { status: 'reopened', revision: 2, notes: 'Newer supervisor notes' },
-      blocker_evidence: reads === 1 ? 'old-evidence' : 'new-evidence', summary: {}, checklist: [], blockers: [], action_links: [], can_complete: true }) };
+      blocker_evidence: reads === 1 ? 'old-evidence' : 'new-evidence', summary: {}, checklist: [], blockers: [], action_links: [], attendance_queue: { affected_kiosks: 0, kiosks: [] }, can_complete: true }) };
   }));
   await act(async () => { tree = create(<CloseoutPage />); });
   await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Original intent notes' } }));
@@ -68,7 +68,7 @@ it.each(['lost response', 'malformed acknowledgement', 'untyped 500'])('restores
 it('does not preserve or submit an acknowledged blocker draft without its required note', async () => {
   const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => ({ ok: true, json: async () => ({ date: '2026-09-03', closeout: null,
     blocker_evidence: 'current-evidence', summary: { kiosk_warnings: 1 }, checklist: [],
-    blockers: [{ id: 'kiosk', label: 'Kiosk unavailable', count: 1, href: '/kiosks' }], action_links: [], can_complete: false }) }));
+    blockers: [{ id: 'kiosk', label: 'Kiosk unavailable', count: 1, href: '/kiosks' }], action_links: [], attendance_queue: { affected_kiosks: 0, kiosks: [] }, can_complete: false }) }));
   vi.stubGlobal('fetch', fetchMock);
   await act(async () => { tree = create(<CloseoutPage />); });
   await act(async () => tree.root.findAllByType('input').find(node => node.props.type === 'checkbox')!.props.onChange({ target: { checked: true } }));
@@ -88,7 +88,7 @@ it('reconciles a definite new-blocker rejection and completes with a fresh expli
     reads++;
     return { ok: true, json: async () => ({ date: '2026-09-03', closeout: posts.length < 2 ? null : { status: 'completed', revision: 1, notes: 'Reviewed shift evidence', snapshot: {} },
       blocker_evidence: reads === 1 ? 'no-blockers' : 'new-blocker', summary: { kiosk_warnings: reads === 1 ? 0 : 1 }, checklist: [],
-      blockers: reads === 1 ? [] : [{ id: 'kiosk', label: 'Kiosk unavailable', count: 1, href: '/kiosks' }], action_links: [], can_complete: reads === 1 }) };
+      blockers: reads === 1 ? [] : [{ id: 'kiosk', label: 'Kiosk unavailable', count: 1, href: '/kiosks' }], action_links: [], attendance_queue: { affected_kiosks: 0, kiosks: [] }, can_complete: reads === 1 }) };
   }));
   await act(async () => { tree = create(<CloseoutPage />); });
   await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Reviewed shift evidence' } }));
@@ -111,7 +111,7 @@ it.each(['open', 'completed'])('retains a rejected draft after reload and reconc
     if (init?.method === 'PATCH') return { ok: false, status: 409, json: async () => ({ code: 'CLOSEOUT_REVISION_CONFLICT', error: 'Review the current record' }) };
     reads++;
     return { ok: true, json: async () => ({ date: '2026-09-03', closeout: { status: reads === 1 ? 'open' : status, revision: reads === 1 ? 1 : 2, notes: 'Current server notes', supervisor_name: 'Current supervisor', snapshot: {} },
-      blocker_evidence: 'current-evidence', summary: {}, checklist: [], blockers: [], action_links: [], can_complete: true }) };
+      blocker_evidence: 'current-evidence', summary: {}, checklist: [], blockers: [], action_links: [], attendance_queue: { affected_kiosks: 0, kiosks: [] }, can_complete: true }) };
   }));
   await act(async () => { tree = create(<CloseoutPage />); });
   await act(async () => tree.root.findByType('textarea').props.onChange({ target: { value: 'Rejected original draft' } }));

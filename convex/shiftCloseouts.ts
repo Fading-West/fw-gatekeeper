@@ -5,12 +5,64 @@ import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { isValidFactoryLocalDateKey } from "./localDate";
 import { buildShiftExceptions } from "./shiftExceptions";
-import { buildShiftBriefing } from "./shiftBriefing";
+import { buildShiftBriefing, describeKioskWarningReasons, summarizeAttendanceQueue } from "./shiftBriefing";
+import { ATTENDANCE_QUEUE_SCOPE_NOTE } from "./attendanceQueue";
 import { assertPortalRole } from "./access";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 
 type CloseoutStatus = "open" | "completed" | "reopened";
+type AttendanceQueueSummary = ReturnType<typeof summarizeAttendanceQueue>;
+type SignedAttendanceQueue = NonNullable<Doc<"shiftCloseouts">["attendanceQueueEvidence"]>;
+
+const SIGNED_QUEUE_KIOSK_LIMIT = 200;
+
+function attendanceQueueSentence(queue: AttendanceQueueSummary) {
+  return `${plural(queue.affected_kiosks, "kiosk")} last reported ${plural(queue.pending_records, "attendance record")} not yet uploaded. ${ATTENDANCE_QUEUE_SCOPE_NOTE}`;
+}
+
+// Immutable copy of the observations the supervisor signed against.
+function signAttendanceQueue(queue: AttendanceQueueSummary, capturedAt: string): SignedAttendanceQueue {
+  const kiosks = queue.kiosks.slice(0, SIGNED_QUEUE_KIOSK_LIMIT);
+  return {
+    capturedAt,
+    affectedKiosks: queue.affected_kiosks,
+    pendingRecords: queue.pending_records,
+    unknownKiosks: queue.unknown_kiosks,
+    omittedKiosks: queue.kiosks.length - kiosks.length,
+    kiosks: kiosks.map((kiosk) => ({
+      id: kiosk.id,
+      name: kiosk.name.slice(0, 120),
+      kioskId: kiosk.kiosk_id ? kiosk.kiosk_id.slice(0, 120) : null,
+      status: kiosk.status,
+      lastValidCount: kiosk.last_valid_count,
+      observedAt: kiosk.observed_at,
+    })),
+  };
+}
+
+function serializeSignedAttendanceQueue(evidence: SignedAttendanceQueue | undefined) {
+  if (!evidence) return null;
+  return {
+    scope: "current_fleet" as const,
+    attendance_dates_known: false as const,
+    captured_at: evidence.capturedAt,
+    affected_kiosks: evidence.affectedKiosks,
+    pending_records: evidence.pendingRecords,
+    unknown_kiosks: evidence.unknownKiosks,
+    omitted_kiosks: evidence.omittedKiosks,
+    note: ATTENDANCE_QUEUE_SCOPE_NOTE,
+    kiosks: evidence.kiosks.map((kiosk) => ({
+      id: kiosk.id,
+      name: kiosk.name,
+      kiosk_id: kiosk.kioskId,
+      status: kiosk.status,
+      last_valid_count: kiosk.lastValidCount,
+      observed_at: kiosk.observedAt,
+      caveat: (kiosk.lastValidCount ?? 0) > 0,
+    })),
+  };
+}
 
 async function recordActionReceipt(ctx: MutationCtx, receipt: {
   actorUserId: Id<"users">; requestId: string; evidence: string;
@@ -75,6 +127,8 @@ function buildChecklist(input: {
   missingClockOuts: any[];
   recognitionReviews: any[];
   kioskWarnings: number;
+  kioskWarningReasons: string;
+  attendanceQueue: AttendanceQueueSummary;
   unavailableWorkers: number;
   notYetDueWorkers: number;
   acknowledgedBlockers: boolean;
@@ -151,8 +205,10 @@ function buildChecklist(input: {
       href: kioskHref,
       proof: proof(input.kioskWarnings, "kiosk trust warnings", kioskHref, false),
       description: input.kioskWarnings
-        ? `${input.kioskWarnings} kiosk trust warning${input.kioskWarnings === 1 ? "" : "s"} may affect shift confidence.`
-        : "All kiosk trust signals are clear.",
+        ? `${input.kioskWarnings} kiosk trust warning${input.kioskWarnings === 1 ? "" : "s"} (${input.kioskWarningReasons}) may affect shift confidence.${input.attendanceQueue.affected_kiosks ? ` ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`
+        : input.attendanceQueue.unknown_kiosks
+          ? `No kiosk trust warnings. ${plural(input.attendanceQueue.unknown_kiosks, "kiosk")} did not include a valid attendance queue count in the latest report and had no unresolved positive count.`
+          : "All kiosk trust signals are clear.",
     },
     {
       id: "recognition_reviews",
@@ -185,6 +241,7 @@ function buildSuggestedNote(input: {
     attendance_corrections: number;
   };
   blockers: Array<{ label: string; count: number }>;
+  attendanceQueue: AttendanceQueueSummary;
 }) {
   const summaryCounts = [
     `${input.summary.expected} expected`,
@@ -201,11 +258,14 @@ function buildSuggestedNote(input: {
     `${input.summary.attendance_corrections} attendance corrections`,
   ].join(", ");
 
+  const queueCaveat = input.attendanceQueue.affected_kiosks
+    ? ` Incomplete attendance evidence: ${attendanceQueueSentence(input.attendanceQueue)}`
+    : "";
   if (input.blockers.length) {
     const blockerCounts = input.blockers
       .map((blocker) => `${blocker.label}: ${blocker.count}`)
       .join("; ");
-    return `${input.date} closeout: blockers remain (${blockerCounts}). Summary: ${summaryCounts}.`;
+    return `${input.date} closeout: blockers remain (${blockerCounts}). Summary: ${summaryCounts}.${queueCaveat}`;
   }
 
   return `${input.date} closeout: checklist clear. Summary: ${summaryCounts}.`;
@@ -231,6 +291,7 @@ function buildCloseoutDraft(input: {
   reviewedExceptions: number;
   sourceBlockers: ReturnType<typeof buildChecklist>;
   actionLinks: Array<{ label: string; href: string }>;
+  attendanceQueue: AttendanceQueueSummary;
 }) {
   const sourceCounts = {
     ...input.summary,
@@ -286,7 +347,7 @@ function buildCloseoutDraft(input: {
       "kiosk_trust_caveats",
       "Kiosk trust caveats",
       input.summary.kiosk_warnings
-        ? `${plural(input.summary.kiosk_warnings, "kiosk trust warning")} may affect confidence in the physical-door attendance record and should be reviewed against kiosk sync evidence.`
+        ? `${plural(input.summary.kiosk_warnings, "kiosk trust warning")} may affect confidence in the physical-door attendance record and should be reviewed against kiosk sync evidence.${input.attendanceQueue.affected_kiosks ? ` Incomplete attendance evidence: ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`
         : "No kiosk trust warnings are blocking the closeout based on current kiosk sync evidence.",
       [
         {
@@ -350,16 +411,22 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
   const missingClockOuts = openExceptions.filter((exception: any) => exception.type === "missing_clock_out");
   const recognitionReviews = openExceptions.filter((exception: any) => exception.type === "recognition_review");
   const kioskWarnings = briefing.summary.kiosk_warnings || 0;
+  const kioskWarningReasons = describeKioskWarningReasons(briefing.kiosks.rows.filter(kiosk => kiosk.warning_reasons.length > 0));
+  const attendanceQueue = briefing.kiosks.attendance_queue;
   // Canonical, collision-free comparison evidence. Exclude names, notes and
   // routine heartbeat times: those do not change the blocker being reviewed.
+  // Queue entries carry the count and known/unknown state, never the
+  // observation time, so routine heartbeats do not invalidate a review.
+  // Kiosks without a queue caveat keep their earlier evidence shape.
   const kioskEvidence = await Promise.all(briefing.kiosks.rows
-    .filter(kiosk => kiosk.status !== "online" || kiosk.device_fault)
+    .filter(kiosk => kiosk.warning_reasons.length > 0)
     .map(async kiosk => {
       const id = ctx.db.normalizeId("kiosks", kiosk.id);
       const record = id ? await ctx.db.get(id) : null;
       return [kiosk.id, kiosk.status, record?.health?.cameraOk ?? null,
         record?.health?.modelOk ?? null, record?.health?.livenessAvailable ?? null,
-        record?.health?.degradedReason ?? null];
+        record?.health?.degradedReason ?? null,
+        ...(kiosk.attendance_queue.caveat ? ["attendance_queue", kiosk.attendance_queue.status, kiosk.attendance_queue.last_valid_count] : [])];
     }));
   const blockerEvidence = JSON.stringify({ version: 4, date,
     // Composed schedule coverage remains a blocker after its exception is reviewed.
@@ -381,6 +448,8 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     missingClockOuts,
     recognitionReviews,
     kioskWarnings,
+    kioskWarningReasons,
+    attendanceQueue,
     unavailableWorkers: briefing.coverage_unavailable,
     notYetDueWorkers: briefing.daily_attendance.not_yet_due,
     acknowledgedBlockers,
@@ -392,6 +461,8 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     missingClockOuts,
     recognitionReviews,
     kioskWarnings,
+    kioskWarningReasons,
+    attendanceQueue,
     unavailableWorkers: briefing.coverage_unavailable,
     notYetDueWorkers: briefing.daily_attendance.not_yet_due,
     acknowledgedBlockers: false,
@@ -415,6 +486,7 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     date,
     summary,
     blockers: sourceBlockers,
+    attendanceQueue,
   });
   const actionLinks = [
     { label: "Briefing", href: `/briefing?date=${date}` },
@@ -431,6 +503,7 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     reviewedExceptions: exceptions.filter((exception: any) => exception.status !== "open").length,
     sourceBlockers,
     actionLinks,
+    attendanceQueue,
   });
 
   return {
@@ -460,8 +533,12 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
             critical_exceptions: closeout.criticalExceptions,
             kiosk_warnings: closeout.kioskWarnings,
           },
+          // Signed evidence is distinct from current observations; records
+          // signed before this capture existed report null ("not recorded").
+          signed_attendance_queue: serializeSignedAttendanceQueue(closeout.attendanceQueueEvidence),
         }
       : null,
+    attendance_queue: attendanceQueue,
     summary,
     checklist,
     blockers,
@@ -592,6 +669,7 @@ export const save = mutation({
       openExceptions: current.summary.open_exceptions,
       criticalExceptions: current.summary.critical_exceptions,
       kioskWarnings: current.summary.kiosk_warnings,
+      attendanceQueueEvidence: args.action === "complete" ? signAttendanceQueue(current.attendance_queue, now) : undefined,
       completedAt: args.action === "complete" ? now : existing?.completedAt,
       reopenedAt: args.action === "reopen" ? now : existing?.reopenedAt,
       updatedAt: now,

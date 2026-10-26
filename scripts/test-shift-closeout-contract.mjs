@@ -186,4 +186,6 @@ const activityLog = read('src/app/log/page.tsx');
 assert.match(activityLog, /useSearchParams/, 'Activity Log must honor dated closeout/source links.');
 assert.match(activityLog, /searchParams\.get\('date'\)/, 'Activity Log should initialize date filtering from query params.');
 
+assert.match(closeouts, /attendanceQueueEvidence: args\.action === "complete" \? signAttendanceQueue\(current\.attendance_queue, now\) : undefined/, 'Only signoff should capture immutable attendance queue evidence.');
+assert.match(closeouts, /signed_attendance_queue: serializeSignedAttendanceQueue\(closeout\.attendanceQueueEvidence\)/, 'Signed queue evidence must be returned separately from current observations.');
 console.log('Shift closeout contract passed');
