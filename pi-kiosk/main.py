@@ -724,8 +724,9 @@ def _run(args):
             # 2. Feed to detection thread (stamped so results can be ordered
             #    against events like blink confirmation)
             with detect_lock:
-                if pending_frame[0] is None:
-                    pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now, camera_generation[0])
+                # Keep the newest waiting frame while inference is busy. An
+                # older queued frame adds a full inference cycle to its age.
+                pending_frame[0] = (bgr_frame.copy(), rgb_frame.copy(), now, camera_generation[0])
 
             if not model_recovery.ready:
                 pending_clock[0] = None

@@ -255,6 +255,10 @@ lock-timeout messages.
 
 - `enroll.py` — local enrollment CLI (add/list/remove workers) with a
   loopback-only browser preview on `:5556`.
+  Its `enrollment_quality.py` policy is bundled in `pi-kiosk` so maintenance
+  commands also work inside immutable releases, including releases staged by
+  older updaters. Keep it byte-identical to `face-service/enrollment_quality.py`;
+  the enrollment tests enforce parity when either copy changes.
   A camera dropout clears the preview and resets blink verification immediately.
   Three consecutive failed reads release the handle; enrollment then tries up
   to five reopens, backing off from 0.25 seconds to 2 seconds between attempts.

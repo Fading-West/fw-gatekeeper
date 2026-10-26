@@ -90,6 +90,10 @@ class UpdateScriptTests(unittest.TestCase):
         (kiosk / "tools").mkdir(parents=True)
         for name in ("update.sh", "requirements-build.lock", "requirements.lock"):
             shutil.copy(KIOSK / name, kiosk / name)
+        shutil.copy(KIOSK / "enrollment_samples.py", kiosk / "enrollment_samples.py")
+        (self.upstream / "face-service").mkdir()
+        shutil.copy(REPO / "face-service/enrollment_quality.py",
+                    self.upstream / "face-service/enrollment_quality.py")
         shutil.copy(KIOSK / "tools/kiosk_release.py", kiosk / "tools/kiosk_release.py")
         shutil.copy(REPO / ".gitignore", self.upstream / ".gitignore")
         (kiosk / "main.py").write_text(APP.replace("VERSION", repr("old")))
@@ -104,6 +108,7 @@ class UpdateScriptTests(unittest.TestCase):
         (self.kiosk / "data").mkdir()
         (self.kiosk / "data/attendance.db").write_text("offline scans\n")
         (kiosk / "main.py").write_text(APP.replace("VERSION", repr("new")))
+        shutil.copy(KIOSK / "enrollment_quality.py", kiosk / "enrollment_quality.py")
         for name in ("requirements-build.lock", "requirements.lock"):
             (kiosk / name).write_text(f"target {name}\n")
         self.git(self.upstream, "add", ".")
@@ -323,6 +328,37 @@ state_path.write_text(json.dumps(state))
         self.assertNotIn("watchdog", self.log.read_text())
         self.assertNotIn("systemctl stop", self.log.read_text())
         self.assertNotIn("systemctl restart", self.log.read_text())
+
+    def test_active_release_includes_its_own_local_enrollment_policy(self):
+        # The checkout deliberately stays old. Enrollment must use the policy
+        # from the target revision, even when maintenance runs in the release.
+        policy = self.upstream / "pi-kiosk/enrollment_quality.py"
+        policy.write_text(policy.read_text().replace("COMPETING_FACE_AREA_RATIO = 0.4",
+                                                     "COMPETING_FACE_AREA_RATIO = 0.5"))
+        self.git(self.upstream, "add", ".")
+        self.git(self.upstream, "commit", "-m", "update enrollment policy")
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads((self.repo / ".git/kiosk-current.json").read_text())
+        directory = Path(record["directory"])
+        # Execute the real CLI helper; camera/ONNX are unnecessary to exercise
+        # its import and identity/competing-face decisions.
+        result = subprocess.run([sys.executable, "-c", '''
+import numpy as np
+from enrollment_samples import competing_faces, samples_agree
+subject = np.eye(1, 512, 0)[0]
+other = np.eye(1, 512, 1)[0]
+assert samples_agree([subject, subject])
+assert not samples_agree([subject, other])
+assert competing_faces([(0, 100, 100, 0), (0, 80, 80, 0)])
+assert not competing_faces([(0, 100, 100, 0), (0, 45, 100, 0)])
+'''], cwd=directory, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deployed_policy = directory / "enrollment_quality.py"
+        self.assertEqual(deployed_policy.read_text(), policy.read_text())
+        self.assertFalse(deployed_policy.is_symlink())
+        self.assertFalse((self.repo / "pi-kiosk/enrollment_quality.py").exists())
+        self.assertFalse((directory.parent / "face-service").exists())
 
     def test_failed_build_locks_never_touch_service_or_old_venv(self):
         for lock in ("requirements-build.lock", "requirements.lock"):

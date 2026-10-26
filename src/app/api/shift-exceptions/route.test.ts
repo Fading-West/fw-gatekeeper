@@ -41,7 +41,7 @@ async function setup() {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ exception_key: exceptionKey, source_fingerprint: source.source_fingerprint, date, type: 'missing_arrival', status: 'reviewed', ...fields }),
   }));
-  return { t, id, patch };
+  return { t, actor, exceptionKey, id, patch };
 }
 
 it.each(['', '   '])('clears the saved note when it is explicitly sent as %j', async note => {
@@ -76,4 +76,30 @@ it.each([null, 42, { text: 'note' }])('rejects a non-string note %j without chan
   expect(res.status).toBe(400);
   expect(convex.mutation).not.toHaveBeenCalled();
   expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ status: 'open', note: 'Existing note' });
+});
+
+it.each([null, false, 42, [], {}, '', '   ', 'unknown'].map(status => ({ status })))('rejects an explicit invalid status $status without dismissing a critical exception', async ({ status }) => {
+  const { t, actor, exceptionKey, id, patch } = await setup();
+  const before = await t.run(ctx => ctx.db.get(id));
+  const res = await patch({ status });
+  expect(res.status).toBe(400);
+  expect(await res.json()).toEqual({ error: 'status must be open, reviewed, ignored, or resolved' });
+  expect(convex.mutation).not.toHaveBeenCalled();
+  expect(await t.run(ctx => ctx.db.get(id))).toEqual(before);
+  expect(await t.run(ctx => ctx.db.query('auditLog').collect())).toEqual([]);
+  expect((await actor.query(api.shiftExceptions.summary, { date })).exceptions).toContainEqual(
+    expect.objectContaining({ key: exceptionKey, status: 'open', severity: 'critical' }),
+  );
+});
+
+it.each(['open', 'reviewed', 'ignored', 'resolved'])('saves the explicit supported status %s', async status => {
+  const { t, id, patch } = await setup();
+  expect((await patch({ status: ` ${status} ` })).status).toBe(200);
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ status });
+});
+
+it('keeps the reviewed default when status is omitted', async () => {
+  const { t, id, patch } = await setup();
+  expect((await patch({ status: undefined })).status).toBe(200);
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ status: 'reviewed' });
 });

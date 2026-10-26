@@ -1,6 +1,6 @@
 import { getKioskSyncStatus } from "../src/lib/kiosk-sync-status";
 import { isSupportedEncoding } from "../src/lib/encoding";
-import { getFactoryLocalDateKey, getFactoryLocalTimestamp } from "./localDate";
+import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
@@ -563,14 +563,13 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       });
     }
 
-    const factoryNow = getFactoryLocalTimestamp(new Date().toISOString())!;
     const departmentRows = [...departmentMap.values()].map((row) => {
       // Workers whose shift has not started yet do not count against coverage.
       const dueExpected = row.expected - row.not_yet_due;
       let status: DepartmentCoverageStatus = "covered";
       if (row.missing > 0 || row.late > 0) status = "short";
       // An empty floor is critical only while due coverage is missing or still running.
-      const shiftEnded = factoryNow > `${date}T${row.scheduled_end}:00`;
+      const shiftEnded = hasScheduleTimePassed(date, row.scheduled_end);
       if (row.present === 0 && dueExpected > 0 && (row.missing > 0 || !shiftEnded)) status = "critical";
       if (row.expected > 0 && dueExpected === 0) status = "not_yet_due";
       return { ...row, status };
