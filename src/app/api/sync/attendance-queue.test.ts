@@ -5,7 +5,13 @@ import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 import { fetchWorkersForSync, updateKioskLastSync } from '@/lib/convex-ingest';
 
 vi.mock('@/lib/kiosk-device-auth', () => ({ authenticateKiosk: vi.fn() }));
-vi.mock('@/lib/convex-ingest', () => ({ fetchWorkersForSync: vi.fn(), updateKioskLastSync: vi.fn(), issueRosterReceipt: vi.fn() }));
+vi.mock('@/lib/convex-ingest', () => ({
+  fetchWorkersForSync: vi.fn(),
+  updateKioskLastSync: vi.fn(),
+  issueRosterReceipt: vi.fn(),
+  // The sequence-cursor roster protocol also issues a legacy delivery cursor.
+  issueLegacyRosterCursor: vi.fn(async () => ({ issuedAt: '2026-10-09T12:00:00.000Z', since: null })),
+}));
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(authenticateKiosk).mockResolvedValue({ documentId: 'kiosk-document', kioskId: 'entry', aliases: ['entry'] });
