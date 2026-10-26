@@ -367,9 +367,18 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
   };
 }
 
-function withReview(exception: ShiftException, review: any): ShiftException {
+// Arrival checks read only the date's clock-ins and schedule, so their reviews bind
+// to that evidence: a later clock-out or next-day scan must not reopen them.
+// source_fingerprint keeps the full pairing window for correction stale checks.
+const reviewFingerprints = new WeakMap<ShiftException, string>();
+export function getReviewFingerprint(exception: ShiftException): string {
+  return reviewFingerprints.get(exception) ?? exception.source_fingerprint;
+}
+
+function withReview(exception: ShiftException, review: any, reviewFingerprint = exception.source_fingerprint): ShiftException {
   // Stable keys and timestamps cannot attribute legacy reviews to this evidence.
-  if (review?.sourceFingerprint !== exception.source_fingerprint) review = null;
+  // A full-window match (reviews stored before arrival binding) also proves it.
+  if (review?.sourceFingerprint !== reviewFingerprint && review?.sourceFingerprint !== exception.source_fingerprint) review = null;
   return {
     ...exception,
     status: getReviewStatus(review),
@@ -826,21 +835,26 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       const sourceKey = JSON.stringify([exception.type, exception.worker_id]);
       source_fingerprint = attendanceFingerprints.get(sourceKey);
       if (!source_fingerprint) {
-        // Arrival checks read only this date's clock-ins, so a later clock-out or
-        // next-day scan must not reopen a reviewed late or missing arrival.
-        const arrival = exception.type === "late_arrival" || exception.type === "missing_arrival";
         source_fingerprint = buildExceptionSourceFingerprint({
           date: exception.date, type: exception.type, workerId: exception.worker_id,
-          attendanceEvents: arrival
-            ? (eventsByWorker.get(exception.worker_id || "") ?? []).filter(event => event.eventType === "clock_in")
-            : pairingEventsByWorker.get(exception.worker_id || "") ?? [],
+          attendanceEvents: pairingEventsByWorker.get(exception.worker_id || "") ?? [],
           schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
           scheduleAssignment: assignmentsByWorker.get(exception.worker_id || ""),
         });
         attendanceFingerprints.set(sourceKey, source_fingerprint);
       }
     }
-    return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
+    if (exception.type !== "late_arrival" && exception.type !== "missing_arrival") {
+      return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
+    }
+    const reviewFingerprint = buildExceptionSourceFingerprint({
+      date: exception.date, type: exception.type, workerId: exception.worker_id,
+      attendanceEvents: (eventsByWorker.get(exception.worker_id || "") ?? []).filter(event => event.eventType === "clock_in"),
+      schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
+    });
+    const reviewed = withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key), reviewFingerprint);
+    reviewFingerprints.set(reviewed, reviewFingerprint);
+    return reviewed;
   });
   const timestampKey = createRecognitionTimestampSortKey();
   const chronologicalKeys = new Map(hydrated.map(exception =>
@@ -917,15 +931,16 @@ export const review = mutation({
       .query("exceptionReviews")
       .withIndex("by_key", (q) => q.eq("exceptionKey", args.exceptionKey))
       .first();
+    const reviewFingerprint = getReviewFingerprint(source);
     const patch = {
-      sourceFingerprint: source.source_fingerprint,
+      sourceFingerprint: reviewFingerprint,
       date: source.date,
       type: source.type,
       status: args.status,
       // An omitted note keeps the note currently shown (for recognition reviews, a newer
       // Recognition Lab note wins over an older exceptions note); an empty or whitespace-only note clears it.
       note: args.note === undefined
-        ? await currentReviewNote(ctx, args, existing?.sourceFingerprint === source.source_fingerprint ? existing : null)
+        ? await currentReviewNote(ctx, args, existing?.sourceFingerprint === reviewFingerprint || existing?.sourceFingerprint === source.source_fingerprint ? existing : null)
         : normalizeText(args.note),
       reviewedAt: args.status === "open" ? undefined : now,
       updatedAt: now,

@@ -28,7 +28,7 @@ async function setup(firstClockIn: string | null) {
     expect(await find(type)).toMatchObject({ status: 'reviewed', review_note: note });
   };
   const punch = (eventType: string, timestamp: string) => t.run(ctx => ctx.db.insert('attendance', { workerId: ids.workerId, eventType, timestamp, synced: true }));
-  return { t, admin, find, review, punch };
+  return { t, admin, find, review, punch, workerId: ids.workerId };
 }
 
 it('keeps a reviewed late arrival through the same-day clock-out and next-day clock-in', async () => {
@@ -62,4 +62,24 @@ it('keeps a reviewed missing arrival when the worker clocks in the next day', as
   vi.setSystemTime(new Date(`${nextDate}T12:05:00Z`));
   await punch('clock_in', `${nextDate}T07:00:00`);
   expect(await find('missing_arrival')).toMatchObject({ status: 'reviewed', review_note: 'Approved day off' });
+});
+
+it('still rejects a stale missing-arrival correction after an overnight exit changes the pairing window', async () => {
+  const { admin, find, review, punch, workerId } = await setup(null);
+  await punch('clock_in', '2026-09-02T23:00:00');
+  await review('missing_arrival', 'Checking with the night lead');
+  const source = await find('missing_arrival');
+  await punch('clock_out', `${date}T08:00:00`);
+  expect(await find('missing_arrival')).toMatchObject({ status: 'reviewed', review_note: 'Checking with the night lead' });
+  await expect(admin.mutation(api.attendanceCorrections.create, { requestId: 'stale-arrival', date, workerId, action: 'add_clock_in',
+    correctedTimestamp: `${date}T07:00:00`, relatedExceptionKey: source.key, sourceFingerprint: source.source_fingerprint,
+    reason: 'Old draft' })).rejects.toThrow('source exception changed');
+});
+
+it('keeps an arrival review stored with the full-window fingerprint before this change', async () => {
+  const { t, find } = await setup('07:45');
+  const source = await find('late_arrival');
+  await t.run(ctx => ctx.db.insert('exceptionReviews', { exceptionKey: source.key, date, type: 'late_arrival',
+    sourceFingerprint: source.source_fingerprint, status: 'reviewed', note: 'Reviewed before deploy', reviewedAt: date, updatedAt: date }));
+  expect(await find('late_arrival')).toMatchObject({ status: 'reviewed', review_note: 'Reviewed before deploy' });
 });
