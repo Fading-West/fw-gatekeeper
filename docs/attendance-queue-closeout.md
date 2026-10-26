@@ -70,3 +70,24 @@ does not report attendance queue evidence, it refuses new signoffs.
 and the Closeout page disables completion. Notes can still be saved, and a
 retry against an already completed record still recovers its receipt. Physical offline and reconnect
 behavior must be confirmed on a Pi pilot.
+
+## Current integration order
+
+This queue-evidence layer is stacked on #132's action receipts and expected
+revisions, which is itself stacked on #249's signed-attendance comparison.
+Merge #249, then #132, then this layer. Preserve each layer's existing history
+and tests rather than replacing it with an older integrated copy.
+
+Signed attendance evidence belongs to the selected factory date. Signed queue
+evidence records fleet-wide uncertainty whose attendance dates are unknown.
+They stay separate in the stored closeout, immutable history, page and export.
+An original completion receipt returns its original result after a later reopen
+without recapturing either signature; a deliberate re-sign captures both again.
+
+Use `[skip render]` on the eventual merge commit when following the deferred
+[coordinated release procedure](legacy-kiosk-rollout.md#coordinated-production-release).
+Release the matching Convex schema/functions before the portal and reload old
+Closeout tabs. Do not bypass missing queue evidence or missing action identity
+to restore writes during a mixed-version deployment. Automated composition tests
+do not establish live authentication, deployed Convex concurrency or physical Pi
+offline/reconnect acceptance.
