@@ -39,9 +39,13 @@ async function setup(blocked = false) {
     // PATCH uses a generated reference, not the HTTP client's future references.
     return actor.mutation(ref as typeof api.shiftCloseouts.save, JSON.parse(JSON.stringify(args)));
   });
-  const patch = (fields: Record<string, unknown>) => PATCH(new NextRequest('https://example.test/api/shift-closeout', {
-    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, blocker_evidence: evidence, ...fields }),
-  }));
+  let request = 0;
+  const patch = async (fields: Record<string, unknown>) => {
+    const current = await actor.query(api.shiftCloseouts.get, { date });
+    return PATCH(new NextRequest('https://example.test/api/shift-closeout', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ date, request_id: `route-fixture-${++request}`, expected_revision: current.closeout?.revision ?? 0, blocker_evidence: evidence, ...fields }),
+    }));
+  };
   return { t, id, patch };
 }
 

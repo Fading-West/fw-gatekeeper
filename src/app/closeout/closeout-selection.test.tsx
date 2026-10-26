@@ -4,6 +4,8 @@ import CloseoutPage from './page';
 
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-10') }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'admin' }));
+const actor = vi.hoisted(() => ({ id: 'synthetic-selection-0', next: 0 }));
+vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => actor.id }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
@@ -15,6 +17,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 const button = (text: string) => tree.root.findAllByType('button').find((node) => label(node) === text)!;
 
 beforeEach(async () => {
+  actor.id = `synthetic-selection-${++actor.next}`;
   requests = new Map();
   fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => new Promise((resolve) => { requests.set(init?.method === 'PATCH' ? 'PATCH' : url, (data) => resolve(response(data))); }));
   vi.stubGlobal('fetch', fetchMock);
@@ -42,7 +45,8 @@ it('keeps React 18 save controls disabled until the network request and refresh 
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
   expect(button('Save notes').props.disabled).toBe(true);
   expect(tree.root.findByType('textarea').props.readOnly).toBe(true);
-  await act(async () => requests.get('PATCH')!({}));
+  const body = JSON.parse(String(fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')![1].body));
+  await act(async () => requests.get('PATCH')!({ id: 'synthetic-closeout', status: 'open', revision: 1, requestId: body.request_id, actorUserId: actor.id }));
   expect(button('Save notes').props.disabled).toBe(true);
   await act(async () => requests.get('/api/shift-closeout?date=2026-09-10')!(payload('2026-09-10', 'Notes')));
   expect(button('Save notes').props.disabled).toBe(false);

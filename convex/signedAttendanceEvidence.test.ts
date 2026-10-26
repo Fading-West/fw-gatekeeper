@@ -24,9 +24,10 @@ async function setup() {
     return { userId, viewerId, workerId };
   });
   const actor = t.withIdentity({ subject: ids.userId });
+  let request = 0;
   const complete = async (selected = date) => {
     const p = await actor.query(api.shiftCloseouts.get, { date: selected });
-    return actor.mutation(api.shiftCloseouts.save, { date: selected, action: 'complete', notes: 'Synthetic evidence reviewed', acknowledgedBlockers: true, blockerEvidence: p.blocker_evidence });
+    return actor.mutation(api.shiftCloseouts.save, { date: selected, action: 'complete', requestId: `evidence-complete-${++request}`, expectedRevision: p.closeout?.revision ?? null, notes: 'Synthetic evidence reviewed', acknowledgedBlockers: true, blockerEvidence: p.blocker_evidence });
   };
   return { t, actor, complete, ...ids };
 }
@@ -68,10 +69,10 @@ describe('versioned signed attendance evidence', () => {
     await t.mutation(internal.attendance.bulkCreateFromHttp, { events: [punch] });
     const afterUpload = await actor.query(api.shiftCloseouts.get, { date });
     expect(afterUpload.attendance_comparison).toMatchObject({ status: 'changed', signed: { raw_punches: 0 }, current: { raw_punches: 1 }, activity_log_href: `/log?date=${date}` });
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Retry must not re-sign' });
+    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'already-completed', expectedRevision: signed.revision, notes: 'Retry must not re-sign' });
     expect(await t.run(ctx => ctx.db.get(signed.id))).toEqual(before);
     expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toHaveLength(1);
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen' });
+    await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'reopen-evidence', expectedRevision: signed.revision });
     expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('not_applicable');
     await complete();
     const history = await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect());
@@ -125,12 +126,12 @@ describe('versioned signed attendance evidence', () => {
     const viewer = t.withIdentity({ subject: viewerId });
     expect((await viewer.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({ status: 'unknown', signed: null, current: null });
     expect(await t.run(ctx => ctx.db.get(id))).toEqual(before);
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' });
+    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: 'legacy-retry', expectedRevision: before!.revision ?? 0 });
     expect(await t.run(ctx => ctx.db.get(id))).toEqual(before);
     await t.run(ctx => ctx.db.patch(id, { signedAttendanceEvidence: { version: 2, digest: 'future', raw_punches: 0, corrections: 0, reversals: 0 } }));
     expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unknown');
     await expect(t.query(api.shiftCloseouts.get, { date })).rejects.toThrow('Unauthorized');
-    for (const action of ['save', 'complete', 'reopen'] as const) await expect(viewer.mutation(api.shiftCloseouts.save, { date, action })).rejects.toThrow();
+    for (const action of ['save', 'complete', 'reopen'] as const) await expect(viewer.mutation(api.shiftCloseouts.save, { date, action, requestId: `viewer-${action}`, expectedRevision: before!.revision ?? 0 })).rejects.toThrow();
   });
 
   it('retains a signed baseline when comparison reads fail', async () => {

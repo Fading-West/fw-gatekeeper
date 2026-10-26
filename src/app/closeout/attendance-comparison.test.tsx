@@ -6,6 +6,7 @@ import { ATTENDANCE_SCOPE } from '@/lib/attendance-comparison';
 const state = vi.hoisted(() => ({ role: 'admin' }));
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-02') }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => state.role }));
+vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => 'synthetic-actor' }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');

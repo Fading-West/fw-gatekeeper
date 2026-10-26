@@ -501,9 +501,9 @@ describe("inactive worker scans in shift trust workflows", () => {
     expect(blocked.summary).toMatchObject({ critical_exceptions: 1, open_exceptions: 1 });
     expect(blocked.checklist.find((item: any) => item.id === "critical_exceptions")).toMatchObject({ status: "blocked", count: 1 });
     expect(blocked.can_complete).toBe(false);
-    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { date: DATE, action: "complete" }))
+    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null, date: DATE, action: "complete" }))
       .rejects.toThrow("acknowledgement note");
-    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { date: DATE, action: "complete", blockerEvidence: blocked.blocker_evidence, acknowledgedBlockers: true }))
+    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null, date: DATE, action: "complete", blockerEvidence: blocked.blocker_evidence, acknowledgedBlockers: true }))
       .rejects.toThrow("acknowledgement note");
 
     const [exception] = await inactiveScans(s);
@@ -511,7 +511,7 @@ describe("inactive worker scans in shift trust workflows", () => {
     const cleared = await s.enrollment.query(api.shiftCloseouts.get, { date: DATE });
     expect(cleared.summary.critical_exceptions).toBe(0);
     expect(cleared.blockers).toEqual([]);
-    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { date: DATE, action: "complete", notes: "Scan reviewed" }))
+    await expect(s.enrollment.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null, date: DATE, action: "complete", notes: "Scan reviewed" }))
       .resolves.toMatchObject({ status: "completed" });
   });
 

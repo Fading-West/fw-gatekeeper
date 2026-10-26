@@ -20,9 +20,10 @@ async function setup() {
     return { userId, workerId };
   });
   const actor = t.withIdentity({ subject: ids.userId });
+  let request = 0;
   const complete = async () => {
     const payload = await actor.query(api.shiftCloseouts.get, { date });
-    return actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Synthetic capacity review', acknowledgedBlockers: true, blockerEvidence: payload.blocker_evidence });
+    return actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', requestId: `capacity-complete-${++request}`, expectedRevision: payload.closeout?.revision ?? null, notes: 'Synthetic capacity review', acknowledgedBlockers: true, blockerEvidence: payload.blocker_evidence });
   };
   return { t, actor, complete, ...ids };
 }
@@ -109,8 +110,8 @@ it('reopens and re-signs a busy day with many reversed corrections inside transa
   expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({
     status: 'changed', current: { raw_punches: 2000, corrections: 1900, reversals: 1900 },
   });
-  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen' })).status).toBe('reopened');
-  await actor.mutation(api.shiftCloseouts.save, { date, action: 'save', notes: 'Synthetic review' });
+  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'capacity-reopen', expectedRevision: (await actor.query(api.shiftCloseouts.get, { date })).closeout!.revision })).status).toBe('reopened');
+  await actor.mutation(api.shiftCloseouts.save, { date, action: 'save', requestId: 'capacity-save', expectedRevision: (await actor.query(api.shiftCloseouts.get, { date })).closeout!.revision, notes: 'Synthetic review' });
   const { id } = await complete();
   expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 2000, corrections: 1900, reversals: 1900 });
   expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');

@@ -4,6 +4,7 @@ import CloseoutPage from './page';
 
 const role = vi.hoisted(() => ({ current: 'admin' }));
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-09-10') }));
+vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => 'role-test-actor' }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => role.current }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...props}>{children}</a> }));
