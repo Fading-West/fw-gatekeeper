@@ -392,7 +392,10 @@ export const update = mutation({
     }
     updates.updatedAt = new Date().toISOString();
     await ctx.db.patch(id, updates);
-    if (fields.name !== undefined || fields.employeeId !== undefined || fields.department !== undefined) {
+    // Enrollment and the Workers page resend unchanged identity fields; only real changes are audited.
+    const identityChanged = (["name", "employeeId", "department"] as const)
+      .some((field) => field in updates && updates[field] !== worker[field]);
+    if (identityChanged) {
       await writeAuditLog(ctx, { actorUserId: member.userId, action: "workers.updateIdentity", targetTable: "workers", targetId: id,
         details: JSON.stringify({ before: { name: worker.name, employeeId: worker.employeeId, department: worker.department }, after: { name: updates.name ?? worker.name, employeeId: fields.employeeId === undefined ? worker.employeeId : updates.employeeId, department: updates.department ?? worker.department } }) });
     }
@@ -407,6 +410,8 @@ export const remove = mutation({
     const member = await assertPortalRole(ctx, ["admin"]);
     const worker = await ctx.db.get(args.id);
     if (!worker) throw new Error("Worker not found");
+    // Repeated deactivation (a retry or a stale tab) changes nothing to audit or resync.
+    if (!worker.active) return { ok: true };
     await ctx.db.patch(args.id, { active: false, updatedAt: new Date().toISOString() });
     await writeAuditLog(ctx, {
       actorUserId: member.userId,
@@ -496,7 +501,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
   const page = await query.paginate({ cursor, numItems: 200 });
   const result = await Promise.all(page.page.map(async (w: any) => {
     let photoUrl: string | null = null;
-    if (w.photoStorageIds) {
+    if (w.active && w.photoStorageIds) {
       for (const sid of w.photoStorageIds) {
         const url = await ctx.storage.getUrl(sid);
         if (url) {
@@ -511,7 +516,7 @@ async function listWorkersForSync(ctx: any, args: { since?: string; inclusive?: 
       employee_id: w.employeeId || "",
       department: w.department,
       photo_url: photoUrl,
-      face_encoding: w.faceEncoding || null,
+      face_encoding: w.active ? w.faceEncoding || null : null,
       enrolled_at: w.enrolledAt,
       updated_at: w.updatedAt || w.enrolledAt,
       active: w.active ? 1 : 0,
@@ -527,12 +532,4 @@ export const listForSyncFromHttp = internalQuery({
   args: { since: v.optional(v.string()), inclusive: v.optional(v.boolean()), cursor: v.optional(v.string()) },
   returns: v.object({ workers: workerSyncResult, isDone: v.boolean(), continueCursor: v.string() }),
   handler: listWorkersForSync,
-});
-
-export const generateUploadUrl = mutation({
-  args: {},
-  handler: async (ctx) => {
-    await assertPortalRole(ctx, ["admin", "enrollment"]);
-    return await ctx.storage.generateUploadUrl();
-  },
 });

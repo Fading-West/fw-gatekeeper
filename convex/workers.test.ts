@@ -121,3 +121,43 @@ describe("worker identity safeguards", () => {
     })).rejects.toThrow("Employee must be selected from the company roster");
   });
 });
+
+describe("worker audit entries", () => {
+  async function auditActions(admin: Awaited<ReturnType<typeof authenticatedAdmin>>, workerId: string) {
+    const rows = await admin.run((ctx) => ctx.db.query("auditLog")
+      .withIndex("by_target", (q) => q.eq("targetTable", "workers").eq("targetId", workerId)).collect());
+    return rows.map((row) => row.action);
+  }
+
+  it("records identity updates only when the name, employee ID or department changes", async () => {
+    const admin = await authenticatedAdmin();
+    const worker = await admin.mutation(api.workers.create, {
+      name: "Audit Worker", employeeId: "F-9", department: "Operations", faceEncoding: encoding, consentAt: new Date().toISOString(),
+    });
+    const created = await auditActions(admin, worker.id);
+
+    // Re-enrollment and the Workers page Save resend the current identity.
+    await admin.mutation(api.workers.update, {
+      id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, name: " Audit  Worker ", employeeId: "f-9", department: "Operations ", faceEncoding: encoding, consentAt: new Date().toISOString(),
+    });
+    await admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, name: "Audit Worker", employeeId: "F-9", department: "Operations" });
+    expect(await auditActions(admin, worker.id)).toEqual([...created, "workers.enroll"]);
+
+    await admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, name: "Audit Worker", employeeId: "F-9", department: "Mill" });
+    await admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, employeeId: "" });
+    expect(await auditActions(admin, worker.id)).toEqual([...created, "workers.enroll", "workers.updateIdentity", "workers.updateIdentity"]);
+  });
+
+  it("does not re-deactivate an inactive worker", async () => {
+    const admin = await authenticatedAdmin();
+    const worker = await admin.mutation(api.workers.create, {
+      name: "Leaving Worker", employeeId: "F-10", department: "Operations", faceEncoding: encoding, consentAt: new Date().toISOString(),
+    });
+    await admin.mutation(api.workers.remove, { id: worker.id });
+    const deactivated = await admin.run((ctx) => ctx.db.get(worker.id));
+
+    await admin.mutation(api.workers.remove, { id: worker.id });
+    expect(await admin.run((ctx) => ctx.db.get(worker.id))).toEqual(deactivated);
+    expect((await auditActions(admin, worker.id)).filter((action) => action === "workers.remove")).toHaveLength(1);
+  });
+});

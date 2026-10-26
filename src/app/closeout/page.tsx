@@ -64,6 +64,7 @@ function exportText(payload: ShiftCloseoutResponse, supervisorName: string, note
     `Present: ${summary.present}`,
     `Late: ${summary.late}`,
     `Missing: ${summary.missing}`,
+    ...(payload.closeout?.status !== 'completed' && payload.summary.not_yet_due ? [`Not yet due: ${payload.summary.not_yet_due}`] : []),
     `Open exceptions: ${summary.open_exceptions}`,
     `Critical exceptions: ${summary.critical_exceptions}`,
     `Kiosk warnings: ${summary.kiosk_warnings}`,
@@ -182,6 +183,8 @@ function ShiftCloseoutPageContent() {
   const [acknowledgedBlockers, setAcknowledgedBlockers] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const mutationPendingRef = useRef(false);
+  const conflictDraftRef = useRef<{ date: string; notes: string; supervisorName: string } | null>(null);
+  const [unsavedConflictDraft, setUnsavedConflictDraft] = useState<{ notes: string; supervisorName: string } | null>(null);
   const canOperate = canOperateCloseout(currentRole);
 
   const loadCloseout = useCallback(async (signal: AbortSignal): Promise<ShiftCloseoutResponse> => {
@@ -195,9 +198,13 @@ function ShiftCloseoutPageContent() {
   const dataReady = Boolean(payload && !loading && !error);
 
   useEffect(() => {
-    setSupervisorName(payload?.closeout?.supervisor_name || '');
-    setNotes(payload?.closeout?.notes || '');
+    const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
+    const editableDraft = payload?.closeout?.status === 'completed' ? null : retained;
+    setSupervisorName(editableDraft?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
+    setNotes(editableDraft?.notes ?? payload?.closeout?.notes ?? '');
+    setUnsavedConflictDraft(retained && payload?.closeout?.status === 'completed' ? retained : null);
     setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
+    if (retained) conflictDraftRef.current = null;
   }, [payload]);
 
 
@@ -208,7 +215,8 @@ function ShiftCloseoutPageContent() {
     Number(payload?.summary.missing_clock_outs || 0) +
     Number(payload?.summary.recognition_reviews || 0) +
     Number(payload?.summary.kiosk_warnings || 0) +
-    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0);
+    Number(payload?.checklist.find((item) => item.id === 'schedule_coverage')?.count || 0) +
+    Number(payload?.checklist.find((item) => item.id === 'not_yet_due')?.count || 0);
   const canComplete = Boolean(payload && (
     sourceBlockerCount > 0
       ? acknowledgedBlockers && notes.trim()
@@ -243,6 +251,7 @@ function ShiftCloseoutPageContent() {
       ['Present', summary?.present ?? 0, 'text-emerald-300'],
       ['Late', summary?.late ?? 0, 'text-amber-300'],
       ['Missing', summary?.missing ?? 0, 'text-red-300'],
+      ...(summary?.not_yet_due ? [['Not Yet Due', summary.not_yet_due, 'text-sky-300']] : []),
       ['Open Exceptions', summary?.open_exceptions ?? 0, 'text-gold'],
       ['Clock-out Blockers', summary?.missing_clock_outs ?? 0, 'text-amber-300'],
       ['Recognition Reviews', summary?.recognition_reviews ?? 0, 'text-blue-300'],
@@ -275,9 +284,17 @@ function ShiftCloseoutPageContent() {
             supervisor_name: supervisorName,
             notes,
             acknowledged_blockers: acknowledgedBlockers,
+            blocker_evidence: payload?.blocker_evidence,
           }),
         });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && ['CLOSEOUT_BLOCKERS_CHANGED', 'CLOSEOUT_ACKNOWLEDGEMENT_REQUIRED'].includes(body.code)) {
+          conflictDraftRef.current = { date, notes, supervisorName };
+          setAcknowledgedBlockers(false);
+          await fetchCloseout();
+          toast(body.error, 'error');
+          return;
+        }
         if (!res.ok) throw new Error(body?.error || 'Failed to update closeout');
         toast(action === 'complete' ? 'Shift closeout completed' : action === 'reopen' ? 'Shift closeout reopened' : 'Closeout notes saved');
         await fetchCloseout();
@@ -426,6 +443,13 @@ function ShiftCloseoutPageContent() {
               <h2 className="font-display font-semibold text-slate-100">Supervisor signoff</h2>
               <p className="text-sm text-slate-400 mt-2">Save notes during the shift, then complete the record at close. Reopen a completed record before editing; its prior signoff stays in the audit history.</p>
             </div>
+            {unsavedConflictDraft && (
+              <div role="alert" className="rounded-xl border border-amber-400/30 p-3 text-sm">
+                <p>The record was completed while your action was rejected. This unsaved draft is separate from the signed record.</p>
+                <p>Draft supervisor: {unsavedConflictDraft.supervisorName || 'Not set'}</p>
+                <p className="whitespace-pre-wrap">{unsavedConflictDraft.notes || 'No draft notes'}</p>
+              </div>
+            )}
             <label className="space-y-1.5 block">
               <span className="section-label block">Date</span>
               <input type="date" disabled={isPending} value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
@@ -536,7 +560,10 @@ function ShiftCloseoutPageContent() {
                 className="input-field min-h-[180px] resize-y"
               />
             </label>
-            {blockerCount > 0 && !completed && (
+            {payload?.closeout?.acknowledgement_stale && !completed && (
+              <p role="alert" className="text-sm text-amber-300">The blockers changed since the saved acknowledgement. Review and acknowledge the current evidence.</p>
+            )}
+            {sourceBlockerCount > 0 && !completed && (
               <label className="flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-100">
                 <input
                   type="checkbox"

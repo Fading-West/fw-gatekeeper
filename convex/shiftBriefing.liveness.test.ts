@@ -17,7 +17,7 @@ describe('required liveness in shift trust', () => {
       const kioskId = await ctx.db.insert('kiosks', {
         name: 'Entry', kioskId: 'entry-1', type: 'entry', location: 'Factory door', active: true,
         lastSync: now, health: { cameraOk: true, modelOk: true, livenessAvailable: false,
-          degradedReason: 'liveness_required_unavailable', reportedAt: now },
+          degradedReason: 'liveness_required_unavailable,clock_unsynchronized', reportedAt: now },
       });
       return { userId, kioskId };
     });

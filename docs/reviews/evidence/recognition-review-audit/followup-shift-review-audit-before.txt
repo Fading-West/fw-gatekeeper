@@ -1,0 +1,25 @@
+
+ RUN  v4.1.10 <isolated-workspace>/qa-notes
+
+ ❯ review15-shift-recognition-audit.test.ts (2 tests | 1 failed) 76ms
+   × audits actor and effective before/after state across recognition exception close, note edit and reopen 7ms
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  03:24:00
+   Duration  485ms (transform 104ms, setup 0ms, import 236ms, tests 76ms, environment 0ms)
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  review15-shift-recognition-audit.test.ts > audits actor and effective before/after state across recognition exception close, note edit and reopen
+AssertionError: expected 0 to be greater than or equal to 3
+ ❯ review15-shift-recognition-audit.test.ts:30:90
+     28|  vi.advanceTimersByTime(1000);const edited=await admin.mutation(api.sh…
+     29|  vi.advanceTimersByTime(1000);const reopened=await admin.mutation(api.…
+     30|  const audits=await t.run(ctx=>ctx.db.query('auditLog').collect());exp…
+       |                                                                                          ^
+     31|  for(const audit of audits){expect(audit.actorUserId).toBe(uid);expect…
+     32|  const details=audits.map(a=>JSON.parse(a.details!));
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯

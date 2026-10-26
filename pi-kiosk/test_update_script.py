@@ -1,130 +1,550 @@
-"""Keep the kiosk update procedure identical to setup.sh's locked install."""
+"""Real Git, real venvs and launcher processes; stub pip and host systemd only."""
+import fcntl
+import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import socket
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
+import urllib.request
 
-KIOSK_DIR = Path(__file__).parent
-REPO_DIR = KIOSK_DIR.parent
+KIOSK = Path(__file__).parent
+REPO = KIOSK.parent
+SPEC = importlib.util.spec_from_file_location("kiosk_release", KIOSK / "tools/kiosk_release.py")
+RELEASE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RELEASE)
+APP = '''import http.server, json, os, sys, time
+from pathlib import Path
+version = VERSION
+if version == "new" and os.environ.get("TEST_FAIL") == "crash":
+    time.sleep(.2)
+    sys.exit(9)
+if version == "new" and os.environ.get("TEST_FAIL") == "slow":
+    time.sleep(1)
+started = time.monotonic()
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        healthy = not (version == "new" and os.environ.get("TEST_FAIL") == "health")
+        assert Path("config_local.py").read_text() == "device secret\\n"
+        assert Path("data/attendance.db").read_text() == "offline scans\\n"
+        progress = (started if version == "new" and os.environ.get("TEST_FAIL") == "frozen"
+                    else time.monotonic())
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "ok" if healthy else "degraded",
+                                    "camera_ok": healthy, "model_ok": healthy,
+                                    "version": version, "arguments": sys.argv[1:],
+                                    "trial": bool(os.environ.get("KIOSK_UPDATE_TRIAL") and Path(os.environ["KIOSK_UPDATE_TRIAL"]).is_file()),
+                                    "pid": (1 if version == "new" and os.environ.get("TEST_FAIL") == "wrong-pid" else os.getpid()),
+                                    "last_camera_frame": progress, "last_detection": progress,
+                                    "last_model_inference": progress}).encode())
+    def log_message(self, *args): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["TEST_PORT"])), Handler).serve_forever()
+'''
 
 
-def pip_lines(source):
-    # Compare commands, not indentation or spacing, so harmless reformatting passes.
-    return [
-        " ".join(line.split()) for line in source.splitlines()
-        if "-m pip install" in line and not line.lstrip().startswith("#")
-    ]
+class BuildReserveTests(unittest.TestCase):
+    def test_completed_build_cannot_leave_less_than_the_disk_reserve(self):
+        child = mock.Mock(returncode=0)
+        # The build finishes during the sleep, after the in-loop check.
+        child.poll.side_effect = [None, 0]
+        space = [mock.Mock(free=RELEASE.RESERVE + 1), mock.Mock(free=RELEASE.RESERVE - 1)]
+        with mock.patch.object(RELEASE.subprocess, "Popen", return_value=child), \
+                mock.patch.object(RELEASE.shutil, "disk_usage", side_effect=space), \
+                mock.patch.object(RELEASE.time, "sleep"), \
+                mock.patch.object(RELEASE.signal, "signal"), \
+                mock.patch.object(RELEASE, "stop_child"):
+            with self.assertRaisesRegex(RuntimeError, "disk reserve"):
+                RELEASE.guard(Path("."), ["build"])
 
 
 class UpdateScriptTests(unittest.TestCase):
-    def test_installs_match_setup_verbatim(self):
-        setup = pip_lines((KIOSK_DIR / "setup.sh").read_text(encoding="utf-8"))
-        update = pip_lines((KIOSK_DIR / "update.sh").read_text(encoding="utf-8"))
-        self.assertEqual(len(setup), 2)
-        self.assertEqual(update, setup)
+    @staticmethod
+    def git(directory, *arguments):
+        return subprocess.run(["git", "-C", str(directory), *arguments], check=True,
+                              capture_output=True, text=True).stdout.strip()
 
-    def test_both_readme_update_procedures_use_the_script(self):
-        readme = (REPO_DIR / "README.md").read_text(encoding="utf-8")
-        single = readme.split("### Update kiosk software", 1)[1].split("### Update all 4 kiosks at once", 1)
-        bulk = single[1].split("\n### ", 1)[0]
-        for section in (single[0], bulk):
-            # Only the commands matter; the prose may mention what not to do.
+    @staticmethod
+    def script(path, source):
+        path.write_text(f"#!{sys.executable}\n" + source)
+        path.chmod(0o755)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.upstream = self.root / "upstream"
+        self.repo = self.root / "installed"
+        self.upstream.mkdir()
+        self.git(self.upstream, "init", "-b", "master")
+        self.git(self.upstream, "config", "user.name", "Update test")
+        self.git(self.upstream, "config", "user.email", "test@example.invalid")
+        kiosk = self.upstream / "pi-kiosk"
+        (kiosk / "tools").mkdir(parents=True)
+        for name in ("update.sh", "requirements-build.lock", "requirements.lock"):
+            shutil.copy(KIOSK / name, kiosk / name)
+        shutil.copy(KIOSK / "enrollment_samples.py", kiosk / "enrollment_samples.py")
+        (self.upstream / "face-service").mkdir()
+        shutil.copy(REPO / "face-service/enrollment_quality.py",
+                    self.upstream / "face-service/enrollment_quality.py")
+        shutil.copy(KIOSK / "tools/kiosk_release.py", kiosk / "tools/kiosk_release.py")
+        shutil.copy(REPO / ".gitignore", self.upstream / ".gitignore")
+        (kiosk / "main.py").write_text(APP.replace("VERSION", repr("old")))
+        self.git(self.upstream, "add", ".")
+        self.git(self.upstream, "commit", "-m", "old")
+        self.old_head = self.git(self.upstream, "rev-parse", "HEAD")
+        self.git(self.root, "clone", str(self.upstream), str(self.repo))
+        self.kiosk = self.repo / "pi-kiosk"
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.kiosk / "venv")], check=True)
+        (self.kiosk / "venv/old-environment").touch()
+        (self.kiosk / "config_local.py").write_text("device secret\n")
+        (self.kiosk / "data").mkdir()
+        (self.kiosk / "data/attendance.db").write_text("offline scans\n")
+        (kiosk / "main.py").write_text(APP.replace("VERSION", repr("new")))
+        shutil.copy(KIOSK / "enrollment_quality.py", kiosk / "enrollment_quality.py")
+        for name in ("requirements-build.lock", "requirements.lock"):
+            (kiosk / name).write_text(f"target {name}\n")
+        self.git(self.upstream, "add", ".")
+        self.git(self.upstream, "commit", "-m", "new")
+        self.target = self.git(self.upstream, "rev-parse", "HEAD")
+        self.log = self.root / "calls.log"
+        self.state = self.root / "service.json"
+        self.units = self.root / "units"
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            port = reserve.getsockname()[1]
+        self.rebooted = None
+        self.env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "TEST_UID": "1000",
+                    "TEST_REPO": str(self.repo), "TEST_LOG": str(self.log),
+                    "TEST_STATE": str(self.state), "TEST_UNITS": str(self.units),
+                    "TEST_PORT": str(port), "TEST_FAIL": "",
+                    "KIOSK_HEALTH_URL": f"http://127.0.0.1:{port}/health",
+                    "KIOSK_HEALTH_STABLE_SECONDS": ".6", "KIOSK_UPDATE_TIMEOUT": "3.5"}
+        self.script(stubs / "id", '''import os, sys
+print(os.environ["TEST_UID"] if sys.argv[1] == "-u" else "test-user")
+''')
+        self.script(stubs / "sudo", '''import os, sys
+if os.environ.get("TEST_FAIL") == sys.argv[1]: sys.exit(13)
+args = [arg.replace("/etc/systemd/system/fw-gatekeeper-kiosk.service.d", os.environ["TEST_UNITS"])
+        for arg in sys.argv[1:]]
+assert args[0] != "git"
+os.execvp(args[0], args)
+''')
+        pip_stub = '''import os, pathlib, sys
+if sys.argv[1:3] != ["-m", "pip"]:
+    os.execv(str(pathlib.Path(__file__).with_name("real-python")), [str(pathlib.Path(__file__).with_name("real-python")), *sys.argv[1:]])
+lock = sys.argv[-1]
+assert pathlib.Path(lock).read_text() == f"target {lock}\\n"
+with open(os.environ["TEST_LOG"], "a") as log: log.write("pip " + lock + "\\n")
+pathlib.Path("venv/partial").touch()
+if os.environ["TEST_FAIL"] == lock: sys.exit(9)
+'''
+        self.script(stubs / "python3", '''import os, pathlib, subprocess, sys
+if sys.argv[1:3] == ["-m", "venv"]:
+    subprocess.run([sys.executable, *sys.argv[1:], "--without-pip"], check=True)
+    python = pathlib.Path("venv/bin/python")
+    python.rename(python.with_name("real-python"))
+    python.write_text(PIP_STUB)
+    python.chmod(0o755)
+    # A real absolute console-script shebang: relocation would break this.
+    check = python.with_name("console-check")
+    check.write_text("#!" + str(python.with_name("real-python").resolve().parent / "python") + "\\n")
+    check.write_text("#!" + str(python.absolute()) + "\\nimport sys; print(sys.prefix)\\n")
+    check.chmod(0o755)
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+'''.replace("PIP_STUB", repr(f"#!{sys.executable}\n" + pip_stub)))
+        self.script(stubs / "systemctl", '''import json, os, pathlib, signal, subprocess, sys, time
+args = sys.argv[1:]
+root = pathlib.Path(os.environ["TEST_REPO"])
+state_path = pathlib.Path(os.environ["TEST_STATE"])
+state = json.loads(state_path.read_text())
+with open(os.environ["TEST_LOG"], "a") as log: log.write("systemctl " + " ".join(args) + "\\n")
+if args[0] == "show":
+    print(state["pid"] if "--property=MainPID" in args else "test-user")
+    sys.exit(0)
+if args[0] == "is-active":
+    sys.exit(0 if state.get("pid") else 3)
+if args[0] == "daemon-reload":
+    sys.exit(7 if os.environ["TEST_FAIL"] == "reload" else 0)
+assert args[0] == "kill", args
+if os.environ["TEST_FAIL"] == "kill": sys.exit(7)
+os.kill(state["pid"], signal.SIGTERM)
+# Real systemd waits for the old cgroup to exit before Restart=always.
+for _ in range(100):
+    try:
+        fields = pathlib.Path(f"/proc/{state['pid']}/stat").read_text().rsplit(")", 1)[1].split()
+        if fields[0] == "Z": break
+    except FileNotFoundError: break
+    time.sleep(.02)
+with open(root / ".git/launcher.log", "a") as output:
+    process = subprocess.Popen([sys.executable, str(root / ".git/kiosk-launch.py"), "launch", str(root), "--camera", "auto"],
+                               start_new_session=True, stdout=output, stderr=output)
+state["pid"] = process.pid
+state_path.write_text(json.dumps(state))
+''')
+        self.original = subprocess.Popen([sys.executable, "main.py"], cwd=self.kiosk,
+                                         env=self.env, start_new_session=True,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.state.write_text(json.dumps({"pid": self.original.pid}))
+        self.addCleanup(self.stop_service)
+        self.wait_version("old")
+
+    def stop_service(self):
+        # The supervisor and its child use separate process groups, like systemd
+        # cgroups. Cleanup sends SIGTERM, giving the supervisor time to reap.
+        pid = json.loads(self.state.read_text()).get("pid")
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if self.rebooted is not None and pid == self.rebooted.pid:
+            self.rebooted.wait(timeout=5)
+        if pid == self.original.pid:
+            self.original.wait(timeout=5)
+        else:
+            self.original.poll()
+        time.sleep(.1)
+        running = self.repo / ".git/kiosk-running.json"
+        if running.exists():
+            for name in ("process", "child"):
+                process = json.loads(running.read_text()).get(name)
+                if process:
+                    try: os.kill(process[0], signal.SIGKILL)
+                    except ProcessLookupError: pass
+
+    def snapshot(self):
+        try:
+            with urllib.request.urlopen(self.env["KIOSK_HEALTH_URL"], timeout=.2) as response:
+                return json.load(response)
+        except OSError:
+            return {}
+
+    def wait_version(self, version, timeout=5):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.snapshot().get("version") == version: return
+            time.sleep(.05)
+        log = self.repo / ".git/launcher.log"
+        self.fail(f"No {version} kiosk; log: {log.read_text() if log.exists() else ''}")
+
+    def run_update(self, failure="", extra=None, script=None):
+        result = subprocess.run(["bash", str(script or self.kiosk / "update.sh"), str(self.repo)],
+                                env={**self.env, "TEST_FAIL": failure, **(extra or {})},
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual((self.kiosk / "config_local.py").read_text(), "device secret\n")
+        self.assertEqual((self.kiosk / "data/attendance.db").read_text(), "offline scans\n")
+        return result
+
+    def assert_old(self):
+        self.wait_version("old")
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), self.old_head)
+        self.assertTrue((self.kiosk / "venv/old-environment").exists())
+        self.assertFalse((self.repo / ".git/kiosk-current.json").exists())
+
+    def test_disk_reserve_aborts_before_installing(self):
+        with mock.patch.object(RELEASE.shutil, "disk_usage", return_value=mock.Mock(free=1024)):
+            with self.assertRaisesRegex(RuntimeError, "second venv"):
+                with mock.patch.object(sys, "argv", ["helper", "space", str(self.repo), str(self.kiosk / "venv")]):
+                    RELEASE.main()
+            started = []
+            real_popen = subprocess.Popen
+
+            def start(*arguments, **keywords):
+                child = real_popen(*arguments, **keywords)
+                started.append(child)
+                return child
+
+            with mock.patch.object(RELEASE.subprocess, "Popen", side_effect=start):
+                with self.assertRaisesRegex(RuntimeError, "disk reserve"):
+                    RELEASE.guard(self.repo, [sys.executable, "-c", "import time; time.sleep(30)"])
+            self.assertIsNotNone(started[0].returncode)
+        self.assert_old()
+
+    def test_manifest_write_failure_and_stale_boot_identity_keep_old(self):
+        directory = self.root / "candidate"
+        directory.mkdir()
+        with mock.patch.object(RELEASE.os, "fsync", side_effect=OSError("SD I/O failure")):
+            with self.assertRaises(OSError):
+                RELEASE.prepare(self.repo, directory, self.target, os.getpid())
+        self.assertFalse((self.repo / ".git/kiosk-pending.json").exists())
+        owner = RELEASE.identity(os.getpid())
+        owner[2] = "different-boot"
+        RELEASE.durable_write(self.repo / ".git/kiosk-pending.json",
+                              {"release": {"directory": str(directory)}, "owner": owner})
+        self.assertEqual(RELEASE.selected(self.repo)["directory"], str(self.kiosk))
+        # A completed atomic commit wins even if power failed before pending
+        # was removed; the pending owner's identity is invalid after reboot.
+        candidate = {"directory": str(directory), "revision": self.target}
+        RELEASE.durable_write(self.repo / ".git/kiosk-current.json", candidate)
+        self.assertEqual(RELEASE.selected(self.repo), candidate)
+
+    def test_prepare_shares_nested_runtime_data_without_resurrecting_code(self):
+        (self.kiosk / "tools/local.db").write_text("custom scans")
+        directory = self.root / "candidate"
+        (directory / "tools").mkdir(parents=True)
+        RELEASE.prepare(self.repo, directory, self.target, os.getpid())
+        self.assertEqual((directory / "tools/local.db").read_text(), "custom scans")
+        self.assertFalse((directory / "main.py").exists())
+        self.assertEqual((directory / "data").resolve(), self.kiosk / "data")
+
+    def test_readmes_share_the_update_procedure(self):
+        text = (REPO / "README.md").read_text()
+        single, bulk = text.split("### Update kiosk software", 1)[1].split("### Update all 4 kiosks at once", 1)
+        for section in (single.split("For the first release update", 1)[0], bulk.split("\n### ", 1)[0]):
             commands = "".join(section.split("```")[1::2])
-            # Pull as the owning kiosk user; a root pull leaves root-owned files.
-            self.assertNotIn("sudo git pull", commands)
-            self.assertIn("bash pi-kiosk/update.sh", commands)
+            self.assertIn('python3 .git/kiosk-launch.py update "$PWD"', commands)
+            self.assertNotIn("git pull", commands)
             self.assertNotIn("systemctl restart", commands)
 
-    def run_update(self, fail_lock=None, uid="1000", user="pi", kiosk_user=None,
-                   fail_pull=False, replace_script=False):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            kiosk = root / "pi-kiosk"
-            (kiosk / "venv" / "bin").mkdir(parents=True)
-            stubs = root / "stubs"
-            stubs.mkdir()
-            shutil.copy(KIOSK_DIR / "update.sh", kiosk / "update.sh")
-            log = root / "calls.log"
-            python = kiosk / "venv" / "bin" / "python"
-            python.write_text(
-                '#!/bin/sh\nprintf "python %s\\n" "$*" >> "$TEST_LOG"\n'
-                + (f'case "$*" in *{fail_lock}*) exit 9;; esac\n' if fail_lock else "")
-            )
-            sudo = stubs / "sudo"
-            sudo.write_text('#!/bin/sh\nprintf "sudo %s\\n" "$*" >> "$TEST_LOG"\n')
-            identity = stubs / "id"
-            identity.write_text(
-                f'#!/bin/sh\ncase "$1" in -u) echo {uid};; -un) echo {user};; esac\n'
-            )
-            git = stubs / "git"
-            git.write_text(
-                '#!/bin/sh\nprintf "git %s\n" "$*" >> "$TEST_LOG"\n'
-                + ('exit 8\n' if fail_pull else "")
-                + ('printf "invalid replacement script\n" > pi-kiosk/update.sh\n'
-                   if replace_script else "")
-            )
-            for stub in (python, sudo, identity, git):
-                stub.chmod(0o755)
-            env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "TEST_LOG": str(log)}
-            env.pop("KIOSK_USER", None)
-            if kiosk_user is not None:
-                env["KIOSK_USER"] = kiosk_user
-            result = subprocess.run(
-                ["bash", str(kiosk / "update.sh")], cwd=root,
-                env=env,
-                capture_output=True, text=True, check=False,
-            )
-            return result, log.read_text().splitlines() if log.exists() else []
+    def test_lock_installs_match_setup(self):
+        def commands(path):
+            return [" ".join(line.split()) for line in path.read_text().splitlines()
+                    if "-m pip install" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(commands(KIOSK / "setup.sh"), commands(KIOSK / "update.sh"))
 
-    def test_installs_both_locks_before_restarting(self):
-        result, calls = self.run_update()
+    def test_success_keeps_code_and_venv_at_permanent_paths(self):
+        result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, [
-            "git pull origin master",
-            "python -m pip install --require-hashes -r requirements-build.lock",
-            "python -m pip install --require-hashes --no-build-isolation -r requirements.lock",
-            "sudo systemctl restart fw-gatekeeper-kiosk",
-        ])
+        self.wait_version("new")
+        self.assertFalse(self.snapshot()["trial"])
+        record = json.loads((self.repo / ".git/kiosk-current.json").read_text())
+        self.assertEqual(record["revision"], self.target)
+        venv = (Path(record["directory"]) / "venv").resolve()
+        result = subprocess.run([str(venv / "bin/console-check")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(venv))
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), self.old_head)
+        self.assertNotIn("watchdog", self.log.read_text())
+        self.assertNotIn("systemctl stop", self.log.read_text())
+        self.assertNotIn("systemctl restart", self.log.read_text())
 
-    def test_failed_install_does_not_restart(self):
+    def test_active_release_includes_its_own_local_enrollment_policy(self):
+        # The checkout deliberately stays old. Enrollment must use the policy
+        # from the target revision, even when maintenance runs in the release.
+        policy = self.upstream / "pi-kiosk/enrollment_quality.py"
+        policy.write_text(policy.read_text().replace("COMPETING_FACE_AREA_RATIO = 0.4",
+                                                     "COMPETING_FACE_AREA_RATIO = 0.5"))
+        self.git(self.upstream, "add", ".")
+        self.git(self.upstream, "commit", "-m", "update enrollment policy")
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads((self.repo / ".git/kiosk-current.json").read_text())
+        directory = Path(record["directory"])
+        # Execute the real CLI helper; camera/ONNX are unnecessary to exercise
+        # its import and identity/competing-face decisions.
+        result = subprocess.run([sys.executable, "-c", '''
+import numpy as np
+from enrollment_samples import competing_faces, samples_agree
+subject = np.eye(1, 512, 0)[0]
+other = np.eye(1, 512, 1)[0]
+assert samples_agree([subject, subject])
+assert not samples_agree([subject, other])
+assert competing_faces([(0, 100, 100, 0), (0, 80, 80, 0)])
+assert not competing_faces([(0, 100, 100, 0), (0, 45, 100, 0)])
+'''], cwd=directory, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deployed_policy = directory / "enrollment_quality.py"
+        self.assertEqual(deployed_policy.read_text(), policy.read_text())
+        self.assertFalse(deployed_policy.is_symlink())
+        self.assertFalse((self.repo / "pi-kiosk/enrollment_quality.py").exists())
+        self.assertFalse((directory.parent / "face-service").exists())
+
+    def test_failed_build_locks_never_touch_service_or_old_venv(self):
         for lock in ("requirements-build.lock", "requirements.lock"):
-            with self.subTest(lock=lock):
-                result, calls = self.run_update(fail_lock=lock)
-                self.assertEqual(result.returncode, 9)
-                self.assertEqual(calls[0], "git pull origin master")
-                self.assertIn(lock, calls[-1])
-                self.assertFalse(any(call.startswith("sudo ") for call in calls))
+            result = self.run_update(lock)
+            self.assertEqual(result.returncode, 9, result.stderr)
+            self.assertNotIn("systemctl kill", self.log.read_text())
+            self.assert_old()
 
-    def test_failed_pull_does_not_install_or_restart(self):
-        result, calls = self.run_update(fail_pull=True)
-        self.assertEqual(result.returncode, 8)
-        self.assertEqual(calls, ["git pull origin master"])
+    def test_failed_cutover_and_health_restore_code_and_dependencies(self):
+        for failure in ("install", "mv", "reload", "kill", "health", "crash", "wrong-pid", "frozen"):
+            with self.subTest(failure=failure):
+                result = self.run_update(failure)
+                self.assertNotEqual(result.returncode, 0)
+                self.assert_old()
 
-    def test_accepts_custom_kiosk_user(self):
-        for kiosk_user in (None, "scanner"):
-            with self.subTest(kiosk_user=kiosk_user):
-                result, calls = self.run_update(user="scanner", kiosk_user=kiosk_user)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(calls[-1], "sudo systemctl restart fw-gatekeeper-kiosk")
-
-    def test_refuses_a_different_explicit_kiosk_user(self):
-        result, calls = self.run_update(kiosk_user="scanner")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("Run update.sh as KIOSK_USER (scanner)", result.stderr)
-        self.assertEqual(calls, [])
-
-    def test_pull_can_replace_the_running_script(self):
-        result, calls = self.run_update(replace_script=True)
+    def test_migration_preserves_installed_command_line_on_trial_and_fallback(self):
+        self.stop_service()
+        arguments = ["--server", "https://legacy.example/with space", "--kiosk-id", "legacy-exit", "--camera", "usb"]
+        self.original = subprocess.Popen([sys.executable, "main.py", *arguments], cwd=self.kiosk,
+                                         env=self.env, start_new_session=True,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.state.write_text(json.dumps({"pid": self.original.pid}))
+        self.wait_version("old")
+        self.assertEqual(self.snapshot()["arguments"], arguments)
+        result = self.run_update("health")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_old()
+        self.assertEqual(self.snapshot()["arguments"], arguments)
+        result = self.run_update()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls[-1], "sudo systemctl restart fw-gatekeeper-kiosk")
+        self.wait_version("new")
+        self.assertEqual(self.snapshot()["arguments"], arguments)
 
-    def test_refuses_root_before_touching_venv(self):
-        result, calls = self.run_update(uid="0")
+    def test_slow_startup_is_allowed_and_checked(self):
+        result = self.run_update("slow")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_version("new")
+
+    def test_sigkill_during_trial_automatically_restores_old_release(self):
+        process = subprocess.Popen(["bash", str(self.kiosk / "update.sh")],
+                                   env={**self.env, "KIOSK_HEALTH_STABLE_SECONDS": "10"},
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.wait_version("new")
+            self.assertTrue(self.snapshot()["trial"])
+            process.kill()
+            process.wait(timeout=3)
+            self.assert_old()
+            self.assertFalse(self.snapshot()["trial"])
+            # Simulated reboot: the persisted trial record cannot select new.
+            self.stop_service()
+            with (self.repo / ".git/launcher.log").open("a") as output:
+                rebooted = subprocess.Popen([sys.executable, str(self.repo / ".git/kiosk-launch.py"),
+                                              "launch", str(self.repo)], env=self.env,
+                                             stdout=output, stderr=output, start_new_session=True)
+            self.rebooted = rebooted
+            self.state.write_text(json.dumps({"pid": rebooted.pid}))
+            self.wait_version("old")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+    def test_hup_during_trial_restores_old_release(self):
+        process = subprocess.Popen(["bash", str(self.kiosk / "update.sh")],
+                                   env={**self.env, "KIOSK_HEALTH_STABLE_SECONDS": "10"},
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.wait_version("new")
+            process.send_signal(signal.SIGHUP)
+            self.assertEqual(process.wait(timeout=5), 129)
+            self.assert_old()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+    def test_root_local_changes_and_concurrent_updates_are_refused(self):
+        result = self.run_update(extra={"TEST_UID": "0"})
         self.assertEqual(result.returncode, 1)
         self.assertIn("not with sudo or as root", result.stderr)
-        self.assertEqual(calls, [])
+        with (self.repo / ".git/kiosk-update.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_update()
+        self.assertIn("Another kiosk update", result.stderr)
+        (self.kiosk / "main.py").write_text("local edits\n")
+        result = self.run_update()
+        self.assertIn("local changes", result.stderr)
+        self.assertNotIn("systemctl kill", self.log.read_text() if self.log.exists() else "")
+
+    def test_code_only_update_reuses_venv_and_later_failure_restores_release(self):
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        old_record = json.loads((self.repo / ".git/kiosk-current.json").read_text())
+        old_venv = (Path(old_record["directory"]) / "venv").resolve()
+        self.log.write_text("")
+        new_app = APP.replace("VERSION", repr("third"))
+        (self.upstream / "pi-kiosk/main.py").write_text(new_app)
+        updater = self.upstream / "pi-kiosk/update.sh"
+        updater.write_text('touch "$TEST_REPO/.git/updater-used"\n' + updater.read_text())
+        # An app release cannot replace the stable recovery launcher with an
+        # unverified/broken implementation, including on the next reboot.
+        (self.upstream / "pi-kiosk/tools/kiosk_release.py").write_text('raise RuntimeError("bad candidate launcher")\n')
+        self.git(self.upstream, "add", ".")
+        self.git(self.upstream, "commit", "-m", "code-only update")
+        result = self.run_update("kill")
+        self.assertNotEqual(result.returncode, 0)
+        self.wait_version("new")
+        self.assertEqual(json.loads((self.repo / ".git/kiosk-current.json").read_text()), old_record)
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_version("third")
+        self.assertNotIn("pip ", self.log.read_text())
+        record = json.loads((self.repo / ".git/kiosk-current.json").read_text())
+        self.assertEqual((Path(record["directory"]) / "venv").resolve(), old_venv)
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.repo / ".git/updater-used").exists())
+
+    def test_fetch_or_archive_failure_keeps_old_installation(self):
+        real_git = shutil.which("git")
+        for operation in ("fetch", "archive"):
+            self.script(self.root / "stubs/git", f"""import os, sys
+if sys.argv[1] == {operation!r}: sys.exit(8)
+os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
+""")
+            result = self.run_update()
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assert_old()
+            self.assertNotIn("systemctl kill", self.log.read_text())
+
+    def test_missing_trial_interpreter_falls_back_without_waiting_for_updater(self):
+        candidate = self.root / "missing-interpreter"
+        candidate.mkdir()
+        RELEASE.prepare(self.repo, candidate, self.target, os.getpid())
+        shutil.copy(KIOSK / "tools/kiosk_release.py", self.repo / ".git/kiosk-launch.py")
+        self.stop_service()
+        with (self.repo / ".git/launcher.log").open("a") as output:
+            self.rebooted = subprocess.Popen([sys.executable, str(self.repo / ".git/kiosk-launch.py"),
+                                               "launch", str(self.repo)], env=self.env,
+                                              stdout=output, stderr=output, start_new_session=True)
+        self.state.write_text(json.dumps({"pid": self.rebooted.pid}))
+        self.wait_version("old")
+
+    def test_legacy_in_place_updater_is_not_used_after_bootstrap(self):
+        legacy = 'touch "$TEST_REPO/unsafe-in-place"; exit 91\n'
+        (self.kiosk / "update.sh").write_text(legacy)
+        self.git(self.repo, "config", "user.name", "Update test")
+        self.git(self.repo, "config", "user.email", "test@example.invalid")
+        self.git(self.repo, "commit", "-am", "legacy in-place updater")
+        self.old_head = self.git(self.repo, "rev-parse", "HEAD")
+        # The deploy target descends from the installed legacy revision and
+        # contains the new updater; the checkout itself must stay untouched.
+        self.git(self.upstream, "fetch", str(self.repo), "master")
+        self.git(self.upstream, "merge", "--no-edit", "FETCH_HEAD")
+        shutil.copy(KIOSK / "update.sh", self.upstream / "pi-kiosk/update.sh")
+        self.git(self.upstream, "commit", "-am", "release updater")
+        self.target = self.git(self.upstream, "rev-parse", "HEAD")
+        fetched = self.root / "bootstrap.sh"
+        shutil.copy(KIOSK / "update.sh", fetched)
+        # Retry a half-migration both before and after the override is active.
+        # The old checkout still has its unsafe updater throughout recovery.
+        for failure in ("requirements.lock", "health"):
+            result = self.run_update(failure, script=fetched)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assert_old()
+            self.assertTrue((self.repo / ".git/kiosk-launch.py").is_file())
+            result = subprocess.run([sys.executable, str(self.repo / ".git/kiosk-launch.py"), "update", str(self.repo)],
+                                    env=self.env, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Bootstrap", result.stderr)
+        result = self.run_update(script=fetched)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.kiosk / "update.sh").read_text(), legacy)
+        result = subprocess.run([sys.executable, str(self.repo / ".git/kiosk-launch.py"), "update", str(self.repo)],
+                                env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_version("new")
+        self.assertFalse((self.repo / "unsafe-in-place").exists())
+
+    def test_bootstrap_uses_installed_clone(self):
+        fetched = self.root / "bootstrap.sh"
+        shutil.copy(KIOSK / "update.sh", fetched)
+        result = self.run_update(script=fetched)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_version("new")
 
 
 if __name__ == "__main__":

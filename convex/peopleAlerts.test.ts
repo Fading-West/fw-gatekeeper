@@ -10,6 +10,7 @@ const modules = import.meta.glob("./**/*.ts");
 const encoding = Array.from({ length: 512 }, () => 0.1);
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -72,6 +73,8 @@ describe("new person alerts", () => {
   });
 
   it("retries a provider failure without losing the alert", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-18T16:00:00.000Z"));
     const t = convexTest(schema, modules);
     await t.run((ctx) => ctx.db.insert("peopleAlertEvents", {
       kind: "portal_account", targetId: "member-1", label: "new@example.test",
@@ -85,6 +88,9 @@ describe("new person alerts", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "email-1" }), { status: 200 }));
     vi.stubGlobal("fetch", send);
     expect(await t.action(internal.peopleAlerts.deliverPending, {})).toEqual({ delivered: 0, configured: true });
+    expect(await t.action(internal.peopleAlerts.deliverPending, {})).toEqual({ delivered: 0, configured: true });
+    expect(send).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(60_000);
     expect(await t.action(internal.peopleAlerts.deliverPending, {})).toEqual({ delivered: 1, configured: true });
     const [event] = await t.run((ctx) => ctx.db.query("peopleAlertEvents").collect());
     expect(event.delivered).toBe(true);
