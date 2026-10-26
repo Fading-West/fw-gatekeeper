@@ -1,3 +1,4 @@
+import { shareAttendanceReads } from "./attendanceReads";
 import { compareSignedAttendanceEvidence, readSignedAttendanceEvidence } from "./signedAttendanceEvidence";
 import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
@@ -466,6 +467,8 @@ export const get = query({
   handler: async (ctx, args) => {
     await assertPortalRole(ctx, ["admin", "enrollment", "viewer"]);
     const date = args.date || getFactoryLocalDateKey(new Date().toISOString())!;
+    // Read-only: the payload's builders and comparison share attendance reads.
+    shareAttendanceReads(ctx);
     return buildCloseoutPayload(ctx, date);
   },
 });
@@ -497,6 +500,9 @@ export const save = mutation({
     if (args.action === "reopen" && existing?.status !== "completed") {
       throw new ConvexError("Only a completed closeout can be reopened.");
     }
+    // The payload builders and baseline capture share attendance reads; the
+    // scope ends before this transaction writes.
+    const endSharedReads = shareAttendanceReads(ctx);
     const current = await buildCloseoutPayload(ctx, args.date);
     const now = new Date().toISOString();
     const supervisorName = args.supervisorName === undefined ? existing?.supervisorName : normalizeText(args.supervisorName);
@@ -531,6 +537,12 @@ export const save = mutation({
     const status: CloseoutStatus =
       args.action === "complete" ? "completed" : args.action === "reopen" ? "reopened" : existing?.status || "open";
 
+    // Only a successful new completion captures a server-derived baseline.
+    // Throws roll back the whole transaction; retries return before this read.
+    const signedAttendanceEvidence = args.action === "complete"
+      ? await readSignedAttendanceEvidence(ctx, args.date) : existing?.signedAttendanceEvidence;
+    endSharedReads();
+
     const patch = {
       date: args.date,
       status,
@@ -538,10 +550,7 @@ export const save = mutation({
       notes: nextNotes,
       acknowledgedBlockers,
       acknowledgedBlockerEvidence: acknowledgedBlockers ? current.blocker_evidence : undefined,
-      // Only a successful new completion captures a server-derived baseline.
-      // Throws roll back the whole transaction; retries return before this read.
-      signedAttendanceEvidence: args.action === "complete"
-        ? await readSignedAttendanceEvidence(ctx, args.date) : existing?.signedAttendanceEvidence,
+      signedAttendanceEvidence,
       expected: current.summary.expected,
       present: current.summary.present,
       late: current.summary.late,

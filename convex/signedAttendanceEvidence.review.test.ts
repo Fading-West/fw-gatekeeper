@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import schema from './schema';
 import { api } from './_generated/api';
 import type { Doc } from './_generated/dataModel';
-import { buildSignedAttendanceEvidence, compareSignedAttendanceEvidence, MAX_ATTENDANCE_SCAN_ROWS, MAX_CANONICAL_BYTES } from './signedAttendanceEvidence';
+import { buildSignedAttendanceEvidence, compareSignedAttendanceEvidence, MAX_ATTENDANCE_EVIDENCE_ROWS, MAX_CANONICAL_BYTES } from './signedAttendanceEvidence';
 
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-02';
@@ -42,9 +42,10 @@ describe('independent signed-attendance audit probes', () => {
     expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({ status: 'changed', signed: { raw_punches: 1 }, current: { raw_punches: 1 } });
   });
 
-  it('treats a truncated conservative range as unknown and preserves its signed baseline', async () => {
+  it('treats evidence over the safe comparison limit as unknown and preserves its signed baseline', async () => {
     const signed = buildSignedAttendanceEvidence(date, { raw: [], corrections: [], reversals: [] });
-    const db = { query: vi.fn(() => ({ withIndex: () => ({ take: () => Array.from({ length: MAX_ATTENDANCE_SCAN_ROWS + 1 }, () => ({})) }) })) };
+    const rows = Array.from({ length: MAX_ATTENDANCE_EVIDENCE_ROWS + 1 }, (_, i) => ({ _id: `a${i}`, timestamp: `${date}T12:00:00.${i}` }));
+    const db = { query: vi.fn(() => ({ withIndex: () => ({ collect: async () => rows }) })) };
     const result = await compareSignedAttendanceEvidence({ db } as unknown as Parameters<typeof compareSignedAttendanceEvidence>[0], date, { status: 'completed', signedAttendanceEvidence: signed } as Doc<'shiftCloseouts'>);
     expect(result).toMatchObject({ status: 'unknown', signed, current: null, compared_at: null });
     expect(db.query).toHaveBeenCalledOnce();

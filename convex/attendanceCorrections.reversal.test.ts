@@ -118,9 +118,9 @@ it('bounds reversal lookups across batches and excludes a late reversal', async 
     if (table === 'attendanceCorrections') return { withIndex: () => ({ collect: async () => corrections }) };
     return { withIndex: (_index: string, select: (query: { eq: (_field: string, id: string) => string }) => string) => {
       const id = select({ eq: (_field, value) => value });
-      return { unique: () => {
+      return { take: () => {
         started.push(id);
-        return new Promise<null | { _id: string }>(resolve => pending.set(id, resolve));
+        return new Promise<Array<{ _id: string }>>(resolve => pending.set(id, value => resolve(value ? [value] : [])));
       } };
     } };
   } } };

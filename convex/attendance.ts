@@ -13,6 +13,7 @@ import {
 } from "./localDate";
 import { assertPortalRole } from "./access";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { listCorrectionReversals, scanAttendanceByTimestamp } from "./attendanceReads";
 
 // Keep the instant separate from the factory wall time used by schedule rules
 // and API display. In a repeated DST hour, wall time alone reverses scans.
@@ -30,18 +31,6 @@ function compareAttendance(a: any, b: any) {
   const left = a.chronologicalKey || "~";
   const right = b.chronologicalKey || "~";
   return left < right ? -1 : left > right ? 1 : String(a._id).localeCompare(String(b._id));
-}
-
-async function scanAttendanceByTimestamp(ctx: any, range: { startTimestamp: string; endTimestamp: string }, workerId?: string) {
-  const query = workerId
-    ? ctx.db
-        .query("attendance")
-        .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp))
-        .filter((q: any) => q.eq(q.field("workerId"), workerId))
-    : ctx.db
-        .query("attendance")
-        .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp));
-  return await query.collect();
 }
 
 export async function listAttendanceByTimestampRange(
@@ -124,9 +113,11 @@ async function listActiveCorrections(ctx: any, corrections: any[]) {
   const reversalBatchSize = 20;
   for (let start = 0; start < corrections.length; start += reversalBatchSize) {
     const batch = corrections.slice(start, start + reversalBatchSize);
-    reversed.push(...await Promise.all(batch.map(async (correction: any) =>
-      Boolean(await ctx.db.query("attendanceCorrectionReversals")
-        .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correction._id)).unique()))));
+    reversed.push(...await Promise.all(batch.map(async (correction: any) => {
+      const reversals = await listCorrectionReversals(ctx, correction._id);
+      if (reversals.length > 1) throw new Error("Attendance correction has more than one reversal.");
+      return reversals.length === 1;
+    })));
   }
   return corrections.filter((_: any, index: number) => !reversed[index]);
 }

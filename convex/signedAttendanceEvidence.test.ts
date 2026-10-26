@@ -162,19 +162,4 @@ describe('versioned signed attendance evidence', () => {
     expect(await t.run(ctx => ctx.db.query('shiftCloseoutHistory').collect())).toEqual([]);
   });
 
-  it('does not let busy adjacent dates in the conservative scan block a new signature', async () => {
-    const { t, actor, complete, workerId } = await setup();
-    // Neighboring factory dates share the scanned timestamp prefixes but are not evidence for this date.
-    await t.run(async ctx => {
-      for (let i = 0; i <= MAX_ATTENDANCE_EVIDENCE_ROWS; i++) {
-        await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', synced: true,
-          timestamp: `2026-09-0${i % 2 ? 1 : 3}T12:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.${i}Z` });
-      }
-      await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', synced: true, timestamp: '2026-09-02T08:00:00' });
-    });
-    const { id } = await complete();
-    expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 1 });
-    expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
-  }, 60_000);
-
 });

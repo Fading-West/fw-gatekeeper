@@ -2,6 +2,7 @@ import { sha256 } from '@oslojs/crypto/sha2';
 import { v } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
+import { listCorrectionReversals, scanAttendanceByTimestamp } from './attendanceReads';
 import { buildConservativeFactoryLocalTimestampRanges, timestampBelongsToFactoryLocalDate } from './localDate';
 
 // Widen version for forward compatibility: old readers report unknown for new versions.
@@ -13,10 +14,8 @@ export type SignedAttendanceEvidence = {
   version: number; digest: string; raw_punches: number; corrections: number; reversals: number;
 };
 export const ATTENDANCE_EVIDENCE_SCOPE = 'Attendance evidence for this factory date only';
-// The conservative timestamp scan spans three calendar-date prefixes, so it is
-// bounded separately from the date-owned evidence. Both sit well below Convex's
-// per-transaction read limits while covering a 1,000-worker factory day.
-export const MAX_ATTENDANCE_SCAN_ROWS = 16_000;
+// Bounds the date-owned evidence that is hashed. The conservative timestamp scan
+// itself is the one the closeout briefing already performs (see attendanceReads).
 export const MAX_ATTENDANCE_EVIDENCE_ROWS = 8_000;
 export const MAX_CANONICAL_BYTES = 4_000_000;
 type EvidenceInput = {
@@ -57,25 +56,24 @@ export function buildSignedAttendanceEvidence(date: string, input: EvidenceInput
   return { version: 1, digest, raw_punches: raw.length, corrections: corrections.length, reversals: reversals.length };
 }
 
-/** Read only bounded persisted documents. Never use the display-normalized reader
- * or active-only corrections: both discard evidence needed by this signature. */
+/** Read persisted documents, not the display-normalized reader or active-only
+ * corrections: both discard evidence needed by this signature. Within a closeout
+ * transaction the timestamp scan and reversal lookups are shared with the
+ * briefing/exception builders, so capture adds no index ranges per correction. */
 export async function readSignedAttendanceEvidence(ctx: Pick<QueryCtx, 'db'>, date: string): Promise<SignedAttendanceEvidence> {
   const rawById = new Map<string, Doc<'attendance'>>();
   for (const range of buildConservativeFactoryLocalTimestampRanges(date)) {
-    const rows = await ctx.db.query('attendance').withIndex('by_timestamp', q =>
-      q.gte('timestamp', range.startTimestamp).lt('timestamp', range.endTimestamp))
-      .take(MAX_ATTENDANCE_SCAN_ROWS + 1);
-    // A truncated conservative range cannot establish complete evidence.
-    if (rows.length > MAX_ATTENDANCE_SCAN_ROWS) throw new Error('Attendance evidence range exceeds the safe comparison limit.');
-    for (const row of rows) if (timestampBelongsToFactoryLocalDate(row.timestamp, date)) rawById.set(String(row._id), row);
+    for (const row of await scanAttendanceByTimestamp(ctx, range) as Doc<'attendance'>[]) {
+      if (timestampBelongsToFactoryLocalDate(row.timestamp, date)) rawById.set(String(row._id), row);
+    }
   }
+  if (rawById.size > MAX_ATTENDANCE_EVIDENCE_ROWS) throw new Error('Attendance evidence exceeds the safe comparison limit.');
   const corrections = await ctx.db.query('attendanceCorrections')
     .withIndex('by_date', q => q.eq('date', date)).take(MAX_ATTENDANCE_EVIDENCE_ROWS + 1);
   if (rawById.size + corrections.length > MAX_ATTENDANCE_EVIDENCE_ROWS) throw new Error('Attendance evidence exceeds the safe comparison limit.');
   const reversals: Doc<'attendanceCorrectionReversals'>[] = [];
   for (const correction of corrections) {
-    const rows = await ctx.db.query('attendanceCorrectionReversals')
-      .withIndex('by_correctionId', q => q.eq('correctionId', correction._id)).take(2);
+    const rows = await listCorrectionReversals(ctx, correction._id) as Doc<'attendanceCorrectionReversals'>[];
     if (rows.length > 1) throw new Error('Attendance reversal evidence is ambiguous.');
     reversals.push(...rows);
   }
