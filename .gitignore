@@ -1,4 +1,5 @@
-node_modules/
+# No trailing slash: also ignore a node_modules symlink, not just a directory.
+node_modules
 .next/
 data/
 *.tsbuildinfo
@@ -8,6 +9,12 @@ __pycache__/
 
 .env.local
 pi-kiosk/config_local.py
+pi-kiosk/venv
+pi-kiosk/.venv-releases/
+pi-kiosk/.venv-before-update
+pi-kiosk/.venv-retired
+pi-kiosk/venv.next
+pi-kiosk/.kiosk-releases/
 
 # Local scratch/build outputs
 outputs/

@@ -7,3 +7,12 @@ it('identifies manual clocks without labeling legacy attendance as manual', () =
   expect(renderToStaticMarkup(<AttendanceTable events={[{ ...event, note: 'manual_clock' }]} />)).toContain('Manual clock');
   expect(renderToStaticMarkup(<AttendanceTable events={[event]} />)).not.toContain('Manual clock');
 });
+it('renders no action column unless a caller provides row actions', () => {
+  const plain = renderToStaticMarkup(<AttendanceTable events={[event]} />);
+  expect(plain).not.toContain('>Action<');
+  expect(plain.match(/<th /g)).toHaveLength(4);
+  const withAction = renderToStaticMarkup(<AttendanceTable events={[event, { ...event, id: 'other' }]} renderRowAction={(row) => <button>Fix {row.id}</button>} />);
+  expect(withAction).toContain('>Action<');
+  expect(withAction).toContain('Fix event');
+  expect(withAction).toContain('Fix other');
+});
