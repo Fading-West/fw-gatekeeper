@@ -3,7 +3,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 const mocks=vi.hoisted(()=>({authenticate:vi.fn(),update:vi.fn(),fetch:vi.fn()}));
 vi.mock('@/lib/auth',()=>({hasDeviceKeyFormat:()=>true,unauthorizedApiResponse:()=>Response.json({error:'Unauthorized'},{status:401})}));
 vi.mock('@/lib/kiosk-device-auth',()=>({authenticateKiosk:mocks.authenticate}));
-vi.mock('@/lib/convex-ingest',()=>({fetchWorkersForSync:mocks.fetch,updateKioskLastSync:mocks.update,issueRosterReceipt:vi.fn()}));
+vi.mock('@/lib/convex-ingest',()=>({fetchWorkersForSync:mocks.fetch,updateKioskLastSync:mocks.update,issueRosterReceipt:vi.fn(),issueLegacyRosterCursor:vi.fn(async()=>({issuedAt:new Date().toISOString(),since:null}))}));
 import {GET} from './route';
 beforeEach(()=>{vi.useFakeTimers({toFake:['Date']});vi.clearAllMocks();mocks.authenticate.mockResolvedValue({documentId:'synthetic-kiosk'});mocks.update.mockResolvedValue({updated:true});mocks.fetch.mockResolvedValue({workers:[]});});
 afterEach(()=>vi.useRealTimers());
