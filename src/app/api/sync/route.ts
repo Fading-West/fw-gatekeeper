@@ -1,9 +1,9 @@
+import { parseQueueCount } from '@/lib/attendance-queue';
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk } from '@/lib/kiosk-device-auth';
 import { fetchWorkersForSync, updateKioskLastSync, issueRosterReceipt, type KioskHealthReport } from '@/lib/convex-ingest';
-import { parseQueueCount } from '@/lib/attendance-queue';
 
 function parseKioskHealth(params: URLSearchParams): KioskHealthReport | undefined {
   const bool = (key: string) => {

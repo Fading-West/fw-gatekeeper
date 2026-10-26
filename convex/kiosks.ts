@@ -1,10 +1,10 @@
+import { nextAttendanceQueue, observeAttendanceQueue } from "./attendanceQueue";
+import { parseQueueCount } from "../src/lib/attendance-queue";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { assertPortalRole } from "./access";
 import { findActiveKioskByIdentifier } from "./kioskLookup";
 import type { Doc } from "./_generated/dataModel";
-import { nextAttendanceQueue, observeAttendanceQueue } from "./attendanceQueue";
-import { parseQueueCount } from "../src/lib/attendance-queue";
 
 function normalizeOptionalText(value?: string) {
   const trimmed = value?.trim();
