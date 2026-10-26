@@ -23,8 +23,9 @@ October 8 review update: merged the updated #119 parent including current master
 ## Current integration and release
 
 The dependency in #119 is now merged. This branch integrates `master` at
-`893d47596a627fdc85a976d5a73d152f7ae06f90`; the action-receipt change can be
-reviewed against `master` directly. Existing overnight, DST, inactive-worker,
+`893d47596a627fdc85a976d5a73d152f7ae06f90` and is stacked on #249's
+signed-attendance comparison. Review the action-receipt diff against #249 and
+merge #249 first. Existing overnight, DST, inactive-worker,
 early-closeout, error-privacy and date-selection regressions now supply the
 required action identity and authenticated actor rather than bypassing those
 guards. Their assertions are retained.
@@ -40,7 +41,8 @@ closeouts and history during recovery or rollback.
 
 Automated checks use isolated records and controlled service boundaries. They do
 not establish deployed Convex/OCC behavior, real authenticated-browser acceptance,
-or physical kiosk offline/reconnect behavior. The branch includes #249 as its prerequisite and preserves its signed-attendance
+or physical kiosk offline/reconnect behavior. The branch includes #249 as its
+prerequisite and preserves its signed-attendance
 baseline, comparison and shared-read transaction bounds. The action-receipt diff
 is reviewed against #249; queue evidence remains the separate #224 layer.
 A receipt replay returns before baseline capture, and only a new, successful
