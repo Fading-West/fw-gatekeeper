@@ -826,9 +826,14 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       const sourceKey = JSON.stringify([exception.type, exception.worker_id]);
       source_fingerprint = attendanceFingerprints.get(sourceKey);
       if (!source_fingerprint) {
+        // Arrival checks read only this date's clock-ins, so a later clock-out or
+        // next-day scan must not reopen a reviewed late or missing arrival.
+        const arrival = exception.type === "late_arrival" || exception.type === "missing_arrival";
         source_fingerprint = buildExceptionSourceFingerprint({
           date: exception.date, type: exception.type, workerId: exception.worker_id,
-          attendanceEvents: pairingEventsByWorker.get(exception.worker_id || "") ?? [],
+          attendanceEvents: arrival
+            ? (eventsByWorker.get(exception.worker_id || "") ?? []).filter(event => event.eventType === "clock_in")
+            : pairingEventsByWorker.get(exception.worker_id || "") ?? [],
           schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
           scheduleAssignment: assignmentsByWorker.get(exception.worker_id || ""),
         });
