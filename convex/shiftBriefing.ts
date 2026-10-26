@@ -5,6 +5,7 @@ import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
+import { listCorrectionsByDateRange } from "./attendanceReads";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { assertPortalRole } from "./access";
 import { ATTENDANCE_QUEUE_SCOPE_NOTE, observeAttendanceQueue, type AttendanceQueueObservation } from "./attendanceQueue";
@@ -516,10 +517,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
         .withIndex("by_active", (q: any) => q.eq("active", true))
         .collect(),
       buildShiftExceptions(ctx, date),
-      ctx.db
-        .query("attendanceCorrections")
-        .withIndex("by_date", (q: any) => q.eq("date", date))
-        .collect(),
+      listCorrectionsByDateRange(ctx, date),
     ]) as [any[], any[], any[], any[], any[], any[]];
 
     const todaysSchedules = schedules.filter((schedule) => scheduleDays(schedule.days).includes(dayOfWeek));

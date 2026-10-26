@@ -40,6 +40,8 @@ closeouts and history during recovery or rollback.
 
 Automated checks use isolated records and controlled service boundaries. They do
 not establish deployed Convex/OCC behavior, real authenticated-browser acceptance,
-or physical kiosk offline/reconnect behavior. Source integration with #224 and
-the separate #249 signed-attendance baseline requires its own composed checks;
-this PR does not include either feature.
+or physical kiosk offline/reconnect behavior. The branch includes #249 as its prerequisite and preserves its signed-attendance
+baseline, comparison and shared-read transaction bounds. The action-receipt diff
+is reviewed against #249; queue evidence remains the separate #224 layer.
+A receipt replay returns before baseline capture, and only a new, successful
+completion captures a new signed-attendance baseline.

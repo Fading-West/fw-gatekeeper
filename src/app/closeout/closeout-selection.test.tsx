@@ -67,7 +67,8 @@ it('locks completed notes and exports the signed summary instead of later source
   await act(async () => button('Export').props.onClick());
   const text = await exported.text();
   expect(text).toContain('Signed summary\nExpected: 9');
-  expect(text).not.toContain('Expected: 123');
+  expect(text.split('Signed summary\n')[1].split('Current summary\n')[0]).not.toContain('Expected: 123');
+  expect(text).toContain('Current summary\nExpected: 123');
 });
 
 it('requires notes and acknowledgement when schedule coverage is unavailable after exception review', async () => {

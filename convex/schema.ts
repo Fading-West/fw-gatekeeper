@@ -1,8 +1,10 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { signedAttendanceEvidenceValidator } from "./signedAttendanceEvidence";
 
 export const closeoutFields = {
+    signedAttendanceEvidence: v.optional(signedAttendanceEvidenceValidator),
     date: v.string(),
     status: v.union(v.literal("open"), v.literal("completed"), v.literal("reopened")),
     supervisorName: v.optional(v.string()),
