@@ -19,3 +19,27 @@ Serialized source-contract correction: the old completion-message assertion now 
 Serialized nullable-ownership correction: pending-action selection now first requires an actual action before checking its actor/date. When actor identity is initially undefined and no receipt exists, optional actor comparison previously matched two undefined values and reached a null action's date. The explicit presence guard restores the intended empty selection and narrows its type without a suppression. A normal loading-to-known-actor component regression checks that the empty page renders, no saved receipt appears, and completion stays disabled until actor ownership is known. Failed e186328d912401bbb74d0f1807b551e2001e5420 typecheck evidence is retained at runtime/evidence/rank8-e186328d9124/typecheck.log. New source fixture only; root serialized rerun remains pending.
 
 October 8 review update: merged the updated #119 parent including current master, keeping API field validation and explicit clears. A rejected action restored after reload now preserves its supervisor/name draft during deliberate reconciliation: editable records recover the draft with acknowledgement reset, and completed records keep the draft separate from signed values. Confirmed actions stay cleared in memory if tab storage removal fails. Regression fixtures fail before these fixes and pass afterward; inherited master/parent fixtures now use request identities and expected revisions. No additional schema changes were needed.
+
+## Current integration and release
+
+The dependency in #119 is now merged. This branch integrates `master` at
+`893d47596a627fdc85a976d5a73d152f7ae06f90`; the action-receipt change can be
+reviewed against `master` directly. Existing overnight, DST, inactive-worker,
+early-closeout, error-privacy and date-selection regressions now supply the
+required action identity and authenticated actor rather than bypassing those
+guards. Their assertions are retained.
+
+Follow [the coordinated release procedure](../legacy-kiosk-rollout.md#coordinated-production-release),
+including `[skip render]` on the eventual merge commit when deployment is deferred.
+Deploy the schema/functions before the matching portal. An old page cannot write
+without a request ID and revision; a new portal against an older backend also
+cannot complete the protocol. Expect a temporary write interruption and reload
+existing Closeout tabs after both versions match. Do not remove the identity or
+revision checks to restore old-client writes. Preserve stored action receipts,
+closeouts and history during recovery or rollback.
+
+Automated checks use isolated records and controlled service boundaries. They do
+not establish deployed Convex/OCC behavior, real authenticated-browser acceptance,
+or physical kiosk offline/reconnect behavior. Source integration with #224 and
+the separate #249 signed-attendance baseline requires its own composed checks;
+this PR does not include either feature.
