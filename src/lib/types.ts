@@ -375,6 +375,24 @@ export interface ShiftBriefingResponse {
 export type ShiftCloseoutStatus = 'open' | 'completed' | 'reopened';
 export type ShiftCloseoutChecklistStatus = 'clear' | 'blocked';
 
+export interface SignedAttendanceEvidence {
+  version: number;
+  digest: string;
+  raw_punches: number;
+  corrections: number;
+  reversals: number;
+}
+
+export interface AttendanceComparison {
+  status: 'not_applicable' | 'changed' | 'unchanged' | 'unknown';
+  reason: string | null;
+  scope: string;
+  compared_at: string | null;
+  signed: SignedAttendanceEvidence | null;
+  current: SignedAttendanceEvidence | null;
+  activity_log_href: string;
+}
+
 export interface ShiftCloseoutSnapshot {
   expected: number;
   present: number;
@@ -449,6 +467,8 @@ export interface ShiftCloseoutResponse {
   date: string;
   generated_at: string;
   blocker_evidence?: string;
+  // Optional while portal and backend versions roll out independently.
+  attendance_comparison?: AttendanceComparison;
   closeout: ShiftCloseoutRecord | null;
   summary: ShiftCloseoutSnapshot & {
     // Live only (not in the signed snapshot); optional for older deployments.
