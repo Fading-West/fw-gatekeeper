@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import schema from '../../../convex/schema';
 import convex from '@/lib/convex';
+import { api } from '../../../convex/_generated/api';
 import { hasValidPortalSession } from '@/lib/portal-auth';
 import { POST as correct } from './attendance-corrections/route';
 import { POST as enroll } from './enroll/route';
@@ -52,7 +53,7 @@ async function setup() {
   vi.mocked(convex.mutation).mockImplementation(call((ref, args) => actor.mutation(ref, args)) as any);
   vi.mocked(convex.query).mockImplementation(call((ref, args) => actor.query(ref, args)) as any);
   vi.mocked(convex.action).mockRejectedValue(new Error('photo storage is not part of this test'));
-  return { t, ...ids };
+  return { t, actor, ...ids };
 }
 
 function post(handler: (req: NextRequest) => Promise<Response>, path: string, body: unknown) {
@@ -90,11 +91,13 @@ it('reports a reused correction request ID and a wrong-day void as client errors
 });
 
 it('reports an employee ID owned by a former worker as a conflict in production', async () => {
-  const { t, workerId } = await setup();
+  const { t, actor, workerId } = await setup();
+  vi.mocked(convex.action).mockImplementation(((ref: any, args: any) => actor.action(ref, args)) as any);
   vi.stubEnv('FACE_SERVICE_KEY', 'test');
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [0, 1, 2] })));
   const response = await post(enroll, 'enroll', {
     workerId, name: 'Current Worker', employeeId: 'E-2', department: 'Assembly',
+    expected_identity_revision: (await convex.query(api.workers.get, { id: workerId })).identity_revision,
     photos: Array(3).fill('data:image/jpeg;base64,YQ=='), consent: true, consentAgeMs: 0,
   });
   expect(response.status).toBe(409);

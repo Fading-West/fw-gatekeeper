@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, internal } from './_generated/api';
 import schema from './schema';
 import type { Id } from './_generated/dataModel';
+import * as workers from './workers';
 const modules = import.meta.glob('./**/*.ts');
 const encoding = Array(512).fill(0.1);
 const consentAt = new Date().toISOString();
@@ -32,6 +33,18 @@ async function setup() {
 afterEach(() => vi.useRealTimers());
 
 describe('pending enrollment photo lifecycle', () => {
+  it('exposes no legacy upload URL mutation that bypasses tracked photo retention', () => {
+    expect(workers).not.toHaveProperty('generateUploadUrl');
+  });
+
+  it('rejects empty and oversized photos before storing or registering them', async () => {
+    const { t, owner } = await setup();
+    for (const size of [0, 3_000_001]) {
+      await expect(owner.action(api.enrollmentPhotos.upload, { photo: new ArrayBuffer(size) })).rejects.toThrow('1 to 3000000 bytes');
+    }
+    expect(await t.run(ctx => ctx.db.query('pendingEnrollmentPhotos').collect())).toHaveLength(0);
+  });
+
   it('cleans failed saves, including inactive re-enrollment, and cannot attach deleted photos later', async () => {
     const { t, owner, upload, create } = await setup();
     const worker = await create([]);

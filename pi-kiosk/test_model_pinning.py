@@ -5,12 +5,14 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import io
+import importlib.util
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 KIOSK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(KIOSK_DIR))
@@ -101,6 +103,65 @@ class ModelPinningTests(unittest.TestCase):
 
         self.assertFalse(self.path.exists())
         self.assertFalse(self.path.with_name("model.onnx.part").exists())
+
+    def test_model_download_reserves_disk_for_the_old_kiosk(self):
+        candidate = self.path.with_name('candidate.onnx')
+        with patch('model_pinning.urllib.request.urlopen', return_value=_FakeResponse(self.payload)), \
+                patch.dict(os.environ, KIOSK_UPDATE_TRIAL=str(self.path)), \
+                patch('model_pinning.shutil.disk_usage', return_value=Mock(free=1024)):
+            with self.assertRaisesRegex(OSError, 'disk reserve'):
+                ensure_pinned_model('https://example.invalid/model', candidate, self.expected)
+        self.assertEqual(self.path.read_bytes(), self.payload)
+        self.assertFalse(candidate.exists())
+        self.assertEqual(list(self.path.parent.glob('*.part')), [])
+
+    def test_normal_startup_can_copy_verified_legacy_model_below_update_reserve(self):
+        candidate = self.path.with_name('candidate.onnx')
+        with patch.dict(os.environ, KIOSK_UPDATE_TRIAL=''), \
+                patch('model_pinning.shutil.disk_usage', return_value=Mock(free=256 * 1024**2)):
+            ensure_pinned_model(self.path.as_uri(), candidate, self.expected)
+        self.assertEqual(candidate.read_bytes(), self.payload)
+        self.assertEqual(self.path.read_bytes(), self.payload)
+
+    def test_model_flush_failure_keeps_committed_cache(self):
+        legacy = self.path.with_name('legacy.onnx')
+        legacy.write_bytes(self.payload)
+        self.path.unlink()
+        with patch('model_pinning._download', side_effect=lambda _url, path: path.write_bytes(self.payload)), \
+                patch('model_pinning.os.fsync', side_effect=OSError('power loss')):
+            with self.assertRaises(OSError):
+                ensure_pinned_model('https://example.invalid/model', self.path, self.expected)
+        self.assertEqual(legacy.read_bytes(), self.payload)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(list(self.path.parent.glob('*.part')), [])
+
+    def test_digest_specific_cache_migrates_offline_and_preserves_fallback_model(self):
+        spec = importlib.util.spec_from_file_location('kiosk_embeddings_test', KIOSK_DIR / 'embeddings.py')
+        embeddings = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(embeddings)
+        self.assertIn(REC_MODEL_SHA256, embeddings.REC_MODEL_PATH.name)
+        legacy = self.path.with_name('legacy.onnx')
+        legacy.write_bytes(self.payload)
+        first = self.path.with_name(f'mobilefacenet-{self.expected}.onnx')
+        second_payload = b'new pinned model'
+        second_digest = hashlib.sha256(second_payload).hexdigest()
+        second = self.path.with_name(f'mobilefacenet-{second_digest}.onnx')
+        with patch.object(embeddings, 'LEGACY_REC_MODEL_PATH', legacy), \
+                patch.object(embeddings, 'REC_MODEL_PATH', first), \
+                patch.object(embeddings, 'REC_MODEL_SHA256', self.expected):
+            # A file URL exercises the normal atomic copy/verify path without
+            # making a network request or touching the old release's cache.
+            self.assertTrue(embeddings.ensure_rec_model())
+        self.assertEqual(first.read_bytes(), self.payload)
+        with patch.object(embeddings, 'LEGACY_REC_MODEL_PATH', legacy), \
+                patch.object(embeddings, 'REC_MODEL_PATH', second), \
+                patch.object(embeddings, 'REC_MODEL_SHA256', second_digest), \
+                patch('model_pinning._download', side_effect=OSError('offline')):
+            with self.assertLogs('kiosk_embeddings_test', level='ERROR'):
+                self.assertFalse(embeddings.ensure_rec_model())
+        self.assertEqual(legacy.read_bytes(), self.payload)
+        self.assertEqual(first.read_bytes(), self.payload)
+        self.assertFalse(second.exists())
 
     def test_rec_model_url_is_pinned_to_a_commit_not_a_branch(self):
         match = COMMIT_PINNED_URL.search(REC_MODEL_URL)

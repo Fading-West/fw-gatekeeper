@@ -1,0 +1,21 @@
+.FF
+======================================================================
+FAIL: test_dropouts_and_invalid_rectangles_cannot_complete_blink (__main__.BlinkTests.test_dropouts_and_invalid_rectangles_cannot_complete_blink)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/11-continuous-blink-evidence/pi-kiosk/test_oct02_continuous_blink_evidence.py", line 22, in test_dropouts_and_invalid_rectangles_cannot_complete_blink
+    self.assertFalse(self.feed(checker,.3))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_nonfinite_or_degenerate_landmarks_cannot_complete_blink (__main__.BlinkTests.test_nonfinite_or_degenerate_landmarks_cannot_complete_blink)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<isolated-workspace>/worktrees/11-continuous-blink-evidence/pi-kiosk/test_oct02_continuous_blink_evidence.py", line 26, in test_nonfinite_or_degenerate_landmarks_cannot_complete_blink
+    self.assertFalse(self.feed(checker,.3))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.005s
+
+FAILED (failures=2)

@@ -4,13 +4,16 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import WorkerCard from '@/components/WorkerCard';
 import { DashboardSkeleton } from '@/components/Skeleton';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
 import { buildLiveShiftSentinelItems, buildProactiveActions, getLiveShiftSentinelSnapshot } from '@/lib/proactive-actions';
 import type { LiveShiftSentinelItem, LiveShiftSentinelSnapshot, ProactiveActionFreshness, ProactiveSignalFreshness } from '@/lib/proactive-actions';
 import type { ShiftBriefingResponse, ShiftCloseoutResponse, ShiftException, ShiftExceptionsResponse, ShiftTrustBriefStatus } from '@/lib/types';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { boundedRead } from '@/lib/bounded-read';
 import { latestAttendanceByWorker } from '@/lib/attendance-presence';
+import { createAttendanceClock } from '@/lib/attendance-time';
+
+const attendanceClock = createAttendanceClock();
 
 interface WorkerWithStatus {
   id: string;
@@ -100,9 +103,9 @@ interface SignalFailure {
   message: string;
 }
 
-function formatRelativeTime(value: string | null) {
-  if (!value) return 'Never';
-  const timestamp = new Date(value).getTime();
+function formatRelativeTime(value: string | number | null) {
+  if (value == null || value === '') return 'Never';
+  const timestamp = typeof value === 'number' ? value : new Date(value).getTime();
   if (!Number.isFinite(timestamp)) return 'Unknown';
   const diffMs = Date.now() - timestamp;
   if (diffMs < -60_000) return 'Clock skew';
@@ -112,6 +115,11 @@ function formatRelativeTime(value: string | null) {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function attendanceInstant(value: string | null | undefined, timestampUtc?: string | null) {
+  if (!value && !timestampUtc) return null;
+  return attendanceClock.instantMs({ timestamp: value || '', timestamp_utc: timestampUtc });
 }
 
 function healthTone(status: HealthStatus) {
@@ -203,6 +211,7 @@ function getExceptionTypeLabel(type: string) {
     missing_clock_out: 'Still clocked in',
     scan_sequence: 'Bad scan sequence',
     recognition_review: 'Recognition review',
+    inactive_worker_scan: 'Deactivated worker scan',
   };
   return labels[type] || titleCase(type);
 }
@@ -458,7 +467,7 @@ export default function Dashboard() {
 
           if (latest) {
             status = latest.event_type === 'clock_in' ? 'in' : 'out';
-            clockInTime = new Date(latest.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            clockInTime = formatFactoryLocalDateTime(latest.timestamp, '—', { hour: '2-digit', minute: '2-digit', hour12: true });
           }
 
           return { ...w, status, clockInTime };
@@ -617,6 +626,8 @@ export default function Dashboard() {
   const workerCardFreshnessCopy = attendanceStaleCopy || rosterStaleCopy;
   const workerCardsAreStale = isSignalStale(signalFreshness, 'workers') || isSignalStale(signalFreshness, 'attendance');
   const systemHealthStaleCopy = getSignalFreshnessCopy(signalFreshness, 'system-health', 'System health cached');
+  // Stats failed with no earlier successful load today, so the zeroed defaults are not real counts.
+  const statsUnavailable = isSignalStale(signalFreshness, 'stats') && !signalFreshness.stats?.lastSuccessAt;
   const sentinelChangedCount = sentinelItems.filter((item) => item.changedSinceSeen).length;
   const sentinelCriticalCount = sentinelItems.filter((item) => item.priority === 'critical').length;
   const canOpenAdminOps = dashboardRole === 'admin';
@@ -639,6 +650,9 @@ export default function Dashboard() {
     : 0;
   const staleKioskCount = systemHealth?.kiosks.counts.stale || 0;
   const faceServiceHealthy = systemHealth?.face_service.status === 'online' && systemHealth.face_service.model_ready;
+  // A recent sync only proves connectivity; the device may still be unable
+  // to scan or have attendance/purge work waiting locally.
+  const hasKioskDeviceIssues = Boolean(systemHealth?.kiosks.rows.some((kiosk) => kiosk.device_issues?.length));
   const hasWorkerEnrollmentIssues = missingFaceWorkers.length + invalidFaceWorkers.length > 0;
   const readyForShift = Boolean(
     systemHealth &&
@@ -646,6 +660,7 @@ export default function Dashboard() {
     systemHealth.kiosks.total > 0 &&
     offlineKioskCount === 0 &&
     staleKioskCount === 0 &&
+    !hasKioskDeviceIssues &&
     !hasWorkerEnrollmentIssues
   );
   const readinessStatus: OpsReadinessStatus = !systemHealth || systemHealth.kiosks.total === 0 || stats.totalWorkers === 0 || offlineKioskCount > 0 || !faceServiceHealthy
@@ -670,11 +685,13 @@ export default function Dashboard() {
         ? 'System health is unavailable, so readiness cannot be confirmed.'
         : systemHealth.kiosks.total === 0
           ? 'No kiosks are registered, so employee clock-in cannot be confirmed.'
-          : stats.totalWorkers === 0
-            ? 'No active workers are available for today’s clock-in readiness.'
-            : offlineKioskCount > 0
-              ? `${offlineKioskCount} kiosk${offlineKioskCount === 1 ? '' : 's'} are offline or have never synced.`
-              : 'Face service is not fully ready for enrollment or recognition.',
+          : statsUnavailable
+            ? 'Dashboard stats are unavailable, so the active worker count cannot be confirmed.'
+            : stats.totalWorkers === 0
+              ? 'No active workers are available for today’s clock-in readiness.'
+              : offlineKioskCount > 0
+                ? `${offlineKioskCount} kiosk${offlineKioskCount === 1 ? '' : 's'} are offline or have never synced.`
+                : 'Face service is not fully ready for enrollment or recognition.',
       tone: 'border-red-400/25 bg-red-400/10 text-red-200',
     },
   }[readinessStatus];
@@ -693,16 +710,19 @@ export default function Dashboard() {
         href: faceServiceWarning ? opsEnrollmentHref : opsKioskHref,
       };
     }),
-    ...attendanceEvents.map((event) => ({
-      id: event.id || `${event.worker_id}-${event.timestamp}-${event.event_type}`,
-      tone: event.event_type === 'clock_in' ? 'emerald' as const : 'slate' as const,
-      source: 'attendance' as const,
-      label: event.event_type === 'clock_in' ? 'Clock in' : event.event_type === 'clock_out' ? 'Clock out' : 'Attendance',
-      title: `${event.worker_name || 'Worker'} ${event.event_type === 'clock_in' ? 'clocked in' : event.event_type === 'clock_out' ? 'clocked out' : 'recorded an event'}`,
-      description: `${event.worker_department || 'No department'}${event.kiosk_name ? ` · ${event.kiosk_name}` : event.kiosk_id ? ` · ${event.kiosk_id}` : ''}`,
-      timestamp: event.timestamp,
-      href: `/log?date=${actionDate}`,
-    })),
+    ...attendanceEvents.map((event) => {
+      const instantMs = attendanceClock.instantMs(event);
+      return {
+        id: event.id || `${event.worker_id}-${event.timestamp}-${event.event_type}`,
+        tone: event.event_type === 'clock_in' ? 'emerald' as const : 'slate' as const,
+        source: 'attendance' as const,
+        label: event.event_type === 'clock_in' ? 'Clock in' : event.event_type === 'clock_out' ? 'Clock out' : 'Attendance',
+        title: `${event.worker_name || 'Worker'} ${event.event_type === 'clock_in' ? 'clocked in' : event.event_type === 'clock_out' ? 'clocked out' : 'recorded an event'}`,
+        description: `${event.worker_department || 'No department'}${event.kiosk_name ? ` · ${event.kiosk_name}` : event.kiosk_id ? ` · ${event.kiosk_id}` : ''}`,
+        timestamp: Number.isFinite(instantMs) ? new Date(instantMs).toISOString() : null,
+        href: `/log?date=${actionDate}`,
+      };
+    }),
   ]
     .sort((a, b) => {
       const bMs = b.timestamp ? new Date(b.timestamp).getTime() : 0;
@@ -835,8 +855,8 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 sm:grid-cols-4 xl:min-w-[560px] gap-3">
             <div className="rounded-2xl bg-navy-950/35 border border-white/10 p-3">
               <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Expected</p>
-              <p className="mt-1 text-2xl font-display font-bold text-slate-100">{trustBrief?.source_counts.expected ?? stats.totalWorkers}</p>
-              <p className="text-[11px] text-slate-500">workers today</p>
+              <p className="mt-1 text-2xl font-display font-bold text-slate-100">{trustBrief?.source_counts.expected ?? (statsUnavailable ? '—' : stats.totalWorkers)}</p>
+              <p className="text-[11px] text-slate-500">{!trustBrief && statsUnavailable ? 'stats unavailable' : 'workers today'}</p>
             </div>
             <div className="rounded-2xl bg-navy-950/35 border border-white/10 p-3">
               <p className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Open exceptions</p>
@@ -1004,7 +1024,9 @@ export default function Dashboard() {
                       <h3 className="mt-2 font-display text-base font-semibold text-slate-100">{exception.title}</h3>
                       <p className="mt-1 text-sm leading-5 text-slate-400">{exception.description}</p>
                     </div>
-                    <span className="text-xs font-mono text-slate-600 shrink-0">{formatRelativeTime(exception.last_seen || exception.first_seen)}</span>
+                    <span className="text-xs font-mono text-slate-600 shrink-0">{formatRelativeTime(exception.last_seen || exception.last_seen_utc
+                      ? attendanceInstant(exception.last_seen, exception.last_seen_utc)
+                      : attendanceInstant(exception.first_seen, exception.first_seen_utc))}</span>
                   </div>
                   <div className="mt-3 rounded-xl border border-navy-600/50 bg-navy-950/45 p-3">
                     <p className="text-[11px] uppercase tracking-wider text-slate-500">Suggested resolution</p>
@@ -1059,7 +1081,7 @@ export default function Dashboard() {
                       <span className={`badge border text-[10px] ${healthTone(kiosk.status)}`}>{healthLabel(kiosk.status)}</span>
                     </div>
                     <p className="mt-1 text-xs font-mono text-slate-500 truncate">{kiosk.location || kiosk.kiosk_id || 'No location set'}</p>
-                    <p className="mt-2 text-[11px] text-slate-500">Last sync {formatRelativeTime(kiosk.last_sync)} · Last upload {formatRelativeTime(kiosk.last_attendance_upload)}</p>
+                    <p className="mt-2 text-[11px] text-slate-500">Last sync {formatRelativeTime(kiosk.last_sync)} · Last upload {formatRelativeTime(attendanceInstant(kiosk.last_attendance_upload))}</p>
                     {(kiosk.device_issues || []).map((issue) => (
                       <p key={issue} className="mt-1 text-[11px] text-amber-300">{issue}</p>
                     ))}

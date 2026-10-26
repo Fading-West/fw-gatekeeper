@@ -40,6 +40,8 @@ export interface Kiosk {
 export interface AttendanceWithWorker extends AttendanceEvent {
   worker_name: string;
   worker_department: string;
+  // Current roster label; stable matching must use worker_id.
+  worker_employee_id?: string | null;
   kiosk_name?: string;
 }
 
@@ -81,6 +83,7 @@ export interface RecognitionAttempt {
   threshold?: number | null;
   liveness_passed?: boolean | null;
   timestamp: string;
+  timestamp_utc?: string | null;
   reviewed_at?: string | null;
   review_note?: string | null;
   model_version?: string | null;
@@ -100,6 +103,10 @@ export interface RecognitionAttemptSummary {
 export interface RecognitionAttemptsResponse {
   attempts: RecognitionAttempt[];
   summary: RecognitionAttemptSummary;
+  truncated?: boolean;
+  summary_limited?: boolean;
+  summary_limited_fields?: string[];
+  next_scan_cursor?: string | null;
   backend_unavailable?: boolean;
   warning?: string;
 }
@@ -130,6 +137,7 @@ export interface ShiftExceptionSuggestedResolution {
 }
 
 export interface ShiftException {
+  source_fingerprint: string;
   key: string;
   date: string;
   type: string;
@@ -144,6 +152,8 @@ export interface ShiftException {
   kiosk_name: string | null;
   first_seen: string | null;
   last_seen: string | null;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
   schedule_name: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
@@ -216,8 +226,9 @@ export interface ShiftExceptionsResponse {
   warning?: string;
 }
 
-export type WorkerCoverageStatus = 'present' | 'late' | 'missing' | 'clocked_out' | 'still_clocked_in';
-export type DepartmentCoverageStatus = 'covered' | 'short' | 'critical' | 'unscheduled';
+// not_yet_due: scheduled with no clock-in before the scheduled start has passed.
+export type WorkerCoverageStatus = 'present' | 'late' | 'missing' | 'not_yet_due' | 'clocked_out' | 'still_clocked_in';
+export type DepartmentCoverageStatus = 'covered' | 'short' | 'critical' | 'not_yet_due' | 'unscheduled';
 export type ShiftBriefingActionPriority = 'critical' | 'warning' | 'info';
 export type ShiftBriefingKioskStatus = 'online' | 'stale' | 'offline' | 'never_synced';
 
@@ -230,6 +241,8 @@ export interface ShiftBriefingDepartment {
   present: number;
   late: number;
   missing: number;
+  // Optional while an older Convex deployment may omit it.
+  not_yet_due?: number;
   clocked_out: number;
   status: DepartmentCoverageStatus;
 }
@@ -281,6 +294,7 @@ export interface ShiftTrustBriefSourceCounts {
   present: number;
   late: number;
   missing: number;
+  not_yet_due?: number;
   open_exceptions: number;
   critical_exceptions: number;
   recognition_reviews: number;
@@ -322,6 +336,7 @@ export interface ShiftBriefingResponse {
     present: number;
     late: number;
     missing: number;
+    not_yet_due?: number;
     clocked_out: number;
     departments: number;
     open_exceptions: number;
@@ -331,6 +346,18 @@ export interface ShiftBriefingResponse {
   };
   departments: ShiftBriefingDepartment[];
   workers: ShiftBriefingWorker[];
+  coverage_unavailable?: number;
+  schedule_assignment_warnings?: {
+    worker_id: string;
+    worker_name: string;
+    department: string;
+    kind: 'none' | 'ambiguous' | 'unsupported';
+    tier: 'department' | 'default' | null;
+    candidates: { id: string; name: string; start: string; end: string; days: string; department: string }[];
+    first_seen: string | null;
+    last_seen: string | null;
+    event_count: number;
+  }[];
   action_items: ShiftBriefingActionItem[];
   kiosks: {
     total: number;
@@ -366,6 +393,7 @@ export interface ShiftCloseoutRecord {
   supervisor_name: string | null;
   notes: string;
   acknowledged_blockers: boolean;
+  acknowledgement_stale?: boolean;
   completed_at: string | null;
   reopened_at: string | null;
   updated_at: string;
@@ -405,6 +433,7 @@ export interface ShiftCloseoutDraftSection {
 export interface ShiftCloseoutDraft {
   generated_at: string;
   source_counts: ShiftCloseoutSnapshot & {
+    not_yet_due?: number;
     missing_clock_outs: number;
     recognition_reviews: number;
     attendance_corrections: number;
@@ -420,8 +449,11 @@ export interface ShiftCloseoutDraft {
 export interface ShiftCloseoutResponse {
   date: string;
   generated_at: string;
+  blocker_evidence?: string;
   closeout: ShiftCloseoutRecord | null;
   summary: ShiftCloseoutSnapshot & {
+    // Live only (not in the signed snapshot); optional for older deployments.
+    not_yet_due?: number;
     missing_clock_outs: number;
     recognition_reviews: number;
     attendance_corrections: number;
