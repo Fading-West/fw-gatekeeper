@@ -220,6 +220,24 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         self.assertEqual(database.get_sync_state("last_worker_sync"), "2026-09-02T12:00:00")
         self.assertTrue(any("last_sync_at" in call.kwargs for call in reporter.call_args_list))
 
+    def test_shared_key_sync_echoes_mapped_timestamp_exactly_and_keeps_it_after_failure(self):
+        self._loaded_recognizer()
+        timestamp = "2026-10-09T12:00:00.001Z"
+        response = mock.Mock(status_code=200, json=lambda: {
+            "workers": [], "synced_at": timestamp,
+        })
+        with mock.patch.object(sync.requests, "get", return_value=response) as download:
+            self.assertTrue(sync.sync_workers())
+            self.assertEqual(database.get_sync_state("last_worker_sync"), timestamp)
+            self.assertTrue(sync.sync_workers())
+            self.assertEqual(download.call_args.kwargs["params"]["since"], timestamp)
+            self.assertEqual(download.call_args.kwargs["params"]["roster_receipt"], "1")
+            self.assertEqual(download.call_args.kwargs["params"]["full_roster"], "1")
+            response.status_code = 503
+            self.assertFalse(sync.sync_workers())
+            self.assertEqual(database.get_sync_state("last_worker_sync"), timestamp)
+        self.assertIsNone(database.get_sync_state("last_roster_applied_at"))
+
     def test_unchanged_and_offline_cycles_preserve_recognition(self):
         for online in (True, False):
             with self.subTest(online=online):
