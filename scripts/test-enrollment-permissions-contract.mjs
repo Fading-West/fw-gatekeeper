@@ -107,7 +107,7 @@ assert.match(
 );
 assert.match(
   enrollRoute,
-  /if \(workerId && !isAdminSession\)[\s\S]*convex\.query\(api\.workers\.get[\s\S]*normalizedName = existingForEnrollment\.name/,
+  /if \(workerId\)[\s\S]*convex\.query\(api\.workers\.get[\s\S]*if \(!isAdminSession\) \{\s*normalizedName = existingForEnrollment\.name;\s*employeeIdForSave = existingForEnrollment\.employee_id \|\| undefined;\s*departmentForSave = existingForEnrollment\.department \|\| undefined;\s*\}/,
   'Enrollment-role re-enrollment should preserve existing worker name instead of allowing metadata edits through /api/enroll',
 );
 assert.match(

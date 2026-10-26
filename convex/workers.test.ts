@@ -57,7 +57,7 @@ describe("worker identity safeguards", () => {
       consentAt: new Date().toISOString(),
     });
 
-    await expect(admin.mutation(api.workers.update, { id: second.id, employeeId: "f-1" }))
+    await expect(admin.mutation(api.workers.update, { id: second.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: second.id }))?.identity_revision, employeeId: "f-1" }))
       .rejects.toThrow("Employee ID F-1 already belongs to First Worker");
   });
 
@@ -138,13 +138,13 @@ describe("worker audit entries", () => {
 
     // Re-enrollment and the Workers page Save resend the current identity.
     await admin.mutation(api.workers.update, {
-      id: worker.id, name: " Audit  Worker ", employeeId: "f-9", department: "Operations ", faceEncoding: encoding, consentAt: new Date().toISOString(),
+      id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, name: " Audit  Worker ", employeeId: "f-9", department: "Operations ", faceEncoding: encoding, consentAt: new Date().toISOString(),
     });
-    await admin.mutation(api.workers.update, { id: worker.id, name: "Audit Worker", employeeId: "F-9", department: "Operations" });
+    await admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, name: "Audit Worker", employeeId: "F-9", department: "Operations" });
     expect(await auditActions(admin, worker.id)).toEqual([...created, "workers.enroll"]);
 
-    await admin.mutation(api.workers.update, { id: worker.id, name: "Audit Worker", employeeId: "F-9", department: "Mill" });
-    await admin.mutation(api.workers.update, { id: worker.id, employeeId: "" });
+    await admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, name: "Audit Worker", employeeId: "F-9", department: "Mill" });
+    await admin.mutation(api.workers.update, { id: worker.id, expectedIdentityRevision: (await admin.query(api.workers.get, { id: worker.id }))!.identity_revision, employeeId: "" });
     expect(await auditActions(admin, worker.id)).toEqual([...created, "workers.enroll", "workers.updateIdentity", "workers.updateIdentity"]);
   });
 

@@ -68,7 +68,7 @@ it.each([
   ['issue credential', () => issue(request('kiosks/credentials', 'POST', { id: 'entry-2' }))],
   ['revoke credential', () => revoke(request('kiosks/credentials', 'DELETE', { id: 'entry-2', confirmStopSync: true }))],
   ['purge worker', () => purge(request('workers/purge-biometrics', 'POST', { id: 'worker-1', reason: 'Requested' }))],
-  ['update worker', () => updateWorker(request('workers', 'PATCH', { id: 'worker-1', name: 'Changed' }))],
+  ['update worker', () => updateWorker(request('workers', 'PATCH', { id: 'worker-1', name: 'Changed', expected_identity_revision: 'current-worker-revision' }))],
   ['remove worker', () => removeWorker(request('workers?id=worker-1', 'DELETE'))],
 ] as const)('invalidates all dates after successful %s', async (_label, mutate) => {
   rows.push({ id: 'entry-2', name: 'Entry-2', type: 'entry', purge_pending: false });

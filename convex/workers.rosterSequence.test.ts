@@ -138,7 +138,11 @@ it('sequences create, deactivation, employee-ID reenrollment, metadata, template
   await ack(reEnrolled.receipt);
   for (const change of [{ department: 'New department' }, { faceEncoding: encoding, consentAt }, { photoStorageIds: [], consentAt }]) {
     const before = (await t.run(ctx => ctx.db.get(created.id)))!.rosterSequence!;
-    await admin.mutation(api.workers.update, { id: created.id, ...change });
+    await admin.mutation(api.workers.update, {
+      id: created.id,
+      expectedIdentityRevision: (await admin.query(api.workers.get, { id: created.id }))!.identity_revision,
+      ...change,
+    });
     expect((await t.run(ctx => ctx.db.get(created.id)))!.rosterSequence).toBe(before + 1);
     const receipt = await issue();
     expect(await sync(receipt.since)).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id })]));
@@ -150,7 +154,9 @@ it('preserves identity audit filtering and does not resequence a repeated deacti
   const { t, admin, workerId } = await setup();
   // Current enrollment clients resend these fields even when identity is unchanged.
   await admin.mutation(api.workers.update, {
-    id: workerId, name: 'Legacy worker', employeeId: 'F-77', department: 'Operations',
+    id: workerId,
+    expectedIdentityRevision: (await admin.query(api.workers.get, { id: workerId }))!.identity_revision,
+    name: 'Legacy worker', employeeId: 'F-77', department: 'Operations',
   });
   expect((await t.run(ctx => ctx.db.get(workerId)))!.rosterSequence).toBe(1);
   expect(await t.run(ctx => ctx.db.query('auditLog').collect())).toEqual([]);

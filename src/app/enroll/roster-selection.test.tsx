@@ -79,7 +79,11 @@ it('ignores a late response for the previous query and selects the current resul
   await act(async () => { await vi.advanceTimersByTimeAsync(200); });
   await act(async () => resolveAlex(response([alex])));
   expect(options()).toHaveLength(1);
+  fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({
+    name: blair.name, employee_id: blair.employeeId, department: blair.department, identity_revision: 'current-blair',
+  }) });
   await enter();
+  expect(fetchMock).toHaveBeenCalledWith('/api/workers?id=worker-2');
   expect(input().props.value).toBe('Blair Jones');
   expect(input().props.readOnly).toBe(true);
 });
