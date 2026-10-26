@@ -650,6 +650,9 @@ export default function Dashboard() {
     : 0;
   const staleKioskCount = systemHealth?.kiosks.counts.stale || 0;
   const faceServiceHealthy = systemHealth?.face_service.status === 'online' && systemHealth.face_service.model_ready;
+  // A recent sync only proves connectivity; the device may still be unable
+  // to scan or have attendance/purge work waiting locally.
+  const hasKioskDeviceIssues = Boolean(systemHealth?.kiosks.rows.some((kiosk) => kiosk.device_issues?.length));
   const hasWorkerEnrollmentIssues = missingFaceWorkers.length + invalidFaceWorkers.length > 0;
   const readyForShift = Boolean(
     systemHealth &&
@@ -657,6 +660,7 @@ export default function Dashboard() {
     systemHealth.kiosks.total > 0 &&
     offlineKioskCount === 0 &&
     staleKioskCount === 0 &&
+    !hasKioskDeviceIssues &&
     !hasWorkerEnrollmentIssues
   );
   const readinessStatus: OpsReadinessStatus = !systemHealth || systemHealth.kiosks.total === 0 || stats.totalWorkers === 0 || offlineKioskCount > 0 || !faceServiceHealthy

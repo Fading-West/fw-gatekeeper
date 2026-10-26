@@ -10,6 +10,12 @@ from enrollment_samples import competing_faces, samples_agree
 
 
 class EnrollmentSampleTests(unittest.TestCase):
+    def test_bundled_policy_matches_face_service(self):
+        kiosk = Path(__file__).resolve().parent
+        self.assertEqual((kiosk / 'enrollment_quality.py').read_bytes(),
+                         (kiosk.parent / 'face-service/enrollment_quality.py').read_bytes(),
+                         'Update the bundled kiosk policy when the service policy changes')
+
     def vector(self, axis):
         vector = np.zeros(512)
         vector[axis] = 1
