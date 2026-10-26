@@ -1,12 +1,7 @@
 """Use the face service's quality policy for supported local enrollment too."""
-import importlib.util
-from pathlib import Path
-
-
-_policy_path = Path(__file__).resolve().parents[1] / "face-service/enrollment_quality.py"
-_spec = importlib.util.spec_from_file_location("gatekeeper_enrollment_quality", _policy_path)
-_policy = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_policy)
+# Immutable kiosk releases contain only pi-kiosk. Keep a bundled policy beside
+# this helper; test_enrollment_samples.py checks it against the service copy.
+import enrollment_quality as _policy
 
 
 def competing_faces(locations):
