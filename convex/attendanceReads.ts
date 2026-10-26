@@ -1,9 +1,10 @@
 // One closeout transaction builds the briefing, exceptions and the signed
-// attendance baseline, which repeat the same attendance scans and reversal
-// lookups. Convex bounds documents scanned and index ranges per transaction, so
+// attendance baseline, which repeat the same attendance scans, correction reads
+// and reversal lookups. Convex bounds documents scanned and index ranges per transaction, so
 // a read-only scope shares those results instead of re-reading them.
 type SharedReads = {
   scans: Map<string, Promise<any[]>>;
+  corrections: Map<string, Promise<any[]>>;
   reversals: Map<string, Promise<any[]>>;
 };
 
@@ -13,7 +14,7 @@ const sharedReads = new WeakMap<object, SharedReads>();
  * called. End the scope before any write: cached reads would not see it. */
 export function shareAttendanceReads(ctx: { db: object }) {
   if (sharedReads.has(ctx.db)) return () => {};
-  sharedReads.set(ctx.db, { scans: new Map(), reversals: new Map() });
+  sharedReads.set(ctx.db, { scans: new Map(), corrections: new Map(), reversals: new Map() });
   return () => { sharedReads.delete(ctx.db); };
 }
 
@@ -35,6 +36,14 @@ export async function scanAttendanceByTimestamp(ctx: any, range: { startTimestam
       .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp));
     return (workerId ? query.filter((q: any) => q.eq(q.field("workerId"), workerId)) : query).collect();
   });
+}
+
+/** All corrections recorded for the inclusive factory dates, including reversed ones. */
+export async function listCorrectionsByDateRange(ctx: any, startDate: string, endDate = startDate) {
+  return shared(sharedReads.get(ctx.db)?.corrections, `${startDate}\u0000${endDate}`, () => ctx.db
+    .query("attendanceCorrections")
+    .withIndex("by_date", (q: any) => startDate === endDate ? q.eq("date", startDate) : q.gte("date", startDate).lte("date", endDate))
+    .collect());
 }
 
 /** Up to two reversals, so callers can reject an ambiguous duplicate. */

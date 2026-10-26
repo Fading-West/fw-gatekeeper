@@ -13,7 +13,7 @@ import {
 } from "./localDate";
 import { assertPortalRole } from "./access";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
-import { listCorrectionReversals, scanAttendanceByTimestamp } from "./attendanceReads";
+import { listCorrectionReversals, listCorrectionsByDateRange, scanAttendanceByTimestamp } from "./attendanceReads";
 
 // Keep the instant separate from the factory wall time used by schedule rules
 // and API display. In a repeated DST hour, wall time alone reverses scans.
@@ -63,10 +63,7 @@ export async function listEffectiveAttendanceByTimestampRange(
           .query("attendanceCorrections")
           .withIndex("by_worker_date", (q: any) => q.eq("workerId", workerId).eq("date", date))
           .collect()
-      : ctx.db
-          .query("attendanceCorrections")
-          .withIndex("by_date", (q: any) => q.eq("date", date))
-          .collect(),
+      : listCorrectionsByDateRange(ctx, date),
   ]);
   return applyAttendanceCorrections(rawRecords, await listActiveCorrections(ctx, corrections));
 }
@@ -90,10 +87,7 @@ export async function listEffectiveAttendanceByFactoryDates(
   const [ranges, corrections] = await Promise.all([
     Promise.all(buildConservativeFactoryLocalTimestampRanges(startDate, endDate)
       .map(range => scanAttendanceByTimestamp(ctx, range))),
-    ctx.db
-      .query("attendanceCorrections")
-      .withIndex("by_date", (q: any) => q.gte("date", startDate).lte("date", endDate))
-      .collect(),
+    listCorrectionsByDateRange(ctx, startDate, endDate),
   ]);
   const activeCorrections = await listActiveCorrections(ctx, corrections);
   const sortKey = createRecognitionTimestampSortKey();

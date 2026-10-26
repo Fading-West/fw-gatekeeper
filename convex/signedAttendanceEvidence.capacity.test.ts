@@ -76,3 +76,42 @@ it('does not let busy adjacent dates in the conservative scan block a new signat
   expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 1 });
   expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
 }, 120_000);
+
+it('reopens and re-signs a busy day with many reversed corrections inside transaction limits', async () => {
+  const { t, actor, complete, userId } = await setup();
+  await t.run(ctx => ctx.db.insert('schedules', { name: 'Day', days: '[0,1,2,3,4,5,6]',
+    startTime: '08:00', endTime: '17:00', department: 'QA', active: true, createdAt: date }));
+  const workerIds: string[] = [];
+  for (let start = 0; start < 1000; start += 100) {
+    await t.run(async ctx => {
+      for (let i = start; i < start + 100; i++) {
+        const workerId = await ctx.db.insert('workers', { name: `Worker ${i}`, department: 'QA', active: true, enrolledAt: date });
+        workerIds.push(workerId);
+        for (const day of ['2026-08-31', '2026-09-01', date, '2026-09-03', '2026-09-04']) {
+          await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', synced: true, timestamp: `${day}T08:00:00` });
+          await ctx.db.insert('attendance', { workerId, eventType: 'clock_out', synced: true, timestamp: `${day}T17:00:00` });
+        }
+      }
+    });
+  }
+  await complete();
+  // Audited corrections, each later reversed, arrive after signoff.
+  for (let start = 0; start < 1900; start += 100) {
+    await t.run(async ctx => {
+      for (let i = start; i < start + 100; i++) {
+        const workerId = workerIds[i % workerIds.length];
+        const correctionId = await ctx.db.insert('attendanceCorrections', { date, workerId, action: 'add_clock_out', eventType: 'clock_out',
+          correctedTimestamp: `${date}T17:00:00`, reason: 'Synthetic', actorUserId: userId, createdAt: date, updatedAt: date });
+        await ctx.db.insert('attendanceCorrectionReversals', { correctionId, date, workerId, reason: 'Synthetic reversal', actorUserId: userId, createdAt: date, requestId: `capacity-${i}` });
+      }
+    });
+  }
+  expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({
+    status: 'changed', current: { raw_punches: 2000, corrections: 1900, reversals: 1900 },
+  });
+  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen' })).status).toBe('reopened');
+  await actor.mutation(api.shiftCloseouts.save, { date, action: 'save', notes: 'Synthetic review' });
+  const { id } = await complete();
+  expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 2000, corrections: 1900, reversals: 1900 });
+  expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
+}, 180_000);

@@ -1,4 +1,4 @@
-import { shareAttendanceReads } from "./attendanceReads";
+import { listCorrectionsByDateRange, shareAttendanceReads } from "./attendanceReads";
 import { compareSignedAttendanceEvidence, readSignedAttendanceEvidence } from "./signedAttendanceEvidence";
 import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
@@ -321,7 +321,9 @@ function buildCloseoutDraft(input: {
   };
 }
 
-async function buildCloseoutPayload(ctx: any, date: string) {
+// Saves never return the read-only attendance comparison; with no closeout it is
+// not_applicable and reads nothing.
+async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance = true } = {}) {
   const generatedAt = new Date().toISOString();
   const [briefing, exceptions, closeout] = await Promise.all([
     buildShiftBriefing(ctx, date),
@@ -331,10 +333,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
       .withIndex("by_date", (q: any) => q.eq("date", date))
       .first(),
   ]);
-  const attendanceCorrections = await ctx.db
-    .query("attendanceCorrections")
-    .withIndex("by_date", (q: any) => q.eq("date", date))
-    .collect();
+  const attendanceCorrections = await listCorrectionsByDateRange(ctx, date);
 
   const openExceptions = exceptions.filter((exception: any) => exception.status === "open");
   const criticalExceptions = openExceptions.filter((exception: any) => exception.severity === "critical");
@@ -428,7 +427,7 @@ async function buildCloseoutPayload(ctx: any, date: string) {
     date,
     generated_at: generatedAt,
     blocker_evidence: blockerEvidence,
-    attendance_comparison: await compareSignedAttendanceEvidence(ctx, date, closeout),
+    attendance_comparison: await compareSignedAttendanceEvidence(ctx, date, compareAttendance ? closeout : null),
     closeout: closeout
       ? {
           id: String(closeout._id),
@@ -503,7 +502,7 @@ export const save = mutation({
     // The payload builders and baseline capture share attendance reads; the
     // scope ends before this transaction writes.
     const endSharedReads = shareAttendanceReads(ctx);
-    const current = await buildCloseoutPayload(ctx, args.date);
+    const current = await buildCloseoutPayload(ctx, args.date, { compareAttendance: false });
     const now = new Date().toISOString();
     const supervisorName = args.supervisorName === undefined ? existing?.supervisorName : normalizeText(args.supervisorName);
     const hasNotesArg = Object.prototype.hasOwnProperty.call(args, "notes");

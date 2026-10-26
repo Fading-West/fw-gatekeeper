@@ -2,7 +2,7 @@ import { sha256 } from '@oslojs/crypto/sha2';
 import { v } from 'convex/values';
 import type { Doc } from './_generated/dataModel';
 import type { QueryCtx } from './_generated/server';
-import { listCorrectionReversals, scanAttendanceByTimestamp } from './attendanceReads';
+import { listCorrectionReversals, listCorrectionsByDateRange, scanAttendanceByTimestamp } from './attendanceReads';
 import { buildConservativeFactoryLocalTimestampRanges, timestampBelongsToFactoryLocalDate } from './localDate';
 
 // Widen version for forward compatibility: old readers report unknown for new versions.
@@ -58,8 +58,8 @@ export function buildSignedAttendanceEvidence(date: string, input: EvidenceInput
 
 /** Read persisted documents, not the display-normalized reader or active-only
  * corrections: both discard evidence needed by this signature. Within a closeout
- * transaction the timestamp scan and reversal lookups are shared with the
- * briefing/exception builders, so capture adds no index ranges per correction. */
+ * transaction the timestamp scan, the date's corrections and reversal lookups are
+ * shared with the briefing/exception builders, so capture re-reads none of them. */
 export async function readSignedAttendanceEvidence(ctx: Pick<QueryCtx, 'db'>, date: string): Promise<SignedAttendanceEvidence> {
   const rawById = new Map<string, Doc<'attendance'>>();
   for (const range of buildConservativeFactoryLocalTimestampRanges(date)) {
@@ -68,8 +68,7 @@ export async function readSignedAttendanceEvidence(ctx: Pick<QueryCtx, 'db'>, da
     }
   }
   if (rawById.size > MAX_ATTENDANCE_EVIDENCE_ROWS) throw new Error('Attendance evidence exceeds the safe comparison limit.');
-  const corrections = await ctx.db.query('attendanceCorrections')
-    .withIndex('by_date', q => q.eq('date', date)).take(MAX_ATTENDANCE_EVIDENCE_ROWS + 1);
+  const corrections = await listCorrectionsByDateRange(ctx, date) as Doc<'attendanceCorrections'>[];
   if (rawById.size + corrections.length > MAX_ATTENDANCE_EVIDENCE_ROWS) throw new Error('Attendance evidence exceeds the safe comparison limit.');
   const reversals: Doc<'attendanceCorrectionReversals'>[] = [];
   for (const correction of corrections) {
