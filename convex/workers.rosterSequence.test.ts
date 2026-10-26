@@ -146,6 +146,29 @@ it('sequences create, deactivation, employee-ID reenrollment, metadata, template
   }
 });
 
+it('preserves identity audit filtering and does not resequence a repeated deactivation', async () => {
+  const { t, admin, workerId } = await setup();
+  // Current enrollment clients resend these fields even when identity is unchanged.
+  await admin.mutation(api.workers.update, {
+    id: workerId, name: 'Legacy worker', employeeId: 'F-77', department: 'Operations',
+  });
+  expect((await t.run(ctx => ctx.db.get(workerId)))!.rosterSequence).toBe(1);
+  expect(await t.run(ctx => ctx.db.query('auditLog').collect())).toEqual([]);
+
+  await admin.mutation(api.workers.remove, { id: workerId });
+  const removed = await t.run(ctx => ctx.db.get(workerId));
+  const counter = await t.run(ctx => ctx.db.query('rosterSequence').unique());
+  const audit = await t.run(ctx => ctx.db.query('auditLog').collect());
+  expect(removed).toMatchObject({ active: false, rosterSequence: 2 });
+  expect(audit).toMatchObject([{ action: 'workers.remove' }]);
+
+  vi.setSystemTime(t0 + 500);
+  await admin.mutation(api.workers.remove, { id: workerId });
+  expect(await t.run(ctx => ctx.db.get(workerId))).toEqual(removed);
+  expect(await t.run(ctx => ctx.db.query('rosterSequence').unique())).toEqual(counter);
+  expect(await t.run(ctx => ctx.db.query('auditLog').collect())).toEqual(audit);
+});
+
 it('routes seed and roster enrollment through the same counter', async () => {
   const t = convexTest(schema, modules);
   await t.mutation(internal.seed.run, {});
