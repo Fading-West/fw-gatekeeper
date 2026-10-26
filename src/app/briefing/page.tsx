@@ -669,11 +669,11 @@ function ShiftBriefingPageContent() {
               </div>
             ))}
           </div>
-          {payload && (
+          {(payload || error) && (
             <div className="mt-4">
               <AttendanceQueueEvidencePanel
                 title="Attendance queue evidence"
-                evidence={payload.backend_unavailable ? null : payload.kiosks.attendance_queue}
+                evidence={dataReady ? payload?.kiosks.attendance_queue : null}
                 missing="Attendance queue evidence is unavailable. Do not treat the queue as clear."
                 testId="briefing-attendance-queue"
               />

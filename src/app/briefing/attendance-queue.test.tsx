@@ -33,3 +33,11 @@ it.each([
   await act(async () => { tree = create(<BriefingPage />); });
   expect(panel()).toContain('Do not treat the queue as clear.');
 });
+
+it('keeps attendance queue evidence explicitly unavailable when the briefing request fails', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, json: async () => ({ error: 'Briefing service unavailable' }) })));
+  await act(async () => { tree = create(<BriefingPage />); });
+  expect(label(tree.toJSON())).toContain('Briefing unavailable');
+  expect(panel()).toContain('Attendance queue evidence is unavailable. Do not treat the queue as clear.');
+  expect(panel()).not.toContain('No kiosk reported attendance waiting to upload.');
+});
