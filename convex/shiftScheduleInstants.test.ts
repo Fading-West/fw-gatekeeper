@@ -74,7 +74,7 @@ describe("schedule lateness compares punch instants", () => {
     const briefing = await admin.query(api.shiftBriefing.summary, { date });
     expect(briefing.workers[0].status).toBe("clocked_out");
     expect(briefing.daily_attendance).toMatchObject({ present: 1, late: 1 });
-    await admin.mutation(api.shiftCloseouts.save, {
+    await admin.mutation(api.shiftCloseouts.save, { requestId: "synthetic-closeout", expectedRevision: null,
       date, action: "complete", blockerEvidence: (await admin.query(api.shiftCloseouts.get, { date })).blocker_evidence, acknowledgedBlockers: true, notes: "Reviewed the late arrival during the repeated hour.",
     });
     const closeout = await admin.query(api.shiftCloseouts.get, { date });

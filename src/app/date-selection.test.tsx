@@ -10,6 +10,7 @@ const navigation = vi.hoisted(() => ({ query: '' }));
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(navigation.query) }));
 vi.mock('next/link', () => ({ default: ({ children }: { children: React.ReactNode }) => children }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => 'admin' }));
+vi.mock('@/hooks/useCloseoutActor', () => ({ useCloseoutActor: () => 'synthetic-actor' }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('@/components/AttendanceTable', () => ({ default: () => null, attendanceRowId: (id: string) => id }));
 
