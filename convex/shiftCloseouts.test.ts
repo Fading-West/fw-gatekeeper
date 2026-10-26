@@ -42,7 +42,8 @@ describe('closeout signed record integrity', () => {
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ actorUserId: userId, action: 'reopen', before: { status: 'completed', notes: 'Original signed notes', expected: 9 }, after: { status: 'reopened', acknowledgedBlockers: false } });
     await expect(actor.mutation(api.shiftCloseouts.save, { date, action: 'complete' })).rejects.toThrow('acknowledgement note');
-    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Offline gate evidence reviewed', acknowledgedBlockers: true });
+    const evidence = (await actor.query(api.shiftCloseouts.get, { date })).blocker_evidence;
+    await actor.mutation(api.shiftCloseouts.save, { date, action: 'complete', notes: 'Offline gate evidence reviewed', acknowledgedBlockers: true, blockerEvidence: evidence });
     const completed = await t.run((ctx) => ctx.db.get(closeoutId!));
     expect(completed).toMatchObject({ status: 'completed', notes: 'Offline gate evidence reviewed', kioskWarnings: 1 });
     expect((await t.run((ctx) => ctx.db.query('shiftCloseoutHistory').collect()))).toHaveLength(2);

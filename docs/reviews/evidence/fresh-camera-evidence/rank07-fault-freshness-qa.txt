@@ -1,0 +1,7 @@
+test_actual_camera_failure_branch_clears_pending_evidence_and_rejects_late_result (__main__.FaultFreshnessQA.test_actual_camera_failure_branch_clears_pending_evidence_and_rejects_late_result) ... ok
+test_fresh_faults_survive_the_actual_main_consumption_guard (__main__.FaultFreshnessQA.test_fresh_faults_survive_the_actual_main_consumption_guard) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.002s
+
+OK

@@ -131,11 +131,22 @@ export const appGuides: AppGuide[] = [
     steps: [
       'Choose the date or follow a source link from an exception.',
       'Confirm the worker, event type, time, and kiosk for the event in question.',
-      'Review correction history to understand any supervisor changes.',
+      'Use Correct to void a wrong kiosk row, or Add missing punch for a forgotten clock-in or clock-out. Both need a reason, are audited, and can be reversed.',
+      'To reassign a scan credited to the wrong worker, void it with Correct, then use Add missing punch for the right worker.',
+      'Review correction history, including Direct (no exception) changes, and reverse a mistaken correction with a reason.',
       'Export events or calculated hours when the record must be shared.',
     ],
-    tips: ['A source-linked view highlights the relevant worker or event.', 'Create attendance corrections in Exceptions; authorized operators can reverse a recorded correction here with a reason.'],
+    stepsByRole: {
+      viewer: [
+        'Choose the date or follow a source link from an exception.',
+        'Confirm the worker, event type, time, and kiosk for the event in question.',
+        'Review correction history to understand any supervisor changes.',
+        'Export events or calculated hours when the record must be shared.',
+      ],
+    },
+    tips: ['A source-linked view highlights the relevant worker or event.', 'Corrections never delete kiosk evidence; each one records who made it, when, and why.'],
     related: [{ href: '/exceptions', label: 'Review an exception' }, { href: '/closeout', label: 'Return to closeout' }],
+    roleNotes: { viewer: 'Your account is review-only. Send a wrong or missing record to an admin or enrollment operator with the evidence.' },
   },
   {
     path: '/workers',

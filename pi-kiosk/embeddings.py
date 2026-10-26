@@ -15,13 +15,16 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from model_pinning import MODEL_COMMIT, REC_MODEL_SHA256, REC_MODEL_URL, ensure_pinned_model
+from model_pinning import MODEL_COMMIT, REC_MODEL_SHA256, REC_MODEL_URL, ensure_pinned_model, sha256_of_file
 
 logger = logging.getLogger(__name__)
 
 # REC_MODEL_URL / REC_MODEL_SHA256 pin immich-app/buffalo_s @ MODEL_COMMIT.
 # Re-pin instructions live in model_pinning.py (kiosk and face service must match).
-REC_MODEL_PATH = Path("data/models/mobilefacenet.onnx")
+# Each pin has its own cache file: a trial must never delete/replace the
+# committed release's model in the shared runtime directory.
+REC_MODEL_PATH = Path(f"data/models/mobilefacenet-{REC_MODEL_SHA256}.onnx")
+LEGACY_REC_MODEL_PATH = Path("data/models/mobilefacenet.onnx")
 EXPECTED_EMBEDDING_DIM = 512
 
 _rec_session = None
@@ -36,8 +39,14 @@ def ensure_rec_model() -> bool:
     than scanning with an unknown model.
     """
     try:
+        source = REC_MODEL_URL
+        # Migrate the verified legacy cache by copying, so the first release
+        # update works offline and fallback can still use the original path.
+        if (not REC_MODEL_PATH.exists() and LEGACY_REC_MODEL_PATH.is_file()
+                and sha256_of_file(LEGACY_REC_MODEL_PATH) == REC_MODEL_SHA256):
+            source = LEGACY_REC_MODEL_PATH.resolve().as_uri()
         ensure_pinned_model(
-            REC_MODEL_URL,
+            source,
             REC_MODEL_PATH,
             REC_MODEL_SHA256,
             label=f"MobileFaceNet (buffalo_s@{MODEL_COMMIT[:12]})",

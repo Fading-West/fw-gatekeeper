@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestRecognitionAttemptBatch, SecuredIngestError } from '@/lib/convex-ingest';
 import { unauthorizedApiResponse } from '@/lib/auth';
-import { authenticateKiosk, kioskClaims, kioskEvidenceId } from '@/lib/kiosk-device-auth';
+import { authenticateKiosk, kioskClaims, kioskEvidenceId, KioskClaimMismatchError } from '@/lib/kiosk-device-auth';
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -18,6 +18,22 @@ function optionalBoolean(value: unknown): boolean | undefined {
   if (value === 1 || value === 'true') return true;
   if (value === 0 || value === 'false') return false;
   return undefined;
+}
+
+const metricLimits: [string[], number, number][] = [
+  [['best_score', 'bestScore', 'score', 'confidence', 'second_best_score', 'secondBestScore', 'second_score', 'secondScore'], -1, 1],
+  [['score_margin', 'scoreMargin', 'margin'], -2, 2],
+  [['threshold', 'match_threshold', 'matchThreshold', 'image_quality', 'imageQuality', 'face_quality', 'faceQuality'], 0, 1],
+  [['brightness'], 0, 255], [['blur'], 0, Number.MAX_VALUE],
+];
+function invalidRawMetric(raw: Record<string, unknown>): string | undefined {
+  for (const [fields, minimum, maximum] of metricLimits) {
+    for (const field of fields) {
+      const value = raw[field];
+      if (value !== undefined && value !== null && (typeof value !== 'number' ||
+          !Number.isFinite(value) || value < minimum - 1e-12 || value > maximum + 1e-12)) return field;
+    }
+  }
 }
 
 function normalizeAttempt(raw: any, kioskId: string) {
@@ -87,8 +103,13 @@ export async function POST(req: NextRequest) {
     }
     const claims = [...kioskClaims(body), ...attempts.flatMap((attempt: unknown) =>
       attempt && typeof attempt === 'object' && !Array.isArray(attempt) ? kioskClaims(attempt as Record<string, unknown>) : [])];
-    const identity = await authenticateKiosk(req, claims);
+    const identity = await authenticateKiosk(req, claims, { batchClaims: kioskClaims(body) });
     if (!identity) return unauthorizedApiResponse();
+
+    for (const attempt of attempts) {
+      const invalid = invalidRawMetric(attempt);
+      if (invalid) return NextResponse.json({ error: `Invalid recognition metric: ${invalid}`, code: 'INVALID_RECOGNITION_METRIC' }, { status: 400 });
+    }
 
     if (attempts.some((raw: any) => !(optionalString(raw.timestamp) || optionalString(raw.created_at) || optionalString(raw.createdAt)))) {
       return NextResponse.json({ error: 'Each recognition attempt requires its captured timestamp for safe retry.', code: 'INVALID_RECOGNITION_TIMESTAMP' }, { status: 400 });
@@ -103,6 +124,13 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof KioskClaimMismatchError) {
+      return NextResponse.json({ error: error.message, code: 'KIOSK_CLAIM_MISMATCH' }, { status: 403 });
+    }
+    if (error instanceof SecuredIngestError && error.status === 400 &&
+        ['INVALID_RECOGNITION_TIMESTAMP', 'INVALID_RECOGNITION_METRIC'].includes(error.code || '')) {
+      return NextResponse.json({ error: error.detail || 'Invalid recognition evidence', code: error.code }, { status: 400 });
+    }
     if (error instanceof SecuredIngestError && error.status === 409) {
       return NextResponse.json({ error: 'Recognition attempt ID was reused with different evidence.', code: 'RECOGNITION_ATTEMPT_CONFLICT' }, { status: 409 });
     }

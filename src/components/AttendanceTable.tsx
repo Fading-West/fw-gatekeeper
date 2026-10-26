@@ -1,6 +1,8 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { AttendanceWithWorker } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 
 export function attendanceRowId(id: string) {
   return `attendance-row-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
@@ -9,9 +11,12 @@ export function attendanceRowId(id: string) {
 export default function AttendanceTable({
   events,
   targetAttendanceId = '',
+  renderRowAction,
 }: {
   events: AttendanceWithWorker[];
   targetAttendanceId?: string;
+  // Optional per-row control column. Callers that omit it render unchanged.
+  renderRowAction?: (event: AttendanceWithWorker) => ReactNode;
 }) {
   if (events.length === 0) {
     return (
@@ -34,6 +39,7 @@ export default function AttendanceTable({
             <th className="text-left py-3.5 px-4 section-label">Worker</th>
             <th className="text-left py-3.5 px-4 section-label">Event</th>
             <th className="text-left py-3.5 px-4 section-label">Kiosk</th>
+            {renderRowAction && <th className="text-left py-3.5 px-4 section-label">Action</th>}
           </tr>
         </thead>
         <tbody>
@@ -46,7 +52,7 @@ export default function AttendanceTable({
                 className={`border-b border-navy-700/30 table-row-hover transition-colors ${targeted ? 'bg-gold/5 ring-1 ring-inset ring-gold/30' : ''}`}
               >
                 <td className="py-3 px-4 font-mono text-xs text-slate-400 tabular-nums">
-                  {new Date(e.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  {formatFactoryLocalDateTime(e.timestamp, '—', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
                 </td>
                 <td className="py-3 px-4">
                   <div className="font-display font-medium text-slate-200 text-sm">{e.worker_name}</div>
@@ -93,6 +99,7 @@ export default function AttendanceTable({
                     </span>
                   )}
                 </td>
+                {renderRowAction && <td className="py-3 px-4">{renderRowAction(e)}</td>}
               </tr>
             );
           })}

@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import schema from "./schema";
 import { listRecognitionAttemptsByFactoryDate } from "./recognitionAttempts";
-import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
 const modules = import.meta.glob("./**/*.ts");
 
 it("sorts mixed UTC, offset, and factory-local evidence before limiting", async () => {
@@ -23,9 +23,11 @@ it("sorts mixed UTC, offset, and factory-local evidence before limiting", async 
     });
   });
   const rows = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15" }));
-  expect(rows.map(row => row.timestamp)).toEqual([...timestamps].reverse());
+  expect(rows.map(row => row.timestamp)).toEqual([...timestamps].reverse().map(timestamp => getRecognitionDisplayTimestamp(timestamp)));
+  const key = createRecognitionTimestampSortKey();
+  expect(rows.map(row => row.timestamp_utc)).toEqual([...timestamps].reverse().map(timestamp => `${key(timestamp)}Z`.replace(".Z", "Z")));
   const limited = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15", limit: 1 }));
-  expect(limited[0].timestamp).toBe(timestamps.at(-1));
+  expect(limited[0].timestamp).toBe(getRecognitionDisplayTimestamp(timestamps[timestamps.length - 1]));
 });
 
 it("retains true instant order during fall-back and chooses the earlier legacy occurrence", () => {
@@ -54,4 +56,18 @@ it("orders equal instants deterministically by ID across timestamp representatio
   });
   const rows = await t.run(ctx => listRecognitionAttemptsByFactoryDate(ctx, { date: "2026-09-15" }));
   expect(rows.map(row => row.id)).toEqual(ids.sort((a, b) => a.localeCompare(b)));
+});
+
+it("bounds the lab read using the existing kiosk/review/timestamp index", async () => {
+  const paginate = vi.fn(async () => ({ page: [], isDone: true, continueCursor: "" }));
+  const order = vi.fn(() => ({ paginate }));
+  const withIndex = vi.fn(() => ({ order }));
+  const query = vi.fn(() => ({ withIndex }));
+  await listRecognitionAttemptsByFactoryDate({ db: { query } }, {
+    date: "2026-09-15", kioskId: "entry", reviewed: false, limit: 150,
+  });
+  expect(query).toHaveBeenCalledWith("recognitionAttempts");
+  expect(withIndex).toHaveBeenCalledWith("by_kiosk_reviewed_timestamp", expect.any(Function));
+  expect(order).toHaveBeenCalledWith("desc");
+  expect(paginate).toHaveBeenCalledExactlyOnceWith({ cursor: null, numItems: 1000, maximumRowsRead: 1001, maximumBytesRead: 4 * 1024 * 1024 });
 });

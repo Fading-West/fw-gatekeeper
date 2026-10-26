@@ -1,3 +1,4 @@
+import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
@@ -39,6 +40,7 @@ export type AlertKioskHealth = {
   knownWorkers?: number;
   queuedLogs?: number;
   queuedAttempts?: number;
+  rejectedAttempts?: number;
   degradedReason?: string;
   lastScanAt?: string;
   reportedAt: string;
@@ -100,7 +102,7 @@ export type AlertPlan = {
 function hasScanBlockingFault(health?: AlertKioskHealth): boolean {
   if (!health) return false;
   if (health.cameraOk === false || health.modelOk === false) return true;
-  return typeof health.degradedReason === "string" && SCAN_BLOCKING_DEGRADED_REASONS.has(health.degradedReason);
+  return getKioskDegradedReasons(health.degradedReason).some(reason => SCAN_BLOCKING_DEGRADED_REASONS.has(reason));
 }
 
 /**
@@ -471,6 +473,7 @@ const alertKioskValidator = v.object({
     knownWorkers: v.optional(v.float64()),
     queuedLogs: v.optional(v.float64()),
     queuedAttempts: v.optional(v.float64()),
+    rejectedAttempts: v.optional(v.float64()),
     degradedReason: v.optional(v.string()),
     lastScanAt: v.optional(v.string()),
     reportedAt: v.string(),
