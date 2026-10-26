@@ -19,6 +19,7 @@ function serializeHealth(health: any) {
     known_workers: health.knownWorkers ?? null,
     queued_logs: health.queuedLogs ?? null,
     queued_attempts: health.queuedAttempts ?? null,
+    rejected_attempts: health.rejectedAttempts ?? null,
     degraded_reason: health.degradedReason ?? null,
     last_scan_at: health.lastScanAt ?? null,
     reported_at: health.reportedAt,
@@ -49,6 +50,7 @@ const healthSerialized = v.union(v.object({
   known_workers: v.union(v.float64(), v.null()),
   queued_logs: v.union(v.float64(), v.null()),
   queued_attempts: v.union(v.float64(), v.null()),
+  rejected_attempts: v.union(v.float64(), v.null()),
   degraded_reason: v.union(v.string(), v.null()),
   last_scan_at: v.union(v.string(), v.null()),
   reported_at: v.string(),
@@ -61,6 +63,7 @@ const healthInput = v.object({
   knownWorkers: v.optional(v.float64()),
   queuedLogs: v.optional(v.float64()),
   queuedAttempts: v.optional(v.float64()),
+  rejectedAttempts: v.optional(v.float64()),
   degradedReason: v.optional(v.string()),
   lastScanAt: v.optional(v.string()),
   reportedAt: v.string(),
@@ -165,6 +168,13 @@ export const updateLastSyncFromHttp = internalMutation({
     const kiosk = await findActiveKioskByIdentifier(ctx, args.kioskId);
     if (!kiosk) return { updated: false };
 
+    const now = Date.now();
+    const incomingAt = Date.parse(args.lastSync);
+    if (!Number.isFinite(incomingAt) || incomingAt > now + 60_000) {
+      throw new ConvexError({ code: "INVALID_KIOSK_SYNC_TIME", message: "Kiosk sync time must be a valid recent or past instant" });
+    }
+    const storedAt = kiosk.lastSync ? Date.parse(kiosk.lastSync) : NaN;
+    if (Number.isFinite(storedAt) && storedAt <= now + 60_000 && incomingAt <= storedAt) return { updated: true };
     await ctx.db.patch(kiosk._id, {
       lastSync: args.lastSync,
       ...(args.health ? { health: args.health } : {}),

@@ -90,6 +90,7 @@ export type KioskHealthReport = {
   knownWorkers?: number;
   queuedLogs?: number;
   queuedAttempts?: number;
+  rejectedAttempts?: number;
   degradedReason?: string;
   lastScanAt?: string;
 };

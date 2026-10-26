@@ -291,7 +291,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
     # --- startup migration ------------------------------------------------
 
-    def test_init_db_backfills_queued_rows_only(self):
+    def test_init_db_backfills_queued_and_synced_rows(self):
         worker_id = database.add_worker(name="prime", encoding=ENCODING, server_id="cccccccccccccccccccccccccccccccc")
         queued_id = self._insert_legacy_row(worker_id, name="prime", synced=0)
         synced_id = self._insert_legacy_row(worker_id, name="prime", synced=1)
@@ -304,7 +304,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
 
         self.assertEqual(self._row(queued_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
         self.assertEqual(self._row(blank_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
-        self.assertIsNone(self._row(synced_id)["server_worker_id"])
+        self.assertEqual(self._row(synced_id)["server_worker_id"], "cccccccccccccccccccccccccccccccc")
 
     def test_init_db_replaces_old_installed_delete_trigger(self):
         conn = database._get_conn()
@@ -328,6 +328,7 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
             "AND name = 'attendance_keep_server_id_before_worker_delete'"
         ).fetchone()["sql"]
         self.assertIn("server_worker_id IS NULL", trigger_sql)
+        self.assertNotIn("synced = 0", trigger_sql)
 
         worker_id = database.add_worker(name="upgrade", encoding=ENCODING, server_id="server-b")
         log_id = database.log_attendance(
@@ -385,7 +386,8 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
         first_warnings = [r for r in first.records if r.levelno >= logging.WARNING]
         second_warnings = [r for r in second.records if r.levelno >= logging.WARNING]
         self.assertEqual(len(first_warnings), 1)
-        self.assertIn("local_worker_id=4 name=caleb x2", first_warnings[0].getMessage())
+        self.assertIn("local_worker_id=4 x2", first_warnings[0].getMessage())
+        self.assertNotIn("caleb", first_warnings[0].getMessage())
         self.assertEqual(second_warnings, [])
         # Still counted for health reporting; nothing was silently dropped or marked synced.
         self.assertEqual(database.count_unsynced_logs(), 2)
@@ -414,7 +416,8 @@ class AttendanceServerIdMappingTests(unittest.TestCase):
                 self.assertFalse(sync.sync_attendance())
             post.assert_not_called()
 
-        self.assertIn("'E1042'", logs.output[0])
+        self.assertIn(f"Attendance log {log_id}", logs.output[0])
+        self.assertNotIn("E1042", logs.output[0])
         self.assertEqual(self._row(log_id)["synced"], 0)
 
     def test_mixed_batch_sends_mapped_rows_and_keeps_orphans(self):

@@ -10,7 +10,9 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
-import { getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
+import { FactoryDayNotice } from '@/components/FactoryDayNotice';
+import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
 
@@ -63,14 +65,7 @@ function formatScore(value: number | null | undefined) {
 }
 
 function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || '—';
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return formatFactoryLocalDateTime(value);
 }
 
 function titleCase(value: string) {
@@ -104,14 +99,26 @@ function recognitionAttemptRowId(id: string) {
 function RecognitionCalibrationLabContent() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
-  const queryDate = validDateParam(searchParams.get('date')) || getFactoryLocalDateString();
+  const queryDate = validDateParam(searchParams.get('date'));
   const queryDecision = validDecisionParam(searchParams.get('decision'));
   const queryReviewStatus = validReviewParam(searchParams.get('review_status'));
   const queryConfidenceBand = validConfidenceParam(searchParams.get('confidence_band'));
   const queryKioskId = searchParams.get('kiosk_id') || '';
   const queryAttemptId = searchParams.get('attempt_id') || '';
+  const urlKey = searchParams.toString();
+  const [target, setTarget] = useState({ urlKey, id: queryAttemptId });
+  // Manual filter edits leave an exact-source handoff. Keep it released on
+  // refresh, but restore the URL's target on navigation (including Back).
+  if (target.urlKey !== urlKey) setTarget({ urlKey, id: queryAttemptId });
+  const attemptId = target.urlKey === urlKey ? target.id : queryAttemptId;
+  const clearTarget = () => setTarget({ urlKey, id: '' });
   const currentRole = usePortalRole();
-  const [date, setDate] = useState(queryDate);
+  const { date, setDate, today, newDay } = useFactoryDateSelection(queryDate);
+  // A new source link owns its date even when its date parameter matches the
+  // previous URL and the operator has since browsed a different day locally.
+  useEffect(() => {
+    if (queryAttemptId) setDate(queryDate || getFactoryLocalDateString());
+  }, [queryAttemptId, queryDate, setDate, urlKey]);
   const [decision, setDecision] = useState<RecognitionDecision | 'all'>(queryDecision);
   const [reviewStatus, setReviewStatus] = useState<RecognitionReviewStatus | 'all'>(queryReviewStatus);
   const [confidenceBand, setConfidenceBand] = useState<RecognitionConfidenceBand | 'all'>(queryConfidenceBand);
@@ -119,23 +126,34 @@ function RecognitionCalibrationLabContent() {
   const [isReviewPending, setIsReviewPending] = useState(false);
   const reviewPendingRef = useRef(false);
 
+  // Key filter resets on the raw URL only: a computed "today" fallback changes
+  // at factory midnight and must not discard the supervisor's chosen view.
   useEffect(() => {
-    setDate(queryDate);
     setDecision(queryDecision);
     setReviewStatus(queryReviewStatus);
     setConfidenceBand(queryConfidenceBand);
     setKioskId(queryKioskId);
   }, [queryConfidenceBand, queryDate, queryDecision, queryKioskId, queryReviewStatus]);
 
+  const selectionKey = JSON.stringify([date, decision, reviewStatus, confidenceBand, kioskId.trim(), attemptId]);
+  const [scanWindow, setScanWindow] = useState({ key: selectionKey, cursor: '', limit: 150 });
+  if (scanWindow.key !== selectionKey) {
+    setScanWindow({ key: selectionKey, cursor: '', limit: 150 });
+  }
+  // Derive the reset immediately so a changed filter never reuses an old cursor.
+  const scanCursor = scanWindow.key === selectionKey ? scanWindow.cursor : '';
+  const displayLimit = scanWindow.key === selectionKey ? scanWindow.limit : 150;
+
   const queryString = useMemo(() => {
-    const params = new URLSearchParams({ date, limit: queryAttemptId ? '1000' : '150' });
+    const params = new URLSearchParams({ date, limit: attemptId ? '1000' : String(displayLimit) });
     if (decision !== 'all') params.set('decision', decision);
     if (reviewStatus !== 'all') params.set('review_status', reviewStatus);
     if (confidenceBand !== 'all') params.set('confidence_band', confidenceBand);
     if (kioskId.trim()) params.set('kiosk_id', kioskId.trim());
-    if (queryAttemptId) params.set('attempt_id', queryAttemptId);
+    if (scanCursor && !attemptId) params.set('scan_cursor', scanCursor);
+    if (attemptId) params.set('attempt_id', attemptId);
     return params.toString();
-  }, [confidenceBand, date, decision, kioskId, queryAttemptId, reviewStatus]);
+  }, [attemptId, confidenceBand, date, decision, displayLimit, kioskId, reviewStatus, scanCursor]);
 
   const currentQueryRef = useRef(queryString);
   currentQueryRef.current = queryString;
@@ -151,6 +169,10 @@ function RecognitionCalibrationLabContent() {
 
   const attempts = useMemo(() => payload?.attempts ?? [], [payload]);
   const summary = payload?.summary;
+  const countLabel = (count: number, field: string) => {
+    const limited = payload?.summary_limited && (!payload.summary_limited_fields || payload.summary_limited_fields.includes(field));
+    return `${count}${limited ? '+' : ''}`;
+  };
   const canOperate = canOperateRecognition(currentRole);
   const kiosks = useMemo(() => {
     const ids = attempts.flatMap((attempt) => (attempt.kiosk_id ? [attempt.kiosk_id] : []));
@@ -158,9 +180,9 @@ function RecognitionCalibrationLabContent() {
   }, [attempts]);
 
   useEffect(() => {
-    if (!queryAttemptId || !attempts.some((attempt) => attempt.id === queryAttemptId)) return;
-    document.getElementById(recognitionAttemptRowId(queryAttemptId))?.scrollIntoView({ block: 'center' });
-  }, [attempts, queryAttemptId]);
+    if (!attemptId || !attempts.some((attempt) => attempt.id === attemptId)) return;
+    document.getElementById(recognitionAttemptRowId(attemptId))?.scrollIntoView({ block: 'center' });
+  }, [attemptId, attempts]);
 
   function reviewAttempt(attempt: RecognitionAttempt, nextStatus: RecognitionReviewStatus) {
     if (!dataReady || currentQueryRef.current !== queryString || reviewPendingRef.current || !attempts.some((row) => row.id === attempt.id)) return;
@@ -211,15 +233,24 @@ function RecognitionCalibrationLabContent() {
         </button>
       </div>
 
+      {newDay && <FactoryDayNotice date={date} today={today} />}
+
+      {attemptId && (
+        <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-slate-300">
+          <p>Showing one linked recognition attempt. Change a filter or show all attempts to browse the matching evidence.</p>
+          <button type="button" onClick={clearTarget} className="btn-secondary">Show all attempts</button>
+        </div>
+      )}
+
       <section className="glass-card p-5">
         <div className="grid gap-3 md:grid-cols-5">
           <label className="space-y-1.5">
             <span className="section-label block">Date</span>
-            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="input-field" />
+            <input type="date" value={date} onChange={(event) => { clearTarget(); setDate(event.target.value); }} className="input-field" />
           </label>
           <label className="space-y-1.5">
             <span className="section-label block">Decision</span>
-            <select value={decision} onChange={(event) => setDecision(event.target.value as RecognitionDecision | 'all')} className="input-field">
+            <select value={decision} onChange={(event) => { clearTarget(); setDecision(event.target.value as RecognitionDecision | 'all'); }} className="input-field">
               {decisionOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
@@ -227,7 +258,7 @@ function RecognitionCalibrationLabContent() {
           </label>
           <label className="space-y-1.5">
             <span className="section-label block">Review</span>
-            <select value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value as RecognitionReviewStatus | 'all')} className="input-field">
+            <select value={reviewStatus} onChange={(event) => { clearTarget(); setReviewStatus(event.target.value as RecognitionReviewStatus | 'all'); }} className="input-field">
               {reviewOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
@@ -235,7 +266,7 @@ function RecognitionCalibrationLabContent() {
           </label>
           <label className="space-y-1.5">
             <span className="section-label block">Confidence</span>
-            <select value={confidenceBand} onChange={(event) => setConfidenceBand(event.target.value as RecognitionConfidenceBand | 'all')} className="input-field">
+            <select value={confidenceBand} onChange={(event) => { clearTarget(); setConfidenceBand(event.target.value as RecognitionConfidenceBand | 'all'); }} className="input-field">
               {confidenceOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
@@ -246,7 +277,7 @@ function RecognitionCalibrationLabContent() {
             <input
               list="recognition-kiosks"
               value={kioskId}
-              onChange={(event) => setKioskId(event.target.value)}
+              onChange={(event) => { clearTarget(); setKioskId(event.target.value); }}
               placeholder="Any kiosk"
               className="input-field"
             />
@@ -261,13 +292,13 @@ function RecognitionCalibrationLabContent() {
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
         {[
-          ['Accepted', summary?.accepted ?? 0, 'text-emerald-300'],
-          ['Rejected', summary?.rejected ?? 0, 'text-red-300'],
-          ['Unknown', summary?.unknown ?? 0, 'text-amber-300'],
-          ['Near miss', summary?.near_miss ?? 0, 'text-gold'],
-          ['Low-margin accepted', summary?.low_margin_accepted ?? 0, 'text-gold'],
+          ['Accepted', countLabel(summary?.accepted ?? 0, 'accepted'), 'text-emerald-300'],
+          ['Rejected', countLabel(summary?.rejected ?? 0, 'rejected'), 'text-red-300'],
+          ['Unknown', countLabel(summary?.unknown ?? 0, 'unknown'), 'text-amber-300'],
+          ['Near miss', countLabel(summary?.near_miss ?? 0, 'near_miss'), 'text-gold'],
+          ['Low-margin accepted', countLabel(summary?.low_margin_accepted ?? 0, 'low_margin_accepted'), 'text-gold'],
           ['Median score', formatScore(summary?.median_score), 'text-slate-100'],
-          ['Review backlog', summary?.review_backlog ?? 0, 'text-blue-300'],
+          ['Review backlog', countLabel(summary?.review_backlog ?? 0, 'review_backlog'), 'text-blue-300'],
         ].map(([label, value, tone]) => (
           <div key={label} className="rounded-xl border border-navy-600/50 bg-navy-900/35 p-4">
             <p className="text-xs text-slate-500">{label}</p>
@@ -275,6 +306,46 @@ function RecognitionCalibrationLabContent() {
           </div>
         ))}
       </section>
+
+      {payload?.truncated && (
+        <div role="status" className="rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-3 text-sm text-amber-200">
+          Showing {attempts.length} of {countLabel(summary?.total ?? attempts.length, 'total')} matching attempts. Results are capped; more evidence may be hidden.
+          {payload.summary_limited
+            ? ' Counts marked + are lower bounds; 0+ does not mean there are no unresolved attempts. Median score is unavailable for this incomplete selection.'
+            : ' Summary counts include all matching attempts.'}
+          {payload.summary_limited
+            ? ' Use the scan window controls to inspect remaining evidence. Decision and confidence filters only narrow the current window; selecting another date, kiosk or Unreviewed starts a new search.'
+            : ' Narrow the date, kiosk, decision or confidence filters, or select Unreviewed to find unresolved evidence.'}
+          {attempts.length < (summary?.total ?? 0) && ' Use Show all matches in this window to see hidden matches.'}
+          {payload.next_scan_cursor && ' Use Next scan window to reach remaining records, even when this window is empty.'}
+          {scanCursor && !payload.next_scan_cursor && ' This is the last scan window. Use First scan window to return to the beginning.'}
+          {(payload.next_scan_cursor || scanCursor) && ' Windows follow stored timestamp order; mixed timestamp formats are sorted by actual time within each window. Counts marked + cover this window and are lower bounds for the full selection.'}
+        </div>
+      )}
+
+      {!attemptId && (payload?.truncated || scanCursor) && (
+        <div className="flex flex-wrap gap-3">
+          {attempts.length < (summary?.total ?? 0) && (
+            <button type="button" className="btn-secondary" disabled={!dataReady || isReviewPending}
+              onClick={() => setScanWindow({ key: selectionKey, cursor: scanCursor, limit: 1000 })}>
+              Show all matches in this window
+            </button>
+          )}
+          {payload?.next_scan_cursor && (
+            <button type="button" className="btn-secondary"
+              disabled={!dataReady || isReviewPending || attempts.length < (summary?.total ?? 0)}
+              onClick={() => setScanWindow({ key: selectionKey, cursor: payload.next_scan_cursor!, limit: 150 })}>
+              Next scan window
+            </button>
+          )}
+          {scanCursor && (
+            <button type="button" className="btn-secondary" disabled={!dataReady || isReviewPending}
+              onClick={() => setScanWindow({ key: selectionKey, cursor: '', limit: 150 })}>
+              First scan window
+            </button>
+          )}
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-300">
@@ -292,7 +363,7 @@ function RecognitionCalibrationLabContent() {
         <div className="flex items-center justify-between gap-3 border-b border-navy-600/50 px-5 py-4">
           <div>
             <h2 className="font-display font-semibold text-slate-100">Recognition attempts</h2>
-            <p className="text-xs font-mono text-slate-500">{summary?.total ?? attempts.length} attempts in current view</p>
+            <p className="text-xs font-mono text-slate-500">{attempts.length} shown · {countLabel(summary?.total ?? attempts.length, 'total')} matching attempts</p>
           </div>
           {loading && <span className="text-xs text-slate-500">Loading…</span>}
         </div>
@@ -315,7 +386,7 @@ function RecognitionCalibrationLabContent() {
             <tbody className="divide-y divide-navy-600/35">
               {attempts.map((attempt) => {
                 const controlsDisabled = !dataReady || isReviewPending;
-                const targeted = queryAttemptId === attempt.id;
+                const targeted = attemptId === attempt.id;
                 return (
                   <tr
                     id={recognitionAttemptRowId(attempt.id)}
@@ -389,7 +460,9 @@ function RecognitionCalibrationLabContent() {
 
         {!loading && !error && attempts.length === 0 && (
           <div className="px-5 py-12 text-center text-sm text-slate-500">
-            No recognition attempts match these filters yet.
+            {payload?.summary_limited
+              ? 'No matching attempts were found within the capped results. Use the scan window controls or narrow the filters to check remaining evidence.'
+              : 'No recognition attempts match these filters yet.'}
           </div>
         )}
       </section>
