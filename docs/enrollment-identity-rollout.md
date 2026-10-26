@@ -10,6 +10,12 @@ the same normalized identity.
 
 ## Release order
 
+This change is stacked on roster sequencing (#158). Follow its
+[roster sequence deployment and backfill procedure](../RETENTION.md#roster-sequence-deployment)
+when releasing the combined stack; the identity fingerprint does not replace
+that prerequisite. A rejected stale enrollment must leave both the worker and
+roster counter unchanged.
+
 Follow [the coordinated release procedure](legacy-kiosk-rollout.md#coordinated-production-release),
 including `[skip render]` on the eventual merge while deployment is deferred.
 Deploy the matching Convex functions before the portal. There is no schema change
