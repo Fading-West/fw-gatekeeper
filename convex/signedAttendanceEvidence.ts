@@ -58,7 +58,7 @@ export function buildSignedAttendanceEvidence(date: string, input: EvidenceInput
 
 /** Read persisted documents, not the display-normalized reader or active-only
  * corrections: both discard evidence needed by this signature. Within a closeout
- * transaction the timestamp scan, the date's corrections and reversal lookups are
+ * transaction the timestamp scan, the date's corrections and their reversals are
  * shared with the briefing/exception builders, so capture re-reads none of them. */
 export async function readSignedAttendanceEvidence(ctx: Pick<QueryCtx, 'db'>, date: string): Promise<SignedAttendanceEvidence> {
   const rawById = new Map<string, Doc<'attendance'>>();
@@ -71,8 +71,7 @@ export async function readSignedAttendanceEvidence(ctx: Pick<QueryCtx, 'db'>, da
   const corrections = await listCorrectionsByDateRange(ctx, date) as Doc<'attendanceCorrections'>[];
   if (rawById.size + corrections.length > MAX_ATTENDANCE_EVIDENCE_ROWS) throw new Error('Attendance evidence exceeds the safe comparison limit.');
   const reversals: Doc<'attendanceCorrectionReversals'>[] = [];
-  for (const correction of corrections) {
-    const rows = await listCorrectionReversals(ctx, correction._id) as Doc<'attendanceCorrectionReversals'>[];
+  for (const rows of (await listCorrectionReversals(ctx, corrections)).values()) {
     if (rows.length > 1) throw new Error('Attendance reversal evidence is ambiguous.');
     reversals.push(...rows);
   }

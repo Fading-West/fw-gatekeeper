@@ -103,17 +103,12 @@ export async function listEffectiveAttendanceByFactoryDates(
 }
 
 async function listActiveCorrections(ctx: any, corrections: any[]) {
-  const reversed: boolean[] = [];
-  const reversalBatchSize = 20;
-  for (let start = 0; start < corrections.length; start += reversalBatchSize) {
-    const batch = corrections.slice(start, start + reversalBatchSize);
-    reversed.push(...await Promise.all(batch.map(async (correction: any) => {
-      const reversals = await listCorrectionReversals(ctx, correction._id);
-      if (reversals.length > 1) throw new Error("Attendance correction has more than one reversal.");
-      return reversals.length === 1;
-    })));
-  }
-  return corrections.filter((_: any, index: number) => !reversed[index]);
+  const reversals = await listCorrectionReversals(ctx, corrections);
+  return corrections.filter((correction: any) => {
+    const rows = reversals.get(String(correction._id))!;
+    if (rows.length > 1) throw new Error("Attendance correction has more than one reversal.");
+    return rows.length === 0;
+  });
 }
 
 function applyAttendanceCorrections(rawRecords: any[], activeCorrections: any[]) {

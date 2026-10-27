@@ -1,6 +1,6 @@
 // One closeout transaction builds the briefing, exceptions and the signed
 // attendance baseline, which repeat the same attendance scans, correction reads
-// and reversal lookups. Convex bounds documents scanned and index ranges per transaction, so
+// and reversal reads. Convex bounds documents scanned and index ranges per transaction, so
 // a read-only scope shares those results instead of re-reading them.
 type SharedReads = {
   scans: Map<string, Promise<any[]>>;
@@ -46,10 +46,20 @@ export async function listCorrectionsByDateRange(ctx: any, startDate: string, en
     .collect());
 }
 
-/** Up to two reversals, so callers can reject an ambiguous duplicate. */
-export async function listCorrectionReversals(ctx: any, correctionId: string) {
-  return shared(sharedReads.get(ctx.db)?.reversals, String(correctionId), () => ctx.db
+/** Reversals of the given corrections, grouped by correction id. A reversal
+ * carries its correction's date, so one `by_date` range read over the
+ * corrections' dates replaces a lookup (and an index range) per correction.
+ * Callers reject a correction with more than one reversal as ambiguous. */
+export async function listCorrectionReversals(ctx: any, corrections: readonly { _id: string; date: string }[]) {
+  const byCorrection = new Map<string, any[]>();
+  if (corrections.length === 0) return byCorrection;
+  for (const correction of corrections) byCorrection.set(String(correction._id), []);
+  const dates = corrections.map(correction => correction.date).sort();
+  const [startDate, endDate] = [dates[0], dates[dates.length - 1]];
+  const reversals = await shared(sharedReads.get(ctx.db)?.reversals, `${startDate}\u0000${endDate}`, () => ctx.db
     .query("attendanceCorrectionReversals")
-    .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correctionId))
-    .take(2));
+    .withIndex("by_date", (q: any) => startDate === endDate ? q.eq("date", startDate) : q.gte("date", startDate).lte("date", endDate))
+    .collect());
+  for (const reversal of reversals) byCorrection.get(String(reversal.correctionId))?.push(reversal);
+  return byCorrection;
 }

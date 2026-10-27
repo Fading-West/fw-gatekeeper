@@ -34,21 +34,25 @@ or reasons. No duplicate ledger is stored.
 
 Closeout reads share the conservative timestamp scan (three calendar-date
 prefixes, filtered by factory-date membership), the date's correction documents
-and the per-correction reversal lookups between the briefing, exception and
+and their reversals between the briefing, exception and
 baseline builders within one transaction (`convex/attendanceReads.ts`), so
 capture and comparison re-read none of them. Save/complete/reopen skip the
 read-only comparison entirely; only a new completion reads the baseline. Convex's
 per-transaction document and index-range limits are exercised with
 `transactionLimits` in `convex/signedAttendanceEvidence.capacity.test.ts`,
 including 1,000 scheduled workers over five days with 1,900 reversed
-corrections arriving after signoff, then reopen and re-sign. The hashed date-owned evidence
+corrections arriving after signoff, then reopen and re-sign, and 5,000 unreversed
+corrections loaded, reopened and re-signed. Reversals are read with one
+`attendanceCorrectionReversals.by_date` range per date range rather than one
+lookup per correction (`reverse` copies the correction's date, which never
+changes), so correction volume does not consume Convex's 4,096 index-range
+limit. The hashed date-owned evidence
 is bounded to 8,000 combined rows and 4,000,000 canonical UTF-8 bytes. These caps
 bound capture and comparison only; a stored baseline is not invalidated by a
 later cap change. Oversized evidence or an ambiguous reversal cannot establish
 equality. Comparison failure returns unknown while preserving the signed record;
-failure to capture a new baseline aborts completion atomically. Sharing also
-removes the briefing's duplicate reversal lookups for corrections the exception
-builder already read; a duplicate reversal still fails the read, as before.
+failure to capture a new baseline aborts completion atomically. A duplicate
+reversal still fails the read, as before.
 
 ## Compatibility and display
 

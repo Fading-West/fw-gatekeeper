@@ -6,6 +6,7 @@ import { api } from './_generated/api';
 import type { Id } from './_generated/dataModel';
 import { listEffectiveAttendanceByTimestampRange } from './attendance';
 import schema from './schema';
+import { readSignedAttendanceEvidence } from './signedAttendanceEvidence';
 
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-01';
@@ -105,40 +106,37 @@ describe('attendance correction reversal', () => {
   });
 });
 
-it('bounds reversal lookups across batches and excludes a late reversal', async () => {
-  const started: string[] = [];
-  const pending = new Map<string, (value: null | { _id: string }) => void>();
+it('rejects a correction with duplicate reversals instead of picking one', async () => {
+  const { t, admin, workerId, adminId } = await setup();
+  const added = await admin.mutation(api.attendanceCorrections.create, {
+    date, workerId, action: 'add_clock_out', correctedTimestamp: '2026-09-01T17:00:00', reason: 'Missed scan',
+  });
+  await t.run(async ctx => {
+    for (const requestId of ['duplicate-1', 'duplicate-2']) {
+      await ctx.db.insert('attendanceCorrectionReversals', { correctionId: added.id, requestId, date, workerId, reason: 'Duplicate', actorUserId: adminId, createdAt: date });
+    }
+  });
+  await expect(t.run(ctx => listEffectiveAttendanceByTimestampRange(ctx, date))).rejects.toThrow('more than one reversal');
+  await expect(t.run(ctx => readSignedAttendanceEvidence(ctx, date))).rejects.toThrow('ambiguous');
+});
+
+it('reads the date\'s reversals in one index range and excludes a reversed correction', async () => {
+  const reads: string[] = [];
   const corrections = Array.from({ length: 45 }, (_, index) => ({
-    _id: `correction-${index}`, workerId: 'worker-1', action: 'add_clock_in',
+    _id: `correction-${index}`, date, workerId: 'worker-1', action: 'add_clock_in',
     correctedTimestamp: `2026-09-01T08:${String(index).padStart(2, '0')}:00`,
     eventType: 'clock_in', reason: 'Missed scan',
   }));
   const ctx = { db: { query(table: string) {
-    if (table === 'attendance') return { withIndex: () => ({ collect: async () => [] }) };
-    if (table === 'attendanceCorrections') return { withIndex: () => ({ collect: async () => corrections }) };
-    return { withIndex: (_index: string, select: (query: { eq: (_field: string, id: string) => string }) => string) => {
-      const id = select({ eq: (_field, value) => value });
-      return { take: () => {
-        started.push(id);
-        return new Promise<Array<{ _id: string }>>(resolve => pending.set(id, value => resolve(value ? [value] : [])));
-      } };
-    } };
+    return { withIndex: (index: string) => ({ collect: async () => {
+      reads.push(`${table}.${index}`);
+      if (table === 'attendanceCorrections') return corrections;
+      if (table === 'attendanceCorrectionReversals') return [{ _id: 'reversal-42', correctionId: 'correction-42', date }];
+      return [];
+    } }) };
   } } };
-  const result = listEffectiveAttendanceByTimestampRange(ctx, date);
-  await new Promise<void>(resolve => setImmediate(resolve));
-  expect(started).toEqual(corrections.slice(0, 20).map(correction => correction._id));
-  for (const [id, resolve] of pending) { resolve(null); pending.delete(id); }
-  await new Promise<void>(resolve => setImmediate(resolve));
-  expect(started).toEqual(corrections.slice(0, 40).map(correction => correction._id));
-  for (const [id, resolve] of pending) { resolve(null); pending.delete(id); }
-  await new Promise<void>(resolve => setImmediate(resolve));
-  expect(started).toEqual(corrections.map(correction => correction._id));
-  expect(pending.size).toBe(5);
-  for (const [id, resolve] of pending) {
-    resolve(id === 'correction-42' ? { _id: 'reversal-42' } : null);
-    pending.delete(id);
-  }
-  const effective = await result;
+  const effective = await listEffectiveAttendanceByTimestampRange(ctx, date);
+  expect(reads.filter(read => read.startsWith('attendanceCorrectionReversals'))).toEqual(['attendanceCorrectionReversals.by_date']);
   expect(effective).toHaveLength(44);
   expect(effective.map(row => row.correctionId)).not.toContain('correction-42');
   expect(effective.map(row => row.correctionId)).toContain('correction-44');
