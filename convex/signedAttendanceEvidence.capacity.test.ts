@@ -142,10 +142,15 @@ it('loads, reopens and re-signs a day with 5,000 unreversed corrections inside t
       }
     });
   }
-  const payload = await actor.query(api.shiftCloseouts.get, { date });
-  expect(payload.attendance_comparison).toMatchObject({ status: 'changed', current: { raw_punches: 2000, corrections: 5000, reversals: 0 } });
-  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'capacity-reopen', expectedRevision: payload.closeout!.revision })).status).toBe('reopened');
+  // Reopen first, without a prior load, so each path is exercised on its own.
+  const signed = await t.run(ctx => ctx.db.query('shiftCloseouts').withIndex('by_date', q => q.eq('date', date)).first());
+  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'capacity-reopen', expectedRevision: signed!.revision })).status).toBe('reopened');
   const { id } = await complete();
   expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 2000, corrections: 5000, reversals: 0 });
   expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
+  await t.run(ctx => ctx.db.insert('attendanceCorrections', { date, workerId: workerIds[0], action: 'add_clock_out', eventType: 'clock_out',
+    correctedTimestamp: `${date}T17:00:00`, reason: 'Synthetic', actorUserId: userId, createdAt: date, updatedAt: date }));
+  expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({
+    status: 'changed', current: { raw_punches: 2000, corrections: 5001, reversals: 0 },
+  });
 }, 180_000);
