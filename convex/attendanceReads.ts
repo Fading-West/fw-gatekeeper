@@ -47,19 +47,26 @@ export async function listCorrectionsByDateRange(ctx: any, startDate: string, en
 }
 
 /** Reversals of the given corrections, grouped by correction id. A reversal
- * carries its correction's date, so one `by_date` range read over the
- * corrections' dates replaces a lookup (and an index range) per correction.
- * Callers reject a correction with more than one reversal as ambiguous. */
+ * carries its correction's date, so one `by_date` read per date replaces a
+ * lookup (and an index range) per correction; each date is read once per scope
+ * however callers' date ranges overlap. Callers reject a correction with more
+ * than one reversal as ambiguous. */
 export async function listCorrectionReversals(ctx: any, corrections: readonly { _id: string; date: string }[]) {
-  const byCorrection = new Map<string, any[]>();
-  if (corrections.length === 0) return byCorrection;
-  for (const correction of corrections) byCorrection.set(String(correction._id), []);
-  const dates = corrections.map(correction => correction.date).sort();
-  const [startDate, endDate] = [dates[0], dates[dates.length - 1]];
-  const reversals = await shared(sharedReads.get(ctx.db)?.reversals, `${startDate}\u0000${endDate}`, () => ctx.db
+  const byCorrection = new Map(corrections.map(correction => [String(correction._id), [] as any[]]));
+  const dates = [...new Set(corrections.map(correction => correction.date))];
+  const reads = await Promise.all(dates.map(date => shared(sharedReads.get(ctx.db)?.reversals, date, () => ctx.db
     .query("attendanceCorrectionReversals")
-    .withIndex("by_date", (q: any) => startDate === endDate ? q.eq("date", startDate) : q.gte("date", startDate).lte("date", endDate))
-    .collect());
-  for (const reversal of reversals) byCorrection.get(String(reversal.correctionId))?.push(reversal);
+    .withIndex("by_date", (q: any) => q.eq("date", date))
+    .collect())));
+  for (const reversal of reads.flat()) byCorrection.get(String(reversal.correctionId))?.push(reversal);
   return byCorrection;
+}
+
+/** As `listCorrectionReversals`, for a few corrections (one worker's day): a
+ * lookup per correction reads only their reversals, not the whole date's. */
+export async function listReversalsPerCorrection(ctx: any, corrections: readonly { _id: string }[]) {
+  return new Map(await Promise.all(corrections.map(async correction => [String(correction._id), await ctx.db
+    .query("attendanceCorrectionReversals")
+    .withIndex("by_correctionId", (q: any) => q.eq("correctionId", correction._id))
+    .take(2)] as [string, any[]])));
 }

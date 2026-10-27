@@ -43,10 +43,11 @@ per-transaction document and index-range limits are exercised with
 including 1,000 scheduled workers over five days with 1,900 reversed
 corrections arriving after signoff, then reopen and re-sign, and 5,000 unreversed
 corrections loaded, reopened and re-signed. Reversals are read with one
-`attendanceCorrectionReversals.by_date` range per date range rather than one
-lookup per correction (`reverse` copies the correction's date, which never
-changes), so correction volume does not consume Convex's 4,096 index-range
-limit. The hashed date-owned evidence
+`attendanceCorrectionReversals.by_date` range per date, once per transaction,
+rather than one lookup per correction (`reverse` copies the correction's date,
+which never changes), so correction volume does not consume Convex's 4,096
+index-range limit. Worker-filtered attendance keeps per-correction lookups so it
+reads only that worker's reversals. The hashed date-owned evidence
 is bounded to 8,000 combined rows and 4,000,000 canonical UTF-8 bytes. These caps
 bound capture and comparison only; a stored baseline is not invalidated by a
 later cap change. Oversized evidence or an ambiguous reversal cannot establish

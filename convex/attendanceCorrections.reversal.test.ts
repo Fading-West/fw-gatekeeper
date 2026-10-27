@@ -117,6 +117,7 @@ it('rejects a correction with duplicate reversals instead of picking one', async
     }
   });
   await expect(t.run(ctx => listEffectiveAttendanceByTimestampRange(ctx, date))).rejects.toThrow('more than one reversal');
+  await expect(t.run(ctx => listEffectiveAttendanceByTimestampRange(ctx, date, workerId))).rejects.toThrow('more than one reversal');
   await expect(t.run(ctx => readSignedAttendanceEvidence(ctx, date))).rejects.toThrow('ambiguous');
 });
 
