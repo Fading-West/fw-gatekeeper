@@ -151,7 +151,7 @@ describe("recognition review completion", () => {
     await admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await status())!.source_fingerprint, date: DATE, type: "recognition_review", status: "open" });
     for (const label of ["confirmed", "corrected", "ignored"]) {
       vi.advanceTimersByTime(1000);
-      await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: label, reviewedNote: `Reviewed ${label}` });
+      await admin.mutation(api.recognitionAttempts.updateReview, { id, expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id }))!.review_version, reviewedLabel: label, reviewedNote: `Reviewed ${label}` });
       expect(await status()).toMatchObject({ status: label === "ignored" ? "ignored" : "reviewed", review_note: `Reviewed ${label}` });
     }
     vi.advanceTimersByTime(1000);
@@ -161,7 +161,7 @@ describe("recognition review completion", () => {
     expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(1);
     vi.advanceTimersByTime(1000);
     // The Lab keeps its own note when none is sent, and that newer note replaces "Recheck".
-    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed" });
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id }))!.review_version, reviewedLabel: "confirmed" });
     expect(await status()).toMatchObject({ status: "reviewed", review_note: "Reviewed ignored" });
     expect((await admin.query(api.shiftCloseouts.get, { date: DATE })).summary.recognition_reviews).toBe(0);
     expect((await admin.query(api.shiftBriefing.summary, { date: DATE })).summary.recognition_reviews).toBe(0);
@@ -170,7 +170,7 @@ describe("recognition review completion", () => {
     await admin.mutation(api.shiftExceptions.review, { exceptionKey, sourceFingerprint: (await status())!.source_fingerprint, date: DATE, type: "recognition_review", status: "resolved" });
     expect(await status()).toMatchObject({ status: "resolved", review_note: "Reviewed ignored" });
     vi.advanceTimersByTime(1000);
-    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewed: false });
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id }))!.review_version, reviewed: false });
     expect(await status()).toMatchObject({ status: "open", reviewed_at: null });
   });
 });
@@ -195,7 +195,7 @@ describe("recognition review notes", () => {
     expect(await row()).toMatchObject({ status: "open", review_note: "Recheck" });
     // A newer Recognition Lab review clears its note; the old exceptions note must not come back.
     vi.advanceTimersByTime(1000);
-    await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewedLabel: "confirmed", reviewedNote: "" });
+    await admin.mutation(api.recognitionAttempts.updateReview, { id, expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id }))!.review_version, reviewedLabel: "confirmed", reviewedNote: "" });
     expect(await row()).toMatchObject({ status: "reviewed", review_note: null });
     vi.advanceTimersByTime(1000);
     await review("resolved");

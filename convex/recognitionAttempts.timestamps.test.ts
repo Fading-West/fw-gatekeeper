@@ -22,7 +22,7 @@ it.each([
     return { userId, id };
   });
   const admin = t.withIdentity({ subject: userId });
-  const updated = await admin.mutation(api.recognitionAttempts.updateReview, { id, reviewed: true, reviewedLabel: "confirmed" });
+  const updated = await admin.mutation(api.recognitionAttempts.updateReview, { id, expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id }))!.review_version, reviewed: true, reviewedLabel: "confirmed" });
   const read = await admin.query(api.recognitionAttempts.getById, { id });
   expect(updated).toMatchObject({ timestamp: display, timestamp_utc: read?.timestamp_utc, reviewed: 1 });
   expect(read).toMatchObject({ timestamp: display, reviewed: 1 });

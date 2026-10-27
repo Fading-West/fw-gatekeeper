@@ -8,14 +8,14 @@ vi.mock('@/components/Toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 const label = (node: any): string => typeof node === 'string' ? node : (node?.children || []).map(label).join('');
 const payload = (id: string, name: string) => ({ attempts: [{ id, candidate_worker_name: name, kiosk_id: 'gate-1', timestamp: '2026-09-10T08:00:00', decision: 'accepted', review_status: 'unreviewed' }], summary: { total: 1 } });
 let tree: ReactTestRenderer;
-let requests: Map<string, (data: unknown, ok?: boolean) => void>;
+let requests: Map<string, (data: unknown, ok?: boolean, status?: number) => void>;
 let fetchMock: ReturnType<typeof vi.fn>;
 const button = (text: string) => tree.root.findAllByType('button').find((node) => label(node) === text)!;
 const day = (date: string) => `/api/recognition-attempts?date=${date}&limit=150`;
 
 beforeEach(async () => {
   requests = new Map();
-  fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => new Promise((resolve) => requests.set(init?.method === 'PATCH' ? 'PATCH' : url, (data, ok = true) => resolve({ ok, json: async () => data }))));
+  fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => new Promise((resolve) => requests.set(init?.method === 'PATCH' ? 'PATCH' : url, (data, ok = true, status = ok ? 200 : 500) => resolve({ ok, status, json: async () => data }))));
   vi.stubGlobal('fetch', fetchMock);
   await act(async () => { tree = create(<RecognitionCalibrationLab />); });
 });
@@ -23,6 +23,19 @@ afterEach(async () => { await act(async () => tree.unmount()); vi.unstubAllGloba
 async function selectDate(date: string) {
   await act(async () => tree.root.findAllByType('input').find((node) => node.props.type === 'date')!.props.onChange({ target: { value: date } }));
 }
+
+it('submits the displayed review version and refreshes after a concurrent review conflict', async () => {
+  const original = payload('attempt', 'Worker');
+  await act(async () => requests.get(day('2026-09-10'))!({ ...original, attempts: [{ ...original.attempts[0], review_version: 'original-version' }] }));
+  await act(async () => button('Confirm').props.onClick());
+  const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+  expect(JSON.parse(writes[0][1].body)).toMatchObject({ id: 'attempt', review_status: 'confirmed', review_version: 'original-version' });
+  await act(async () => requests.get('PATCH')!({ error: 'Another operator corrected this match. Refresh and review it.' }, false, 409));
+  expect(fetchMock.mock.calls.filter(([url, init]) => url === day('2026-09-10') && !init?.method)).toHaveLength(2);
+  await act(async () => requests.get(day('2026-09-10'))!({ ...original, attempts: [{ ...original.attempts[0], review_version: 'new-version', review_status: 'corrected' }] }));
+  expect(label(tree.toJSON())).toContain('Corrected');
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+});
 
 it('keeps the selected date when an old request finishes last', async () => {
   await selectDate('2026-09-11');

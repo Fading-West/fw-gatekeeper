@@ -12,6 +12,7 @@ import {
 } from '@/lib/types';
 import { isValidLocalDateString, resolveRequestDate } from '@/lib/date';
 import { api } from '../../../../convex/_generated/api';
+import { knownApiErrorResponse } from '@/lib/api-errors';
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 const REVIEW_STATUSES: RecognitionReviewStatus[] = ['confirmed', 'corrected', 'ignored', 'unreviewed'];
@@ -53,6 +54,7 @@ function normalizeAttempt(row: any): RecognitionAttempt {
   const score = optionalNumber(row.best_score ?? row.bestScore ?? row.score ?? row.confidence);
   return {
     id: String(row.id || row._id || ''),
+    review_version: row.review_version,
     kiosk_id: row.kiosk_id ?? row.kioskId ?? null,
     kiosk_name: row.kiosk_name ?? row.kioskName ?? null,
     candidate_worker_id: row.candidate_worker_id ?? row.candidateWorkerId ?? row.worker_id ?? row.workerId ?? null,
@@ -255,8 +257,13 @@ export async function PATCH(req: NextRequest) {
     if (!REVIEW_STATUSES.includes(reviewStatus as RecognitionReviewStatus)) {
       return NextResponse.json({ error: `review_status must be one of ${REVIEW_STATUSES.join(', ')}` }, { status: 400 });
     }
+    const reviewVersion = optionalString(body.review_version);
+    if (!reviewVersion) {
+      return NextResponse.json({ error: 'Refresh the attempts before saving a review.' }, { status: 409 });
+    }
     const result = await convex.mutation((api as any).recognitionAttempts.updateReview, {
       id: id as any,
+      expectedReviewVersion: reviewVersion,
       reviewed: reviewStatus !== 'unreviewed',
       reviewedLabel: reviewStatus === 'unreviewed' ? undefined : reviewStatus,
       reviewedNote: optionalString(body.review_note) || optionalString(body.reviewNote),
@@ -264,6 +271,10 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json(result || { ok: true });
   } catch (error) {
+    const conflict = knownApiErrorResponse(error, {
+      'This recognition review changed. Refresh the attempts and review the current decision before saving.': 409,
+    });
+    if (conflict) return conflict;
     console.error('Recognition attempts PATCH error:', error);
     return NextResponse.json({ error: 'Failed to review recognition attempt' }, { status: 500 });
   }

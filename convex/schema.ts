@@ -202,6 +202,8 @@ export default defineSchema({
     brightness: v.optional(v.float64()),
     blur: v.optional(v.float64()),
     reviewed: v.boolean(),
+    // Legacy rows start at revision zero; increment atomically on each review.
+    reviewRevision: v.optional(v.number()),
     reviewedLabel: v.optional(v.string()),
     reviewedNote: v.optional(v.string()),
     reviewedAt: v.optional(v.string()),
