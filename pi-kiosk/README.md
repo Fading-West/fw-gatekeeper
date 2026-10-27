@@ -259,6 +259,16 @@ lock-timeout messages.
   commands also work inside immutable releases, including releases staged by
   older updaters. Keep it byte-identical to `face-service/enrollment_quality.py`;
   the enrollment tests enforce parity when either copy changes.
+  A camera dropout clears the preview and resets blink verification immediately.
+  Three consecutive failed reads release the handle; enrollment then tries up
+  to five reopens, backing off from 0.25 seconds to 2 seconds between attempts.
+  A read exception releases the handle immediately. Only a delivered frame
+  resets the retry budget. If recovery fails, the command exits with an error;
+  reconnect the camera and rerun enrollment. Retry delays are bounded, but
+  native camera open/read calls can take additional device-dependent time.
+  Accepted samples stay in memory during recovery and must still identify the
+  same worker; blink verification starts again. Cancellation or failure before
+  all three valid captures publishes no worker or partial photos.
 - `tools/liveness_check.py` — field diagnostic for blink detection; serves a
   loopback-only preview on `:5599` (stop the kiosk service first to free the
   camera).

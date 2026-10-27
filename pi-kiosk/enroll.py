@@ -33,6 +33,8 @@ logger = logging.getLogger("enroll")
 
 SAMPLES_REQUIRED = 3
 PREVIEW_PORT = 5556
+CAMERA_READ_RETRIES = 3
+CAMERA_REOPEN_ATTEMPTS = 5
 
 _preview_lock = threading.Lock()
 _preview_frame = None
@@ -121,7 +123,9 @@ def _start_preview_server():
 def _set_preview(frame, message: str, captures: int, ear: float, liveness: bool):
     with _preview_lock:
         global _preview_frame
-        _preview_frame = frame.copy() if frame is not None else None
+        # Send a blank JPEG on camera loss: None would leave the browser's last
+        # successful MJPEG image visible while the generator waits for a frame.
+        _preview_frame = frame.copy() if frame is not None else np.zeros((90, 320, 3), dtype=np.uint8)
         _preview_status.update(
             {
                 "message": message,
@@ -158,6 +162,26 @@ def _detect_primary_face(frame) -> Optional[tuple[int, int, int, int]]:
     return int(top * 2), int(right * 2), int(bottom * 2), int(left * 2)
 
 
+def _open_enrollment_camera():
+    cap = None
+    ready = False
+    try:
+        cap = cv2.VideoCapture(config.CAMERA_INDEX)
+        if not cap.isOpened():
+            return None
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
+        ready = True
+        return cap
+    except (cv2.error, OSError) as exc:
+        logger.warning("Unable to open enrollment camera: %s", exc)
+        return None
+    finally:
+        # Also release partially configured handles on operator cancellation.
+        if cap is not None and not ready:
+            cap.release()
+
+
 def add_worker(name: str):
     database.init_db()
     database.recover_photo_cleanup()
@@ -178,30 +202,61 @@ def add_worker(name: str):
         print("Recognition model unavailable (download failed or corrupt). Connect to the network once and retry.")
         return 1
 
-    cap = cv2.VideoCapture(config.CAMERA_INDEX)
-    if not cap.isOpened():
-        print(f"Unable to open camera index {config.CAMERA_INDEX}")
-        return 1
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
-
-    _start_preview_server()
-    print(f"Enrollment preview running at http://localhost:{PREVIEW_PORT}")
-    print("Look at the camera and blink naturally. 3 live captures are required.")
-
+    cap = None
     encodings: list[np.ndarray] = []
     photo_bytes: list[bytes] = []
     last_capture = 0.0
+    read_failures = 0
+    reopen_attempts = 0
 
     try:
+        cap = _open_enrollment_camera()
+        if cap is None:
+            message = f"Unable to open camera index {config.CAMERA_INDEX}"
+            _set_preview(None, message, 0, 0, False)
+            print(message)
+            return 1
+
+        _start_preview_server()
+        print(f"Enrollment preview running at http://localhost:{PREVIEW_PORT}")
+        print("Look at the camera and blink naturally. 3 live captures are required.")
+
         while len(encodings) < SAMPLES_REQUIRED:
-            ret, frame = cap.read()
+            if cap is None:
+                if reopen_attempts >= CAMERA_REOPEN_ATTEMPTS:
+                    message = "Camera unavailable; enrollment failed. Reconnect the camera and retry enrollment."
+                    _set_preview(None, message, len(encodings), 0, False)
+                    print(message)
+                    return 1
+                time.sleep(min(0.25 * (2 ** reopen_attempts), 2.0))
+                reopen_attempts += 1
+                cap = _open_enrollment_camera()
+                if cap is None:
+                    continue
+
+            try:
+                ret, frame = cap.read()
+                ret = ret and frame is not None
+            except (cv2.error, OSError) as exc:
+                logger.warning("Enrollment camera read failed: %s", exc)
+                ret = False
+                read_failures = CAMERA_READ_RETRIES
             if not ret:
                 liveness.reset()
+                _set_preview(None, "Camera unavailable; reconnecting. Blink again after recovery.", len(encodings), 0, False)
+                read_failures += 1
+                if read_failures >= CAMERA_READ_RETRIES:
+                    cap.release()
+                    cap = None
+                    read_failures = 0
                 time.sleep(0.05)
                 continue
 
+            # Opening a handle alone is not recovery: require an actual frame
+            # before resetting the budget. Accepted samples still pass the
+            # existing same-worker and final quality checks before publication.
+            read_failures = 0
+            reopen_attempts = 0
             display = frame.copy()
             message = "Step into frame"
             try:
@@ -279,10 +334,13 @@ def add_worker(name: str):
             time.sleep(0.03)
 
     except KeyboardInterrupt:
+        liveness.reset()
+        _set_preview(None, "Enrollment cancelled.", len(encodings), 0, False)
         print("Enrollment cancelled.")
         return 1
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
 
     if len(encodings) < SAMPLES_REQUIRED:
         print("Enrollment failed before all required captures were collected.")
