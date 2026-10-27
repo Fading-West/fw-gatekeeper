@@ -15,7 +15,7 @@ it.each(['cancel', 'role'] as const)('retires recovery across a %s boundary, eve
   let resolve!: (response: Response) => void;
   const recovery = new Promise<Response>(done => { resolve = done; });
   vi.stubGlobal('fetch', vi.fn((url: string, options?: RequestInit) => {
-    if (options?.method === 'PATCH') return Promise.resolve(Response.json({ error: 'Changed' }, { status: 409 }));
+    if (options?.method === 'PATCH') return Promise.resolve(Response.json({ error: 'Changed', code: 'WORKER_IDENTITY_CONFLICT' }, { status: 409 }));
     if (url.includes('?id=')) return recovery;
     return Promise.resolve(Response.json(url === '/api/kiosks' ? [] : [worker]));
   }));
