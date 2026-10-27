@@ -936,7 +936,12 @@
                     showReconnecting();
                     return;
                 }
-                if (link.reconnectFeed || !cameraFeed.isConnected()) cameraFeed.connect();
+                // A camera outage longer than the server's feed idle timeout ends
+                // the stream without an <img> error. Drop it while the camera is
+                // down and start a fresh one when it is back; the feed shows
+                // itself again on its first new frame.
+                if (data.health?.camera_ok === false) cameraFeed.disconnect();
+                else if (link.reconnectFeed || !cameraFeed.isConnected()) cameraFeed.connect();
                 const observedBoot = data.health?.supervisor_boot_nonce;
                 supervisorBootNonce = typeof observedBoot === "string" && /^[a-f0-9]{32}$/.test(observedBoot) ? observedBoot : null;
                 const msg = statusMessageFromState(
@@ -956,7 +961,6 @@
 
                 // Footer claims must match what the kiosk actually enforces.
                 const health = data.health || {};
-                document.getElementById("cameraFeed").style.visibility = health.camera_ok === false ? "hidden" : "visible";
                 clockWarning.hidden = health.clock_synchronized !== false;
                 if (health.policy_ok === false) {
                     livenessNote.textContent = "Configuration needs attention - automatic scans paused; ask your supervisor";
