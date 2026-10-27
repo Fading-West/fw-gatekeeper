@@ -299,6 +299,39 @@ const healthy = bootId => () => ({ ok: true, status: 200, body: { state: 'IDLE',
 }
 
 {
+    // A camera outage longer than the server's feed idle timeout ends the MJPEG
+    // stream cleanly, with no <img> error event. Once the camera recovers the
+    // page must reconnect instead of showing the pre-outage frame again.
+    let cameraOk = true;
+    const page = kioskPage({ reply: () => ({ ok: true, status: 200, body: { state: 'IDLE', message: 'Step toward camera', boot_id: 'boot-1', health: { sync_online: true, camera_ok: cameraOk } } }) });
+    await page.flush();
+    const feed = page.el('cameraFeed');
+    feed.dispatch('load');
+    const beforeOutage = feed.src;
+    assert.match(beforeOutage, /^\/feed\?ts=\d+$/);
+
+    cameraOk = false;
+    await page.poll();
+    assert.equal(feed.style.visibility, 'hidden', 'the last frame is hidden while the camera is down');
+    assert.equal(feed.src, undefined, 'a camera outage drops the stream');
+    await page.poll();
+    assert.equal(feed.src, undefined, 'the feed does not reconnect on every poll while the camera is down');
+
+    await new Promise(resolve => setTimeout(resolve, 2));
+    cameraOk = true;
+    await page.poll();
+    assert.match(feed.src, /^\/feed\?ts=\d+$/);
+    assert.notEqual(feed.src, beforeOutage, 'the feed reconnects once the camera recovers');
+    assert.equal(feed.style.visibility, 'hidden', 'nothing is shown until a fresh frame arrives');
+    feed.dispatch('load');
+    assert.equal(feed.style.visibility, '');
+
+    feed.dispatch('error');
+    await page.poll();
+    assert.equal(feed.style.visibility, 'hidden', 'status polls do not reveal a broken stream while it reconnects');
+}
+
+{
     // Reloading inside the backoff window (same tab storage) does not reload again.
     const storage = memoryStorage();
     const first = kioskPage({ storage, reply: unauthorized });
