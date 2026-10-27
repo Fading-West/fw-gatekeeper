@@ -7,6 +7,7 @@ import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { ConvexError } from 'convex/values';
 import { systemHealthCache } from '@/lib/system-health-cache';
+import { knownApiErrorResponse } from '@/lib/api-errors';
 
 async function requireAdmin(req: NextRequest) {
   return (await hasValidPortalSession(req, ['admin'])) ? null : unauthorizedApiResponse();
@@ -110,6 +111,12 @@ export async function PATCH(req: NextRequest) {
     if (error instanceof ConvexError && typeof error.data === 'object' && error.data?.code === 'WORKER_IDENTITY_CONFLICT') {
       return NextResponse.json({ error: error.data.message, code: error.data.code }, { status: 409 });
     }
+    const knownError = knownApiErrorResponse(error, {
+      'Worker name is required': 400,
+      'Active worker not found; use enrollment to restore a worker by employee ID': 400,
+      'Worker name already exists': 409,
+    }, [/^Employee ID [^\r\n]+ already belongs to [^\r\n]+$/]);
+    if (knownError) return knownError;
     return NextResponse.json({ error: 'Failed to update worker' }, { status: 500 });
   }
 }

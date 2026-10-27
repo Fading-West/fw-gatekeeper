@@ -113,9 +113,16 @@ export default function WorkersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: editId, name, employee_id: employeeId, department, expected_identity_revision: editRevision }),
       });
-      if (res.status === 409) {
-        const result = await res.json();
-        if (isCurrent()) setEditConflict(result.error || 'Worker changed. Review the current record before saving.');
+      if (res.status === 400 || res.status === 409) {
+        const result = await res.json().catch(() => ({}));
+        const message = typeof result?.error === 'string' ? result.error : '';
+        if (!isCurrent()) return;
+        if (res.status === 409 && result?.code === 'WORKER_IDENTITY_CONFLICT') {
+          setEditConflict(message || 'Worker changed. Review the current record before saving.');
+        } else {
+          // Duplicate name/employee ID or a worker deactivated meanwhile: say why; keep the draft.
+          toast(message || 'Failed to save worker', 'error');
+        }
         return;
       }
       if (!res.ok) throw new Error('Failed to update worker');

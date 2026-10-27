@@ -10,6 +10,7 @@ import { hasValidPortalSession } from '@/lib/portal-auth';
 import { POST as correct } from './attendance-corrections/route';
 import { POST as enroll } from './enroll/route';
 import { POST as purge } from './workers/purge-biometrics/route';
+import { PATCH as editWorker } from './workers/route';
 
 vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn(), query: vi.fn(), action: vi.fn() } }));
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
@@ -56,9 +57,9 @@ async function setup() {
   return { t, actor, ...ids };
 }
 
-function post(handler: (req: NextRequest) => Promise<Response>, path: string, body: unknown) {
+function post(handler: (req: NextRequest) => Promise<Response>, path: string, body: unknown, method = 'POST') {
   return handler(new NextRequest(`https://example.test/api/${path}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   }));
 }
 
@@ -110,4 +111,27 @@ it('reports purging a missing worker as a client error in production', async () 
   const response = await post(purge, 'workers/purge-biometrics', { id: removedWorkerId, reason: 'Retention request' });
   expect(response.status).toBe(400);
   expect(await response.json()).toEqual({ error: 'Worker not found' });
+});
+
+it('reports duplicate identities and a deactivated worker on the Workers edit route in production', async () => {
+  const { t, workerId } = await setup();
+  const otherId = await t.run(ctx => ctx.db.insert('workers', { name: 'Other Worker', employeeId: 'E-3', department: 'Assembly', active: true, enrolledAt: date }));
+  const revision = (await convex.query(api.workers.get, { id: workerId }))!.identity_revision;
+  const edit = (fields: Record<string, unknown>) => post(editWorker, 'workers', {
+    id: workerId, name: 'Current Worker', employee_id: 'E-1', department: 'Assembly', expected_identity_revision: revision, ...fields,
+  }, 'PATCH');
+
+  const duplicateName = await edit({ name: 'Other Worker' });
+  expect(duplicateName.status).toBe(409);
+  expect(await duplicateName.json()).toEqual({ error: 'Worker name already exists' });
+
+  const duplicateEmployeeId = await edit({ employee_id: 'E-2' });
+  expect(duplicateEmployeeId.status).toBe(409);
+  expect(await duplicateEmployeeId.json()).toEqual({ error: 'Employee ID E-2 already belongs to Former Worker' });
+
+  await t.run(ctx => ctx.db.patch(workerId, { active: false }));
+  const deactivated = await edit({ department: 'Paint' });
+  expect(deactivated.status).toBe(400);
+  expect(await deactivated.json()).toEqual({ error: 'Active worker not found; use enrollment to restore a worker by employee ID' });
+  expect(await t.run(ctx => ctx.db.get(otherId))).toMatchObject({ name: 'Other Worker', employeeId: 'E-3' });
 });
