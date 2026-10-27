@@ -144,7 +144,7 @@ it('loads, reopens and re-signs a day with 5,000 unreversed corrections inside t
   }
   // Reopen first, without a prior load, so each path is exercised on its own.
   const signed = await t.run(ctx => ctx.db.query('shiftCloseouts').withIndex('by_date', q => q.eq('date', date)).first());
-  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'capacity-reopen', expectedRevision: signed!.revision })).status).toBe('reopened');
+  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'capacity-reopen', expectedRevision: signed!.revision ?? null })).status).toBe('reopened');
   const { id } = await complete();
   expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 2000, corrections: 5000, reversals: 0 });
   expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
