@@ -115,7 +115,10 @@ export async function PATCH(req: NextRequest) {
       'Worker name is required': 400,
       'Active worker not found; use enrollment to restore a worker by employee ID': 400,
       'Worker name already exists': 409,
-    }, [/^Employee ID [^\r\n]+ already belongs to [^\r\n]+$/]);
+    }, [
+      /^Employee ID [^\r\n]+ already belongs to [^\r\n]+$/,
+      /^Employee ID [^\r\n]+ belongs to multiple workers; resolve the duplicate identities before enrollment$/,
+    ]);
     if (knownError) return knownError;
     return NextResponse.json({ error: 'Failed to update worker' }, { status: 500 });
   }

@@ -129,6 +129,11 @@ it('reports duplicate identities and a deactivated worker on the Workers edit ro
   expect(duplicateEmployeeId.status).toBe(409);
   expect(await duplicateEmployeeId.json()).toEqual({ error: 'Employee ID E-2 already belongs to Former Worker' });
 
+  await t.run(ctx => ctx.db.insert('workers', { name: 'Legacy Duplicate', employeeId: 'E-1', department: 'Assembly', active: false, enrolledAt: date }));
+  const legacyDuplicate = await edit({ department: 'Paint' });
+  expect(legacyDuplicate.status).toBe(409);
+  expect(await legacyDuplicate.json()).toEqual({ error: 'Employee ID E-1 belongs to multiple workers; resolve the duplicate identities before enrollment' });
+
   await t.run(ctx => ctx.db.patch(workerId, { active: false }));
   const deactivated = await edit({ department: 'Paint' });
   expect(deactivated.status).toBe(400);
