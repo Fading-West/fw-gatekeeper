@@ -9,6 +9,7 @@ import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useToast } from '@/components/Toast';
 import { correctionRequestId, acknowledgeCorrectionRequest } from '@/lib/correction-request';
 import { createLocalIsoTimestamp, formatFactoryLocalDateTime } from '@/lib/date';
+import { futureCorrectionError } from '@/lib/direct-correction';
 import { csvField } from '@/lib/csv';
 import { usePortalRole } from '@/hooks/usePortalRole';
 import { useSelectedData } from '@/hooks/useSelectedData';
@@ -419,6 +420,12 @@ function ExceptionsPageContent() {
       correctionDraft.correctedTime !== correctionDraft.suggestedCorrectedTime
     ) {
       toast('Update the correction reason after changing the suggested time.', 'error');
+      return;
+    }
+    // Same guard as the Activity Log dialog: never record a punch that has not happened yet.
+    const futureProblem = futureCorrectionError(date, correctionDraft.action === 'void_event' ? null : correctionDraft.correctedTime, new Date());
+    if (futureProblem) {
+      toast(futureProblem, 'error');
       return;
     }
 
