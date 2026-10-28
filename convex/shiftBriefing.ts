@@ -11,6 +11,7 @@ import { assertPortalRole } from "./access";
 import { ATTENDANCE_QUEUE_SCOPE_NOTE, observeAttendanceQueue, type AttendanceQueueObservation } from "./attendanceQueue";
 import { createScheduleMinutesElapsed, createScheduleTimeHasPassed, isSupportedScheduleTimeRange } from "./scheduleTimes";
 import { resolveScheduleAssignment, scheduleDays } from "./scheduleAssignment";
+import { createRosterMembership } from "./rosterMembership";
 
 // not_yet_due: scheduled, no clock-in, and the factory clock has not reached
 // the scheduled start yet (same gate as shiftExceptions missing_arrival).
@@ -482,7 +483,10 @@ function getWorkerStatus(input: {
   schedule: any;
   firstIn: any | null;
   lastEvent: any | null;
+  // False for a worker who joined after the shift start (see rosterMembership).
+  arrivalChecks: boolean;
 }): WorkerCoverageStatus {
+  if (!input.arrivalChecks) return input.lastEvent?.eventType === "clock_out" ? "clocked_out" : "present";
   if (!input.firstIn) {
     // Mirror shiftExceptions: no missing arrival until the scheduled start has
     // passed on the factory clock (future dates and later shifts stay due later).
@@ -502,6 +506,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
     // within a query, so both builders see the same instant).
     const hasScheduleTimePassed = createScheduleTimeHasPassed(new Date().toISOString());
     const scheduleMinutesElapsed = createScheduleMinutesElapsed();
+    const rosterMembership = createRosterMembership();
     const [workers, schedules, attendance, kiosks, exceptions, attendanceCorrections] = await Promise.all([
       ctx.db
         .query("workers")
@@ -548,15 +553,22 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       first_seen: string | null; last_seen: string | null; event_count: number;
     }[] = [];
 
+    // Workers on this date's roster; enrollment readiness only judges them.
+    const rosterWorkers = [];
     for (const worker of workers) {
       const assignment = resolveScheduleAssignment(worker.department, schedules, dayOfWeek);
       const schedule = assignment.kind === "unique" ? assignment.schedule : null;
+      const workerId = String(worker._id);
+      const events = eventsByWorker.get(workerId) || []; // Already chronological.
+      const membership = rosterMembership(worker, date, schedule, events);
+      if (membership === "omit") continue;
+      const arrivalChecks = membership === "full";
+      rosterWorkers.push(worker);
       // Do not fall back to another schedule when the assigned schedule is invalid.
       if (!schedule || !isSupportedScheduleTimeRange(schedule.startTime, schedule.endTime)) {
         unavailableWorkers += 1;
         if (assignment.kind === "none") uncertainWorkers += 1;
         if (assignment.kind === "unique") unsupportedWorkers += 1;
-        const events = eventsByWorker.get(String(worker._id)) || [];
         const candidates = assignment.kind === "unique" ? [assignment.schedule] : assignment.candidates;
         scheduleWarnings.push({ worker_id: String(worker._id), worker_name: worker.name || "Unknown worker", department: worker.department || "Unassigned",
           kind: assignment.kind === "unique" ? "unsupported" : assignment.kind, tier: assignment.tier,
@@ -566,14 +578,12 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       }
 
       expected += 1;
-      const workerId = String(worker._id);
-      const events = eventsByWorker.get(workerId) || []; // Already chronological.
       const firstIn = events.find((event) => event.eventType === "clock_in") || null;
       const lastEvent = events[events.length - 1] || null;
-      const status = getWorkerStatus({ date, hasScheduleTimePassed, scheduleMinutesElapsed, schedule, firstIn, lastEvent });
+      const status = getWorkerStatus({ date, hasScheduleTimePassed, scheduleMinutesElapsed, schedule, firstIn, lastEvent, arrivalChecks });
       // Daily attendance survives clock-out; live coverage intentionally does not.
       if (firstIn) attended += 1;
-      if (getWorkerStatus({ date, hasScheduleTimePassed, scheduleMinutesElapsed, schedule, firstIn, lastEvent: null }) === "late") arrivedLate += 1;
+      if (getWorkerStatus({ date, hasScheduleTimePassed, scheduleMinutesElapsed, schedule, firstIn, lastEvent: null, arrivalChecks }) === "late") arrivedLate += 1;
       const department = normalizeText(worker.department) || "Unassigned";
       const departmentKey = `${department}:${schedule.name}:${schedule.startTime}:${schedule.endTime}`;
 
@@ -790,7 +800,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       unavailableWorkers,
       uncertainWorkers,
       unsupportedWorkers,
-      workers,
+      workers: rosterWorkers,
       openExceptions,
       criticalExceptions,
       missingClockOuts,

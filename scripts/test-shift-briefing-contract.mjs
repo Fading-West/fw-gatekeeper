@@ -163,4 +163,8 @@ assert.match(packageJson, /"test:shift-briefing":\s*"node scripts\/test-shift-br
 
 assert.match(briefing, /kiosk_warnings: warningKiosks\.length/, 'Each kiosk with any warning reason should count once in kiosk warnings.');
 assert.match(briefing, /attendance_queue: attendanceQueue,/, 'Briefing kiosks should expose fleet-wide attendance queue evidence.');
+assert.match(briefing, /import \{ createRosterMembership \} from "\.\/rosterMembership"/, 'Shift briefing must share the roster membership rule with shift exceptions.');
+assert.match(briefing, /if \(membership === "omit"\) continue;/, 'Workers who joined after the shift start without evidence on the date must be omitted.');
+assert.match(briefing, /if \(!input\.arrivalChecks\) return/, 'Workers who joined after the shift start must never be missing or late.');
+assert.match(briefing, /workers: rosterWorkers,/, 'Enrollment readiness must only judge workers on the date roster.');
 console.log('Shift briefing contract passed');

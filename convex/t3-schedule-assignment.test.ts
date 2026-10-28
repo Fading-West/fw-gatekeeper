@@ -1,13 +1,22 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { api } from './_generated/api';
 import schema from './schema';
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-03';
+
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
 async function setup(kind: 'none' | 'ambiguous' | 'unsupported' | 'unique') {
   const t = convexTest(schema, modules);
-  const ids = await t.run(async ctx => {
+  const ids = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'synthetic-assignment@example.test' });
     await ctx.db.insert('portalMembers', { userId, role: 'enrollment', active: true, createdAt: date });
     const workerId = await ctx.db.insert('workers', { name: 'Synthetic assembly worker', department: 'Assembly', active: true, enrolledAt: date, faceEncoding: Array(512).fill(.1) });
@@ -19,7 +28,7 @@ async function setup(kind: 'none' | 'ambiguous' | 'unsupported' | 'unique') {
     // A raw out-without-in must survive unavailable schedule classification.
     const eventId = await ctx.db.insert('attendance', { workerId: String(workerId), timestamp: `${date}T09:00:00`, eventType: 'clock_out', synced: true });
     return { userId, workerId, eventId };
-  });
+  }));
   return { t, actor: t.withIdentity({ subject: ids.userId }), ...ids };
 }
 describe('schedule uncertainty preserves attendance evidence', () => {
@@ -51,10 +60,10 @@ describe('schedule uncertainty preserves attendance evidence', () => {
   });
   it('uses the assignment risk identity for mixed missing and unsupported coverage while retaining critical severity', async () => {
     const { t, actor } = await setup('none');
-    await t.run(async ctx => {
+    await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
       await ctx.db.insert('workers', { name: 'Synthetic overnight worker', department: 'Overnight', active: true, enrolledAt: date });
       await ctx.db.insert('schedules', { name: 'Unsupported overnight', department: 'Overnight', days: '[4]', startTime: '22:00', endTime: '06:00', active: true, createdAt: date });
-    });
+    }));
     const briefing = await actor.query(api.shiftBriefing.summary, { date });
     expect(briefing.coverage_unavailable).toBe(2);
     expect(briefing.daily_attendance).toEqual({ expected: 0, present: 0, late: 0, missing: 0, not_yet_due: 0 });

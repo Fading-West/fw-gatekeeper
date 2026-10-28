@@ -6,9 +6,18 @@ import schema from './schema';
 
 const modules = import.meta.glob('./**/*.ts');
 
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
+
 async function fixture(date: string, endTime: string, absentWorker = false) {
   const t = convexTest(schema, modules);
-  const userId = await t.run(async ctx => {
+  const userId = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'coverage@example.test' });
     await ctx.db.insert('portalMembers', { userId, role: 'admin', active: true, createdAt: date });
     const workerId = await ctx.db.insert('workers', {
@@ -29,7 +38,7 @@ async function fixture(date: string, endTime: string, absentWorker = false) {
       await ctx.db.insert('attendance', { workerId, eventType, timestamp: `${date}T${time}:00`, synced: true });
     }
     return userId;
-  });
+  }));
   const admin = t.withIdentity({ subject: userId });
   return { load: () => admin.query(api.shiftBriefing.summary, { date }) };
 }

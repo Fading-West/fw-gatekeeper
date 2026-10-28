@@ -13,6 +13,15 @@ vi.mock('@/lib/convex', () => ({ default: { mutation: vi.fn(), query: vi.fn() } 
 vi.mock('@/lib/portal-auth', () => ({ hasValidPortalSession: vi.fn() }));
 const modules = import.meta.glob('../../../../convex/**/*.ts');
 const date = '2026-09-10';
+
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(hasValidPortalSession).mockResolvedValue(true);
@@ -20,13 +29,13 @@ beforeEach(() => {
 
 async function setup() {
   const t = convexTest(schema, modules);
-  const userId = await t.run(async ctx => {
+  const userId = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'exceptions@example.test' });
     await ctx.db.insert('portalMembers', { userId, role: 'enrollment', active: true, createdAt: date });
     await ctx.db.insert('workers', { name: 'Worker', department: 'Operations', active: true, enrolledAt: date });
     await ctx.db.insert('schedules', { name: 'Day', days: '[1,2,3,4,5]', startTime: '08:00', endTime: '17:00', active: true, createdAt: date });
     return userId;
-  });
+  }));
   const actor = t.withIdentity({ subject: userId });
   const source = (await actor.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.type === 'missing_arrival')!;
   const exceptionKey = source.key;

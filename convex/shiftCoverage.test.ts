@@ -1,20 +1,29 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { api } from './_generated/api';
 import schema from './schema';
 
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-01';
+
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
 async function fixture(startTime = '08:00', endTime = '17:00') {
   const t = convexTest(schema, modules);
-  const ids = await t.run(async ctx => {
+  const ids = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'supervisor@example.com' });
     await ctx.db.insert('portalMembers', { userId, role: 'admin', active: true, createdAt: `${date}T00:00:00Z` });
     const workerId = await ctx.db.insert('workers', { name: 'Example', department: 'Assembly', active: true, enrolledAt: `${date}T00:00:00Z`, faceEncoding: Array(512).fill(0.1) });
     await ctx.db.insert('schedules', { name: 'Shift', department: 'Assembly', days: '[0,1,2,3,4,5,6]', startTime, endTime, active: true, createdAt: `${date}T00:00:00Z` });
     return { userId, workerId };
-  });
+  }));
   return { t, admin: t.withIdentity({ subject: ids.userId }), workerId: ids.workerId };
 }
 
@@ -39,11 +48,11 @@ describe('daily attendance and live coverage', () => {
 
   it('counts distinct attendees and their first arrival after repeated scans', async () => {
     const { t, admin, workerId } = await fixture();
+    await joinedAt(`${date}T00:00:00Z`, () => t.run(ctx => ctx.db.insert('workers', { name: 'Absent', department: 'Assembly', active: true, enrolledAt: `${date}T00:00:00Z` })));
     await t.run(async ctx => {
       for (const [time, eventType] of [['07:55', 'clock_in'], ['12:00', 'clock_out'], ['13:00', 'clock_in'], ['17:00', 'clock_out']]) {
         await ctx.db.insert('attendance', { workerId, eventType, timestamp: `${date}T${time}:00`, synced: true });
       }
-      await ctx.db.insert('workers', { name: 'Absent', department: 'Assembly', active: true, enrolledAt: `${date}T00:00:00Z` });
     });
     expect((await admin.query(api.shiftCloseouts.get, { date })).summary).toMatchObject({ expected: 2, present: 1, late: 0, missing: 1 });
   });

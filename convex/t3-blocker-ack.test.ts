@@ -1,21 +1,30 @@
 /// <reference types="vite/client" />
 import { convexTest } from 'convex-test';
 import type { FunctionArgs } from 'convex/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { api } from './_generated/api';
 import type { Id } from './_generated/dataModel';
 import type { MutationCtx } from './_generated/server';
 import schema from './schema';
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-03';
+
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
 async function setup() {
   const t = convexTest(schema, modules);
-  const ids = await t.run(async ctx => {
+  const ids = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'synthetic-supervisor@example.test' });
     await ctx.db.insert('portalMembers', { userId, role: 'enrollment', active: true, createdAt: date });
     const kioskId = await ctx.db.insert('kiosks', { name: 'Synthetic gate', kioskId: 'synthetic-gate', type: 'entry', location: 'Synthetic', active: true });
     return { userId, kioskId };
-  });
+  }));
   return { t, actor: t.withIdentity({ subject: ids.userId }), ...ids };
 }
 async function acknowledge(actor: Awaited<ReturnType<typeof setup>>['actor'], action: 'save' | 'complete' = 'save') {
@@ -84,12 +93,12 @@ describe('closeout acknowledgement is bound to reviewed evidence', () => {
   });
   it('binds reviewed unsupported coverage to its current schedule and worker', async () => {
     const { t, actor } = await setup();
-    const { scheduleId } = await t.run(async ctx => {
+    const { scheduleId } = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
       const workerId = await ctx.db.insert('workers', { name: 'Scheduled worker', department: 'Assembly', active: true, enrolledAt: date });
       const scheduleId = await ctx.db.insert('schedules', { name: 'Unsupported', department: 'Assembly', startTime: '22:00', endTime: '06:00', days: '[0,1,2,3,4,5,6]', active: true, createdAt: date });
       await ctx.db.insert('exceptionReviews', { exceptionKey: `${date}:unsupported_schedule:${workerId}`, date, type: 'unsupported_schedule', status: 'reviewed', updatedAt: date });
       return { workerId, scheduleId };
-    });
+    }));
     const original = await actor.query(api.shiftCloseouts.get, { date });
     await acknowledge(actor);
     await t.run(ctx => ctx.db.patch(scheduleId, { endTime: '07:00' }));
