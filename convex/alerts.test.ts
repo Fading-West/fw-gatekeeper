@@ -161,10 +161,42 @@ describe("alert messages and config", () => {
       NOW,
     );
     const message = buildAlertMessage(plan.alerts[0], NOW, "https://example.test");
-    expect(message.subject).toBe("[FW Gatekeeper] Main Entry offline for 1h 12m");
+    expect(message.subject).toBe("[FW Gatekeeper] Main Entry offline for 2h 0m");
     expect(message.text).toContain("Location: Building A");
     expect(message.text).toContain("https://example.test/kiosks");
     expect(message.text).toContain("Last sync:");
+  });
+
+  it("dates a first offline alert from the last sync, not from when it was first noticed", () => {
+    const lastSync = new Date(NOW - 72 * HOUR).toISOString();
+    const silent = kiosk({ lastSync });
+    const plan = planKioskNotifications(evaluateKioskAlerts([silent], NOW), [], NOW);
+    const message = buildAlertMessage(plan.alerts[0], NOW, "https://example.test");
+    expect(message.subject).toBe("[FW Gatekeeper] Main Entry offline for 3d 0h");
+    expect(message.text).toContain(`  - offline: since ${lastSync} (3d 0h, new)`);
+    expect(message.text).toContain(`Last sync: ${lastSync} (3d 0h ago)`);
+  });
+
+  it("dates a first stale alert from the last sync", () => {
+    const lastSync = new Date(NOW - 20 * MINUTE).toISOString();
+    const plan = planKioskNotifications(evaluateKioskAlerts([kiosk({ lastSync })], NOW), [], NOW);
+    const message = buildAlertMessage(plan.alerts[0], NOW, "https://example.test");
+    expect(message.subject).toBe("[FW Gatekeeper] Main Entry stale for 20m");
+    expect(message.text).toContain(`  - stale: since ${lastSync} (20m, new)`);
+  });
+
+  it("keeps first-seen durations for conditions that are not about silence", () => {
+    const reported = new Date(NOW - MINUTE).toISOString();
+    const faulty = kiosk({ health: { cameraOk: false, reportedAt: reported } });
+    const firstSeenAt = new Date(NOW - 45 * MINUTE).toISOString();
+    const plan = planKioskNotifications(
+      evaluateKioskAlerts([faulty], NOW),
+      [{ kioskId: faulty.kioskId, condition: "device_fault", firstSeenAt }],
+      NOW,
+    );
+    const message = buildAlertMessage(plan.alerts[0], NOW, "https://example.test");
+    expect(message.subject).toBe("[FW Gatekeeper] Main Entry reporting a scan-blocking device fault for 45m");
+    expect(message.text).toContain(`  - device fault: since ${firstSeenAt} (45m, still active)`);
   });
 
   it("reports which email variables are missing", () => {

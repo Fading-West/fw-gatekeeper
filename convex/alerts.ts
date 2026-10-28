@@ -278,6 +278,17 @@ function describeAge(iso: string | undefined, nowMs: number) {
   return `${iso} (${formatDuration(nowMs - ms)} ago)`;
 }
 
+// Silence-based conditions date from the last sync, not from the cron run that
+// first noticed them, so a first offline email after 72 h of silence says 3d
+// rather than 0m and agrees with the "Last sync" line.
+function conditionStart(alert: PlannedAlert, item: PlannedAlert["conditions"][number], nowMs: number) {
+  const silenceMs = alert.evaluation.lastSyncAgeMs;
+  if ((item.condition === "offline" || item.condition === "stale") && silenceMs !== null && alert.kiosk.lastSync) {
+    return { sinceIso: alert.kiosk.lastSync, sinceMs: silenceMs };
+  }
+  return { sinceIso: item.firstSeenAt, sinceMs: nowMs - new Date(item.firstSeenAt).getTime() };
+}
+
 export type AlertMessage = {
   kind: "alert" | "recovery";
   kiosk: AlertKiosk;
@@ -289,7 +300,7 @@ export type AlertMessage = {
 export function buildAlertMessage(alert: PlannedAlert, nowMs: number, siteUrl: string): AlertMessage {
   const sorted = [...alert.conditions].sort((a, b) => conditionRank(a.condition) - conditionRank(b.condition));
   const primary = sorted[0];
-  const primarySince = nowMs - new Date(primary.firstSeenAt).getTime();
+  const primarySince = conditionStart(alert, primary, nowMs).sinceMs;
   const extra = sorted.length > 1 ? ` (+${sorted.length - 1} more)` : "";
   const subject = `[FW Gatekeeper] ${alert.kiosk.name} ${conditionSummary(primary.condition, alert.kiosk, primarySince)}${extra}`;
 
@@ -301,9 +312,9 @@ export function buildAlertMessage(alert: PlannedAlert, nowMs: number, siteUrl: s
     "",
     "Conditions:",
     ...sorted.map((item) => {
-      const since = nowMs - new Date(item.firstSeenAt).getTime();
+      const { sinceIso, sinceMs } = conditionStart(alert, item, nowMs);
       const state = item.isNew ? "new" : "still active";
-      return `  - ${CONDITION_LABELS[item.condition] ?? item.condition}: since ${item.firstSeenAt} (${formatDuration(since)}, ${state})`;
+      return `  - ${CONDITION_LABELS[item.condition] ?? item.condition}: since ${sinceIso} (${formatDuration(sinceMs)}, ${state})`;
     }),
     "",
     `Last sync: ${describeAge(alert.kiosk.lastSync, nowMs)}`,
