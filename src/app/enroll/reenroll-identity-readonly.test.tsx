@@ -36,6 +36,9 @@ it('keeps admin manual entry of a new worker editable', async () => {
   const manual = tree!.root.findAllByType('button').find(node => label(node).includes('Add manually'))!;
   await act(async () => manual.props.onClick());
   expect(identityInputs().map(input => input.props.readOnly)).toEqual([false, false]);
+  page.role = 'enrollment';
+  await act(async () => tree!.update(<EnrollPage />));
+  expect(identityInputs().map(input => input.props.readOnly)).toEqual([true, true]);
 });
 
 it('does not offer manual entry to the enrollment role', async () => {

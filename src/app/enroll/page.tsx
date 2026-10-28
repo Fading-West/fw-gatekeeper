@@ -95,8 +95,8 @@ function EnrollPageContent() {
   const [identityRefresh, setIdentityRefresh] = useState(0);
   const enrollmentWorkerId = selectedEmployee?.workerId || workerId;
   // /api/enroll keeps the stored ID and department for non-admin re-enrollment,
-  // so only admins (or admin manual entry) may edit them here.
-  const identityEditable = manualEntry || (Boolean(workerId) && currentRole === 'admin');
+  // so only admins may edit them here (re-enroll or manual entry).
+  const identityEditable = currentRole === 'admin' && (manualEntry || Boolean(workerId));
   const [directoryResult, setDirectoryResult] = useState<{
     query: string;
     suggestions: EmployeeDirectoryEnrollmentEntry[];
