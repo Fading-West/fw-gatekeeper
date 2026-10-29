@@ -94,6 +94,9 @@ function EnrollPageContent() {
   const [identityReady, setIdentityReady] = useState(false);
   const [identityRefresh, setIdentityRefresh] = useState(0);
   const enrollmentWorkerId = selectedEmployee?.workerId || workerId;
+  // /api/enroll keeps the stored ID and department for non-admin re-enrollment,
+  // so only admins may edit them here (re-enroll or manual entry).
+  const identityEditable = currentRole === 'admin' && (manualEntry || Boolean(workerId));
   const [directoryResult, setDirectoryResult] = useState<{
     query: string;
     suggestions: EmployeeDirectoryEnrollmentEntry[];
@@ -681,7 +684,7 @@ function EnrollPageContent() {
                 value={employeeId}
                 onChange={(e) => setEmployeeId(e.target.value)}
                 placeholder="e.g. F-2"
-                readOnly={!workerId && !manualEntry}
+                readOnly={!identityEditable}
                 className="input-field"
               />
             </div>
@@ -693,9 +696,12 @@ function EnrollPageContent() {
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
                 placeholder="e.g. Area Manager, Mill, Station 4"
-                readOnly={!workerId && !manualEntry}
+                readOnly={!identityEditable}
                 className="input-field"
               />
+              {workerId && currentRole === 'enrollment' && (
+                <p className="mt-1 text-xs text-slate-500">Only an admin can change employee ID or department, from the Workers page.</p>
+              )}
             </div>
 
             {!workerId && !selectedEmployee && currentRole === 'admin' && (
