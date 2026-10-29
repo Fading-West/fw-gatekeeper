@@ -1,9 +1,8 @@
 import type { AttendanceQueueEvidence, AttendanceQueueObservation } from '@/lib/types';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 
 function formatObservedAt(value: string | null) {
-  if (!value) return 'an unrecorded time';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return formatFactoryLocalDateTime(value, 'an unrecorded time');
 }
 
 function records(count: number) {

@@ -58,7 +58,7 @@ function formatTimestamp(value: string | null) {
   if (!value) return 'No data yet';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Invalid timestamp';
-  return date.toLocaleString();
+  return formatFactoryLocalDateTime(value);
 }
 
 export default function KiosksPage() {
