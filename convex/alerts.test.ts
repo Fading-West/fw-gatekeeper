@@ -112,7 +112,7 @@ describe("planKioskNotifications", () => {
     const fresh = planKioskNotifications(evaluations, [], NOW);
     expect(fresh.alerts).toHaveLength(1);
     expect(fresh.alerts[0].conditions).toEqual([{ condition: "offline", firstSeenAt: new Date(NOW).toISOString(), isNew: true }]);
-    expect(fresh.observations).toEqual([{ kioskId: offline.kioskId, condition: "offline" }]);
+    expect(fresh.observations).toEqual([{ kioskId: offline.kioskId, condition: "offline", since: offline.lastSync }]);
 
     const firstSeenAt = new Date(NOW - 3 * HOUR).toISOString();
     const recentlyNotified = [{ kioskId: offline.kioskId, condition: "offline", firstSeenAt, lastNotifiedAt: new Date(NOW - HOUR).toISOString() }];
@@ -271,7 +271,8 @@ describe("alertState recording", () => {
     const rowsAfterSecond = await t.run((ctx) => ctx.db.query("alertState").collect());
     expect(rowsAfterSecond).toHaveLength(1);
     expect(rowsAfterSecond[0]._id).toBe(rowsAfterFirst[0]._id);
-    expect(rowsAfterSecond[0].firstSeenAt).toBe(new Date(firstRun).toISOString());
+    const [kioskRow] = await t.run((ctx) => ctx.db.query("kiosks").collect());
+    expect(rowsAfterSecond[0].firstSeenAt).toBe(kioskRow.lastSync);
   });
 
   it("checkKiosks records without notifying when delivery is unconfigured", async () => {
@@ -340,6 +341,40 @@ describe("alertState recording", () => {
     expect(fourth).toMatchObject({ alerts: 0, recoveries: 0, delivered: 0 });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
+  it("measures an offline recovery from the last sync, matching the alert emails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.stubEnv("RESEND_API_KEY", "");
+      vi.stubEnv("ALERT_WEBHOOK_URL", "https://example.test/hook");
+      const texts: string[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+        texts.push(JSON.parse(String(init.body)).text);
+        return new Response("{}", { status: 200 });
+      }));
+      const lastGoodSync = Date.parse("2026-10-27T22:00:00.000Z");
+      vi.setSystemTime(lastGoodSync);
+      const t = await seedStaleKiosk(0);
+
+      // Stale at 22:20, escalates to offline at 23:05, kiosk syncs again at 08:00.
+      for (const tick of [lastGoodSync + 20 * MINUTE, lastGoodSync + 65 * MINUTE]) {
+        vi.setSystemTime(tick);
+        await t.action(internal.alerts.checkKiosks, {});
+      }
+      await t.run(async (ctx) => {
+        const [row] = await ctx.db.query("kiosks").collect();
+        await ctx.db.patch(row._id, { lastSync: new Date(lastGoodSync + 10 * HOUR).toISOString() });
+      });
+      vi.setSystemTime(lastGoodSync + 10 * HOUR + 5 * MINUTE);
+      expect(await t.action(internal.alerts.checkKiosks, {})).toMatchObject({ recoveries: 1, delivered: 1 });
+
+      expect(texts).toHaveLength(3);
+      expect(texts[1]).toContain("  - offline: since 2026-10-27T22:00:00.000Z (1h 5m, new)");
+      expect(texts[2]).toContain("  - offline: since 2026-10-27T22:00:00.000Z, lasted 10h 5m");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries failed recovery delivery without repeating a successful recovery", async () => {
     vi.stubEnv("RESEND_API_KEY", "");
     vi.stubEnv("ALERT_WEBHOOK_URL", "https://example.test/hook");

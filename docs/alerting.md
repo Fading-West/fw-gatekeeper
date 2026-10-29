@@ -60,8 +60,9 @@ Inactive kiosks (`active: false`) are ignored.
 - Multiple conditions on the same kiosk are combined into one message per run; the
   subject names the most severe one, e.g. `[FW Gatekeeper] Main Entry offline for 1h 12m (+1 more)`.
 - Alert episodes are tracked in the `alertState` table (`kioskId`, `condition`,
-  `firstSeenAt`, `lastNotifiedAt`, `resolvedAt`). Rows are kept after resolution as a
-  small audit trail; a new episode creates a new row.
+  `firstSeenAt`, `lastNotifiedAt`, `resolvedAt`). For `offline` and `stale`, `firstSeenAt`
+  is the kiosk's last sync, so recovery notices report the whole outage. Rows are kept
+  after resolution as a small audit trail; a new episode creates a new row.
 
 If a delivery attempt fails, the condition is not marked as notified, so it is retried
 on the next run.
