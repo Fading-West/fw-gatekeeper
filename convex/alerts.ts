@@ -582,10 +582,16 @@ export const recordState = internalMutation({
       const existing = openByKey.get(key);
       const shouldStamp = notifiedKeys.has(key);
       if (existing) {
-        if (shouldStamp) {
-          await ctx.db.patch(existing._id, { lastNotifiedAt: args.now });
-          notified += 1;
+        // A newer sync restarts the silence (e.g. while a recovery notice is
+        // still being retried), so keep the start in line with the alerts.
+        const restarted = observation.since !== undefined && observation.since !== existing.firstSeenAt;
+        if (shouldStamp || restarted) {
+          await ctx.db.patch(existing._id, {
+            ...(restarted ? { firstSeenAt: observation.since } : {}),
+            ...(shouldStamp ? { lastNotifiedAt: args.now } : {}),
+          });
         }
+        if (shouldStamp) notified += 1;
         continue;
       }
 

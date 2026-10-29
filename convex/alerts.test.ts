@@ -375,6 +375,24 @@ describe("alertState recording", () => {
     }
   });
 
+  it("moves an open silence row's start to a newer sync, keeping its notification stamp", async () => {
+    const t = convexTest(schema, modules);
+    const observe = (since: string) => [{ kioskId: "kiosk-1", condition: "offline", since }];
+    const firstSync = "2026-10-27T22:00:00.000Z";
+    const laterSync = "2026-10-28T00:10:00.000Z";
+    await t.mutation(internal.alerts.recordState, {
+      now: "2026-10-28T00:00:00.000Z", observations: observe(firstSync), notified: observe(firstSync),
+    });
+    // The kiosk synced at 00:10 and went silent again before the row was resolved.
+    await t.mutation(internal.alerts.recordState, {
+      now: "2026-10-28T01:15:00.000Z", observations: observe(laterSync), notified: [],
+    });
+    const rows = await t.run((ctx) => ctx.db.query("alertState").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ firstSeenAt: laterSync, lastNotifiedAt: "2026-10-28T00:00:00.000Z" });
+    expect(rows[0].resolvedAt).toBeUndefined();
+  });
+
   it("retries failed recovery delivery without repeating a successful recovery", async () => {
     vi.stubEnv("RESEND_API_KEY", "");
     vi.stubEnv("ALERT_WEBHOOK_URL", "https://example.test/hook");
