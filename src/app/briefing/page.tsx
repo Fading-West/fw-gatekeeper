@@ -64,10 +64,7 @@ function formatTime(value: string | null) {
 }
 
 function formatGeneratedAt(value?: string) {
-  if (!value) return 'Not generated';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return formatFactoryLocalDateTime(value, 'Not generated');
 }
 
 function briefingCsv(

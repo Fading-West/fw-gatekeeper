@@ -1,3 +1,5 @@
+import { formatFactoryLocalDateTime } from './date';
+
 export type ProactiveActionPriority = 'critical' | 'warning' | 'closeout' | 'info';
 export type ProactiveActionSeverity = 'critical' | 'warning' | 'info';
 export type ProactiveActionTone = 'red' | 'amber' | 'slate';
@@ -1161,7 +1163,7 @@ export function buildProactiveActions(input: BuildProactiveActionsInput = {}): P
         severity: 'info',
         label: 'Shift closeout complete',
         value: '✓',
-        description: `Today's supervisor closeout was completed${shiftCloseout.closeout.completed_at ? ` at ${new Date(shiftCloseout.closeout.completed_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` : ''}.`,
+        description: `Today's supervisor closeout was completed${shiftCloseout.closeout.completed_at ? ` at ${formatFactoryLocalDateTime(shiftCloseout.closeout.completed_at, '', { hour: '2-digit', minute: '2-digit' })}` : ''}.`,
         href: buildHref('/closeout', { date: actionDate }),
         cta: 'Open closeout',
         source: 'closeout',

@@ -17,11 +17,21 @@ const executableSource = ts.transpileModule(source, {
   },
 }).outputText;
 
+// proactive-actions.ts imports the dependency-free date helpers; transpile them the same way.
+const dateModule = { exports: {} };
+new Script(ts.transpileModule(read('src/lib/date.ts'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText, { filename: 'src/lib/date.ts' }).runInNewContext({
+  exports: dateModule.exports,
+  module: dateModule,
+  require,
+});
+
 const module = { exports: {} };
 new Script(executableSource, { filename: 'src/lib/proactive-actions.ts' }).runInNewContext({
   exports: module.exports,
   module,
-  require,
+  require: (specifier) => (specifier === './date' ? dateModule.exports : require(specifier)),
   console,
 });
 
