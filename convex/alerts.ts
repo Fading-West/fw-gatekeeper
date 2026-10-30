@@ -94,7 +94,9 @@ export type PlannedRecovery = {
 };
 
 export type AlertPlan = {
-  observations: Array<{ kioskId: string; condition: string }>;
+  // `since` is the outage start for offline/stale, stored as the row's
+  // firstSeenAt so the recovery notice measures the same outage as the alerts.
+  observations: Array<{ kioskId: string; condition: string; since?: string }>;
   alerts: PlannedAlert[];
   recoveries: PlannedRecovery[];
 };
@@ -194,7 +196,9 @@ export function planKioskNotifications(
     for (const condition of evaluation.conditions) {
       const key = stateKey(evaluation.kiosk.kioskId, condition);
       observedKeys.add(key);
-      observations.push({ kioskId: evaluation.kiosk.kioskId, condition });
+      // Same rule as conditionStart: silence dates from a parseable, non-future last sync.
+      const since = (condition === "offline" || condition === "stale") && evaluation.lastSyncAgeMs !== null ? evaluation.kiosk.lastSync : undefined;
+      observations.push({ kioskId: evaluation.kiosk.kioskId, condition, ...(since ? { since } : {}) });
 
       const existing = openByKey.get(key);
       const lastNotifiedMs = existing?.lastNotifiedAt ? new Date(existing.lastNotifiedAt).getTime() : NaN;
@@ -351,7 +355,7 @@ export function buildRecoveryMessage(recovery: PlannedRecovery, nowMs: number, s
     "Cleared conditions:",
     ...sorted.map((item) => {
       const lasted = nowMs - new Date(item.firstSeenAt).getTime();
-      return `  - ${CONDITION_LABELS[item.condition] ?? item.condition}: first seen ${item.firstSeenAt}, lasted ${formatDuration(lasted)}`;
+      return `  - ${CONDITION_LABELS[item.condition] ?? item.condition}: since ${item.firstSeenAt}, lasted ${formatDuration(lasted)}`;
     }),
     "",
     `Last sync: ${describeAge(recovery.kiosk.lastSync, nowMs)}`,
@@ -500,7 +504,7 @@ const alertStateValidator = v.object({
   resolvedAt: v.optional(v.string()),
 });
 
-const observationValidator = v.object({ kioskId: v.string(), condition: v.string() });
+const observationValidator = v.object({ kioskId: v.string(), condition: v.string(), since: v.optional(v.string()) });
 
 /** Active kiosks plus every unresolved alertState row. Read-only. */
 export const loadState = internalQuery({
@@ -578,17 +582,23 @@ export const recordState = internalMutation({
       const existing = openByKey.get(key);
       const shouldStamp = notifiedKeys.has(key);
       if (existing) {
-        if (shouldStamp) {
-          await ctx.db.patch(existing._id, { lastNotifiedAt: args.now });
-          notified += 1;
+        // A newer sync restarts the silence (e.g. while a recovery notice is
+        // still being retried), so keep the start in line with the alerts.
+        const restarted = observation.since !== undefined && observation.since !== existing.firstSeenAt;
+        if (shouldStamp || restarted) {
+          await ctx.db.patch(existing._id, {
+            ...(restarted ? { firstSeenAt: observation.since } : {}),
+            ...(shouldStamp ? { lastNotifiedAt: args.now } : {}),
+          });
         }
+        if (shouldStamp) notified += 1;
         continue;
       }
 
       await ctx.db.insert("alertState", {
         kioskId: observation.kioskId,
         condition: observation.condition,
-        firstSeenAt: args.now,
+        firstSeenAt: observation.since ?? args.now,
         ...(shouldStamp ? { lastNotifiedAt: args.now } : {}),
       });
       created += 1;
