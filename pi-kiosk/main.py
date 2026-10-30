@@ -413,6 +413,10 @@ def _run(args):
         last_probe = 0.0
         trial_state = os.environ.get("KIOSK_UPDATE_TRIAL")
         matching_generation = None
+        # Faults this loop reported; a one-off detection fault is retired by
+        # the next successful detector pass, even at an empty door.
+        detection_faulted = False
+        model_faulted = False
         while True:
             with detect_lock:
                 frames = pending_frame[0]
@@ -436,6 +440,17 @@ def _run(args):
                 small_rgb = cv2.resize(rgb_frame, (0, 0), fx=0.5, fy=0.5)
                 locs = fr.face_locations(small_rgb, model="hog")
                 web_app.update_health(last_detection=time.monotonic())
+                if detection_faulted:
+                    with detect_lock:
+                        # Same barrier as publication: a frame from a retired
+                        # camera must not overwrite the newer camera_error.
+                        # Keep reporting an ONNX fault the detection error masked.
+                        if generation == camera_generation[0]:
+                            detection_faulted = False
+                            if model_faulted:
+                                web_app.update_health(model_ok=False, degraded_reason="model_error")
+                            else:
+                                web_app.update_health(model_ok=True, degraded_reason=base_degraded_reason())
 
                 detect_count[0] += 1
                 if detect_count[0] % 20 == 1:
@@ -454,10 +469,12 @@ def _run(args):
                             if (probe is None or probe.shape != (EXPECTED_EMBEDDING_DIM,)
                                     or not np.isfinite(probe).all() or np.linalg.norm(probe) == 0):
                                 raise RuntimeError("Invalid model probe embedding")
+                            model_faulted = False
                             web_app.update_health(last_model_inference=time.monotonic(),
                                                   model_ok=True, degraded_reason=base_degraded_reason())
                         except Exception as e:
                             logger.error("ONNX health probe error (error=%s)", type(e).__name__)
+                            model_faulted = True
                             web_app.update_health(model_ok=False, degraded_reason="model_error")
                     embedding_history.clear()
                     publish_detection(_empty_recognition_result(None, frame_ts=frame_ts), generation)
@@ -477,6 +494,7 @@ def _run(args):
                         raise RuntimeError("Invalid model embedding")
                 except Exception as e:
                     logger.error("ONNX encoding error (error=%s)", type(e).__name__)
+                    model_faulted = True
                     web_app.update_health(model_ok=False, degraded_reason="model_error")
                     embedding_history.clear()
                     publish_detection(_empty_recognition_result(face_loc, decision="rejected_model_error", frame_ts=frame_ts), generation)
@@ -487,6 +505,7 @@ def _run(args):
                     publish_detection(_empty_recognition_result(face_loc, decision="rejected_no_embedding", frame_ts=frame_ts), generation)
                     continue
 
+                model_faulted = detection_faulted = False
                 web_app.update_health(last_model_inference=time.monotonic(),
                                       model_ok=True, degraded_reason=base_degraded_reason())
 
@@ -576,6 +595,7 @@ def _run(args):
 
             except Exception as e:
                 logger.error("Detection error (error=%s)", type(e).__name__)
+                detection_faulted = True
                 web_app.update_health(model_ok=False, degraded_reason="detection_error")
                 embedding_history.clear()
                 publish_detection(None, generation)
