@@ -7,9 +7,18 @@ import schema from './schema';
 const modules = import.meta.glob('./**/*.ts');
 const date = '2026-09-01';
 
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
+
 async function fixture(scans: Array<[string, 'clock_in' | 'clock_out']>) {
   const t = convexTest(schema, modules);
-  const userId = await t.run(async ctx => {
+  const userId = await joinedAt(`${date}T00:00:00Z`, () => t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'supervisor@example.com' });
     await ctx.db.insert('portalMembers', { userId, role: 'admin', active: true, createdAt: `${date}T00:00:00Z` });
     const workerId = await ctx.db.insert('workers', { name: 'Example', department: 'Assembly', active: true, enrolledAt: `${date}T00:00:00Z`, faceEncoding: Array(512).fill(0.1) });
@@ -18,7 +27,7 @@ async function fixture(scans: Array<[string, 'clock_in' | 'clock_out']>) {
       await ctx.db.insert('attendance', { workerId, eventType, timestamp: `${date}T${time}:00`, synced: true });
     }
     return userId;
-  });
+  }));
   return t.withIdentity({ subject: userId }).query(api.shiftBriefing.summary, { date });
 }
 

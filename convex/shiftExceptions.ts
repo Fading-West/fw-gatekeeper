@@ -13,6 +13,7 @@ import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } fro
 import { createScheduleMinutesElapsed, createScheduleTimeHasPassed, isSupportedScheduleTimeRange, SCHEDULE_TIME_ERROR } from "./scheduleTimes";
 import { resolveScheduleAssignment } from "./scheduleAssignment";
 import { buildExceptionSourceFingerprint } from "./exceptionSourceFingerprint";
+import { createRosterMembership } from "./rosterMembership";
 
 const LOW_MARGIN_THRESHOLD = 0.08;
 
@@ -440,6 +441,7 @@ function attendanceSourceEvidence(events: any[]) {
 export async function buildShiftExceptions(ctx: any, date: string) {
   const dayOfWeek = getDayOfWeek(date);
   const scheduleMinutesElapsed = createScheduleMinutesElapsed();
+  const rosterMembership = createRosterMembership();
   const now = new Date().toISOString();
   const hasScheduleTimePassed = createScheduleTimeHasPassed(now);
   const previousDate = getPreviousFactoryLocalDateKey(date);
@@ -491,12 +493,15 @@ export async function buildShiftExceptions(ctx: any, date: string) {
     const assignment = resolveScheduleAssignment(worker.department, schedules, dayOfWeek);
     let schedule = assignment.kind === "unique" ? assignment.schedule : null;
     const workerId = String(worker._id);
+    const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
+    const membership = rosterMembership(worker, date, schedule, workerEvents);
+    if (membership === "omit") continue;
+    const arrivalChecks = membership === "full";
     schedulesByWorker.set(workerId, schedule);
     if (assignment.kind !== "unique") assignmentsByWorker.set(workerId, {
       kind: assignment.kind, tier: assignment.tier, department: worker.department || "",
       candidates: assignment.candidates,
     });
-    const workerEvents = eventsByWorker.get(workerId) || []; // Already chronological.
     const clockIns = workerEvents.filter((event) => event.eventType === "clock_in");
     const firstIn = clockIns[0] || null;
     const lastEvent = workerEvents[workerEvents.length - 1] || null;
@@ -541,7 +546,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       schedule = null;
     }
 
-    if (schedule && !firstIn && hasScheduleTimePassed(date, schedule.startTime)) {
+    if (arrivalChecks && schedule && !firstIn && hasScheduleTimePassed(date, schedule.startTime)) {
       const key = `${date}:missing_arrival:${workerId}`;
       exceptions.push(createException({
         key,
@@ -566,7 +571,7 @@ export async function buildShiftExceptions(ctx: any, date: string) {
       }));
     }
 
-    if (schedule && firstIn) {
+    if (arrivalChecks && schedule && firstIn) {
       const minutesLate = scheduleMinutesElapsed(date, schedule.startTime, firstIn);
       if (minutesLate !== null && minutesLate > 0) {
         const key = `${date}:late_arrival:${workerId}`;

@@ -12,9 +12,18 @@ type Shift = { name: string; department: string; startTime: string; endTime: str
 const DAY_SHIFT: Shift = { name: 'Day', department: 'Assembly', startTime: '08:00', endTime: '17:00', worker: 'Avery' };
 const SECOND_SHIFT: Shift = { name: 'Second', department: 'Paint', startTime: '14:00', endTime: '22:00', worker: 'Blake' };
 
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
+
 async function fixture(shifts: Shift[] = [DAY_SHIFT]) {
   const t = convexTest(schema, modules);
-  const ids = await t.run(async (ctx) => {
+  const ids = await joinedAt('2026-01-01T00:00:00Z', () => t.run(async (ctx) => {
     const createdAt = '2026-08-01T00:00:00Z';
     const userId = await ctx.db.insert('users', { email: 'supervisor@example.com' });
     await ctx.db.insert('portalMembers', { userId, role: 'admin', active: true, createdAt });
@@ -38,7 +47,7 @@ async function fixture(shifts: Shift[] = [DAY_SHIFT]) {
       });
     }
     return { userId, workers };
-  });
+  }));
   return { t, admin: t.withIdentity({ subject: ids.userId }), workers: ids.workers };
 }
 

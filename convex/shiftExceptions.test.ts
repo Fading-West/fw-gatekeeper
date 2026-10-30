@@ -11,9 +11,18 @@ const modules = import.meta.glob("./**/*.ts");
 // Thursday, so a Mon-Fri schedule applies. Central Daylight Time (UTC-5).
 const DATE = "2026-09-03";
 
+// convex-test stamps _creationTime from Date.now(); workers join the roster at
+// `timestamp`, before the evaluated shift starts (see docs/roster-membership.md).
+async function joinedAt<T>(timestamp: string, seed: () => Promise<T>) {
+  const now = vi.isFakeTimers() ? Date.now() : null;
+  if (now === null) vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(timestamp));
+  try { return await seed(); } finally { if (now === null) vi.useRealTimers(); else vi.setSystemTime(now); }
+}
+
 async function seedShift() {
   const t = convexTest(schema, modules);
-  const adminId = await t.run(async (ctx) => {
+  const adminId = await joinedAt(`${DATE}T00:00:00Z`, () => t.run(async (ctx) => {
     const now = new Date().toISOString();
     const userId = await ctx.db.insert("users", { email: "admin@example.com" });
     await ctx.db.insert("portalMembers", { userId, role: "admin", active: true, createdAt: now });
@@ -39,7 +48,7 @@ async function seedShift() {
       synced: true,
     });
     return userId;
-  });
+  }));
   return t.withIdentity({ subject: adminId });
 }
 

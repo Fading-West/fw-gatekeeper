@@ -139,4 +139,10 @@ assert.match(exceptions, /exception\.type === "inactive_worker_scan"[\s\S]*actio
 assert.match(page, /inactive_worker_scan:\s*'Deactivated worker scan'/, 'Exceptions page should label deactivated-worker scans.');
 assert.match(dashboard, /inactive_worker_scan:\s*'Deactivated worker scan'/, 'Dashboard exception labels should include deactivated-worker scans.');
 
+assert.match(exceptions, /import \{ createRosterMembership \} from "\.\/rosterMembership"/, 'Shift exceptions must judge dates with the shared roster membership rule.');
+assert.match(exceptions, /if \(membership === "omit"\) continue;/, 'Workers who joined after the shift start without evidence on the date must be omitted.');
+assert.match(exceptions, /if \(arrivalChecks && schedule && !firstIn/, 'Missing arrivals must skip workers who joined after the shift start.');
+assert.match(exceptions, /if \(arrivalChecks && schedule && firstIn\)/, 'Late arrivals must skip workers who joined after the shift start.');
+assert.match(exceptions, /activeWorkerIds: new Set\(workers\.map/, 'Deactivated-worker scans must still compare against every active worker.');
+
 console.log('Shift exceptions contract passed');

@@ -8,7 +8,8 @@ const modules = import.meta.glob("./**/*.ts");
 
 async function fixture(date: string, startTime: string, timestamp: string) {
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date(`${date}T09:00:00Z`));
+  // convex-test stamps _creationTime from Date.now(); join before the shift.
+  vi.setSystemTime(new Date(`${date}T00:00:00Z`));
   const t = convexTest(schema, modules);
   const { userId, workerId } = await t.run(async (ctx) => {
     const createdAt = "2026-01-01T00:00:00Z";
@@ -24,6 +25,7 @@ async function fixture(date: string, startTime: string, timestamp: string) {
     await ctx.db.insert("attendance", { workerId: String(workerId), eventType: "clock_in", timestamp, synced: true });
     return { userId, workerId: String(workerId) };
   });
+  vi.setSystemTime(new Date(`${date}T09:00:00Z`));
   return { admin: t.withIdentity({ subject: userId }), workerId };
 }
 
