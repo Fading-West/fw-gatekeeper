@@ -13,7 +13,7 @@ import {
 } from "./localDate";
 import { assertPortalRole } from "./access";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
-import { listCorrectionReversals, listCorrectionsByDateRange, scanAttendanceByTimestamp } from "./attendanceReads";
+import { listCorrectionReversals, listCorrectionsByDateRange, listReversalsPerCorrection, scanAttendanceByTimestamp } from "./attendanceReads";
 
 // Keep the instant separate from the factory wall time used by schedule rules
 // and API display. In a repeated DST hour, wall time alone reverses scans.
@@ -65,7 +65,8 @@ export async function listEffectiveAttendanceByTimestampRange(
           .collect()
       : listCorrectionsByDateRange(ctx, date),
   ]);
-  return applyAttendanceCorrections(rawRecords, await listActiveCorrections(ctx, corrections));
+  const reversals = await (workerId ? listReversalsPerCorrection : listCorrectionReversals)(ctx, corrections);
+  return applyAttendanceCorrections(rawRecords, listActiveCorrections(corrections, reversals));
 }
 
 /**
@@ -89,7 +90,7 @@ export async function listEffectiveAttendanceByFactoryDates(
       .map(range => scanAttendanceByTimestamp(ctx, range))),
     listCorrectionsByDateRange(ctx, startDate, endDate),
   ]);
-  const activeCorrections = await listActiveCorrections(ctx, corrections);
+  const activeCorrections = listActiveCorrections(corrections, await listCorrectionReversals(ctx, corrections));
   const sortKey = createRecognitionTimestampSortKey();
   const rowsByDate = new Map(dates.map(date => [date, new Map<string, any>()]));
   for (const row of ranges.flat()) {
@@ -102,18 +103,12 @@ export async function listEffectiveAttendanceByFactoryDates(
   )]));
 }
 
-async function listActiveCorrections(ctx: any, corrections: any[]) {
-  const reversed: boolean[] = [];
-  const reversalBatchSize = 20;
-  for (let start = 0; start < corrections.length; start += reversalBatchSize) {
-    const batch = corrections.slice(start, start + reversalBatchSize);
-    reversed.push(...await Promise.all(batch.map(async (correction: any) => {
-      const reversals = await listCorrectionReversals(ctx, correction._id);
-      if (reversals.length > 1) throw new Error("Attendance correction has more than one reversal.");
-      return reversals.length === 1;
-    })));
-  }
-  return corrections.filter((_: any, index: number) => !reversed[index]);
+function listActiveCorrections(corrections: any[], reversals: Map<string, any[]>) {
+  return corrections.filter((correction: any) => {
+    const rows = reversals.get(String(correction._id))!;
+    if (rows.length > 1) throw new Error("Attendance correction has more than one reversal.");
+    return rows.length === 0;
+  });
 }
 
 function applyAttendanceCorrections(rawRecords: any[], activeCorrections: any[]) {

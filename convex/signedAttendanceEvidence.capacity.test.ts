@@ -116,3 +116,85 @@ it('reopens and re-signs a busy day with many reversed corrections inside transa
   expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 2000, corrections: 1900, reversals: 1900 });
   expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
 }, 180_000);
+
+it('loads, reopens and re-signs a day with 5,000 unreversed corrections inside transaction limits', async () => {
+  const { t, actor, complete, userId } = await setup();
+  await t.run(ctx => ctx.db.insert('schedules', { name: 'Day', days: '[0,1,2,3,4,5,6]',
+    startTime: '08:00', endTime: '17:00', department: 'QA', active: true, createdAt: date }));
+  const workerIds: string[] = [];
+  for (let start = 0; start < 1000; start += 100) {
+    await t.run(async ctx => {
+      for (let i = start; i < start + 100; i++) {
+        const workerId = await ctx.db.insert('workers', { name: `Worker ${i}`, department: 'QA', active: true, enrolledAt: date });
+        workerIds.push(workerId);
+        await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', synced: true, timestamp: `${date}T08:00:00` });
+        await ctx.db.insert('attendance', { workerId, eventType: 'clock_out', synced: true, timestamp: `${date}T17:00:00` });
+      }
+    });
+  }
+  await complete();
+  // Each correction formerly cost its own reversal lookup: 5,000 index ranges.
+  for (let start = 0; start < 5000; start += 500) {
+    await t.run(async ctx => {
+      for (let i = start; i < start + 500; i++) {
+        await ctx.db.insert('attendanceCorrections', { date, workerId: workerIds[i % workerIds.length], action: 'add_clock_out', eventType: 'clock_out',
+          correctedTimestamp: `${date}T17:00:00`, reason: 'Synthetic', actorUserId: userId, createdAt: date, updatedAt: date });
+      }
+    });
+  }
+  // Reopen first, without a prior load, so each path is exercised on its own.
+  const signed = await t.run(ctx => ctx.db.query('shiftCloseouts').withIndex('by_date', q => q.eq('date', date)).first());
+  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'capacity-reopen', expectedRevision: signed!.revision ?? null })).status).toBe('reopened');
+  const { id } = await complete();
+  expect((await t.run(ctx => ctx.db.get(id)))?.signedAttendanceEvidence).toMatchObject({ raw_punches: 2000, corrections: 5000, reversals: 0 });
+  expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison.status).toBe('unchanged');
+  await t.run(ctx => ctx.db.insert('attendanceCorrections', { date, workerId: workerIds[0], action: 'add_clock_out', eventType: 'clock_out',
+    correctedTimestamp: `${date}T17:00:00`, reason: 'Synthetic', actorUserId: userId, createdAt: date, updatedAt: date }));
+  expect((await actor.query(api.shiftCloseouts.get, { date })).attendance_comparison).toMatchObject({
+    status: 'changed', current: { raw_punches: 2000, corrections: 5001, reversals: 0 },
+  });
+}, 180_000);
+
+// Valid reversal reasons up to 1,000 characters: 3 bytes each puts 2,500 reversals
+// near half of Convex's 16 MiB read limit, so reading them twice would fail.
+const longReason = '\u754c'.repeat(1000);
+
+it('reads a date\'s reversals once when the closeout and neighboring-date ranges overlap', async () => {
+  const { t, actor, complete, userId, workerId } = await setup();
+  const { id } = await complete();
+  for (let start = 0; start < 2500; start += 250) {
+    await t.run(async ctx => {
+      for (let i = start; i < start + 250; i++) {
+        const correctionId = await ctx.db.insert('attendanceCorrections', { date, workerId, action: 'add_clock_out', eventType: 'clock_out',
+          correctedTimestamp: `${date}T17:00:00`, reason: 'Synthetic', actorUserId: userId, createdAt: date, updatedAt: date });
+        await ctx.db.insert('attendanceCorrectionReversals', { correctionId, date, workerId, reason: longReason, actorUserId: userId, createdAt: date, requestId: `long-${i}` });
+      }
+    });
+  }
+  // The exception builder's previous..next window now spans two dates with corrections.
+  await t.run(ctx => ctx.db.insert('attendanceCorrections', { date: '2026-09-03', workerId, action: 'add_clock_out', eventType: 'clock_out',
+    correctedTimestamp: '2026-09-03T17:00:00', reason: 'Synthetic', actorUserId: userId, createdAt: date, updatedAt: date }));
+  // Loads; this much evidence is past the comparison's canonical size cap, so it reports unknown.
+  expect((await actor.query(api.shiftCloseouts.get, { date })).closeout?.status).toBe('completed');
+  const revision = (await t.run(ctx => ctx.db.get(id)))!.revision ?? null;
+  expect((await actor.mutation(api.shiftCloseouts.save, { date, action: 'reopen', requestId: 'long-reopen', expectedRevision: revision })).status).toBe('reopened');
+}, 180_000);
+
+it('reads only the selected worker\'s reversals for worker-filtered attendance', async () => {
+  const { t, actor, userId, workerId } = await setup();
+  const otherId = await t.run(async ctx => {
+    await ctx.db.insert('attendanceCorrections', { date, workerId, action: 'add_clock_out', eventType: 'clock_out',
+      correctedTimestamp: `${date}T17:00:00`, reason: 'Selected', actorUserId: userId, createdAt: date, updatedAt: date });
+    return ctx.db.insert('workers', { name: 'Other', department: 'QA', active: false, enrolledAt: date });
+  });
+  for (let start = 0; start < 6000; start += 500) {
+    await t.run(async ctx => {
+      for (let i = start; i < start + 500; i++) {
+        const correctionId = await ctx.db.insert('attendanceCorrections', { date, workerId: otherId, action: 'add_clock_out', eventType: 'clock_out',
+          correctedTimestamp: `${date}T17:00:00`, reason: 'Other', actorUserId: userId, createdAt: date, updatedAt: date });
+        await ctx.db.insert('attendanceCorrectionReversals', { correctionId, date, workerId: otherId, reason: longReason, actorUserId: userId, createdAt: date, requestId: `other-${i}` });
+      }
+    });
+  }
+  expect(await actor.query(api.attendance.list, { date, workerId })).toHaveLength(1);
+}, 180_000);

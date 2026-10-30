@@ -180,7 +180,9 @@ export default defineSchema({
     createdAt: v.string(),
   })
     .index("by_correctionId", ["correctionId"])
-    .index("by_requestId", ["requestId"]),
+    .index("by_requestId", ["requestId"])
+    // `reverse` copies the correction's date, which never changes.
+    .index("by_date", ["date"]),
 
   recognitionAttempts: defineTable({
     timestamp: v.string(),
