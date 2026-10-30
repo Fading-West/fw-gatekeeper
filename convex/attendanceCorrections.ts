@@ -4,8 +4,10 @@ import { assertPortalRole } from "./access";
 import { timestampBelongsToFactoryLocalDate } from "./localDate";
 import { isValidAttendanceTimestamp } from "./attendanceValidation";
 import { buildShiftExceptions } from "./shiftExceptions";
+import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
 
 const nullableString = v.union(v.string(), v.null());
+const FUTURE_CORRECTION_TOLERANCE_MS = 60_000;
 
 const attendanceCorrectionResult = v.object({
   id: v.string(),
@@ -200,6 +202,11 @@ export const create = mutation({
       throw new ConvexError({ code: "INVALID_CORRECTION_TIMESTAMP", message: "correctedTimestamp must be a valid ISO date and time, with optional UTC offset." });
     } else if (!timestampBelongsToFactoryLocalDate(correctedTimestamp, args.date)) {
       throw new ConvexError({ code: "INVALID_CORRECTION_TIMESTAMP", message: "correctedTimestamp must be on the correction date." });
+    } else if (Date.parse(createRecognitionTimestampSortKey()(correctedTimestamp).slice(0, 19) + "Z") > Date.now() + FUTURE_CORRECTION_TOLERANCE_MS) {
+      // Valid timestamps always resolve here: spring-forward gap times were
+      // rejected above. The tolerance absorbs minute-precision input and
+      // browser clocks running slightly ahead of the server.
+      throw new ConvexError({ code: "INVALID_CORRECTION_TIMESTAMP", message: "correctedTimestamp is in the future. Corrections can only record attendance that already happened." });
     }
 
     const now = new Date().toISOString();
