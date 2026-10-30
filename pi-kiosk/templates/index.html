@@ -871,6 +871,16 @@
                         fetchStatus();
                         return;
                     }
+                    if (response.status === 429) {
+                        const data = await response.json().catch(() => null);
+                        // Canceling or locking may retire this attempt while the body is read.
+                        if (generation !== supervisorUnlockGeneration || version !== supervisorStateVersion || supervisorLockPending || supervisorLockNeeded) return;
+                        const seconds = data?.retry_after_seconds;
+                        supervisorError.textContent = Number.isSafeInteger(seconds) && seconds > 0
+                            ? `Too many failed attempts. Try again in ${seconds} second${seconds === 1 ? "" : "s"}.`
+                            : "Too many failed attempts. Wait before trying again.";
+                        return;
+                    }
                     supervisorError.textContent = "Supervisor authentication failed.";
                     supervisorPin.select();
                     return;
