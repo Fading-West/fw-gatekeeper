@@ -7,7 +7,7 @@ import { hasValidPortalSession } from '@/lib/portal-auth';
 import { unauthorizedApiResponse } from '@/lib/auth';
 import { ConvexError } from 'convex/values';
 import { systemHealthCache } from '@/lib/system-health-cache';
-import { knownApiErrorResponse } from '@/lib/api-errors';
+import { knownApiErrorResponse, logApiError } from '@/lib/api-errors';
 
 async function requireAdmin(req: NextRequest) {
   return (await hasValidPortalSession(req, ['admin'])) ? null : unauthorizedApiResponse();
@@ -22,14 +22,52 @@ async function requireDashboardWorkerRead(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const id = req.nextUrl.searchParams.get('id');
-  if (id) {
-    const unauthorized = await requireWorkerRead(req);
+  try {
+    const id = req.nextUrl.searchParams.get('id');
+    if (id) {
+      const unauthorized = await requireWorkerRead(req);
+      if (unauthorized) return unauthorized;
+
+      const worker = await convex.query(api.workers.get, { id: id as any });
+      if (!worker) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      return NextResponse.json({
+        id: worker.id,
+        name: worker.name,
+        employee_id: worker.employee_id,
+        identity_revision: worker.identity_revision,
+        department: worker.department,
+        photo_url: worker.photo_url,
+        has_face_encoding: worker.has_face_encoding,
+        encoding_status: worker.encoding_status,
+        enrolled_at: worker.enrolled_at,
+        active: worker.active,
+      });
+    }
+
+    const dashboardScope = req.nextUrl.searchParams.get('scope') === 'dashboard';
+    if (dashboardScope) {
+      const unauthorized = await requireDashboardWorkerRead(req);
+      if (unauthorized) return unauthorized;
+
+      const workers = await convex.query(api.workers.list, { includeEncodings: false });
+      return NextResponse.json(workers.map((worker: any) => ({
+        id: worker.id,
+        name: worker.name,
+        employee_id: worker.employee_id,
+        department: worker.department,
+        photo_url: worker.photo_url,
+        has_face_encoding: worker.has_face_encoding,
+        encoding_status: worker.encoding_status,
+        enrolled_at: worker.enrolled_at,
+        active: worker.active,
+      })));
+    }
+
+    const unauthorized = await requireAdmin(req);
     if (unauthorized) return unauthorized;
 
-    const worker = await convex.query(api.workers.get, { id: id as any });
-    if (!worker) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    return NextResponse.json({
+    const workers = await convex.query(api.workers.list, { includeEncodings: false, active: req.nextUrl.searchParams.get('active') !== 'false' });
+    return NextResponse.json(workers.map((worker: any) => ({
       id: worker.id,
       name: worker.name,
       employee_id: worker.employee_id,
@@ -40,44 +78,11 @@ export async function GET(req: NextRequest) {
       encoding_status: worker.encoding_status,
       enrolled_at: worker.enrolled_at,
       active: worker.active,
-    });
-  }
-
-  const dashboardScope = req.nextUrl.searchParams.get('scope') === 'dashboard';
-  if (dashboardScope) {
-    const unauthorized = await requireDashboardWorkerRead(req);
-    if (unauthorized) return unauthorized;
-
-    const workers = await convex.query(api.workers.list, { includeEncodings: false });
-    return NextResponse.json(workers.map((worker: any) => ({
-      id: worker.id,
-      name: worker.name,
-      employee_id: worker.employee_id,
-      department: worker.department,
-      photo_url: worker.photo_url,
-      has_face_encoding: worker.has_face_encoding,
-      encoding_status: worker.encoding_status,
-      enrolled_at: worker.enrolled_at,
-      active: worker.active,
     })));
+  } catch (error) {
+    logApiError('Workers GET error:', error);
+    return NextResponse.json({ error: 'Failed to load workers' }, { status: 500 });
   }
-
-  const unauthorized = await requireAdmin(req);
-  if (unauthorized) return unauthorized;
-
-  const workers = await convex.query(api.workers.list, { includeEncodings: false, active: req.nextUrl.searchParams.get('active') !== 'false' });
-  return NextResponse.json(workers.map((worker: any) => ({
-    id: worker.id,
-    name: worker.name,
-    employee_id: worker.employee_id,
-    identity_revision: worker.identity_revision,
-    department: worker.department,
-    photo_url: worker.photo_url,
-    has_face_encoding: worker.has_face_encoding,
-    encoding_status: worker.encoding_status,
-    enrolled_at: worker.enrolled_at,
-    active: worker.active,
-  })));
 }
 
 export async function PATCH(req: NextRequest) {
