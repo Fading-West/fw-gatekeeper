@@ -368,8 +368,8 @@ function buildSuggestedResolution(exception: Omit<ShiftException, "suggested_res
   };
 }
 
-// Arrival checks read only the date's clock-ins and schedule, so their reviews bind
-// to that evidence: a later clock-out or next-day scan must not reopen them.
+// Bind reviews to relevant evidence. Arrival checks read the date's clock-ins;
+// missing exits cannot be affected by next-day scans past the pairing horizon.
 // source_fingerprint keeps the full pairing window for correction stale checks.
 const reviewFingerprints = new WeakMap<ShiftException, string>();
 export function getReviewFingerprint(exception: ShiftException): string {
@@ -849,12 +849,20 @@ export async function buildShiftExceptions(ctx: any, date: string) {
         attendanceFingerprints.set(sourceKey, source_fingerprint);
       }
     }
-    if (exception.type !== "late_arrival" && exception.type !== "missing_arrival") {
+    if (exception.type !== "late_arrival" && exception.type !== "missing_arrival" && exception.type !== "missing_clock_out") {
       return withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key));
     }
+    const dayEvents = eventsByWorker.get(exception.worker_id || "") ?? [];
+    const lastEvent = dayEvents[dayEvents.length - 1];
+    const reviewEvents = exception.type === "missing_clock_out"
+      ? (pairingEventsByWorker.get(exception.worker_id || "") ?? []).filter(event =>
+          // Keep the full prior/current date evidence. Only next-date events
+          // beyond the last entry's maximum shift duration are irrelevant.
+          getFactoryLocalDateKey(event.timestamp) !== nextDate || shiftClock.isPlausibleShift(lastEvent, event))
+      : dayEvents.filter(event => event.eventType === "clock_in");
     const reviewFingerprint = buildExceptionSourceFingerprint({
       date: exception.date, type: exception.type, workerId: exception.worker_id,
-      attendanceEvents: (eventsByWorker.get(exception.worker_id || "") ?? []).filter(event => event.eventType === "clock_in"),
+      attendanceEvents: reviewEvents,
       schedule: schedulesByWorker.get(exception.worker_id || "") ?? null,
     });
     const reviewed = withReview({ ...exception, source_fingerprint }, reviewsByKey.get(exception.key), reviewFingerprint);
