@@ -47,6 +47,7 @@ the dashboard does.
 | `offline` | `lastSync` is older than 60 minutes | `stale` is never reported alongside `offline` for the same kiosk. |
 | `never_synced` | The kiosk has no `lastSync` at all | Usually a freshly registered kiosk whose `KIOSK_ID` does not match. |
 | `device_fault` | `health.cameraOk === false`, `health.modelOk === false`, or `health.degradedReason` is one of `camera_error`, `model_error`, `encoding_mismatch`, `no_workers_synced`, `liveness_required_unavailable` | These are the faults that block every scan. `liveness_unavailable` is shown on the dashboard but does not page anyone. |
+| `roster_unconfirmed` | An online device-credential kiosk has reused an unacknowledged roster receipt for more than 15 minutes since its first retry | The timer starts on first reuse, never issuance. Fires even when no roster changes are waiting. Offline, revoked, or invalid retry evidence holds an open episode without reminders or recovery; only acknowledgement clears it. A different retry starts a new episode. |
 | `queue_backlog` | `health.queuedLogs >= 50` | The kiosk is scanning but cannot upload attendance.  Closeout separately requires acknowledgement for any positive count; see [attendance-queue-closeout.md](attendance-queue-closeout.md). |
 
 Inactive kiosks (`active: false`) are ignored.
@@ -61,7 +62,8 @@ Inactive kiosks (`active: false`) are ignored.
   subject names the most severe one, e.g. `[FW Gatekeeper] Main Entry offline for 1h 12m (+1 more)`.
 - Alert episodes are tracked in the `alertState` table (`kioskId`, `condition`,
   `firstSeenAt`, `lastNotifiedAt`, `resolvedAt`). For `offline` and `stale`, `firstSeenAt`
-  is the kiosk's last sync, so recovery notices report the whole outage. Rows are kept
+  is the kiosk's last sync, so recovery notices report the whole outage. For
+  `roster_unconfirmed`, it is the receipt's first retry (`retriedAt`). Rows are kept
   after resolution as a small audit trail; a new episode creates a new row.
 
 If a delivery attempt fails, the condition is not marked as notified, so it is retried

@@ -10,7 +10,7 @@ afterEach(() => vi.useRealTimers());
 
 async function setup(firstClockIn: string | null) {
   vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date(`${date}T15:00:00Z`)); // 10:00 factory time
+  vi.setSystemTime(new Date('2026-09-02T12:00:00Z')); // Worker joined before the tested shift.
   const t = convexTest(schema, modules);
   const ids = await t.run(async ctx => {
     const userId = await ctx.db.insert('users', { email: 'arrival-review@example.test' });
@@ -20,6 +20,7 @@ async function setup(firstClockIn: string | null) {
     if (firstClockIn) await ctx.db.insert('attendance', { workerId, eventType: 'clock_in', timestamp: `${date}T${firstClockIn}:00`, synced: true });
     return { userId, workerId };
   });
+  vi.setSystemTime(new Date(`${date}T15:00:00Z`)); // 10:00 factory time
   const admin = t.withIdentity({ subject: ids.userId });
   const find = async (type: string) => (await admin.query(api.shiftExceptions.summary, { date })).exceptions.find(row => row.type === type)!;
   const review = async (type: string, note: string) => {
