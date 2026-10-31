@@ -944,15 +944,23 @@
                 else if (link.reconnectFeed || !cameraFeed.isConnected()) cameraFeed.connect();
                 const observedBoot = data.health?.supervisor_boot_nonce;
                 supervisorBootNonce = typeof observedBoot === "string" && /^[a-f0-9]{32}$/.test(observedBoot) ? observedBoot : null;
-                const msg = statusMessageFromState(
+                const stalled = (data.health?.degraded_reason || "").split(",")
+                    .some(reason => ["camera_stalled", "recognition_stalled"].includes(reason));
+                const successAge = (Date.parse(data.server_time) - Date.parse(data.timestamp)) / 1000;
+                const freshSuccess = data.state === "CLOCKED_IN" && successAge >= 0
+                    && successAge < data.display_time_success_sec;
+                const displayState = stalled && !freshSuccess ? "SERVICE_DEGRADED" : data.state;
+                const msg = stalled && !freshSuccess
+                    ? "Scanner not responding - please ask your supervisor"
+                    : statusMessageFromState(
                     data.state,
                     data.message,
                     data.worker_name,
                     data.action
                 );
                 statusText.textContent = msg;
-                applyStatusState(data.state);
-                stateValue.textContent = `State: ${data.state || "IDLE"}`;
+                applyStatusState(displayState);
+                stateValue.textContent = `State: ${displayState || "IDLE"}`;
                 workerIdValue.textContent = `ID: ${data.worker_id || "--"}`;
                 earValue.textContent = `EAR: ${Number(data.ear || 0).toFixed(2)}`;
                 knownValue.textContent = `Workers: ${data.known_workers || 0}`;
