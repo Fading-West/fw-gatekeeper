@@ -149,7 +149,7 @@ describe('enrollment lifecycle', () => {
     await act(async () => tree.root.findByType('video').props.onLoadedData());
     expect(button('Start Capture').props.disabled).toBe(true);
     expect(tree.root.findAllByType('input').find(node => node.props.id === 'biometric-consent')!.props.checked).toBe(false);
-    await act(async () => oldTrack.dispatchEvent(new Event('ended')));
+    await act(async () => { oldTrack.dispatchEvent(new Event('ended')); });
     await confirmConsent();
     await click('Start Capture');
     await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
