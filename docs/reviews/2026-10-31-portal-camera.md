@@ -33,3 +33,10 @@ This tests a standards-based synthetic disconnection, not a physical USB camera.
 
 Scope: biometric capture integrity. No auth policy, payroll calculation, schema
 migration or deployment configuration change. No merge or deployment.
+
+Independent Sol high round 1 at `4194e315` requested one should-fix: a
+getUserMedia grant already ended at delivery retired its request before finally
+cleared the camera-opening state. Reproduced locally with a failing retry test.
+Disconnect handling now explicitly clears that state; the new regression checks
+that Try Again can acquire a fresh stream and requires consent again. No audit
+findings were declined. Round 2 is required at the updated head.

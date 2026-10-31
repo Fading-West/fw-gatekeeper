@@ -114,6 +114,21 @@ describe('enrollment lifecycle', () => {
     expect(label(tree.toJSON())).not.toContain('photos captured');
   });
 
+  it('allows a fresh retry when the camera grant has already ended', async () => {
+    track.readyState = 'ended';
+    await click('Continue to Camera');
+    expect(label(tree.toJSON())).toContain('camera stopped providing images');
+    await click('Try Again');
+    expect(button('Continue to Camera')).toBeDefined();
+    expect(button('Continue to Camera').props.disabled).toBe(false);
+    track = Object.assign(new EventTarget(), { kind: 'video', readyState: 'live', stop });
+    getUserMedia.mockResolvedValueOnce({ getTracks: () => [track], getVideoTracks: () => [track] });
+    await click('Continue to Camera');
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(tree.root.findAllByType('video')).toHaveLength(1);
+    expect(tree.root.findAllByType('input').find(node => node.props.id === 'biometric-consent')!.props.checked).toBe(false);
+  });
+
   it('checks the live track even before its ended event is delivered', async () => {
     await readyCamera();
     await click('Start Capture');

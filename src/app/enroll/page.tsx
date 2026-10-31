@@ -211,6 +211,7 @@ function EnrollPageContent() {
 
   const cameraDisconnected = useCallback(() => {
     stopCamera();
+    setCameraOpening(false);
     previewReadyRef.current = false;
     consentRef.current = false;
     setCameraReady(false);
