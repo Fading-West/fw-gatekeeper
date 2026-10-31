@@ -10,6 +10,7 @@ vi.mock('next/link', () => ({ default: ({ children, ...props }: any) => <a {...p
 
 let tree: ReactTestRenderer;
 let stop: ReturnType<typeof vi.fn>;
+let track: EventTarget & { kind: string; readyState: string; stop: ReturnType<typeof vi.fn> };
 let getUserMedia: ReturnType<typeof vi.fn>;
 let video: { readyState: number; videoWidth: number; videoHeight: number; srcObject: unknown };
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -21,7 +22,8 @@ beforeEach(async () => {
   mocks.role = 'admin';
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
   stop = vi.fn();
-  getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop }] });
+  track = Object.assign(new EventTarget(), { kind: 'video', readyState: 'live', stop });
+  getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [track], getVideoTracks: () => [track] });
   video = { readyState: 0, videoWidth: 0, videoHeight: 0, srcObject: null };
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } });
   vi.stubGlobal('document', { createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage: vi.fn() }), toDataURL: () => 'data:image/jpeg;base64,photo' }) });
@@ -92,6 +94,51 @@ describe('enrollment lifecycle', () => {
     await act(async () => tree.root.findByType('video').props.onLoadedData());
     expect(tree.root.findAllByType('input').find((node) => node.props.id === 'biometric-consent')!.props.checked).toBe(false);
     expect(button('Start Capture').props.disabled).toBe(true);
+  });
+
+  it.each([0, 500])('rejects a disconnected camera retaining its final video frame at %sms', async (delay) => {
+    await readyCamera();
+    if (delay) {
+      await click('Start Capture');
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
+    }
+    await act(async () => {
+      track.readyState = 'ended';
+      track.dispatchEvent(new Event('ended'));
+      await vi.advanceTimersByTimeAsync(9000);
+    });
+    expect(video.readyState).toBe(2); // Browsers can retain HAVE_CURRENT_DATA after ending.
+    expect(label(tree.toJSON())).toContain('camera stopped providing images');
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(label(tree.toJSON())).not.toContain('photos captured');
+  });
+
+  it('checks the live track even before its ended event is delivered', async () => {
+    await readyCamera();
+    await click('Start Capture');
+    track.readyState = 'ended';
+    await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/enroll')).toBe(false);
+    expect(label(tree.toJSON())).toContain('camera stopped providing images');
+  });
+
+  it('requires a new preview and consent after disconnect and ignores the old track', async () => {
+    await readyCamera();
+    const oldTrack = track;
+    await act(async () => { oldTrack.readyState = 'ended'; oldTrack.dispatchEvent(new Event('ended')); });
+    await click('Try Again');
+    track = Object.assign(new EventTarget(), { kind: 'video', readyState: 'live', stop });
+    getUserMedia.mockResolvedValueOnce({ getTracks: () => [track], getVideoTracks: () => [track] });
+    await click('Continue to Camera');
+    await act(async () => tree.root.findByType('video').props.onLoadedData());
+    expect(button('Start Capture').props.disabled).toBe(true);
+    expect(tree.root.findAllByType('input').find(node => node.props.id === 'biometric-consent')!.props.checked).toBe(false);
+    await act(async () => oldTrack.dispatchEvent(new Event('ended')));
+    await confirmConsent();
+    await click('Start Capture');
+    await act(async () => { await vi.advanceTimersByTimeAsync(3500); });
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/enroll')).toHaveLength(1);
   });
 
   it('recovers if video stops during capture instead of hanging or submitting blanks', async () => {
