@@ -15,7 +15,7 @@ it('loads the current identity for directory-selected re-enrollment before openi
   const directory = { suggestions: [{ name: 'Directory name', employeeId: 'S-1', department: 'Old department', status: 'enrolled', workerId: 'synthetic-worker' }], summary: { total: 1, enrolled: 1, remaining: 0, invalid: 0 } };
   const requests = vi.fn((url: string, _options?: RequestInit) => url.startsWith('/api/workers?id=') ? current : Promise.resolve(Response.json(url === '/api/enroll' ? { photosCount: 3 } : directory)));
   vi.stubGlobal('fetch', requests);
-  const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
+  const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }], getVideoTracks: () => [Object.assign(new EventTarget(), { readyState: 'live' })] });
   const video = { readyState: 2, videoWidth: 1280, videoHeight: 720, srcObject: null };
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } });
   vi.stubGlobal('document', { createElement: () => ({ getContext: () => ({ drawImage: vi.fn() }), toDataURL: () => 'data:image/jpeg;base64,photo' }) });
@@ -56,7 +56,7 @@ it('recovers an identity conflict through Try Again and captures against the new
     }
     return Promise.resolve(Response.json(directory));
   }));
-  const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
+  const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }], getVideoTracks: () => [Object.assign(new EventTarget(), { readyState: 'live' })] });
   const video = { readyState: 2, videoWidth: 1280, videoHeight: 720, srcObject: null };
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } });
   vi.stubGlobal('document', { createElement: () => ({ getContext: () => ({ drawImage: vi.fn() }), toDataURL: () => 'data:image/jpeg;base64,photo' }) });

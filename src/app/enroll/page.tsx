@@ -84,6 +84,7 @@ function EnrollPageContent() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const cameraEndedCleanupRef = useRef<(() => void) | null>(null);
   const captureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nameRef = useRef(name);
   const employeeIdRef = useRef(employeeId);
@@ -200,11 +201,26 @@ function EnrollPageContent() {
       clearTimeout(captureTimerRef.current);
       captureTimerRef.current = null;
     }
+    cameraEndedCleanupRef.current?.();
+    cameraEndedCleanupRef.current = null;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
   }, []);
+
+  const cameraDisconnected = useCallback(() => {
+    stopCamera();
+    previewReadyRef.current = false;
+    consentRef.current = false;
+    setCameraReady(false);
+    setConsentConfirmed(false);
+    setConsentStartedAt(null);
+    setPhotos([]);
+    setCaptureCount(0);
+    setErrorMsg('The camera stopped providing images. Reconnect it and try again.');
+    setStep('error');
+  }, [stopCamera]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -292,6 +308,17 @@ function EnrollPageContent() {
         return;
       }
       streamRef.current = stream;
+      const tracks = stream.getVideoTracks();
+      const onEnded = () => {
+        // An old stream must never retire a replacement preview.
+        if (streamRef.current === stream) cameraDisconnected();
+      };
+      tracks.forEach(track => track.addEventListener('ended', onEnded));
+      cameraEndedCleanupRef.current = () => tracks.forEach(track => track.removeEventListener('ended', onEnded));
+      if (!tracks.some(track => track.readyState === 'live')) {
+        cameraDisconnected();
+        return;
+      }
       setStep('camera');
     } catch {
       if (!mountedRef.current || !accessRef.current || request !== cameraRequestRef.current) return;
@@ -314,7 +341,7 @@ function EnrollPageContent() {
   }, [step]);
 
   const captureFrame = useCallback((): string | null => {
-    if (!accessRef.current) return null;
+    if (!accessRef.current || !streamRef.current?.getVideoTracks().some(track => track.readyState === 'live')) return null;
     const video = videoRef.current;
     if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
     const canvas = document.createElement('canvas');
@@ -420,6 +447,11 @@ function EnrollPageContent() {
         captured.length = 0;
         return;
       }
+      if (!streamRef.current?.getVideoTracks().some(track => track.readyState === 'live')) {
+        captured.length = 0;
+        cameraDisconnected();
+        return;
+      }
       attempts += 1;
       let frame: string | null = null;
       try { frame = captureFrame(); } catch { /* Retry a transient video frame failure. */ }
@@ -447,7 +479,7 @@ function EnrollPageContent() {
     };
 
     captureTimerRef.current = setTimeout(doCapture, 500);
-  }, [captureAccessGeneration, capturePreviewGeneration, captureFrame, consentStartedAt, stopCamera]);
+  }, [captureAccessGeneration, capturePreviewGeneration, captureFrame, consentStartedAt, stopCamera, cameraDisconnected]);
 
   const enrollNext = () => {
     identityRevisionRef.current = undefined;
