@@ -89,6 +89,8 @@ export const list = query({
     location: v.string(),
     last_sync: v.union(v.string(), v.null()),
     roster_applied_at: v.union(v.string(), v.null()),
+    roster_retry_since: v.union(v.string(), v.null()),
+    roster_changes_waiting: v.union(v.boolean(), v.null()),
     purge_pending: v.boolean(),
     health: healthSerialized,
     attendance_queue: attendanceQueueSerialized,
@@ -110,7 +112,16 @@ export const list = query({
         q.eq("targetTable", "workers").eq("action", "workers.purgeBiometrics"))
       .order("desc").first();
     const lastPurgeSequence = counter?.lastPurgeSequence ?? (legacyPurge ? 0 : null);
-    return kiosks.map(k => serializeKiosk(k, lastPurgeSequence));
+    return Promise.all(kiosks.map(async k => {
+      const pending = k.credentialHash ? await ctx.db.query("kioskRosterReceipts")
+        .withIndex("by_kiosk", q => q.eq("kioskId", k._id)).first() : null;
+      return {
+        ...serializeKiosk(k, lastPurgeSequence),
+        roster_retry_since: pending?.retriedAt ?? null,
+        roster_changes_waiting: k.rosterAppliedSequence === undefined ? null
+          : (counter?.value ?? 0) > k.rosterAppliedSequence,
+      };
+    }));
   },
 });
 
@@ -316,7 +327,12 @@ export const issueRosterReceiptFromHttp = internalMutation({
     // retry it with a full roster and keep its ack untrusted for confirmation.
     const since = kiosk.rosterAppliedSequence === undefined || (pending !== null && pending.rosterSequence === undefined)
       ? null : `seq:${kiosk.rosterAppliedSequence}`;
-    if (pending) return { receipt: pending._id, issuedAt: pending.issuedAt, since };
+    if (pending) {
+      if (pending.retriedAt === undefined) {
+        await ctx.db.patch(pending._id, { retriedAt: new Date().toISOString() });
+      }
+      return { receipt: pending._id, issuedAt: pending.issuedAt, since };
+    }
     const counter = await readRosterSequence(ctx);
     const issuedAt = new Date().toISOString();
     const receipt = await ctx.db.insert("kioskRosterReceipts", { kioskId: kiosk._id, issuedAt, rosterSequence: counter?.value ?? 0 });

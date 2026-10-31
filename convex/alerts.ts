@@ -1,3 +1,6 @@
+import { getRosterConfirmationStall } from "../src/lib/kiosk-roster-confirmation";
+import { getKioskSyncStatus } from "../src/lib/kiosk-sync-status";
+import { readRosterSequence } from "./rosterSequence";
 import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -30,7 +33,7 @@ export const SCAN_BLOCKING_DEGRADED_REASONS = new Set([
 ]);
 
 // Ordered by severity; the first matching condition drives the email subject.
-export const ALERT_CONDITIONS = ["offline", "never_synced", "device_fault", "stale", "queue_backlog"] as const;
+export const ALERT_CONDITIONS = ["offline", "never_synced", "device_fault", "roster_unconfirmed", "stale", "queue_backlog"] as const;
 export type AlertCondition = (typeof ALERT_CONDITIONS)[number];
 
 export type AlertKioskHealth = {
@@ -52,6 +55,11 @@ export type AlertKiosk = {
   location: string;
   deviceId?: string;
   lastSync?: string;
+  credentialActive?: boolean;
+  rosterReceiptPending?: boolean;
+  rosterRetrySince?: string;
+  rosterAppliedAt?: string;
+  rosterChangesWaiting?: boolean | null;
   health?: AlertKioskHealth;
   active?: boolean;
 };
@@ -94,8 +102,8 @@ export type PlannedRecovery = {
 };
 
 export type AlertPlan = {
-  // `since` is the outage start for offline/stale, stored as the row's
-  // firstSeenAt so the recovery notice measures the same outage as the alerts.
+  // `since` is the outage start for offline/stale or first receipt retry for
+  // roster_unconfirmed, persisted as firstSeenAt for alerts and recovery.
   observations: Array<{ kioskId: string; condition: string; since?: string }>;
   alerts: PlannedAlert[];
   recoveries: PlannedRecovery[];
@@ -146,6 +154,10 @@ export function evaluateKioskAlerts(
     if (hasScanBlockingFault(kiosk.health)) {
       conditions.push("device_fault");
     }
+    if (kiosk.credentialActive && kiosk.rosterReceiptPending &&
+        getRosterConfirmationStall(kiosk.lastSync, kiosk.rosterRetrySince, nowMs)) {
+      conditions.push("roster_unconfirmed");
+    }
     if ((kiosk.health?.queuedLogs ?? 0) >= thresholds.queueBacklog) {
       conditions.push("queue_backlog");
     }
@@ -193,18 +205,30 @@ export function planKioskNotifications(
     kiosksById.set(evaluation.kiosk.kioskId, evaluation);
     const due: PlannedAlert["conditions"] = [];
 
+    // An ineligible observation cannot prove acknowledgement or recovery.
+    const rosterKey = stateKey(evaluation.kiosk.kioskId, "roster_unconfirmed");
+    if (openByKey.has(rosterKey) && !evaluation.conditions.includes("roster_unconfirmed") &&
+        (!evaluation.kiosk.credentialActive || getKioskSyncStatus(evaluation.kiosk.lastSync, nowMs) !== "online" ||
+         evaluation.kiosk.rosterReceiptPending !== false)) {
+      observedKeys.add(rosterKey);
+      observations.push({ kioskId: evaluation.kiosk.kioskId, condition: "roster_unconfirmed" });
+    }
+
     for (const condition of evaluation.conditions) {
       const key = stateKey(evaluation.kiosk.kioskId, condition);
       observedKeys.add(key);
-      // Same rule as conditionStart: silence dates from a parseable, non-future last sync.
-      const since = (condition === "offline" || condition === "stale") && evaluation.lastSyncAgeMs !== null ? evaluation.kiosk.lastSync : undefined;
+      // Silence dates from last contact; roster stalls date from first retry.
+      const since = condition === "roster_unconfirmed" ? evaluation.kiosk.rosterRetrySince
+        : (condition === "offline" || condition === "stale") && evaluation.lastSyncAgeMs !== null
+          ? evaluation.kiosk.lastSync : undefined;
       observations.push({ kioskId: evaluation.kiosk.kioskId, condition, ...(since ? { since } : {}) });
 
-      const existing = openByKey.get(key);
+      const prior = openByKey.get(key);
+      const existing = condition === "roster_unconfirmed" && since !== prior?.firstSeenAt ? undefined : prior;
       const lastNotifiedMs = existing?.lastNotifiedAt ? new Date(existing.lastNotifiedAt).getTime() : NaN;
       const shouldNotify = !Number.isFinite(lastNotifiedMs) || nowMs - lastNotifiedMs >= renotifyMs;
       if (shouldNotify) {
-        due.push({ condition, firstSeenAt: existing?.firstSeenAt ?? nowIso, isNew: !existing });
+        due.push({ condition, firstSeenAt: (condition === "roster_unconfirmed" ? since : undefined) ?? existing?.firstSeenAt ?? nowIso, isNew: !existing });
       }
     }
 
@@ -249,6 +273,7 @@ const CONDITION_LABELS: Record<string, string> = {
   stale: "stale",
   never_synced: "never synced",
   device_fault: "device fault",
+  roster_unconfirmed: "roster confirmation stalled",
   queue_backlog: "queue backlog",
 };
 
@@ -263,6 +288,8 @@ function conditionSummary(condition: string, kiosk: AlertKiosk, sinceMs: number)
       return `has never synced (flagged ${duration} ago)`;
     case "device_fault":
       return `reporting a scan-blocking device fault for ${duration}`;
+    case "roster_unconfirmed":
+      return `awaiting roster confirmation for ${duration}`;
     case "queue_backlog":
       return `holding ${kiosk.health?.queuedLogs ?? "many"} queued logs for ${duration}`;
     default:
@@ -301,6 +328,14 @@ export type AlertMessage = {
   text: string;
 };
 
+function rosterLines(kiosk: AlertKiosk, nowMs: number) {
+  return [
+    `Last applied roster: ${describeAge(kiosk.rosterAppliedAt, nowMs)}`,
+    `Roster confirmation retry since: ${describeAge(kiosk.rosterRetrySince, nowMs)}`,
+    `Roster changes awaiting confirmation: ${kiosk.rosterChangesWaiting == null ? "unknown" : kiosk.rosterChangesWaiting ? "yes" : "no"}`,
+  ];
+}
+
 export function buildAlertMessage(alert: PlannedAlert, nowMs: number, siteUrl: string): AlertMessage {
   const sorted = [...alert.conditions].sort((a, b) => conditionRank(a.condition) - conditionRank(b.condition));
   const primary = sorted[0];
@@ -322,6 +357,7 @@ export function buildAlertMessage(alert: PlannedAlert, nowMs: number, siteUrl: s
     }),
     "",
     `Last sync: ${describeAge(alert.kiosk.lastSync, nowMs)}`,
+    ...rosterLines(alert.kiosk, nowMs),
     `Degraded reason: ${health?.degradedReason ?? "none reported"}`,
     `Camera OK: ${health?.cameraOk ?? "unknown"}`,
     `Model OK: ${health?.modelOk ?? "unknown"}`,
@@ -359,6 +395,7 @@ export function buildRecoveryMessage(recovery: PlannedRecovery, nowMs: number, s
     }),
     "",
     `Last sync: ${describeAge(recovery.kiosk.lastSync, nowMs)}`,
+    ...rosterLines(recovery.kiosk, nowMs),
     `Kiosk readiness: ${siteUrl}/kiosks`,
     `Checked at: ${new Date(nowMs).toISOString()}`,
   ];
@@ -481,6 +518,11 @@ const alertKioskValidator = v.object({
   location: v.string(),
   deviceId: v.optional(v.string()),
   lastSync: v.optional(v.string()),
+  credentialActive: v.optional(v.boolean()),
+  rosterReceiptPending: v.optional(v.boolean()),
+  rosterRetrySince: v.optional(v.string()),
+  rosterAppliedAt: v.optional(v.string()),
+  rosterChangesWaiting: v.optional(v.union(v.boolean(), v.null())),
   health: v.optional(v.object({
     cameraOk: v.optional(v.boolean()),
     modelOk: v.optional(v.boolean()),
@@ -523,8 +565,11 @@ export const loadState = internalQuery({
       .withIndex("by_resolved", (q) => q.eq("resolvedAt", undefined))
       .collect();
 
-    return {
-      kiosks: kiosks.map((kiosk) => ({
+    const counter = await readRosterSequence(ctx);
+    const serializedKiosks = await Promise.all(kiosks.map(async kiosk => {
+      const pending = await ctx.db.query("kioskRosterReceipts")
+        .withIndex("by_kiosk", q => q.eq("kioskId", kiosk._id)).first();
+      return {
         kioskId: kiosk._id as string,
         name: kiosk.name,
         location: kiosk.location,
@@ -532,7 +577,16 @@ export const loadState = internalQuery({
         lastSync: kiosk.lastSync,
         health: kiosk.health,
         active: kiosk.active,
-      })),
+        credentialActive: Boolean(kiosk.credentialHash),
+        rosterReceiptPending: pending !== null,
+        rosterRetrySince: pending?.retriedAt,
+        rosterAppliedAt: kiosk.rosterAppliedAt,
+        rosterChangesWaiting: kiosk.rosterAppliedSequence === undefined ? null
+          : (counter?.value ?? 0) > kiosk.rosterAppliedSequence,
+      };
+    }));
+    return {
+      kiosks: serializedKiosks,
       openStates: openRows.map((row) => ({
         kioskId: row.kioskId,
         condition: row.condition,
@@ -587,7 +641,9 @@ export const recordState = internalMutation({
         const restarted = observation.since !== undefined && observation.since !== existing.firstSeenAt;
         if (shouldStamp || restarted) {
           await ctx.db.patch(existing._id, {
-            ...(restarted ? { firstSeenAt: observation.since } : {}),
+            ...(restarted ? { firstSeenAt: observation.since,
+              ...(observation.condition === "roster_unconfirmed" ? { lastNotifiedAt: undefined } : {}),
+            } : {}),
             ...(shouldStamp ? { lastNotifiedAt: args.now } : {}),
           });
         }

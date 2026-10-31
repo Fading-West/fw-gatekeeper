@@ -1,3 +1,4 @@
+import { getRosterConfirmationStall } from '@/lib/kiosk-roster-confirmation';
 import { getKioskSyncStatus, ONLINE_THRESHOLD_MS, STALE_THRESHOLD_MS } from "@/lib/kiosk-sync-status";
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
@@ -53,6 +54,9 @@ type SystemHealthPayload = {
       location: string;
       last_sync: string | null;
       roster_applied_at: string | null;
+      roster_retry_since: string | null;
+      roster_changes_waiting: boolean | null;
+      roster_confirmation_stalled: boolean;
       purge_pending: boolean;
       status: KioskStatus;
       expected_worker_count: number;
@@ -81,8 +85,8 @@ function asHealthUrl(rawUrl: string) {
   }
 }
 
-function getKioskStatus(lastSync: string | null): KioskStatus {
-  return getKioskSyncStatus(lastSync);
+function getKioskStatus(lastSync: string | null, now: number): KioskStatus {
+  return getKioskSyncStatus(lastSync, now);
 }
 
 
@@ -172,8 +176,10 @@ export async function GET(req: NextRequest) {
     ]);
 
     const readyWorkerCount = workers.filter((worker: any) => worker.encoding_status === 'valid' || worker.has_face_encoding).length;
+    const evaluatedAt = Date.now();
     const kioskRows = kiosks.map((kiosk: any) => {
-      const status = getKioskStatus(kiosk.last_sync);
+      const status = getKioskStatus(kiosk.last_sync, evaluatedAt);
+      const rosterStalled = getRosterConfirmationStall(kiosk.last_sync, kiosk.roster_retry_since, evaluatedAt);
       const kioskCandidates = [kiosk.id, kiosk.kiosk_id, kiosk.name]
         .map(normalizeIdentifier)
         .filter(Boolean);
@@ -190,6 +196,9 @@ export async function GET(req: NextRequest) {
         location: kiosk.location,
         last_sync: kiosk.last_sync,
         roster_applied_at: kiosk.roster_applied_at ?? null,
+        roster_retry_since: kiosk.roster_retry_since ?? null,
+        roster_changes_waiting: kiosk.roster_changes_waiting ?? null,
+        roster_confirmation_stalled: rosterStalled,
         purge_pending: Boolean(kiosk.purge_pending),
         status,
         expected_worker_count: readyWorkerCount,
@@ -198,6 +207,9 @@ export async function GET(req: NextRequest) {
         attendance_queue: kiosk.attendance_queue ?? null,
         device_issues: [
           ...getDeviceIssues(kiosk.health ?? null, kiosk.attendance_queue ?? null),
+          ...(rosterStalled ? [kiosk.roster_changes_waiting === true
+            ? 'Roster changes awaiting confirmation on this online kiosk'
+            : 'Roster confirmation stalled on this online kiosk'] : []),
           ...(kiosk.purge_pending ? ['Biometric purge still unconfirmed on this kiosk'] : []),
         ],
       };

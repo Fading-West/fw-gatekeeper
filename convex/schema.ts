@@ -308,6 +308,7 @@ export default defineSchema({
   kioskRosterReceipts: defineTable({
     kioskId: v.id("kiosks"),
     issuedAt: v.string(),
+    retriedAt: v.optional(v.string()),
     rosterSequence: v.optional(v.number()),
   }).index("by_kiosk", ["kioskId"]),
 
