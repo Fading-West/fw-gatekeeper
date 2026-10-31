@@ -326,6 +326,7 @@ loss as well as blocked UDP 123, and verify payroll review of the outage window.
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
+| "Scanner not responding" | Camera frames stopped for >15 s or recognition cycles for >30 s. Ask a supervisor for manual attendance; inspect `journalctl -u fw-gatekeeper-kiosk -f`, then `sudo systemctl restart fw-gatekeeper-kiosk`. Thresholds `CAMERA_STALL_SECONDS` / `RECOGNITION_STALL_SECONDS` accept finite positive seconds in `config_local.py`. Health clears when progress resumes; there is no automatic restart. Pilot kiosk updates first; release trial progress checks are unchanged. |
 | "queued logs have no server worker mapping" | Queued rows whose worker row was removed before this release; see *Stranded attendance rows* below |
 
 ### Rejected attendance uploads
