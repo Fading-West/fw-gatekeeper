@@ -19,10 +19,25 @@ export const EXISTING_BROWSER_PROOFS = [
   'src/components/AttendanceCorrectionDialog.browser.test.ts',
 ];
 
-export async function launchBrowser(state) {
+// Explicit env: Playwright otherwise hands Chromium the caller's process.env.
+export async function launchBrowser(state, { executablePath } = {}) {
   const { chromium } = appRequire(state)('playwright-core');
-  // Explicit env: Playwright otherwise hands Chromium the caller's process.env.
-  return chromium.launch({ executablePath: chromiumPath(state), headless: true, env: childEnv(state) });
+  return chromium.launch({ executablePath: executablePath ?? chromiumPath(state), headless: true, env: childEnv(state) });
+}
+
+// Launches Chromium through a wrapper that records the environment variable
+// names (never values) it was started with. Chromium rewrites its own
+// /proc/<pid>/environ, so this is the reliable process-level observation.
+export async function browserEnvNames(state) {
+  const wrapper = path.join(state.run, 'home', 'chromium-env-probe.sh');
+  const names = path.join(state.run, 'home', 'chromium-env-names.txt');
+  fs.rmSync(names, { force: true });
+  fs.writeFileSync(wrapper, `#!/bin/sh\nenv | cut -d= -f1 | sort -u > '${names}'\nexec '${chromiumPath(state)}' "$@"\n`, { mode: 0o700 });
+  const browser = await launchBrowser(state, { executablePath: wrapper });
+  await browser.close();
+  // PWD, SHLVL, OLDPWD and _ are set by the wrapper's own /bin/sh.
+  const shellOwn = new Set(['PWD', 'SHLVL', 'OLDPWD', '_']);
+  return fs.readFileSync(names, 'utf8').split('\n').filter((name) => name && !shellOwn.has(name));
 }
 
 // Browser contexts reach only this run's app and backend. Everything else

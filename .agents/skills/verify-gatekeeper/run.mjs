@@ -14,7 +14,7 @@ import {
 import {
   adminClient, deployedModuleHashes, diffSnapshots, readTable, setBackendEnv, snapshot, userClient,
 } from './lib/convex-admin.mjs';
-import { closeRole, isolatedContext, launchBrowser, openRole, runFeature, signIn } from './lib/feature.mjs';
+import { browserEnvNames, closeRole, isolatedContext, launchBrowser, openRole, runFeature, signIn } from './lib/feature.mjs';
 
 const SEEDED_WORKERS = ['Marcus Johnson', 'Sarah Chen', 'Diego Rivera', 'Aisha Patel', 'Tommy Krueger'];
 const DEFECT_FILE = 'convex/attendanceCorrections.ts';
@@ -269,20 +269,14 @@ async function doctor(run, opts) {
   a.check('fixture-roles', ROLES.every((role) => members.some((m) => m.userId === state.users[role].userId && m.role === role && m.active && !m.mustChangePassword)) && members.length === ROLES.length,
     members.map((m) => m.role));
   a.check('fixture-workers', SEEDED_WORKERS.every((name) => workers.some((w) => w.name === name && w.active)), workers.map((w) => w.name));
+  // Chromium must start without any caller-only environment variable.
+  const callerOnly = Object.keys(process.env).filter((key) => !(key in childEnv(state)));
+  const browserNames = await browserEnvNames(state);
+  const leaked = callerOnly.filter((key) => browserNames.includes(key));
+  a.check('browser-env-isolated', browserNames.includes('PATH') && leaked.length === 0,
+    { browserVariables: browserNames.length, callerOnlyVariables: callerOnly.length, leaked });
   const browser = await launchBrowser(state);
   try {
-    // Browser processes must not carry any caller-only environment variable.
-    const allowedKeys = new Set(Object.keys(childEnv(state)));
-    const callerOnly = Object.keys(process.env).filter((key) => !allowedKeys.has(key));
-    const browserPids = ownedTree(process.pid).filter((pid) => pid !== process.pid);
-    const leaked = new Set();
-    for (const pid of browserPids) {
-      let environ = '';
-      try { environ = fs.readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch { continue; }
-      const keys = new Set(environ.split('\0').map((entry) => entry.split('=', 1)[0]));
-      for (const key of callerOnly) if (keys.has(key)) leaked.add(key);
-    }
-    a.check('browser-env-isolated', browserPids.length > 0 && leaked.size === 0, { browserProcesses: browserPids.length, callerOnlyVariables: callerOnly.length, leaked: [...leaked] });
     for (const role of ROLES) {
       const session = await openRole(state, browser, role);
       const current = session.jwt ? await userClient(state, session.jwt).query('portalMembers:current').catch(() => null) : null;
