@@ -1,23 +1,27 @@
 # Pilot proof (Nov 1, 2026)
 
-Candidate `8d02e27569cd293e5912c84faae59a88a2ab9b0e`, which is `master` `6d7110fd`
-plus this package. The commit that adds this file changes only `proof.md`. Run
-`gkv-20261101t201320z-e78ad9` under `~/.cache/fw-gatekeeper-verify/runs/`. The
-backend binary was `precompiled-2026-10-22-1447815` (sha256 `044eedfe569b1550…`),
-with Next build ID `rFR3wX4MEZrqAlU2ftj_r` and Chromium r1248.
+Candidate `38c49f3b01d6945724e341e5d6d821639ce94be7`, which is `master` `6d7110fd`
+plus this package after Sol audit round 1 fixes. The commit that adds this file
+changes only `proof.md`. Run `gkv-20261101t202410z-6342ba` under
+`~/.cache/fw-gatekeeper-verify/runs/`, with caller canaries exported throughout
+(`FWV_CALLER_CANARY`, and `CONVEX_DEPLOYMENT=prod:verify-canary-not-a-real-deployment`).
+The canaries were ignored: no child process or deploy picked them up. Backend binary
+`precompiled-2026-10-22-1447815` (sha256 `044eedfe569b1550…`), Next build ID
+`pcmOO8FHJpYfhnT-yHm-P`, Chromium r1248.
 
 | Command | Result |
 | --- | --- |
-| `run.mjs prepare` | exit 0, about 30 s: archive, `npm ci`, owned backend + deploy, seed, three role sign-ins via `/login`, `next build` + `next start` |
-| `run.mjs doctor --run RUN` | exit 0, 21/21 assertions (`evidence/doctor-20261101T201352Z.json`) |
-| `run.mjs feature --run RUN` | exit 0, 20/20 assertions (`evidence/feature-20261101T201352Z/`) |
-| `run.mjs negative-control --run RUN` | exit 0 (`evidence/negative-control-20261101T201510Z.json`) |
-| `run.mjs doctor --run RUN` | exit 0, 21/21 after the control; deployed function hashes equal prepare's |
-| `run.mjs cleanup --run RUN` | exit 0. Both owned processes stopped, `app/ backend/ home/ sessions/` removed, secrets emptied, evidence and logs kept. A second cleanup is a no-op. |
+| `run.mjs prepare` | exit 0, about 35 s: archive, `npm ci`, owned backend + deploy, seed, three role sign-ins via `/login`, `next build` + `next start` |
+| `run.mjs doctor --run RUN` | exit 0, 22/22 assertions (`evidence/doctor-20261101T202446Z.json`); `browser-env-isolated`: 6 browser variables, 0 of 60 caller-only variables |
+| `run.mjs feature --run RUN` | exit 0, 20/20 assertions (`evidence/feature-20261101T202446Z/`) |
+| `run.mjs negative-control --run RUN` | exit 0 (`evidence/negative-control-20261101T202604Z.json`) |
+| `run.mjs doctor --run RUN` | exit 0, 22/22 after the control; deployed function hashes equal prepare's |
+| `run.mjs cleanup --run RUN` (twice) | exit 0. Both owned processes stopped, `app/ backend/ home/ sessions/` removed, secrets emptied, evidence and logs kept. The second run is a no-op. |
 
 ## Feature evidence
 
 - The enrollment user saved a 06:00 clock-in for Tommy Krueger on 2026-10-31
+  (row `jh7fqzggaprswywc2xddkt32s98hcpwk`)
   through the dialog: POST 201, and the row showed after save. A fresh read found
   exactly one `attendanceCorrections` row with the UI `request_id`, `add_clock_in` /
   `clock_in` and `actorUserId` set to the enrollment user. The row was still there
@@ -42,6 +46,17 @@ The defect (viewer added to `attendanceCorrections.create`) changed only the
 row. The Next proxy still returned 401, which is why the direct Convex assertion
 matters. After the byte-for-byte restore and redeploy, the function hashes equaled
 prepare's and the check passed.
+
+## Sol audit round 1 (`c35c71e8`, REQUEST_CHANGES), fixed
+
+- The snapshot canonicalizer passed a top-level key whitelist to
+  `JSON.stringify`, which dropped nested fields, so nested writes were invisible
+  to the whole-database diff. It now uses a recursive `canonicalJson`.
+- Chromium inherited the caller's `process.env`. It, `keygen` and host tools now
+  get explicit environments. Doctor's `browser-env-isolated` assertion launches
+  Chromium through a wrapper that records variable names, because Chromium
+  rewrites its own `/proc/<pid>/environ` and a /proc-based check passed vacuously.
+  Red check: with the explicit env removed, it failed listing 59 leaked names.
 
 ## Development failures found by the package (fixed before this proof)
 
