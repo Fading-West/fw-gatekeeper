@@ -19,3 +19,13 @@ face-service Docker image and loads the real ONNX model, then checks production
 Node dependencies for high or critical advisories. Dependabot opens weekly updates.
 The workflow does not deploy services or require live credentials. Hardware camera
 and liveness acceptance tests still require a Raspberry Pi pilot.
+
+## End-to-end verification package (opt-in)
+
+`.agents/skills/verify-gatekeeper/` proves a committed candidate in an owned,
+disposable stack: a local `convex-local-backend` and a production Next build on
+loopback, with generated Convex Auth keys and synthetic accounts. It never touches
+the production Convex deployment, Render or kiosks. Run
+`node .agents/skills/verify-gatekeeper/run.mjs prepare`, then `doctor`, `feature`,
+`negative-control` and always `cleanup` with `--run RUN`. See its `SKILL.md`,
+`environment.md` and `features.json`.
