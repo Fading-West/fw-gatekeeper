@@ -421,7 +421,7 @@ function LogPageContent() {
           </p>
           <p className="text-xs text-slate-400 mt-2">Exports include stable worker IDs. Employee IDs reflect the current roster.</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <input
             type="date"
             value={date}

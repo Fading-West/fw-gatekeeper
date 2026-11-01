@@ -37,4 +37,9 @@ window.fetch = ((url: string, options?: RequestInit) => {
   return Promise.resolve(response());
 }) as typeof fetch;
 
-createRoot(document.getElementById('root')!).render(<LogPage />);
+// Same content wrapper as AppShell, so mobile widths match the real page.
+createRoot(document.getElementById('root')!).render(
+  <main className="md:ml-[260px] min-h-screen pb-[calc(7rem+env(safe-area-inset-bottom))] pt-16 md:pb-0 md:pt-0">
+    <div className="max-w-7xl mx-auto px-4 py-6 md:px-8 md:py-8"><LogPage /></div>
+  </main>,
+);
