@@ -1,6 +1,6 @@
 // Admin access to the run-owned local Convex backend only. The URL and admin
 // key always come from this run's private state; nothing reads caller config.
-import { appRequire, fail } from './common.mjs';
+import { appRequire, canonicalJson, fail } from './common.mjs';
 
 // Tables that can change without any portal action: Convex Auth may rotate
 // refresh tokens when the Next proxy refreshes a JWT, and crons (session
@@ -68,7 +68,7 @@ export async function snapshot(admin) {
   const tables = {};
   for (const table of await listTables(admin)) {
     const docs = await readTable(admin, table);
-    tables[table] = Object.fromEntries(docs.map((doc) => [doc._id, JSON.stringify(doc, Object.keys(doc).sort())]));
+    tables[table] = Object.fromEntries(docs.map((doc) => [doc._id, canonicalJson(doc)]));
   }
   return tables;
 }

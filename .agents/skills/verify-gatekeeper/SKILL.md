@@ -27,7 +27,8 @@ deployment, Render, kiosks or the face service.
    backend instance, binary hash and deployed function hashes; `/api/health`;
    the served `_buildManifest.js` equals the archived build and served client
    chunks target the owned backend (no `*.convex.cloud`); fixture roles, workers
-   and live sessions (only admin reaches `/kiosks`); the Command Center
+   and live sessions (only admin reaches `/kiosks`); browser processes carry no
+   caller-only environment variable; the Command Center
    `/api/activity` feed with a run-owned token (200) and without one (401). Every
    table is compared before and after; only auth-token and cron tables may change.
 3. `node .agents/skills/verify-gatekeeper/run.mjs feature --run RUN`: the

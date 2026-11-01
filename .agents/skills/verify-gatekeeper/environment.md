@@ -12,8 +12,10 @@
 
 No account, cloud credential or secret is required. Nothing is read from `.env*`,
 `~/.convex`, `CONVEX_DEPLOYMENT`, `CONVEX_DEPLOY_KEY` or any caller environment
-variable: every child process gets an explicit environment and `HOME=RUN/home`
-(except `npm ci`, which uses the real home for its package cache).
+variable: every child process, including Chromium, gets an explicit environment
+and `HOME=RUN/home` (except `npm ci`, which uses the real home for its package
+cache, and host tools such as `git`/`tar`/`ss`, which get only `PATH`, `HOME` and
+`LANG`). Doctor's `browser-env-isolated` assertion checks the browser processes.
 
 ## Options
 

@@ -40,8 +40,23 @@ export function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
+// Minimal environment for host tools that run before a run's state exists
+// (git, tar, keygen, ss): no caller credentials or deployment variables.
+export function hostEnv() {
+  return { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.homedir(), LANG: 'C.UTF-8' };
+}
+
 export function git(repo, args, options = {}) {
-  return execFileSync('git', ['-C', repo, ...args], { encoding: options.encoding ?? 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  return execFileSync('git', ['-C', repo, ...args], { encoding: options.encoding ?? 'utf8', maxBuffer: 256 * 1024 * 1024, env: hostEnv() });
+}
+
+// JSON with object keys sorted at every depth; arrays keep their order.
+export function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 export function writePrivateJson(file, value) {
@@ -181,7 +196,7 @@ export function ownedTree(rootPid) {
 
 // Listening TCP sockets for the given pids, from `ss -ltnpH`.
 export function listenersFor(pids) {
-  const out = execFileSync('ss', ['-ltnpH'], { encoding: 'utf8' });
+  const out = execFileSync('ss', ['-ltnpH'], { encoding: 'utf8', env: hostEnv() });
   const wanted = new Set(pids.map(String));
   const result = [];
   for (const line of out.split('\n')) {

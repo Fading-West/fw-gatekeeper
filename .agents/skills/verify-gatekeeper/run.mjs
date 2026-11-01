@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   Assertions, CheckFailure, DEFAULT_RUNS_DIR, EMAIL_DOMAIN, ROLES, childEnv, factoryDate, fail, freePort, git, gitBlobHash,
-  listenersFor, nowStamp, ownedProcessAlive, ownedTree, procCwd, procStartTicks, randomHex, randomPassword, readState,
+  hostEnv, listenersFor, nowStamp, ownedProcessAlive, ownedTree, procCwd, procStartTicks, randomHex, randomPassword, readState,
   runLogged, saveState, sha256, spawnOwned, waitFor, writeEvidence, writePrivateJson,
 } from './lib/common.mjs';
 import {
@@ -113,7 +113,7 @@ async function prepare(opts) {
 
   return withLock(run, async () => {
     // Archived committed candidate; never the caller's working tree.
-    execFileSync('sh', ['-c', 'git -C "$1" archive "$2" | tar -x -C "$3"', 'sh', repo, sha, path.join(run, 'app')]);
+    execFileSync('sh', ['-c', 'git -C "$1" archive "$2" | tar -x -C "$3"', 'sh', repo, sha, path.join(run, 'app')], { env: hostEnv() });
     const app = path.join(run, 'app');
     runLogged(state, 'npm-ci.log', 'npm', ['ci', '--no-audit', '--no-fund'], { cwd: app, env: childEnv(state, {}, { realHome: true }) });
     state.candidate.packageLockSha256 = sha256(fs.readFileSync(path.join(app, 'package-lock.json')));
@@ -123,7 +123,7 @@ async function prepare(opts) {
     const [backendPort, sitePort, appPort] = [await freePort(), await freePort(), await freePort()];
     const instanceName = runId.replace(/[^a-z0-9-]/g, '-');
     state.secrets.instanceSecret = randomHex(32);
-    state.secrets.adminKey = execFileSync(backendBin, ['keygen', 'admin-key', '--instance-name', instanceName, '--instance-secret', state.secrets.instanceSecret], { encoding: 'utf8' }).trim();
+    state.secrets.adminKey = execFileSync(backendBin, ['keygen', 'admin-key', '--instance-name', instanceName, '--instance-secret', state.secrets.instanceSecret], { encoding: 'utf8', env: childEnv(state) }).trim();
     state.backend = {
       bin: backendBin, binSha256: sha256(fs.readFileSync(backendBin)), instanceName,
       url: `http://127.0.0.1:${backendPort}`, siteUrl: `http://127.0.0.1:${sitePort}`, ports: [backendPort, sitePort],
@@ -271,6 +271,18 @@ async function doctor(run, opts) {
   a.check('fixture-workers', SEEDED_WORKERS.every((name) => workers.some((w) => w.name === name && w.active)), workers.map((w) => w.name));
   const browser = await launchBrowser(state);
   try {
+    // Browser processes must not carry any caller-only environment variable.
+    const allowedKeys = new Set(Object.keys(childEnv(state)));
+    const callerOnly = Object.keys(process.env).filter((key) => !allowedKeys.has(key));
+    const browserPids = ownedTree(process.pid).filter((pid) => pid !== process.pid);
+    const leaked = new Set();
+    for (const pid of browserPids) {
+      let environ = '';
+      try { environ = fs.readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch { continue; }
+      const keys = new Set(environ.split('\0').map((entry) => entry.split('=', 1)[0]));
+      for (const key of callerOnly) if (keys.has(key)) leaked.add(key);
+    }
+    a.check('browser-env-isolated', browserPids.length > 0 && leaked.size === 0, { browserProcesses: browserPids.length, callerOnlyVariables: callerOnly.length, leaked: [...leaked] });
     for (const role of ROLES) {
       const session = await openRole(state, browser, role);
       const current = session.jwt ? await userClient(state, session.jwt).query('portalMembers:current').catch(() => null) : null;

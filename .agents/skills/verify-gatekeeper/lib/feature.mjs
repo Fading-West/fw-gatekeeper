@@ -21,7 +21,8 @@ export const EXISTING_BROWSER_PROOFS = [
 
 export async function launchBrowser(state) {
   const { chromium } = appRequire(state)('playwright-core');
-  return chromium.launch({ executablePath: chromiumPath(state), headless: true });
+  // Explicit env: Playwright otherwise hands Chromium the caller's process.env.
+  return chromium.launch({ executablePath: chromiumPath(state), headless: true, env: childEnv(state) });
 }
 
 // Browser contexts reach only this run's app and backend. Everything else
