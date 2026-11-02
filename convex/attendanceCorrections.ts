@@ -5,6 +5,8 @@ import { timestampBelongsToFactoryLocalDate } from "./localDate";
 import { isValidAttendanceTimestamp } from "./attendanceValidation";
 import { buildShiftExceptions } from "./shiftExceptions";
 import { createRecognitionTimestampSortKey } from "./recognitionTimestamp";
+import { listCorrectionReversals, listReversalsPerCorrection } from "./attendanceReads";
+import type { Doc, Id } from "./_generated/dataModel";
 
 const nullableString = v.union(v.string(), v.null());
 const FUTURE_CORRECTION_TOLERANCE_MS = 60_000;
@@ -66,14 +68,27 @@ export const list = query({
     const corrections = await baseQuery.collect();
     corrections.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
+    // A full day can contain thousands of corrections after a scanner outage.
+    // Read reversals by date once; keep small worker histories scoped to their
+    // corrections so they do not read unrelated workers' reversal evidence.
+    const reversals = await (args.workerId && corrections.length < 1000
+      ? listReversalsPerCorrection : listCorrectionReversals)(ctx, corrections);
+    const users = new Map<Id<"users">, Doc<"users"> | null>();
+    const workers = new Map<Id<"workers">, Doc<"workers"> | null>();
+    const getUser = async (id: Id<"users">) => {
+      if (!users.has(id)) users.set(id, await ctx.db.get(id));
+      return users.get(id) ?? null;
+    };
     const rows = [];
     for (const correction of corrections) {
-      const reversal = await ctx.db.query("attendanceCorrectionReversals")
-        .withIndex("by_correctionId", (q) => q.eq("correctionId", correction._id)).unique();
-      const actor = canSeeActorIdentity && correction.actorUserId ? await ctx.db.get(correction.actorUserId) : null;
-      const reversalActor = canSeeActorIdentity && reversal ? await ctx.db.get(reversal.actorUserId) : null;
+      const correctionReversals = reversals.get(String(correction._id))!;
+      if (correctionReversals.length > 1) throw new Error("Attendance correction has more than one reversal.");
+      const reversal = correctionReversals[0] ?? null;
+      const actor = canSeeActorIdentity && correction.actorUserId ? await getUser(correction.actorUserId) : null;
+      const reversalActor = canSeeActorIdentity && reversal ? await getUser(reversal.actorUserId) : null;
       const workerId = ctx.db.normalizeId("workers", correction.workerId);
-      const worker = workerId ? await ctx.db.get(workerId) : null;
+      if (workerId && !workers.has(workerId)) workers.set(workerId, await ctx.db.get(workerId));
+      const worker = workerId ? workers.get(workerId) : null;
       const original = correction.originalAttendanceId
         ? await ctx.db.get(correction.originalAttendanceId).catch(() => null)
         : null;
