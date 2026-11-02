@@ -20,7 +20,7 @@ SUPERVISOR_SESSION_TTL_SECONDS = 5 * 60
 SUPERVISOR_MAX_FAILED_ATTEMPTS = 5
 SUPERVISOR_FAILURE_WINDOW_SECONDS = 60
 SUPERVISOR_LOCKOUT_SECONDS = 5 * 60
-_supervisor_sessions: dict[str, int] = {}
+_supervisor_sessions: dict[str, float] = {}  # process-local monotonic expiry deadlines
 _supervisor_unlocks: dict[str, str] = {}
 # Retain cancelled operations until restart: an arbitrarily delayed request
 # must never mint a new credential after its lock has been acknowledged.
@@ -154,16 +154,22 @@ def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int]
                              unlock_request_id: Optional[str] = None) -> str:
     configured_pin = (pin or require_supervisor_pin()).strip()
     ui_key = require_kiosk_ui_key()
-    issued = int(time.time() if issued_at is None else issued_at)
+    wall_now = int(time.time())
+    issued = wall_now if issued_at is None else int(issued_at)
+    # Keep the signed timestamp for token compatibility, but measure a live
+    # unlock's lifetime with the same monotonic clock as PIN lockout.
+    age = wall_now - issued
+    remaining = min(SUPERVISOR_SESSION_TTL_SECONDS, SUPERVISOR_SESSION_TTL_SECONDS - age) if age >= -30 else -1
+    expires_at = time.monotonic() + remaining
     signing_key = f"{ui_key}:{configured_pin}".encode("utf-8")
     nonce = secrets.token_hex(16)
     message = f"{issued}.{nonce}"
     signature = hmac.new(signing_key, _SUPERVISOR_CONTEXT + message.encode("ascii"), hashlib.sha256).hexdigest()
     token = f"{message}.{signature}"
     with _supervisor_session_lock:
-        now = int(time.time())
-        expired = [value for value, timestamp in _supervisor_sessions.items()
-                   if now - timestamp > SUPERVISOR_SESSION_TTL_SECONDS]
+        now = time.monotonic()
+        expired = [value for value, deadline in _supervisor_sessions.items()
+                   if now > deadline]
         for value in expired:
             del _supervisor_sessions[value]
         for operation, value in list(_supervisor_unlocks.items()):
@@ -176,7 +182,7 @@ def supervisor_session_token(pin: Optional[str] = None, issued_at: Optional[int]
             if existing:
                 return existing
             _supervisor_unlocks[unlock_request_id] = token
-        _supervisor_sessions[token] = issued
+        _supervisor_sessions[token] = expires_at
     return token
 
 
@@ -206,15 +212,16 @@ def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_
     if not candidate_session:
         return False
     with _supervisor_session_lock:
-        if candidate_session not in _supervisor_sessions:
+        deadline = _supervisor_sessions.get(candidate_session)
+        if deadline is None:
+            return False
+        if time.monotonic() > deadline:
+            del _supervisor_sessions[candidate_session]
             return False
     try:
         issued_raw, nonce, provided_signature = candidate_session.split(".")
-        issued_at = int(issued_raw)
+        int(issued_raw)
     except (TypeError, ValueError):
-        return False
-    age_seconds = int(time.time()) - issued_at
-    if age_seconds < -30 or age_seconds > SUPERVISOR_SESSION_TTL_SECONDS:
         return False
     try:
         signing_key = f"{require_kiosk_ui_key()}:{configured_pin}".encode("utf-8")
@@ -223,7 +230,9 @@ def has_valid_supervisor_credential(provided_pin: Optional[str] = None, session_
     message = f"{issued_raw}.{nonce}".encode("ascii")
     expected_signature = hmac.new(signing_key, _SUPERVISOR_CONTEXT + message, hashlib.sha256).hexdigest()
     with _supervisor_session_lock:
-        return candidate_session in _supervisor_sessions and hmac.compare_digest(provided_signature, expected_signature)
+        deadline = _supervisor_sessions.get(candidate_session)
+        return (deadline is not None and time.monotonic() <= deadline
+                and hmac.compare_digest(provided_signature, expected_signature))
 
 
 def has_valid_kiosk_ui_credential(

@@ -39,9 +39,9 @@ class SupervisorLockTests(unittest.TestCase):
             self.assertFalse(auth.has_valid_supervisor_credential(session_token=token))
 
     def test_expired_session_and_pruning(self):
-        with mock.patch.object(auth.time, "time", return_value=100):
+        with mock.patch.object(auth.time, "time", return_value=100), mock.patch.object(auth.time, "monotonic", return_value=100):
             token = auth.supervisor_session_token()
-        with mock.patch.object(auth.time, "time", return_value=401):
+        with mock.patch.object(auth.time, "time", return_value=401), mock.patch.object(auth.time, "monotonic", return_value=401):
             self.assertFalse(auth.has_valid_supervisor_credential(session_token=token))
             auth.supervisor_session_token()
             self.assertNotIn(token, auth._supervisor_sessions)
