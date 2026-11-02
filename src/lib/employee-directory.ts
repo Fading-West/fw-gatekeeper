@@ -184,7 +184,10 @@ export function reconcileEmployeeDirectory(
   const employees = employeeDirectory.map((employee, index) => {
     const idMatch = idMatches[index];
     const nameMatches = workersByName.get(normalizeDirectoryValue(employee.name));
-    const nameMatch = nameMatches?.length === 1 ? nameMatches[0] : undefined;
+    // An ambiguous ID is conflicting evidence, not an absent ID match.
+    // A third name-only worker must not bypass that conflict.
+    const ambiguousId = (workersByEmployeeId.get(normalizeDirectoryValue(employee.employeeId))?.length || 0) > 1;
+    const nameMatch = !ambiguousId && nameMatches?.length === 1 ? nameMatches[0] : undefined;
     const worker = idMatch || (nameMatch && !reservedWorkerIds.has(nameMatch.id) ? nameMatch : undefined);
     if (worker) reservedWorkerIds.add(worker.id);
     const status: EmployeeEnrollmentStatus = worker?.encodingStatus === 'valid'

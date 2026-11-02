@@ -1,0 +1,8 @@
+
+ RUN  v5.0.5 /home/noah/.t3/worktrees/fw-gatekeeper/t3-45de045f
+
+
+ Test Files  3 passed (3)
+      Tests  43 passed (43)
+   Start at  12:09:00
+   Duration  650ms (import 42%, transform 38%, tests 17%, worker 3%)
