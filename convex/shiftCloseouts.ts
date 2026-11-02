@@ -431,6 +431,12 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
   const blockerEvidence = JSON.stringify({ version: 4, date,
     // Composed schedule coverage remains a blocker after its exception is reviewed.
     coverage: briefing.coverage_evidence,
+    // Early signoff acknowledges these workers and their pending shift times.
+    // Omit the field when empty to preserve older, unrelated acknowledgements.
+    ...(briefing.daily_attendance.not_yet_due > 0 ? { not_yet_due: briefing.workers
+      .filter(worker => worker.status === "not_yet_due")
+      .map(worker => [worker.worker_id, worker.scheduled_start, worker.scheduled_end])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))) } : {}),
     exceptions: openExceptions.filter((exception: any) => exception.severity === "critical" ||
       exception.type === "missing_clock_out" || exception.type === "recognition_review")
       .map((exception: any) => [exception.key, exception.type, exception.severity, exception.first_seen,
