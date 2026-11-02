@@ -67,6 +67,8 @@ _status = {
 
 _health_lock = threading.Lock()
 _health = {
+    "scan_loop_started_at": None,
+    "last_detection_cycle": None,
     "last_camera_frame": None,
     "last_detection": None,
     "last_model_inference": None,
@@ -156,6 +158,26 @@ def update_health(**kwargs):
         _health.update(kwargs)
 
 
+def derive_scan_progress(snapshot, now, camera_limit, recognition_limit) -> dict:
+    """Derive stalls on a copy so fresh progress clears them on the next read."""
+    snapshot = dict(snapshot)
+    started = snapshot.get("scan_loop_started_at")
+    if started is None or snapshot.get("camera_ok") is not True:
+        return snapshot
+    reason = None
+    if now - (snapshot.get("last_camera_frame") or started) > camera_limit:
+        snapshot["camera_ok"] = False
+        reason = "camera_stalled"
+    elif (snapshot.get("model_ok") is True
+          and now - (snapshot.get("last_detection_cycle") or started) > recognition_limit):
+        snapshot["model_ok"] = False
+        reason = "recognition_stalled"
+    if reason:
+        reasons = [item for item in (snapshot.get("degraded_reason") or "").split(",") if item]
+        snapshot["degraded_reason"] = ",".join(dict.fromkeys([*reasons, reason]))
+    return snapshot
+
+
 def get_health_snapshot() -> dict:
     with _health_lock:
         snapshot = dict(_health)
@@ -175,7 +197,8 @@ def get_health_snapshot() -> dict:
         if "clock_unsynchronized" not in reasons:
             reasons.append("clock_unsynchronized")
         snapshot["degraded_reason"] = ",".join(reasons)
-    return snapshot
+    return derive_scan_progress(snapshot, time.monotonic(), config.CAMERA_STALL_SECONDS,
+                                config.RECOGNITION_STALL_SECONDS)
 
 
 def get_status_snapshot() -> dict:
@@ -191,6 +214,7 @@ def get_status_snapshot() -> dict:
     data["kiosk_type"] = config.KIOSK_TYPE
     data["boot_id"] = BOOT_ID
     data["server_time"] = datetime.now().isoformat(timespec="seconds")
+    data["display_time_success_sec"] = config.DISPLAY_TIME_SUCCESS_SEC
     data["admin"] = {
         "worker_count": len(workers),
         "total_photos": sum(worker["photo_count"] for worker in workers),

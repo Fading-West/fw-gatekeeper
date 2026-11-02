@@ -1,6 +1,7 @@
 """Configuration for FW Gatekeeper Pi kiosk."""
 
 import math
+import logging
 import os
 import math
 import warnings
@@ -20,6 +21,10 @@ KIOSK_API_KEY = os.environ.get("KIOSK_API_KEY", "")
 CAMERA_INDEX = 0
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
+# Steady-state progress deadlines (monotonic seconds); tune for a slow pilot Pi
+# in config_local.py. These report stalls without restarting the scanner.
+CAMERA_STALL_SECONDS = 15
+RECOGNITION_STALL_SECONDS = 30
 
 # Liveness / recognition
 # Blink verification before accepting a clock event. Off by default — it has
@@ -77,6 +82,17 @@ try:
     from config_local import *  # noqa: F401, F403
 except ImportError:
     pass
+
+for _setting, _default in (("CAMERA_STALL_SECONDS", 15), ("RECOGNITION_STALL_SECONDS", 30)):
+    _value = globals()[_setting]
+    try:
+        _valid = (not isinstance(_value, bool) and isinstance(_value, (int, float))
+                  and _value > 0 and math.isfinite(_value))
+    except OverflowError:
+        _valid = False
+    if not _valid:
+        logging.getLogger(__name__).warning("Invalid %s=%r; using %s seconds", _setting, _value, _default)
+        globals()[_setting] = _default
 
 # Validate after config_local.py so per-kiosk overrides obey the same rule.
 try:
