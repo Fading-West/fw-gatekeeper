@@ -142,16 +142,20 @@ class LivenessChecker:
             self.reset()
             return False
 
+        # Prediction and identity verification may be slow on kiosk hardware.
+        # Expire old closed-eye evidence after that work, before an open-eye
+        # frame can mark it alive (alive windows no longer expire).
+        advances_blink = (self._current_ear < self.ear_threshold
+                          or self._low_ear_frames >= self.blink_frames)
+        if advances_blink and frame_check is not None and not frame_check(frame, face_location):
+            self.reset()
+            return False
+        self._reset_window_if_expired()
+
         if self._current_ear < self.ear_threshold:
-            if frame_check is not None and not frame_check(frame, face_location):
-                self.reset()
-                return False
             self._low_ear_frames += 1
         else:
             if self._low_ear_frames >= self.blink_frames:
-                if frame_check is not None and not frame_check(frame, face_location):
-                    self.reset()
-                    return False
                 self._blink_count += 1
                 self._alive = True
             self._low_ear_frames = 0
