@@ -902,8 +902,16 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _owned_photo_path(path: Path, root: Path) -> Path:
-    """Retain the owned directory entry; never turn a symlink into its target."""
+    """Trust the configured root alias, while retaining entries beneath it.
+
+    Setup and immutable releases may relocate PHOTO_DIR through a symlink.
+    Map that configured prefix to its resolved root without resolving any
+    suffix: a nested file/directory symlink still needs manual cleanup.
+    """
     candidate = path.absolute()
+    configured_root = Path(config.PHOTO_DIR).absolute()
+    if candidate.is_relative_to(configured_root):
+        candidate = root / candidate.relative_to(configured_root)
     resolved = candidate.resolve()
     if resolved == root or not resolved.is_relative_to(root):
         raise ValueError(f"Worker photo path needs manual cleanup: {path}")
@@ -926,11 +934,12 @@ def _recover_photo_cleanup_unlocked(paths: Optional[list[str]] = None) -> None:
         journal = [entry for entry in journal if entry["path"] in owned]
     first_error = None
     for entry in journal:
-        path = Path(entry["path"])
-        candidate = path.resolve()
-        if any(part.is_symlink() for part in (path, *path.parents) if part != photo_root):
-            first_error = first_error or ValueError(f"Worker photo symlink needs manual cleanup: {path}")
+        try:
+            path = _owned_photo_path(Path(entry["path"]), photo_root)
+        except ValueError as exc:
+            first_error = first_error or exc
             continue
+        candidate = path.resolve()
         if entry["kind"] == "published" and candidate in references:
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
@@ -946,9 +955,6 @@ def _recover_photo_cleanup_unlocked(paths: Optional[list[str]] = None) -> None:
                     continue
             conn.execute("DELETE FROM photo_cleanup_journal WHERE path = ?", (entry["path"],))
             conn.commit()
-            continue
-        if candidate == photo_root or not candidate.is_relative_to(photo_root):
-            first_error = first_error or ValueError(f"Worker photo path needs manual cleanup: {path}")
             continue
         try:
             path.unlink(missing_ok=True)
