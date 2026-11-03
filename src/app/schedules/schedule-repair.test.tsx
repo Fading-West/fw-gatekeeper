@@ -6,6 +6,7 @@ import type { Schedule } from '@/lib/types';
 
 const role = vi.hoisted(() => ({ current: 'admin' }));
 vi.mock('@/hooks/usePortalRole', () => ({ usePortalRole: () => role.current }));
+vi.mock('@/hooks/useScheduleActor', () => ({ useScheduleActor: () => 'synthetic-admin' }));
 
 let tree: ReactTestRenderer | undefined;
 afterEach(async () => {
