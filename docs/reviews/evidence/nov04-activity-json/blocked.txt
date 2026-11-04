@@ -1,0 +1,4 @@
+Local Vitest command (parent session):
+flock -w 15 /home/noah/.cache/t3-recovery-heavy.lock node_modules/.bin/vitest run src/app/api/activity/route.test.ts src/app/api/activity/invalid-upstream.test.ts
+Exit 1 after timeout acquiring shared lock; Vitest did not start.
+Lint/typecheck/full tests/build not run under this occupied shared lock.

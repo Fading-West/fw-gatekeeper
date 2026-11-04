@@ -1,0 +1,7 @@
+PASS status=200 contentType=text/html => 502 expected=502
+PASS status=503 contentType=text/plain => 502 expected=502
+PASS status=200 contentType=application/json => 502 expected=502
+PASS status=200 contentType=null => 502 expected=502
+PASS status=200 contentType=application/jsonish => 502 expected=502
+PASS status=403 contentType=application/json; charset=utf-8 => 403 expected=403
+PASS status=200 contentType=application/json => 200 expected=200
