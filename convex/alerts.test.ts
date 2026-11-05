@@ -432,3 +432,95 @@ describe("alertState recording", () => {
   });
 
 });
+
+describe('roster confirmation alert episodes', () => {
+  const retry = new Date(NOW - 25 * MINUTE).toISOString();
+  const stalled = (overrides: Partial<AlertKiosk> = {}) => kiosk({ credentialActive: true, rosterReceiptPending: true, rosterRetrySince: retry, rosterChangesWaiting: true, ...overrides });
+  const state = { kioskId: 'kiosk-doc-1', condition: 'roster_unconfirmed', firstSeenAt: retry, lastNotifiedAt: new Date(NOW - 7 * HOUR).toISOString() };
+  it('dates first alerts and reminders from the retry, including unchanged rosters', () => {
+    for (const waiting of [true, false, null]) {
+      const plan = planKioskNotifications(evaluateKioskAlerts([stalled({ rosterChangesWaiting: waiting })], NOW), [], NOW);
+      expect(plan.observations).toContainEqual({ kioskId: state.kioskId, condition: state.condition, since: retry });
+      expect(plan.alerts[0].conditions).toContainEqual({ condition: state.condition, firstSeenAt: retry, isNew: true });
+      const message = buildAlertMessage(plan.alerts[0], NOW, 'https://example.test');
+      expect(message.subject).toContain('25m');
+      expect(message.text).toContain(`Roster changes awaiting confirmation: ${waiting === null ? 'unknown' : waiting ? 'yes' : 'no'}`);
+    }
+    expect(planKioskNotifications(evaluateKioskAlerts([stalled()], NOW), [state], NOW).alerts).toHaveLength(1);
+    expect(planKioskNotifications(evaluateKioskAlerts([stalled()], NOW), [{ ...state, lastNotifiedAt: new Date(NOW).toISOString() }], NOW).alerts).toHaveLength(0);
+  });
+  it('holds existing episodes without recovery/reminder while offline, revoked or retry evidence is ineligible', () => {
+    for (const overrides of [{ lastSync: new Date(NOW - 2 * HOUR).toISOString() }, { credentialActive: false }, { rosterRetrySince: undefined }, { rosterRetrySince: 'invalid' }, { rosterRetrySince: new Date(NOW + MINUTE).toISOString() }, { rosterRetrySince: new Date(NOW - MINUTE).toISOString() }]) {
+      const plan = planKioskNotifications(evaluateKioskAlerts([stalled(overrides)], NOW), [state], NOW);
+      expect(plan.recoveries).toEqual([]);
+      expect(plan.alerts.flatMap(a => a.conditions).some(c => c.condition === state.condition)).toBe(false);
+      expect(plan.observations).toContainEqual({ kioskId: state.kioskId, condition: state.condition });
+    }
+  });
+  it('recovers on ack only and treats a later retry as a new episode despite the reminder window', () => {
+    const acknowledged = planKioskNotifications(evaluateKioskAlerts([stalled({ rosterReceiptPending: false, rosterRetrySince: undefined })], NOW), [state], NOW);
+    expect(acknowledged.recoveries[0].conditions).toEqual([{ condition: state.condition, firstSeenAt: retry }]);
+    const newRetry = new Date(NOW - 20 * MINUTE).toISOString();
+    const plan = planKioskNotifications(evaluateKioskAlerts([stalled({ rosterRetrySince: newRetry })], NOW), [{ ...state, lastNotifiedAt: new Date(NOW - MINUTE).toISOString() }], NOW);
+    expect(plan.alerts[0].conditions).toContainEqual({ condition: state.condition, firstSeenAt: newRetry, isNew: true });
+    expect(plan.recoveries).toEqual([]);
+  });
+  it('persists the retry episode and clears notification history when a new episode delivery fails', async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.alerts.recordState, { now: new Date(NOW).toISOString(), observations: [{ kioskId: state.kioskId, condition: state.condition, since: retry }], notified: [{ kioskId: state.kioskId, condition: state.condition }] });
+    const next = new Date(NOW + MINUTE).toISOString();
+    await t.mutation(internal.alerts.recordState, { now: next, observations: [{ kioskId: state.kioskId, condition: state.condition, since: next }], notified: [] });
+    const rows = await t.run(ctx => ctx.db.query('alertState').collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].firstSeenAt).toBe(next);
+    expect(rows[0].lastNotifiedAt).toBeUndefined();
+  });
+});
+
+it('runs receipt retries, held revocation/offline states, resumption and ack recovery through the alert action', async () => {
+  const t = convexTest(schema, modules);
+  vi.useFakeTimers(); vi.setSystemTime(NOW);
+  vi.stubEnv('ALERT_WEBHOOK_URL', 'https://alerts.example.test');
+  const fetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('{}', { status: 200 }));
+  vi.stubGlobal('fetch', fetch);
+  try {
+    const id = await t.run(ctx => ctx.db.insert('kiosks', { name: 'Gate', type: 'pi', location: '', active: true, credentialHash: 'a'.repeat(64), lastSync: new Date(NOW).toISOString(), rosterAppliedSequence: 0 }));
+    const issued = await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: id });
+    const check = () => t.action(internal.alerts.checkKiosks, {});
+    const rosterRows = () => t.run(async ctx => (await ctx.db.query('alertState').collect()).filter(row => row.condition === 'roster_unconfirmed'));
+    await check();
+    expect(await rosterRows()).toEqual([]);
+    await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: id });
+    vi.setSystemTime(NOW + 16 * MINUTE);
+    await t.run(ctx => ctx.db.patch(id, { lastSync: new Date(Date.now()).toISOString() }));
+    await check();
+    let rows = await rosterRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ firstSeenAt: new Date(NOW).toISOString(), lastNotifiedAt: new Date(Date.now()).toISOString() });
+    const firstNotification = rows[0].lastNotifiedAt;
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).text).toContain('Roster changes awaiting confirmation: no');
+    vi.setSystemTime(NOW + 7 * HOUR);
+    // Recent contact cannot make a revoked kiosk eligible or announce recovery.
+    await t.run(ctx => ctx.db.patch(id, { credentialHash: undefined, lastSync: new Date(Date.now()).toISOString() }));
+    await check();
+    rows = await rosterRows();
+    expect(rows[0]).toMatchObject({ lastNotifiedAt: firstNotification });
+    expect(rows[0].resolvedAt).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await t.run(ctx => ctx.db.patch(id, { credentialHash: 'b'.repeat(64), lastSync: new Date(NOW).toISOString() }));
+    await check(); // Offline alert only; no roster reminder or recovery.
+    expect((await rosterRows())[0].lastNotifiedAt).toBe(firstNotification);
+    const messages = () => fetch.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
+    expect(messages().slice(1).every(message => !message.conditions.includes('roster_unconfirmed'))).toBe(true);
+    await t.run(ctx => ctx.db.patch(id, { lastSync: new Date(Date.now()).toISOString() }));
+    await check();
+    expect((await rosterRows())[0].lastNotifiedAt).toBe(new Date(Date.now()).toISOString());
+    await t.mutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, { documentId: id, receipt: issued!.receipt });
+    await check();
+    expect((await rosterRows())[0].resolvedAt).toBe(new Date(Date.now()).toISOString());
+    const recoveries = messages().filter(message => message.type === 'kiosk_recovery' && message.conditions.includes('roster_unconfirmed'));
+    expect(recoveries).toHaveLength(1);
+    await check();
+    expect(messages().filter(message => message.type === 'kiosk_recovery' && message.conditions.includes('roster_unconfirmed'))).toHaveLength(1);
+  } finally { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); }
+});

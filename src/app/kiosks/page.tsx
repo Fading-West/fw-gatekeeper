@@ -16,6 +16,9 @@ type KioskHealthRow = {
   location: string;
   last_sync: string | null;
   roster_applied_at: string | null;
+  roster_retry_since: string | null;
+  roster_changes_waiting: boolean | null;
+  roster_confirmation_stalled: boolean;
   purge_pending: boolean;
   status: KioskReadinessStatus;
   expected_worker_count: number;
@@ -371,9 +374,13 @@ export default function KiosksPage() {
                       <p className="text-xs text-slate-500">Last contact</p>
                       <p className="text-slate-200 mt-1">{formatTimestamp(kiosk.last_sync)}</p>
                     </div>
-                    <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
+                    <div className={`rounded-xl border p-3 ${kiosk.roster_confirmation_stalled ? 'bg-amber-400/5 border-amber-400/30' : 'bg-navy-900/40 border-navy-600/40'}`}>
                       <p className="text-xs text-slate-500">Last applied roster</p>
                       <p className="text-slate-200 mt-1">{kiosk.roster_applied_at ? formatTimestamp(kiosk.roster_applied_at) : 'Unconfirmed (legacy or pending acknowledgement)'}</p>
+                      {kiosk.roster_confirmation_stalled && (
+                        <p className="text-amber-300 mt-1">Confirmation stalled since {formatTimestamp(kiosk.roster_retry_since)}</p>
+                      )}
+                      <p className="text-xs text-slate-400 mt-1">Roster changes awaiting confirmation: {kiosk.roster_changes_waiting === true ? 'Yes' : kiosk.roster_changes_waiting === false ? 'No' : 'Unknown'}</p>
                     </div>
                     <div className="rounded-xl bg-navy-900/40 border border-navy-600/40 p-3">
                       <p className="text-xs text-slate-500">Biometric purge</p>
@@ -397,7 +404,7 @@ export default function KiosksPage() {
                   </div>
                   {(kiosk.device_issues?.length || 0) > 0 && (
                     <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3">
-                      <p className="text-xs text-amber-200 font-semibold">Device issues reported by the kiosk</p>
+                      <p className="text-xs text-amber-200 font-semibold">Device issues</p>
                       <ul className="mt-1 space-y-1">
                         {kiosk.device_issues!.map((issue) => (
                           <li key={issue} className="text-xs text-amber-300">{issue}</li>

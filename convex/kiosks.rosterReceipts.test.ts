@@ -5,7 +5,7 @@ import { api, internal } from './_generated/api';
 import schema from './schema';
 
 const modules = import.meta.glob('./**/*.ts');
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -80,4 +80,43 @@ it('shows a purge pending until a later receipt is acknowledged, even with a rec
   expect(row?.roster_applied_at).toBeTruthy();
   // A sequence-zero full sync covers all pre-migration purges.
   expect(row?.purge_pending).toBe(false);
+});
+
+it('starts the retry timer once, including legacy receipts, and clears it only on ack', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(Date.parse('2026-10-30T12:00:00Z'));
+  const { t, first } = await setup();
+  const issued = await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: first });
+  expect(await t.run(ctx => ctx.db.get(issued!.receipt))).not.toHaveProperty('retriedAt');
+  vi.advanceTimersByTime(60_000);
+  await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: first });
+  const retried = await t.run(ctx => ctx.db.get(issued!.receipt));
+  expect(retried?.retriedAt).toBe('2026-10-30T12:01:00.000Z');
+  vi.advanceTimersByTime(60_000);
+  await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: first });
+  expect(await t.run(ctx => ctx.db.get(issued!.receipt))).toEqual(retried);
+  await t.mutation(internal.kiosks.acknowledgeRosterReceiptFromHttp, { documentId: first, receipt: issued!.receipt });
+  expect(await t.run(ctx => ctx.db.get(issued!.receipt))).toBeNull();
+  const legacy = await t.run(ctx => ctx.db.insert('kioskRosterReceipts', { kioskId: first, issuedAt: '2020-01-01T00:00:00Z' }));
+  await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: first });
+  expect((await t.run(ctx => ctx.db.get(legacy)))?.retriedAt).toEqual(expect.any(String));
+});
+
+it('lists retry evidence and nullable sequence comparison without exposing revoked retry evidence', async () => {
+  const { t, first, second, admin } = await setup();
+  expect((await admin.query(api.kiosks.list, {}))[0]).toMatchObject({ roster_retry_since: null, roster_changes_waiting: null });
+  await t.run(async ctx => {
+    await ctx.db.insert('rosterSequence', { key: 'roster', value: 8 });
+    await ctx.db.patch(first, { rosterAppliedSequence: 7 });
+    await ctx.db.patch(second, { rosterAppliedSequence: 8 });
+  });
+  const issued = await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: first });
+  await t.mutation(internal.kiosks.issueRosterReceiptFromHttp, { documentId: first });
+  const retry = (await t.run(ctx => ctx.db.get(issued!.receipt)))!.retriedAt;
+  let rows = await admin.query(api.kiosks.list, {});
+  expect(rows.find(k => k.id === first)).toMatchObject({ roster_retry_since: retry, roster_changes_waiting: true });
+  expect(rows.find(k => k.id === second)).toMatchObject({ roster_retry_since: null, roster_changes_waiting: false });
+  await admin.mutation(api.kiosks.revokeCredential, { id: first, confirmStopSync: true });
+  rows = await admin.query(api.kiosks.list, {});
+  expect(rows.find(k => k.id === first)).toMatchObject({ roster_retry_since: null });
+  expect((await t.run(ctx => ctx.db.get(issued!.receipt)))!.retriedAt).toBe(retry);
 });
