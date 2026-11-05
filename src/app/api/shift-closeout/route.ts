@@ -132,7 +132,8 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'JSON object required' }, { status: 400 });
     }
     const date = optionalString(body.date);
-    const action = optionalString(body.action) || 'save';
+    // Only omission defaults to save; an invalid explicit intent must not write.
+    const action = body.action === undefined ? 'save' : typeof body.action === 'string' ? body.action.trim() : '';
     const requestId = body.request_id ?? body.requestId;
     const expectedRevision = body.expected_revision ?? body.expectedRevision;
     const revision = body.expected_revision === null || body.expectedRevision === null ? null : expectedRevision;
