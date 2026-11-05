@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "activation": "opt-in on this branch; no default activation on master",
+  "features": {
+    "activity-log-add-missing-punch": {
+      "entryPoint": "/log?date=<yesterday, America/Chicago> → Add missing punch dialog → Add punch",
+      "write": "POST /api/attendance-corrections (action add_clock_in, request_id) → Convex attendanceCorrections:create",
+      "allowedRole": "enrollment",
+      "deniedRoles": ["viewer", "anonymous"],
+      "serverGuards": [
+        "src/proxy.ts getApiAllowedRoles: POST /api/attendance-corrections → admin, enrollment",
+        "src/app/api/attendance-corrections/route.ts POST: hasValidPortalSession(['admin', 'enrollment'])",
+        "convex/attendanceCorrections.ts create: assertPortalRole(ctx, ['admin', 'enrollment'])"
+      ],
+      "assertions": [
+        "enrollment submits worker, Clock in, a per-attempt time, reason and supervisor through the real dialog; the POST returns 201",
+        "the row 'Supervisor correction: <reason>' appears after save",
+        "fresh database read finds exactly one attendanceCorrections row for the run's unique reason, matching the UI request_id, worker, timestamp and reason",
+        "persisted fields: action add_clock_in, eventType clock_in, date, supervisorName, actorUserId = the enrollment user",
+        "row visible after reload and in a fresh admin session",
+        "viewer sees the row but no Add missing punch control",
+        "viewer replay of the UI request (new request_id) → 401; anonymous → 401",
+        "attendanceCorrections:create called directly on Convex with the viewer's token → Insufficient permissions; anonymous → Unauthorized",
+        "whole-database diff: the only domain change is the allowed row; no denied nonce persists anywhere",
+        "existing src/app/log/direct-corrections.browser.test.ts and src/components/AttendanceCorrectionDialog.browser.test.ts pass unchanged with no skipped tests"
+      ],
+      "negativeControl": "disposable defect deployed to the owned backend only: 'viewer' added to attendanceCorrections.create's assertPortalRole list. The same check fails at viewer-convex-mutation-denied (plus the persistence diffs); after byte-for-byte restore and redeploy (function hashes equal prepare's) it passes.",
+      "choice": "Direct attendance correction is a meaningful persisted supervisor action with a real three-role model enforced in the Next proxy, the route and the Convex mutation, an audit actor on the row, and existing browser proofs. Open PR #274 edits convex/attendanceCorrections.ts (correction-history read capacity); this package changes no product file, and if the create role-check line ever changes, negative-control refuses instead of guessing.",
+      "unverified": [
+        "Raspberry Pi kiosk hardware, camera and recognition",
+        "kiosk sync/ingest with real device credentials",
+        "face-service encode/match (FACE_ENCODE_URL unset)",
+        "Resend email / webhook alert delivery",
+        "the real Command Center consumer of /api/activity (only the endpoint contract is exercised)",
+        "Render hosting and the production Convex deployment"
+      ]
+    }
+  }
+}
