@@ -4,7 +4,7 @@ import { getFactoryLocalDateKey } from "./localDate";
 import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { isValidFactoryLocalDateKey } from "./localDate";
-import { buildShiftExceptions } from "./shiftExceptions";
+import { buildShiftExceptions, getReviewFingerprint } from "./shiftExceptions";
 import { buildShiftBriefing, describeKioskWarningReasons, summarizeAttendanceQueue } from "./shiftBriefing";
 import { ATTENDANCE_QUEUE_SCOPE_NOTE } from "./attendanceQueue";
 import { assertPortalRole } from "./access";
@@ -441,7 +441,11 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
       exception.type === "missing_clock_out" || exception.type === "recognition_review")
       .map((exception: any) => [exception.key, exception.type, exception.severity, exception.first_seen,
         exception.last_seen, exception.event_count, exception.scheduled_start, exception.scheduled_end,
-        exception.kiosk_id, exception.source_event_ids || [], exception.source_evidence || null])
+        exception.kiosk_id, exception.source_event_ids || [], exception.source_evidence || null,
+        // A missing exit can acquire competing overnight scans without changing
+        // its same-day rows or counts. Bind acknowledgement to the same bounded
+        // pairing evidence as explicit exception review (not unrelated next days).
+        ...(exception.type === "missing_clock_out" ? [getReviewFingerprint(exception)] : [])])
       .sort((a: any[], b: any[]) => String(a[0]).localeCompare(String(b[0]))),
     kiosks: kioskEvidence.sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   });
