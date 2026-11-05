@@ -101,3 +101,26 @@ it('keeps writes protected by the portal role check', async () => {
   expect(convex.mutation).not.toHaveBeenCalled();
   expect(hasValidPortalSession).toHaveBeenCalledWith(expect.any(NextRequest), ['admin', 'enrollment']);
 });
+
+// A malformed explicit intent must never turn into a different persisted action.
+it.each([null, false, 0, 123, '', '   ', [], {}, ['complete']].map(action => ({ action })))('rejects explicit malformed action $action without changing closeout evidence', async ({ action }) => {
+  const { t, id, patch } = await setup();
+  const before = await t.run(ctx => ctx.db.get(id));
+  const response = await patch({ action, notes: 'Must not be saved' });
+  const after = await t.run(async ctx => ({
+    closeout: await ctx.db.get(id),
+    receipts: await ctx.db.query('shiftCloseoutActionReceipts').collect(),
+    history: await ctx.db.query('shiftCloseoutHistory').collect(),
+    audit: await ctx.db.query('auditLog').collect(),
+  }));
+  expect(after).toEqual({ closeout: before, receipts: [], history: [], audit: [] });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: 'action must be save, complete, or reopen' });
+  expect(convex.mutation).not.toHaveBeenCalled();
+});
+
+it('continues to default an omitted action to save', async () => {
+  const { t, id, patch } = await setup();
+  expect((await patch({ notes: 'Intentional save' })).status).toBe(200);
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ notes: 'Intentional save', revision: 1 });
+});
