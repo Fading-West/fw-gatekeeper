@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { boundedRead } from '@/lib/bounded-read';
 
 /** A response belongs to the selection that requested it, even if requests finish out of order. */
 export function useSelectedData<T>(key: string, load: (signal: AbortSignal) => Promise<T>) {
@@ -19,7 +20,7 @@ export function useSelectedData<T>(key: string, load: (signal: AbortSignal) => P
     const id = ++requestId.current;
     setState({ key, value: null, error: '', loading: true });
     try {
-      const value = await load(active.signal);
+      const value = await boundedRead(load, active.signal);
       if (active.signal.aborted || id !== requestId.current || selectedKey.current !== key) return;
       setState({ key, value, error: '', loading: false });
     } catch (error) {
