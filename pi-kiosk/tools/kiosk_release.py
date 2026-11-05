@@ -69,13 +69,24 @@ def selected(repo):
 
 
 def stop_child(child):
-    if child.poll() is None:
+    # A reaped leader can still have live build workers in its process group.
+    # Stop the owned group even when poll() already observed the leader's exit.
+    try:
         os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        child.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # The leader exiting also ends its grace period. Do not leave workers
+        # (including ones ignoring SIGTERM) running after staging is collected.
         try:
-            child.wait(timeout=20)
-        except subprocess.TimeoutExpired:
             os.killpg(child.pid, signal.SIGKILL)
-            child.wait()
+        except ProcessLookupError:
+            pass
+        child.wait()
 
 
 def save_arguments(repo, pid):
