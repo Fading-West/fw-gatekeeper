@@ -1,6 +1,6 @@
 import { getFactoryLocalDateKey } from "./localDate";
 import { internalMutation, internalQuery, query } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { validateAttendanceBatch, validateAttendanceEvent, type AttendanceEvent } from "./attendanceValidation";
@@ -171,8 +171,14 @@ export const list = query({
     // Join worker and kiosk data
     const result: any[] = [];
     const resolveKiosk = createActiveKioskResolver(ctx);
+    // Each punch shares its worker's snapshot, including legacy missing IDs.
+    // Repeated full-worker reads otherwise exhaust query ranges or bytes.
+    const workersById = new Map<string, Doc<"workers"> | null>();
     for (const a of records) {
-      const worker = a.workerId ? await ctx.db.get(a.workerId as any).catch(() => null) : null;
+      if (a.workerId && !workersById.has(a.workerId)) {
+        workersById.set(a.workerId, await ctx.db.get(a.workerId as Id<"workers">).catch(() => null));
+      }
+      const worker = workersById.get(a.workerId) ?? null;
       const kiosk = await resolveKiosk(a.kioskId);
       result.push({
         id: a._id,
