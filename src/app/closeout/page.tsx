@@ -216,6 +216,7 @@ function ShiftCloseoutPageContent() {
   const [pendingAction, setPendingAction] = useState<PendingCloseoutAction | null>(null);
   const mutationPendingRef = useRef(false);
   const conflictDraftRef = useRef<{ date: string; notes: string; supervisorName: string } | null>(null);
+  const syncedCloseoutRef = useRef<{ record: string; blockerEvidence?: string } | null>(null);
   const [unsavedConflictDraft, setUnsavedConflictDraft] = useState<{ date: string; notes: string; supervisorName: string } | null>(null);
   const canOperate = canOperateCloseout(currentRole);
   const selectedContext = useRef({ actorId, date, canOperate });
@@ -226,6 +227,10 @@ function ShiftCloseoutPageContent() {
     setPendingAction(actorId ? loadCloseoutAction(actorId, date) : null);
     setUnsavedConflictDraft(null);
     conflictDraftRef.current = null;
+    syncedCloseoutRef.current = null;
+    setSupervisorName('');
+    setNotes('');
+    setAcknowledgedBlockers(false);
   }, [actorId, date]);
 
   const loadCloseout = useCallback(async (signal: AbortSignal): Promise<ShiftCloseoutResponse> => {
@@ -239,17 +244,27 @@ function ShiftCloseoutPageContent() {
   const dataReady = Boolean(payload && !loading && !error && !payload.backend_unavailable);
 
   useEffect(() => {
-    const retained = conflictDraftRef.current?.date === payload?.date ? conflictDraftRef.current : null;
-    const editableDraft = payload?.closeout?.status === 'completed' ? null : retained;
-    setSupervisorName(editableDraft?.supervisorName ?? payload?.closeout?.supervisor_name ?? '');
-    setNotes(editableDraft?.notes ?? payload?.closeout?.notes ?? '');
+    // Refresh clears the payload while it reloads; keep the unsaved draft.
+    if (!payload) return;
+    const record = JSON.stringify([actorId, payload.date, payload.closeout?.revision ?? null, payload.closeout?.status ?? null]);
+    const synced = syncedCloseoutRef.current;
+    syncedCloseoutRef.current = { record, blockerEvidence: payload.blocker_evidence };
+    const retained = conflictDraftRef.current?.date === payload.date ? conflictDraftRef.current : null;
+    if (!retained && synced?.record === record) {
+      // Same saved record: keep the draft. A tick only covers the blockers it was given for.
+      if (synced.blockerEvidence !== payload.blocker_evidence) setAcknowledgedBlockers(Boolean(payload.closeout?.acknowledged_blockers));
+      return;
+    }
+    const editableDraft = payload.closeout?.status === 'completed' ? null : retained;
+    setSupervisorName(editableDraft?.supervisorName ?? payload.closeout?.supervisor_name ?? '');
+    setNotes(editableDraft?.notes ?? payload.closeout?.notes ?? '');
 
-    setAcknowledgedBlockers(Boolean(payload?.closeout?.acknowledged_blockers));
+    setAcknowledgedBlockers(Boolean(payload.closeout?.acknowledged_blockers));
     if (retained) {
-      setUnsavedConflictDraft(payload?.closeout?.status === 'completed' ? retained : null);
+      setUnsavedConflictDraft(payload.closeout?.status === 'completed' ? retained : null);
       conflictDraftRef.current = null;
     }
-  }, [payload]);
+  }, [actorId, payload]);
 
 
   const status = payload?.closeout?.status || 'open';
