@@ -75,8 +75,11 @@ PHOTO_DIR = FACES_DIR
 # mutate config.py — keeping `git pull` upgrades clean on deployed kiosks.
 try:
     from config_local import *  # noqa: F401, F403
-except ImportError:
-    pass
+except ModuleNotFoundError as exc:
+    # Only the optional file may be absent. A broken site import must stop
+    # startup rather than silently changing identity or recognition policy.
+    if exc.name != "config_local":
+        raise
 
 # Validate after config_local.py so per-kiosk overrides obey the same rule.
 try:
