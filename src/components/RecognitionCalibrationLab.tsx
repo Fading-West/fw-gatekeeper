@@ -10,7 +10,7 @@ import {
   RecognitionDecision,
   RecognitionReviewStatus,
 } from '@/lib/types';
-import { formatFactoryLocalDateTime, getFactoryLocalDateString } from '@/lib/date';
+import { formatFactoryLocalDateTime, getFactoryLocalDateString, isValidLocalDateString } from '@/lib/date';
 import { FactoryDayNotice } from '@/components/FactoryDayNotice';
 import { useFactoryDateSelection } from '@/hooks/useFactoryDateSelection';
 import { usePortalRole } from '@/hooks/usePortalRole';
@@ -158,12 +158,15 @@ function RecognitionCalibrationLabContent() {
   const currentQueryRef = useRef(queryString);
   currentQueryRef.current = queryString;
   const loadAttempts = useCallback(async (signal: AbortSignal): Promise<RecognitionAttemptsResponse> => {
+    // A cleared date field sends ?date=, which the API resolves to factory
+    // today. Never show or review another day's attempts under a blank date.
+    if (!isValidLocalDateString(date)) throw new Error('Choose a date to review recognition attempts.');
     const res = await fetch(`/api/recognition-attempts?${queryString}`, { cache: 'no-store', signal });
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error || 'Failed to load recognition attempts');
     if (!Array.isArray(body?.attempts) || !body.summary) throw new Error('Invalid recognition response. Refresh to try again.');
     return body;
-  }, [queryString]);
+  }, [date, queryString]);
   const { data: payload, loading, error, refresh: fetchAttempts } = useSelectedData(queryString, loadAttempts);
   const dataReady = Boolean(payload && !loading && !error);
 

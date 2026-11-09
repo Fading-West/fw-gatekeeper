@@ -142,3 +142,19 @@ it('leaves counts proven exact by filters unmarked while marking bounded counts'
   expect(label(tree.toJSON())).not.toContain('Rejected0+');
   expect(label(tree.toJSON())).not.toContain('Review backlog0+');
 });
+
+it('never shows or reviews another day under a cleared date field', async () => {
+  await act(async () => requests.get(day('2026-09-10'))!(payload('old', 'Thursday worker')));
+  // A cleared date input sends ?date=, which the API resolves to factory today.
+  await selectDate('');
+  if (requests.has(day(''))) await act(async () => requests.get(day(''))!(payload('today', 'Today worker')));
+  expect(fetchMock.mock.calls.some(([url]) => url === day(''))).toBe(false);
+  const text = label(tree.toJSON());
+  expect(text).not.toContain('Today worker');
+  expect(text).not.toContain('Thursday worker');
+  expect(text).toContain('Choose a date to review recognition attempts.');
+  expect(tree.root.findAllByType('button').some((node) => label(node) === 'Confirm')).toBe(false);
+  await selectDate('2026-09-11');
+  await act(async () => requests.get(day('2026-09-11'))!(payload('new', 'Friday worker')));
+  expect(label(tree.toJSON())).toContain('Friday worker');
+});
