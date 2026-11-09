@@ -1,0 +1,25 @@
+test_failed_model_publication_does_not_accumulate_downloads_on_retry (__main__.ModelPinningTests.test_failed_model_publication_does_not_accumulate_downloads_on_retry) ... FAIL
+
+======================================================================
+FAIL: test_failed_model_publication_does_not_accumulate_downloads_on_retry (__main__.ModelPinningTests.test_failed_model_publication_does_not_accumulate_downloads_on_retry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-c57e9eba-7b060b36325be96e/pi-kiosk/test_model_pinning.py", line 156, in test_failed_model_publication_does_not_accumulate_downloads_on_retry
+    self.assertEqual(sorted(path.name for path in self.path.parent.iterdir()),
+AssertionError: Lists differ: ['legacy.onnx', 'model.onnx.3h44t87h.part', 'operator-evidence.part'] != ['legacy.onnx', 'operator-evidence.part']
+
+First differing element 1:
+'model.onnx.3h44t87h.part'
+'operator-evidence.part'
+
+First list contains 1 additional elements.
+First extra element 2:
+'operator-evidence.part'
+
+- ['legacy.onnx', 'model.onnx.3h44t87h.part', 'operator-evidence.part']
++ ['legacy.onnx', 'operator-evidence.part']
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+FAILED (failures=1)

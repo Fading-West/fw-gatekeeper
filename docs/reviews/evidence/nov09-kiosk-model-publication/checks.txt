@@ -1,0 +1,8 @@
+lint 0
+typecheck 0
+build 0
+test 1
+full-stack 2
+backlog-rerun 0
+python-suite 0
+contracts 0

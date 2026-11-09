@@ -2,6 +2,7 @@
 """Behavioral coverage for the commit-pinned, digest-verified recognition model."""
 
 import hashlib
+import errno
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import io
@@ -134,6 +135,26 @@ class ModelPinningTests(unittest.TestCase):
         self.assertEqual(legacy.read_bytes(), self.payload)
         self.assertFalse(self.path.exists())
         self.assertEqual(list(self.path.parent.glob('*.part')), [])
+
+    def test_failed_model_publication_does_not_accumulate_downloads_on_retry(self):
+        legacy = self.path.with_name('legacy.onnx')
+        legacy.write_bytes(self.payload)
+        self.path.unlink()
+        evidence = self.path.with_name('operator-evidence.part')
+        evidence.write_bytes(b'keep operator evidence')
+        with patch('model_pinning.urllib.request.urlopen',
+                   side_effect=lambda *args, **kwargs: _FakeResponse(self.payload)), \
+                patch('model_pinning.Path.replace',
+                      side_effect=OSError(errno.ENOSPC, 'No space left on device')):
+            for _ in range(3):
+                with self.assertRaises(OSError) as failure:
+                    ensure_pinned_model('https://example.invalid/model', self.path, self.expected)
+                self.assertEqual(failure.exception.errno, errno.ENOSPC)
+                self.assertFalse(self.path.exists())
+                self.assertEqual(legacy.read_bytes(), self.payload)
+                self.assertEqual(evidence.read_bytes(), b'keep operator evidence')
+                self.assertEqual(sorted(path.name for path in self.path.parent.iterdir()),
+                                 ['legacy.onnx', 'operator-evidence.part'])
 
     def test_digest_specific_cache_migrates_offline_and_preserves_fallback_model(self):
         spec = importlib.util.spec_from_file_location('kiosk_embeddings_test', KIOSK_DIR / 'embeddings.py')

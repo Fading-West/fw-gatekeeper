@@ -105,10 +105,10 @@ def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, lab
         verify_model_digest(partial, expected_sha256)
         with partial.open("rb") as stream:
             os.fsync(stream.fileno())
+        partial.replace(path)
     except Exception:
         partial.unlink(missing_ok=True)
         raise
-    partial.replace(path)
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
