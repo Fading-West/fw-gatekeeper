@@ -107,6 +107,8 @@ const publicKioskHealth = httpAction(async (ctx) => {
 
   for (const kiosk of kiosks) {
     counts[publicKioskStatus(kiosk.last_sync, checkedAtMs)] += 1;
+    // A missing newer count cannot clear previously acknowledged pending work.
+    queuedRecords += Math.max(0, kiosk.attendance_queue.last_valid_count ?? 0);
     if (!kiosk.health) {
       missingDeviceHealth += 1;
       continue;
@@ -117,7 +119,7 @@ const publicKioskHealth = httpAction(async (ctx) => {
       continue;
     }
     if (kiosk.health.camera_ok === false || kiosk.health.model_ok === false || kiosk.health.degraded_reason) deviceIssues += 1;
-    queuedRecords += Math.max(0, kiosk.health.queued_logs ?? 0) + Math.max(0, kiosk.health.queued_attempts ?? 0);
+    queuedRecords += Math.max(0, kiosk.health.queued_attempts ?? 0);
     rejectedRecognitionRecords += Math.max(0, kiosk.health.rejected_attempts ?? 0);
     if (typeof kiosk.health.camera_ok !== 'boolean' || typeof kiosk.health.model_ok !== 'boolean') {
       missingDeviceHealth += 1;
