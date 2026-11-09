@@ -15,7 +15,9 @@ it('evaluates sync and device health against a clock sampled after the snapshot'
   const response = await action._handler({
     runQuery: async () => {
       vi.setSystemTime(startedAt + 2000);
-      return [{ last_sync: lastSync, health: {
+      return [{ last_sync: lastSync,
+        attendance_queue: { status: 'clear', last_valid_count: 0, observed_at: lastSync, caveat: false },
+        health: {
         camera_ok: true, model_ok: true, reported_at: lastSync,
       } }];
     },
