@@ -1,0 +1,187 @@
+FFFFFFFF.
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 797, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+Mismatched elements: 28796 / 28800 (100%)
+Max absolute difference: 114
+Max relative difference: 2.
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[255, 255, 255],
+        [255, 255, 255],
+        [255, 255, 255],...
+
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=3)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 797, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+Mismatched elements: 17450 / 28800 (60.6%)
+Max absolute difference: 109
+Max relative difference: 24.5
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[242,  19,  11],
+        [242,  19,  11],
+        [242,  19,  11],...
+
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=4)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 797, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+Mismatched elements: 28792 / 28800 (100%)
+Max absolute difference: 114
+Max relative difference: 6.
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[255, 255, 255],
+        [255, 255, 255],
+        [255, 255, 255],...
+
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=5)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 713, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+(shapes (120, 80, 3), (80, 120, 3) mismatch)
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=6)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 713, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+(shapes (120, 80, 3), (80, 120, 3) mismatch)
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[255, 255, 255],
+        [255, 255, 255],
+        [255, 255, 255],...
+
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=7)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 713, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+(shapes (120, 80, 3), (80, 120, 3) mismatch)
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[242,  19,  11],
+        [242,  19,  11],
+        [242,  19,  11],...
+
+======================================================================
+FAIL: test_all_exif_orientations_decode_to_displayed_pixels (__main__.ImageOrientationTests.test_all_exif_orientations_decode_to_displayed_pixels) (orientation=8)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 55, in test_all_exif_orientations_decode_to_displayed_pixels
+    np.testing.assert_array_equal(main.decode_image(data_url(photo)), expected_bgr)
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 920, in assert_array_equal
+    assert_array_compare(operator.__eq__, x, y, err_msg=err_msg,
+  File "/home/lizardbox/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/outputs/face-venv/lib/python3.11/site-packages/numpy/testing/_private/utils.py", line 713, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError:
+Arrays are not equal
+
+(shapes (120, 80, 3), (80, 120, 3) mismatch)
+ x: array([[[ 11,  20, 241],
+        [ 11,  20, 241],
+        [ 11,  20, 241],...
+ y: array([[[255, 255, 255],
+        [255, 255, 255],
+        [255, 255, 255],...
+
+======================================================================
+FAIL: test_encode_and_match_pass_upright_pixels_to_face_detection (__main__.ImageOrientationTests.test_encode_and_match_pass_upright_pixels_to_face_detection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-14e25de8-e33a07160d3b64f4/face-service/test_image_orientation.py", line 82, in test_encode_and_match_pass_upright_pixels_to_face_detection
+    self.assertEqual(encoded.status_code, 200, encoded.text)
+AssertionError: 422 != 200 : {"detail":{"message":"Enrollment needs at least 2 clear, matching photos of one face: 3 of 3 photos could not be used (no face detected). Retake the photos facing the camera in good light.","photos":[{"index":0,"ok":false,"reason":"no_face"},{"index":1,"ok":false,"reason":"no_face"},{"index":2,"ok":false,"reason":"no_face"}],"disagreeing_pairs":[]}}
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.608s
+
+FAILED (failures=8)

@@ -197,7 +197,8 @@ authentication runs before JSON parsing to prevent object expansion from
 unauthenticated JSON. Run `python3 face-service/test_body_size_limit.py`
 to check these boundaries without loading the recognition model.
 
-Images must be still images of at most four million pixels. Invalid or
+Images must be still images of at most four million pixels. EXIF orientation is
+applied before face detection for both enrollment and matching. Invalid or
 zero model embeddings fail closed. Similarity thresholds must be finite in (0,1],
 and at least two consistent photos are required. Only accepted photo indexes are
 stored by the dashboard. Concurrent cold starts share one recognition session.
