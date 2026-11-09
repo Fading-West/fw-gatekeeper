@@ -13,6 +13,7 @@ import { useCloseoutActor } from '@/hooks/useCloseoutActor';
 import { useSelectedData } from '@/hooks/useSelectedData';
 import { beginCloseoutAction, loadCloseoutAction, acknowledgeCloseoutAction, rejectCloseoutAction, reconcileRejectedCloseoutAction, closeoutActionStored, type PendingCloseoutAction } from '@/lib/closeout-request';
 import { attendanceComparisonLabel, attendanceEvidenceCounts, normalizeAttendanceComparison } from '@/lib/attendance-comparison';
+import { formatFactoryLocalDateTime } from '@/lib/date';
 import {
   ShiftCloseoutChecklistItem,
   ShiftCloseoutResponse,
@@ -37,16 +38,10 @@ function titleCase(value: string) {
   return value.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+// Signoff, comparison and draft times are shown and exported in factory time,
+// matching the dashboard and briefing, whatever the viewer's browser timezone.
 function formatDateTime(value: string | null | undefined) {
-  if (!value) return 'Not recorded';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return formatFactoryLocalDateTime(value, 'Not recorded');
 }
 
 function checklistExportLine(item: ShiftCloseoutChecklistItem, role: PortalRole | undefined, date: string) {
