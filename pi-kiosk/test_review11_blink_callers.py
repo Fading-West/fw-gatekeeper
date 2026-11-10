@@ -103,7 +103,9 @@ class BlinkIntegrationQA(fixture.BlinkTests):
         failure=next(n for n in loop.body if isinstance(n,ast.If) and ast.unparse(n.test)=='not ret')
         wrapper=ast.Module(body=[ast.For(target=ast.Name(id='_once',ctx=ast.Store()),iter=ast.List(elts=[ast.Constant(value=0)],ctx=ast.Load()),body=[failure],orelse=[])],type_ignores=[])
         checker=self.checker();self.feed(checker,.1);self.feed(checker,.1)
-        exec(compile(ast.fix_missing_locations(wrapper),'actual-capture-failure','exec'),{'ret':False,'liveness':checker,'time':mock.Mock()})
+        exec(compile(ast.fix_missing_locations(wrapper),'actual-capture-failure','exec'),
+             {'ret':False,'liveness':checker,'time':mock.Mock(), 'read_failures':0,
+              'CAMERA_READ_RETRIES':3, '_set_preview':mock.Mock(), 'encodings':[]})
         self.assertFalse(self.feed(checker,.3))
 
 if __name__=='__main__':unittest.main()
