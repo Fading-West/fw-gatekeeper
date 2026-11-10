@@ -1,0 +1,21 @@
+FF.
+======================================================================
+FAIL: test_processing_crossing_deadline_cannot_complete_old_blink (__main__.BlinkProcessingTimeoutTests.test_processing_crossing_deadline_cannot_complete_old_blink) (slow_stage='predictor')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/noah/.t3/worktrees/fw-gatekeeper/t3-ad0044e2/pi-kiosk/test_blink_processing_timeout.py", line 57, in test_processing_crossing_deadline_cannot_complete_old_blink
+    self.assertFalse(self.feed(.3, slow_work if slow_stage == "identity" else None))
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_processing_crossing_deadline_cannot_complete_old_blink (__main__.BlinkProcessingTimeoutTests.test_processing_crossing_deadline_cannot_complete_old_blink) (slow_stage='identity')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/noah/.t3/worktrees/fw-gatekeeper/t3-ad0044e2/pi-kiosk/test_blink_processing_timeout.py", line 57, in test_processing_crossing_deadline_cannot_complete_old_blink
+    self.assertFalse(self.feed(.3, slow_work if slow_stage == "identity" else None))
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.010s
+
+FAILED (failures=2)
