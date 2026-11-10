@@ -18,8 +18,8 @@ it('audits the authenticated operator and both review states atomically', async 
  const { t, admin, userId } = await setup();
  const result = await t.mutation(internal.recognitionAttempts.bulkIngestFromHttp, { attempts: [attempt] });
  await expect(t.mutation(api.recognitionAttempts.updateReview, { id: result.ids[0], reviewed: true })).rejects.toThrow('Unauthorized');
- await admin.mutation(api.recognitionAttempts.updateReview, { id: result.ids[0], reviewed: true, reviewedLabel: 'confirmed', reviewedNote: 'Checked scan' });
- await admin.mutation(api.recognitionAttempts.updateReview, { id: result.ids[0], reviewed: false });
+ await admin.mutation(api.recognitionAttempts.updateReview, { id: result.ids[0], expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id: result.ids[0] }))!.review_version, reviewed: true, reviewedLabel: 'confirmed', reviewedNote: 'Checked scan' });
+ await admin.mutation(api.recognitionAttempts.updateReview, { id: result.ids[0], expectedReviewVersion: (await admin.query(api.recognitionAttempts.getById, { id: result.ids[0] }))!.review_version, reviewed: false });
  const audits = await t.run(ctx => ctx.db.query('auditLog').collect());
  expect(audits).toHaveLength(2);
  expect(audits[0]).toMatchObject({ actorUserId: userId, action: 'recognition.review', targetId: result.ids[0] });

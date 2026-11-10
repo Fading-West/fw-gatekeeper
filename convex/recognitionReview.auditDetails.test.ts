@@ -24,7 +24,7 @@ it("records review ordering and effective retained or cleared metadata", async (
     return { userId, attemptId };
   });
   const actor = t.withIdentity({ subject: userId });
-  await actor.mutation(api.recognitionAttempts.updateReview, { id: attemptId, reviewedNote: "   " });
+  await actor.mutation(api.recognitionAttempts.updateReview, { id: attemptId, expectedReviewVersion: (await actor.query(api.recognitionAttempts.getById, { id: attemptId }))!.review_version, reviewedNote: "   " });
   const audits = await t.run(ctx => ctx.db.query("auditLog").collect());
   expect(JSON.parse(audits[0].details!)).toEqual({
     before: { updatedAt: "2026-10-01T10:00:00Z", reviewedAt: "2026-10-01T09:00:00Z", reviewed: true, label: "confirmed", note: "Original note" },

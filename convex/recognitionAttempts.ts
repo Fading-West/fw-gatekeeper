@@ -10,6 +10,19 @@ import {
 import { assertPortalRole } from "./access";
 import { writeAuditLog } from "./audit";
 import { createRecognitionTimestampSortKey, getRecognitionDisplayTimestamp } from "./recognitionTimestamp";
+import { sha256 } from "@oslojs/crypto/sha2";
+
+const REVIEW_CONFLICT_MESSAGE = "This recognition review changed. Refresh the attempts and review the current decision before saving.";
+
+function reviewVersion(attempt: any) {
+  // Include content: separate mutations can share the same millisecond, and
+  // reviewedAt may be retained when an operator changes an existing review.
+  // The revision also detects a change away and back to identical content.
+  const state = JSON.stringify([String(attempt._id), attempt.reviewRevision ?? 0, attempt.reviewed,
+    attempt.reviewedLabel ?? null, attempt.reviewedNote ?? null,
+    attempt.reviewedAt ?? null, attempt.updatedAt ?? null]);
+  return Array.from(sha256(new TextEncoder().encode(state)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 const attemptInput = v.object({
   timestamp: v.string(),
@@ -69,6 +82,7 @@ function getScoreMargin(attempt: {
 function serializeAttempt(attempt: any) {
   return {
     id: attempt._id,
+    review_version: reviewVersion(attempt),
     timestamp: attempt.timestamp,
     kiosk_id: attempt.kioskId,
     source_attempt_id: attempt.sourceAttemptId || null,
@@ -505,6 +519,7 @@ export const listByDate = query({
   returns: v.object({
     attempts: v.array(v.object({
       id: v.id("recognitionAttempts"),
+      review_version: v.string(),
       timestamp: v.string(),
       timestamp_utc: v.union(v.string(), v.null()),
       kiosk_id: v.string(),
@@ -582,6 +597,7 @@ const REVIEW_LABELS = ["confirmed", "corrected", "ignored"];
 export const updateReview = mutation({
   args: {
     id: v.id("recognitionAttempts"),
+    expectedReviewVersion: v.optional(v.string()),
     reviewed: v.optional(v.boolean()),
     reviewedLabel: v.optional(v.string()),
     reviewedNote: v.optional(v.string()),
@@ -589,6 +605,7 @@ export const updateReview = mutation({
   },
   returns: v.union(v.null(), v.object({
     id: v.id("recognitionAttempts"), timestamp: v.string(), timestamp_utc: v.optional(v.union(v.string(), v.null())), kiosk_id: v.string(),
+    review_version: v.string(),
     source_attempt_id: v.union(v.string(), v.null()), face_detected: v.number(),
     candidate_worker_id: v.union(v.string(), v.null()), candidate_worker_name: v.union(v.string(), v.null()),
     best_score: v.union(v.number(), v.null()), second_best_score: v.union(v.number(), v.null()),
@@ -606,12 +623,16 @@ export const updateReview = mutation({
     if (!existing) {
       throw new Error("Recognition attempt not found");
     }
+    if (args.expectedReviewVersion !== reviewVersion(existing)) {
+      throw new ConvexError({ code: "RECOGNITION_REVIEW_CONFLICT", message: REVIEW_CONFLICT_MESSAGE });
+    }
 
     const reviewed = args.reviewed ?? true;
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
       reviewed,
       updatedAt: now,
+      reviewRevision: (existing.reviewRevision ?? 0) + 1,
     };
     if (args.reviewedLabel !== undefined) {
       const label = normalizeOptionalText(args.reviewedLabel);
