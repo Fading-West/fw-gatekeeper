@@ -418,6 +418,7 @@ def _run(args):
         detection_faulted = False
         model_faulted = False
         while True:
+            web_app.update_health(last_detection_cycle=time.monotonic())
             with detect_lock:
                 frames = pending_frame[0]
                 pending_frame[0] = None
@@ -672,6 +673,7 @@ def _run(args):
     # roster-derived degraded_reason currently reported
     roster_fault = startup_degraded if startup_degraded in ("no_workers_synced", "encoding_mismatch") else None
     try:
+        web_app.update_health(scan_loop_started_at=time.monotonic())
         while True:
             web_app.check_server()
             if model_recovery.ready and not initial_model_loaded:

@@ -343,4 +343,30 @@ const healthy = bootId => () => ({ ok: true, status: 200, body: { state: 'IDLE',
     assert.equal(second.reloads.length, 0, 'backoff persists across the reload itself');
 }
 
+for (const reason of ['camera_stalled', 'recognition_stalled']) {
+    const body = { state: 'IDLE', message: 'Step toward camera', boot_id: 'stall-test',
+        server_time: '2026-10-30T12:00:00', display_time_success_sec: 2,
+        health: { camera_ok: reason !== 'camera_stalled', model_ok: reason !== 'recognition_stalled',
+            degraded_reason: `no_workers_synced,${reason},clock_unsynchronized` } };
+    const page = kioskPage({ reply: () => ({ ok: true, status: 200, body }) });
+    await page.flush();
+    const warning = 'Scanner not responding - please ask your supervisor';
+    assert.equal(page.el('statusText').textContent, warning);
+    assert.equal(page.el('stateValue').textContent, 'State: SERVICE_DEGRADED');
+    if (reason === 'camera_stalled') assert.equal(page.el('cameraFeed').src, undefined, 'stalled capture drops frozen feed');
+    Object.assign(body, { state: 'CLOCKED_IN', message: 'Welcome, Alex! 12:00 PM',
+        worker_name: 'Alex', action: 'clock_in', timestamp: '2026-10-30T12:00:00' });
+    await page.poll();
+    assert.match(page.el('statusText').textContent, /Alex/, 'fresh manual confirmation remains visible during stall');
+    body.server_time = '2026-10-30T12:00:02';
+    await page.poll();
+    assert.equal(page.el('statusText').textContent, warning, 'frozen confirmation expires at configured success hold');
+    body.health = { camera_ok: true, model_ok: true };
+    body.state = 'IDLE';
+    body.message = 'Step toward camera';
+    await page.poll();
+    assert.equal(page.el('statusText').textContent, 'Step toward camera', 'warning clears on recovery');
+    assert.match(page.el('cameraFeed').src, /^\/feed\?ts=\d+$/);
+}
+
 console.log('Kiosk page recovers from service restarts and auth failures with bounded reloads.');
