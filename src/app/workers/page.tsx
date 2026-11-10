@@ -237,7 +237,7 @@ export default function WorkersPage() {
             Worker <span className="text-gold">Management</span>
           </h1>
           <p className="text-sm text-slate-500 mt-1 font-mono">
-            {inactiveView
+            {loading ? 'Loading worker counts…' : error ? 'Worker counts unavailable' : inactiveView
               ? `${workers.length} inactive workers · ${retainedFaceCount} with retained face data · excluded from kiosk recognition`
               : `${workers.length} registered workers · ${enrolledCount} face enrolled · ${missingFaceCount} needs enrollment · ${invalidFaceCount} invalid`}
           </p>
@@ -273,7 +273,7 @@ export default function WorkersPage() {
         </label>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-8">
+      {!loading && !error && <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-8">
         {inactiveView ? (
         <div className="glass-card p-4">
           <p className="section-label">Retained face data</p>
@@ -316,7 +316,7 @@ export default function WorkersPage() {
             Use <span className="text-slate-200 font-semibold">Enroll Face</span> for all new facial-recognition enrollments.
           </p>
         </div>
-      </div>
+      </div>}
 
       {canEdit && editId && (
         <div className="glass-card p-6 mb-8 animate-slide-up">
@@ -397,12 +397,15 @@ export default function WorkersPage() {
       {error && (
         <div role="alert" className="mb-6 rounded-xl border border-red-400/20 bg-red-400/5 px-4 py-3 text-sm text-red-300">
           {error}
+          <button type="button" onClick={fetchWorkers} className="btn-secondary mt-3 block">
+            Retry loading workers
+          </button>
         </div>
       )}
 
       {loading ? (
         <div className="glass-card p-6 text-sm text-slate-400">Loading workers...</div>
-      ) : !error && workers.length === 0 ? (
+      ) : error ? null : workers.length === 0 ? (
         <div className="glass-card p-12 text-center">
           <p className="text-slate-400 font-display">{showInactive ? 'No inactive workers' : 'No workers registered yet'}</p>
           <p className="text-xs text-slate-600 mt-1">Use Enroll Face to add the first worker.</p>

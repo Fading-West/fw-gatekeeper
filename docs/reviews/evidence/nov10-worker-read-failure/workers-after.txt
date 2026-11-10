@@ -1,0 +1,12 @@
+
+ RUN  v5.0.5 /home/noah/.t3/worktrees/fw-gatekeeper/t3-gAbK480n-daily-issue-review-nov10
+
+
+ Test Files  5 passed (5)
+      Tests  12 passed (12)
+   Start at  13:09:08
+   Duration  1.57s (tests 52%, import 30%, transform 16%, worker 2%)
+
+    Isolate  5 workers spawned · ~125ms startup each (spawn + environment, per file)
+             at least ~498ms faster with isolate: false — reuses workers across files instead of one per file
+

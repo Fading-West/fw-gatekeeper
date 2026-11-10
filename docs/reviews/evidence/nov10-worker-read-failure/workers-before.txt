@@ -1,0 +1,89 @@
+
+ RUN  v5.0.5 /home/noah/.t3/worktrees/fw-gatekeeper/t3-gAbK480n-daily-issue-review-nov10
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=false)
+react-test-renderer is deprecated. See https://react.dev/warnings/react-test-renderer
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=false)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=false)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=false)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+react-test-renderer is deprecated. See https://react.dev/warnings/react-test-renderer
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+The current testing environment is not configured to support act(...)
+
+stderr | src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+The current testing environment is not configured to support act(...)
+
+ ❯ src/app/workers/read-failure.test.tsx (3 tests | 2 failed) 64ms
+   × does not claim zero workers or retained face data after a failed roster read (inactive=false) 51ms
+   × does not claim zero workers or retained face data after a failed roster read (inactive=true) 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=false)
+AssertionError: expected 'Worker Management0 registered workers…' not to contain '0 registered workers'
+
+Expected: "0 registered workers"
+Received: "Worker Management0 registered workers · 0 face enrolled · 0 needs enrollment · 0 invalid0 kiosks with pending purge; 0 without a confirmed roster. Check each device on the Kiosks page.Enroll FaceShow inactive workers to review or purge retained face dataRecognition ready0workersFace enrolled and ready for kiosk recognition.Needs enrollment0workersMissing face data; use Enroll Face before kiosk use.Invalid face data0workersNeeds re-enrollment before kiosk recognition is reliable.Canonical workflowAdding a new person?Use Enroll Face for all new facial-recognition enrollments.Failed to load workersNo workers match these filters."
+
+ ❯ src/app/workers/read-failure.test.tsx:30:22
+     28|   if (inactive) await act(async () => tree!.root.findByProps({ type: '…
+     29|   expect(tree!.root.findByProps({ role: 'alert' }).children.join('')).…
+     30|   expect(text()).not.toContain('0 registered workers');
+       |                      ^
+     31|   expect(text()).not.toContain('0 inactive workers');
+     32|   expect(text()).not.toContain('No workers match these filters');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/app/workers/read-failure.test.tsx > does not claim zero workers or retained face data after a failed roster read (inactive=true)
+AssertionError: expected 'Worker Management0 inactive workers ·…' not to contain '0 inactive workers'
+
+Expected: "0 inactive workers"
+Received: "Worker Management0 inactive workers · 0 with retained face data · excluded from kiosk recognition0 kiosks with pending purge; 0 without a confirmed roster. Check each device on the Kiosks page.Enroll FaceShow inactive workers to review or purge retained face dataRetained face data0inactive workersInactive workers are excluded from kiosk recognition. Purge retained face data below.Canonical workflowAdding a new person?Use Enroll Face for all new facial-recognition enrollments.Failed to load workersNo workers match these filters."
+
+ ❯ src/app/workers/read-failure.test.tsx:31:22
+     29|   expect(tree!.root.findByProps({ role: 'alert' }).children.join('')).…
+     30|   expect(text()).not.toContain('0 registered workers');
+     31|   expect(text()).not.toContain('0 inactive workers');
+       |                      ^
+     32|   expect(text()).not.toContain('No workers match these filters');
+     33|   expect(text()).not.toContain('No workers registered yet');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+   Start at  13:08:00
+   Duration  397ms (transform 37%, tests 32%, import 29%, worker 2%)
+
