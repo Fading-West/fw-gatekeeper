@@ -18,6 +18,7 @@ from typing import Optional
 
 import numpy as np
 
+import attendance_write_health
 import config
 from kiosk_policy import require_kiosk_action_type
 
@@ -1256,6 +1257,62 @@ def _infer_clock_action(worker_id: int, timestamp: str) -> str:
     return "clock_out"
 
 
+class _AttendanceWrite:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+        self.punch = False  # set once a new attendance row is part of this transaction
+
+
+def _rollback_locked(conn: sqlite3.Connection) -> None:
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        # A half-open transaction would make the next punch look nested and
+        # never commit; reconnect on the next write instead.
+        if getattr(_local, "conn", None) is conn:
+            _local.conn = None
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
+@contextmanager
+def _attendance_write_transaction():
+    """Own one attendance write transaction and publish exactly one outcome.
+
+    A SQLite failure anywhere in it (connection, BEGIN, reads, insert, receipt
+    insertion, commit) marks the attendance-write fault after rollback. Only the
+    commit of a transaction that inserted a new punch clears it; receipt replays
+    and validation/identity/policy failures publish nothing. Completion and
+    publication share one lock, so outcomes follow transaction completion order.
+    """
+    try:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+    except (sqlite3.Error, OSError) as exc:
+        attendance_write_health.mark_failed(exc)
+        raise
+    write = _AttendanceWrite(conn)
+    try:
+        yield write
+    except BaseException as exc:
+        with attendance_write_health.completing():
+            _rollback_locked(conn)
+            if isinstance(exc, sqlite3.Error):
+                attendance_write_health.mark_failed_locked(exc)
+        raise
+    with attendance_write_health.completing():
+        try:
+            conn.commit()
+        except sqlite3.Error as exc:
+            _rollback_locked(conn)
+            attendance_write_health.mark_failed_locked(exc)
+            raise
+        if write.punch:
+            attendance_write_health.mark_committed_locked()
+
+
 @_prioritize_event_write
 def log_attendance(
     worker_id: int,
@@ -1277,12 +1334,12 @@ def log_attendance(
     Omit action to apply the kiosk's entry/exit/toggle behavior while holding
     the same write transaction as the insert. Recognition already owns that
     transaction so its enrollment check remains atomic with this write.
+    A nested insert never publishes attendance-write health; the enclosing
+    transaction owner does once it commits or rolls back.
     """
-    conn = _get_conn()
-    owns_transaction = not conn.in_transaction
-    with conn if owns_transaction else nullcontext():
-        if owns_transaction:
-            conn.execute("BEGIN IMMEDIATE")
+    nested = getattr(_local, "conn", None) is not None and _local.conn.in_transaction
+    with nullcontext() if nested else _attendance_write_transaction() as write:
+        conn = _get_conn()
         timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
         if action is None:
             action = _infer_clock_action(worker_id, timestamp)
@@ -1308,6 +1365,8 @@ def log_attendance(
                 _attendance_epoch(timestamp),
             ),
         )
+        if write is not None:
+            write.punch = True
     log_id = int(cursor.lastrowid)
     logger.info(
         "Gatekeeper logged: local_id=%d action=%s confidence=%.3f live=%s",
@@ -1328,9 +1387,8 @@ def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=Non
                              action_for_worker=None) -> dict:
     """Commit the current worker, toggle, attendance and replay receipt together."""
     request_json = json.dumps({"worker_id": worker_id, "name": worker_name, "action": action}, sort_keys=True)
-    conn = _get_conn()
-    with conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with _attendance_write_transaction() as write:
+        conn = write.conn
         receipt = conn.execute("SELECT request_json, result_json FROM manual_attendance_receipts WHERE request_id = ?", (request_id,)).fetchone()
         if receipt:
             if receipt["request_json"] != request_json:
@@ -1359,6 +1417,7 @@ def record_manual_attendance(*, request_id: str, worker_id=None, worker_name=Non
                   "worker_id": worker["employee_id"] or str(worker["id"]), "action": action}
         conn.execute("INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)",
                      (request_id, request_json, json.dumps(result)))
+        write.punch = True
         return result
 
 
@@ -1369,15 +1428,15 @@ def log_recognized_attendance(*, worker_id, server_worker_id=None, expected_enco
     BEGIN IMMEDIATE prevents a concurrent sync deletion/replacement between the
     identity check, action inference, and insert. Existing offline rows remain untouched.
     """
-    conn = _get_conn()
-    with conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with _attendance_write_transaction() as write:
         worker = get_worker_by_id(worker_id)
         if (not worker or (worker.get("server_id") or None) != server_worker_id
                 or expected_encoding is None
                 or not np.array_equal(worker["face_encoding"], expected_encoding)):
             raise ValueError("Worker enrollment changed during recognition; scan again")
-        return log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
+        log_id = log_attendance(worker_id=worker_id, server_worker_id=server_worker_id, **fields)
+        write.punch = True
+        return log_id
 
 
 def get_attendance_action(log_id: int) -> str:

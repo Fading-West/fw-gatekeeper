@@ -352,6 +352,7 @@ export interface ShiftBriefingKiosk {
   last_sync: string | null;
   status: ShiftBriefingKioskStatus;
   device_fault?: boolean;
+  attendance_write_failed?: boolean;
   attendance_queue?: AttendanceQueueObservation;
   warning_reasons?: string[];
 }

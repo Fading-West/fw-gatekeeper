@@ -1,4 +1,4 @@
-import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
+import { ATTENDANCE_WRITE_FAULT_GUIDANCE, getKioskDegradedReasons, hasAttendanceWriteFault } from "../src/lib/kiosk-health-reasons";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
@@ -27,6 +27,8 @@ export const SCAN_BLOCKING_DEGRADED_REASONS = new Set([
   "encoding_mismatch",
   "no_workers_synced",
   "liveness_required_unavailable",
+  // Punches are not being saved locally; cleared by the kiosk's next committed punch.
+  "attendance_write_failed",
 ]);
 
 // Ordered by severity; the first matching condition drives the email subject.
@@ -323,6 +325,7 @@ export function buildAlertMessage(alert: PlannedAlert, nowMs: number, siteUrl: s
     "",
     `Last sync: ${describeAge(alert.kiosk.lastSync, nowMs)}`,
     `Degraded reason: ${health?.degradedReason ?? "none reported"}`,
+    ...(hasAttendanceWriteFault(health?.degradedReason) ? [ATTENDANCE_WRITE_FAULT_GUIDANCE] : []),
     `Camera OK: ${health?.cameraOk ?? "unknown"}`,
     `Model OK: ${health?.modelOk ?? "unknown"}`,
     `Queued logs on device: ${health?.queuedLogs ?? "unknown"}`,

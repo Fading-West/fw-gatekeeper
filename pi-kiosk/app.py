@@ -19,6 +19,7 @@ import cv2
 from flask import Flask, Response, jsonify, make_response, render_template, request
 from werkzeug.serving import ThreadedWSGIServer
 
+import attendance_write_health
 import config
 import database
 from kiosk_policy import require_kiosk_action_type, validate_kiosk_policy
@@ -174,6 +175,16 @@ def get_health_snapshot() -> dict:
         reasons = [reason for reason in (snapshot.get("degraded_reason") or "").split(",") if reason]
         if "clock_unsynchronized" not in reasons:
             reasons.append("clock_unsynchronized")
+        snapshot["degraded_reason"] = ",".join(reasons)
+    # Kept outside _health so device/roster writers of degraded_reason cannot
+    # erase it; only a later committed punch clears it. Process-local.
+    write_fault = attendance_write_health.snapshot()
+    snapshot["attendance_write_ok"] = not write_fault["failed"]
+    snapshot["attendance_write_failed_at"] = write_fault["failed_at"]
+    if write_fault["failed"]:
+        reasons = [reason for reason in (snapshot.get("degraded_reason") or "").split(",") if reason]
+        if attendance_write_health.REASON not in reasons:
+            reasons.append(attendance_write_health.REASON)
         snapshot["degraded_reason"] = ",".join(reasons)
     return snapshot
 
