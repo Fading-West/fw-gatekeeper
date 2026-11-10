@@ -32,8 +32,8 @@ Stop below 5 GiB available disk or 6 GiB MemAvailable. The regression additional
 checks these thresholds itself.
 
 ```
-flock /home/noah/.cache/t3-recovery-heavy.lock node scripts/test-attendance-worker-capacity.mjs --baseline --notes --backend-bin /home/noah/.cache/convex/binaries/precompiled-2026-10-22-1447815/convex-local-backend
-flock /home/noah/.cache/t3-recovery-heavy.lock node scripts/test-attendance-worker-capacity.mjs --backend-bin /home/noah/.cache/convex/binaries/precompiled-2026-10-22-1447815/convex-local-backend
+flock /home/noah/.cache/t3-recovery-heavy.lock node scripts/verify-attendance-worker-capacity.mjs --baseline --notes --backend-bin /home/noah/.cache/convex/binaries/precompiled-2026-10-22-1447815/convex-local-backend
+flock /home/noah/.cache/t3-recovery-heavy.lock node scripts/verify-attendance-worker-capacity.mjs --backend-bin /home/noah/.cache/convex/binaries/precompiled-2026-10-22-1447815/convex-local-backend
 ```
 
 The first command must exit 1: it replaces only `attendanceReads.ts` in the
@@ -43,7 +43,8 @@ and chronological output for local, UTC and offset timestamps. It updates a
 target punch before the capacity reads so cached small-fixture results cannot
 satisfy the assertions. `--notes` optionally adds 1 KiB notes to unrelated rows.
 
-The script copies source and links this checkout's installed dependencies into
+The opt-in script is named `verify-` so the standard contract runner does not
+invoke a local-backend prerequisite absent from CI. It copies source and links this checkout's installed dependencies into
 an owned run. It generates local-only instance credentials, binds both backend
 ports to loopback, and deploys only to that backend with an isolated environment.
 A fixture module exists only in the disposable copy. Admin impersonation invokes
@@ -63,6 +64,14 @@ and keeps `evidence/result.json` plus private logs in the printed run directory.
   `044eedfe569b1550d5003683aec7fceb4dcee3f82abf00ab9baf1c10d3ca0b4c`.
 - Evidence/log root for this investigation:
   `/tmp/gAbK480n-evidence/attendance-worker-capacity/`.
+
+## Owner integration check
+
+The first GitHub run at `d38d336e` failed because the contract runner auto-discovered
+the original `test-` filename and invoked the opt-in backend probe without its
+required binary. Rename it to `verify-attendance-worker-capacity.mjs`; the regular
+contract suite remains independent of the local backend prerequisite. This was
+a PR-introduced validation failure, not a known-main failure.
 
 ## Remaining work
 
