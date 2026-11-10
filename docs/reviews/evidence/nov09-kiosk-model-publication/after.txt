@@ -1,0 +1,19 @@
+test_concurrent_downloads_use_separate_files (__main__.ModelPinningTests.test_concurrent_downloads_use_separate_files) ... ok
+test_digest_specific_cache_migrates_offline_and_preserves_fallback_model (__main__.ModelPinningTests.test_digest_specific_cache_migrates_offline_and_preserves_fallback_model) ... ok
+test_embeddings_module_uses_the_pinned_constants (__main__.ModelPinningTests.test_embeddings_module_uses_the_pinned_constants) ... ok
+test_ensure_pinned_model_discards_download_that_fails_verification (__main__.ModelPinningTests.test_ensure_pinned_model_discards_download_that_fails_verification) ... ok
+test_ensure_pinned_model_does_not_download_when_cached_file_is_valid (__main__.ModelPinningTests.test_ensure_pinned_model_does_not_download_when_cached_file_is_valid) ... ok
+test_ensure_pinned_model_reverifies_cached_file_and_refetches_when_corrupt (__main__.ModelPinningTests.test_ensure_pinned_model_reverifies_cached_file_and_refetches_when_corrupt) ... ok
+test_failed_model_publication_does_not_accumulate_downloads_on_retry (__main__.ModelPinningTests.test_failed_model_publication_does_not_accumulate_downloads_on_retry) ... ok
+test_model_download_reserves_disk_for_the_old_kiosk (__main__.ModelPinningTests.test_model_download_reserves_disk_for_the_old_kiosk) ... ok
+test_model_flush_failure_keeps_committed_cache (__main__.ModelPinningTests.test_model_flush_failure_keeps_committed_cache) ... ok
+test_normal_startup_can_copy_verified_legacy_model_below_update_reserve (__main__.ModelPinningTests.test_normal_startup_can_copy_verified_legacy_model_below_update_reserve) ... ok
+test_rec_model_url_is_pinned_to_a_commit_not_a_branch (__main__.ModelPinningTests.test_rec_model_url_is_pinned_to_a_commit_not_a_branch) ... ok
+test_sha256_helper_matches_hashlib (__main__.ModelPinningTests.test_sha256_helper_matches_hashlib) ... ok
+test_verification_deletes_file_and_raises_on_mismatch (__main__.ModelPinningTests.test_verification_deletes_file_and_raises_on_mismatch) ... ok
+test_verification_passes_on_match_and_keeps_file (__main__.ModelPinningTests.test_verification_passes_on_match_and_keeps_file) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 1.512s
+
+OK

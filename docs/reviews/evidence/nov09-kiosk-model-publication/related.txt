@@ -1,0 +1,39 @@
+................
+----------------------------------------------------------------------
+Ran 16 tests in 0.022s
+
+OK
+..Server returned 503 during worker sync
+........
+----------------------------------------------------------------------
+Ran 10 tests in 2.941s
+
+OK
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 1.791s
+
+OK
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.023s
+
+OK
+Worker deactivated; thumbnail cleanup remains pending (error=ValueError)
+.........Worker deactivated; thumbnail cleanup remains pending (error=ValueError)
+........
+----------------------------------------------------------------------
+Ran 17 tests in 1.210s
+
+OK
+........Attendance sync: 1 of 2 queued logs have no server worker mapping and will stay queued until server_worker_id is set or the rows are removed (local_worker_id=4 x1); log ids=[2]
+.Attendance sync: 1 of 1 queued logs have no server worker mapping and will stay queued until server_worker_id is set or the rows are removed (local_worker_id=4 x1); log ids=[1]
+...Invalid sync response (phase=apply row=1 error=ValueError)
+Invalid sync response (phase=apply row=1 error=ValueError)
+..worker roster sync phase failed (error=RuntimeError); independent phases will continue
+..Server returned 503 during worker sync
+.....
+----------------------------------------------------------------------
+Ran 21 tests in 2.979s
+
+OK

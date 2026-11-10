@@ -1,0 +1,11 @@
+npm notice run fw-gatekeeper@1.0.0 npx
+npm notice run 'vitest' run src/lib/attendance-backlog.test.ts
+
+ RUN  v5.0.5 /home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-c57e9eba-7b060b36325be96e
+
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  12:29:57
+   Duration  7.25s (tests 99%, import 1%)
+

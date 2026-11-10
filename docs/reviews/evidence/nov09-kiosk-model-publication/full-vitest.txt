@@ -1,0 +1,32 @@
+npm notice run fw-gatekeeper@1.0.0 test
+npm notice run vitest run && npm run test:python && npm run test:contracts
+
+ RUN  v5.0.5 /home/lizardbox/.t3/worktrees/fw-gatekeeper/t3-c57e9eba-7b060b36325be96e
+
+ ❯ src/lib/attendance-backlog.test.ts (15 tests | 1 failed) 19210ms
+   × stops starting work at the deadline and resumes committed progress next time 7398ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/lib/attendance-backlog.test.ts > stops starting work at the deadline and resumes committed progress next time
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/lib/attendance-backlog.test.ts:68:1
+     66|   expect(getAttendanceReceiptStatus).not.toHaveBeenCalled();
+     67| });
+     68| it('stops starting work at the deadline and resumes committed progress…
+       | ^
+     69|   let now = 0;
+     70|   vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 212 passed | 1 skipped (214)
+      Tests  1 failed | 1731 passed | 9 skipped (1741)
+   Start at  12:19:05
+   Duration  108.27s (tests 66%, import 26%, transform 7%, worker 1%)
+
+    Isolate  214 workers spawned · ~468ms startup each (spawn + environment, per file)
+             at least ~13.83s faster with isolate: false — reuses workers across files instead of one per file
+

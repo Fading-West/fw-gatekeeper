@@ -1,0 +1,1 @@
+verify-gatekeeper: No convex-local-backend under /home/lizardbox/.cache/convex/binaries; pass --backend-bin.
