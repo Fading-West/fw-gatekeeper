@@ -384,7 +384,9 @@ all event claims. An invalid/revoked credential or unauthorized current
 An authenticated batch containing unauthorized event claims returns **403 with
 `code: KIOSK_CLAIM_MISMATCH`**, before any events are written. This explicit
 server denial quarantines that claim's rows immediately; repeated retries
-cannot authorize that identity. Other 403 responses remain retryable. A newer
+cannot authorize that identity. It is not reported as a sync authorization
+fault, because the portal accepted the credential first. Other 403 responses
+remain retryable. A newer
 kiosk talking to an older portal still uploads current rows first, but retains
 historical 401s in the retry queue until the portal is upgraded. Older kiosks
 keep retrying the new 403 as they did the previous 401.
