@@ -165,7 +165,9 @@ def get_health_snapshot() -> dict:
     snapshot["policy_ok"] = policy.valid
     snapshot["policy_errors"] = list(policy.errors)
     if not policy.valid:
-        snapshot["degraded_reason"] = "kiosk_policy_error"
+        # Additive: an invalid policy must not hide device/roster reasons.
+        reasons = [reason for reason in (snapshot.get("degraded_reason") or "").split(",") if reason]
+        snapshot["degraded_reason"] = ",".join(dict.fromkeys([*reasons, "kiosk_policy_error"]))
     # Read at the shared boundary used by /health, /status and the heartbeat,
     # even if recognition is idle or the camera is unavailable. Preserve the
     # underlying fault in the existing string field so simultaneous roster

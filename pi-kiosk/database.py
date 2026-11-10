@@ -56,7 +56,10 @@ def _prioritize_event_write(write):
             return write(*args, **kwargs)
         except sqlite3.Error:
             conn = getattr(_local, "conn", None)
-            if conn is not None:
+            # Inside an attendance transaction the owner rolls back and
+            # publishes together under the completion lock.
+            if (conn is not None and conn.in_transaction
+                    and not getattr(_local, "attendance_owner", False)):
                 conn.rollback()
             raise
         finally:
@@ -1294,23 +1297,27 @@ def _attendance_write_transaction():
         attendance_write_health.mark_failed(exc)
         raise
     write = _AttendanceWrite(conn)
+    _local.attendance_owner = True
     try:
-        yield write
-    except BaseException as exc:
-        with attendance_write_health.completing():
-            _rollback_locked(conn)
-            if isinstance(exc, sqlite3.Error):
-                attendance_write_health.mark_failed_locked(exc)
-        raise
-    with attendance_write_health.completing():
         try:
-            conn.commit()
-        except sqlite3.Error as exc:
-            _rollback_locked(conn)
-            attendance_write_health.mark_failed_locked(exc)
+            yield write
+        except BaseException as exc:
+            with attendance_write_health.completing():
+                _rollback_locked(conn)
+                if isinstance(exc, sqlite3.Error):
+                    attendance_write_health.mark_failed_locked(exc)
             raise
-        if write.punch:
-            attendance_write_health.mark_committed_locked()
+        with attendance_write_health.completing():
+            try:
+                conn.commit()
+            except sqlite3.Error as exc:
+                _rollback_locked(conn)
+                attendance_write_health.mark_failed_locked(exc)
+                raise
+            if write.punch:
+                attendance_write_health.mark_committed_locked()
+    finally:
+        _local.attendance_owner = False
 
 
 @_prioritize_event_write

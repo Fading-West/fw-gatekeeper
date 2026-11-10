@@ -175,13 +175,24 @@ class AttendanceWriteHealthTests(unittest.TestCase):
                 return self._conn.rollback()
 
         database._local.conn = _Observe(real)
+        drop = None
         try:
             self.recognized()
             with self.assertRaises(ValueError):
                 self.recognized(expected_encoding=None)
+            # A failing nested insert must not be rolled back (by the write
+            # decorator) before its owner can publish under the same lock.
+            drop = self.trigger("attendance_log")
+            with self.assertRaises(sqlite3.Error):
+                self.recognized()
+            with self.assertRaises(sqlite3.Error):
+                self.manual("nested-insert-fails")
         finally:
             database._local.conn = real
-        self.assertEqual(observed, [True, True])
+        if drop:
+            drop()
+        self.assertEqual(observed, [True, True, True, True])
+        self.assertTrue(self.failed())
 
     def test_failure_completing_before_a_pending_punch_commit_is_cleared_by_that_commit(self):
         """Outcomes follow transaction completion: a punch that commits after a
@@ -243,6 +254,16 @@ class HealthCompositionTests(unittest.TestCase):
         with mock.patch.object(app, "validate_kiosk_policy", return_value=invalid):
             self.assertEqual(app.get_health_snapshot()["degraded_reason"],
                              f"kiosk_policy_error,clock_unsynchronized,{REASON}")
+            # Device, policy, clock and write reasons all compose; recovery drops only the write reason.
+            app.update_health(degraded_reason="no_workers_synced")
+            self.assertEqual(app.get_health_snapshot()["degraded_reason"],
+                             f"no_workers_synced,kiosk_policy_error,clock_unsynchronized,{REASON}")
+            with write_health.completing():
+                write_health.mark_committed_locked()
+            self.assertEqual(app.get_health_snapshot()["degraded_reason"],
+                             "no_workers_synced,kiosk_policy_error,clock_unsynchronized")
+            write_health.mark_failed(sqlite3.OperationalError("disk I/O error"))
+            app.update_health(degraded_reason=None)
         params = sync._health_params({**app.get_health_snapshot(), "rejected_logs": 1})
         self.assertEqual(params["degraded_reason"],
                          f"clock_unsynchronized,{REASON}; upload_quarantine: 1 attendance, 0 recognition")
