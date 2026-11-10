@@ -31,10 +31,14 @@ async function shared(cache: Map<string, Promise<any[]>> | undefined, key: strin
 
 export async function scanAttendanceByTimestamp(ctx: any, range: { startTimestamp: string; endTimestamp: string }, workerId?: string) {
   return shared(sharedReads.get(ctx.db)?.scans, `${range.startTimestamp}\u0000${range.endTimestamp}\u0000${workerId ?? ""}`, () => {
-    const query = ctx.db
-      .query("attendance")
-      .withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp));
-    return (workerId ? query.filter((q: any) => q.eq(q.field("workerId"), workerId)) : query).collect();
+    const query = ctx.db.query("attendance");
+    // A post-index filter still scans every other worker in this date range.
+    // Bound worker reads before scanning, using the existing compound index.
+    return (workerId
+      ? query.withIndex("by_worker_and_timestamp", (q: any) => q.eq("workerId", workerId)
+        .gte("timestamp", range.startTimestamp).lt("timestamp", range.endTimestamp))
+      : query.withIndex("by_timestamp", (q: any) => q.gte("timestamp", range.startTimestamp)
+        .lt("timestamp", range.endTimestamp))).collect();
   });
 }
 
