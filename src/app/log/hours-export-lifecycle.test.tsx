@@ -49,6 +49,9 @@ async function renderPendingExport() {
         { ...event('16:00', 'clock_out'), id: 'correction:added-exit', source: 'correction', correction_id: correction.id },
       ]);
     }
+    // Navigation loads the new selected day independently of the two held
+    // neighboring-day reads that belong to the original hours export.
+    if (url.includes('date=2026-09-16')) return Response.json([]);
     if (hold) {
       if (init?.signal) signals.push(init.signal);
       // Deliberately ignore abort: a late network/body completion must also
