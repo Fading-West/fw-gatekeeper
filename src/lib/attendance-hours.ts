@@ -28,7 +28,11 @@ export function buildHoursExportRows(
     return day;
   };
   const byWorker = new Map<string, { name: string; department: string; employeeId: string; events: AttendanceWithWorker[] }>();
-  const orderedEvents = [...previousEvents, ...events, ...boundaryEvents].sort(clock.compare);
+  // Match attendance.list's chronological ID tie breaker. Its newest-first
+  // response reverses tied punches too; a time-only sort leaves them reversed
+  // and can turn a repeated entry into an apparently valid lunch interval.
+  const orderedEvents = [...previousEvents, ...events, ...boundaryEvents].sort((a, b) =>
+    clock.compare(a, b) || a.id.localeCompare(b.id));
   // Anchor row order and labels to this day's punches. Neighboring history
   // supplies pairing evidence without changing an otherwise normal CSV row.
   for (const event of orderedEvents) {
