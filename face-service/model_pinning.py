@@ -100,9 +100,9 @@ def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, lab
     try:
         _download(url, partial)
         verify_model_digest(partial, expected_sha256)
+        partial.replace(path)
     except Exception:
         partial.unlink(missing_ok=True)
         raise
-    partial.replace(path)
     logger.info("Downloaded and verified %s at %s", label, path)
     return path

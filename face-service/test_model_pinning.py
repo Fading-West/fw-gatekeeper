@@ -1,4 +1,5 @@
 import hashlib
+import errno
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import io
@@ -58,6 +59,20 @@ class FaceServiceModelPinningTests(unittest.TestCase):
 
     def test_sha256_helper_matches_hashlib(self):
         self.assertEqual(sha256_of_file(self.path), self.expected)
+
+    def test_publication_failure_cleans_only_its_own_download_on_each_retry(self):
+        self.path.unlink()
+        evidence = self.path.with_name("operator-evidence.part")
+        evidence.write_bytes(b"preserve")
+        with patch("model_pinning._download", side_effect=lambda _url, path: path.write_bytes(self.payload)), \
+                patch("model_pinning.Path.replace", side_effect=OSError(errno.ENOSPC, "publication failed")):
+            for _ in range(3):
+                with self.assertRaises(OSError) as failure:
+                    ensure_pinned_model("https://example.invalid/model", self.path, self.expected)
+                self.assertEqual(failure.exception.errno, errno.ENOSPC)
+                self.assertFalse(self.path.exists())
+                self.assertEqual(list(self.path.parent.iterdir()), [evidence])
+                self.assertEqual(evidence.read_bytes(), b"preserve")
 
     def test_verification_passes_on_match(self):
         self.assertEqual(verify_model_digest(self.path, self.expected), self.expected)
