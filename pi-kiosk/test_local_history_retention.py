@@ -64,6 +64,68 @@ class LocalHistoryTests(unittest.TestCase):
     def ids(self, table):
         return [row[0] for row in database._get_conn().execute(f'SELECT id FROM {table} ORDER BY id')]
 
+    def test_manual_receipts_follow_attendance_retention(self):
+        old = self.attendance(synced=True)
+        latest = self.attendance(synced=True)
+        queued = self.attendance(worker=2)
+        rejected = self.attendance(worker=3)
+        database.reject_attendance(rejected, 'review')
+        database.mark_synced([rejected])
+        self.attendance(worker=3, synced=True)  # rejection, rather than latest-event protection
+        conn = database._get_conn()
+        for label, log_id in [('old', old), ('latest', latest), ('queued', queued), ('rejected', rejected), ('orphan', 999999)]:
+            conn.execute('INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)',
+                         (label, '{}', json.dumps({'log_id': log_id, 'worker_name': 'Alex'})))
+        conn.execute('INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)', ('malformed', '{}', '{'))
+        conn.commit()
+        with mock.patch.object(database, 'datetime') as clock:
+            clock.now.return_value = NOW
+            database.prune_synced_history()
+        remaining = {row[0] for row in conn.execute('SELECT request_id FROM manual_attendance_receipts')}
+        self.assertEqual(remaining, {'latest', 'queued', 'rejected', 'malformed'})
+
+    def test_receipt_delete_failure_rolls_back_attendance_prune(self):
+        old = self.attendance(synced=True)
+        latest = self.attendance(synced=True)
+        conn = database._get_conn()
+        conn.execute('INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)',
+                     ('retry-id', '{}', json.dumps({'log_id': old})))
+        conn.commit()
+        conn.executescript("""CREATE TRIGGER reject_receipt_delete BEFORE DELETE
+            ON manual_attendance_receipts BEGIN SELECT RAISE(ABORT, 'receipt failure'); END;""")
+        with mock.patch.object(database, 'datetime') as clock:
+            clock.now.return_value = NOW
+            with self.assertRaises(sqlite3.IntegrityError):
+                database.prune_synced_history()
+        self.assertEqual(self.ids('attendance_log'), [old, latest])
+        self.assertEqual(conn.execute('SELECT request_id FROM manual_attendance_receipts').fetchone()[0], 'retry-id')
+        self.assertFalse(conn.in_transaction)
+        self.assertIsNone(database.get_sync_state('attendance_prune_after'))
+        conn.execute('DROP TRIGGER reject_receipt_delete')
+        with mock.patch.object(database, 'datetime') as clock:
+            clock.now.return_value = NOW
+            database.prune_synced_history()
+        self.assertEqual(self.ids('attendance_log'), [latest])
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM manual_attendance_receipts').fetchone()[0], 0)
+
+    def test_legacy_receipt_sweep_is_bounded_and_uses_index(self):
+        conn = database._get_conn()
+        for i in range(5):
+            conn.execute('INSERT INTO manual_attendance_receipts VALUES (?, ?, ?)',
+                         (f'request-{i}', '{}', json.dumps({'log_id': 100000 + i})))
+        conn.commit()
+        plan = conn.execute("EXPLAIN QUERY PLAN DELETE FROM manual_attendance_receipts WHERE "
+                            "CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.log_id') END = ?", (1,)).fetchall()
+        self.assertTrue(any('idx_manual_receipt_log' in row[3] for row in plan))
+        with mock.patch.object(database, '_HISTORY_PRUNE_BATCH_SIZE', 2), mock.patch.object(database, 'datetime') as clock:
+            clock.now.return_value = NOW
+            database.prune_synced_history()
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM manual_attendance_receipts').fetchone()[0], 3)
+            database.prune_synced_history()
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM manual_attendance_receipts').fetchone()[0], 1)
+            database.prune_synced_history()
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM manual_attendance_receipts').fetchone()[0], 0)
+
     def legacy_tables(self):
         conn = database._get_conn()
         conn.executescript('''
@@ -604,7 +666,8 @@ class LocalHistoryTests(unittest.TestCase):
             names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
             self.assertTrue({'idx_attendance_worker_id', 'idx_attendance_epoch', 'idx_attendance_worker_epoch',
                              'idx_attendance_server_worker_epoch',
-                             'idx_attendance_log_retention', 'idx_recognition_attempts_retention'} <= names)
+                             'idx_attendance_log_retention', 'idx_recognition_attempts_retention',
+                             'idx_manual_receipt_log'} <= names)
             migrate(c, table, pause=pause)
         with mock.patch.object(database, '_migrate_event_epoch', side_effect=check_indexes):
             database._migrate_history()
