@@ -25,7 +25,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 import onnxruntime as ort
 from starlette.responses import JSONResponse
@@ -254,13 +254,13 @@ def require_face_service_key(
 
 
 def decode_image(data_url: str) -> np.ndarray:
-    """Decode base64 data URL to BGR numpy array."""
+    """Decode a base64 photo to BGR pixels in its displayed orientation."""
     if "," in data_url:
         data_url = data_url.split(",", 1)[1]
     with Image.open(io.BytesIO(base64.b64decode(data_url, validate=True))) as source:
         if source.width * source.height > 4_000_000 or getattr(source, "n_frames", 1) != 1:
             raise ValueError("Use a single photo no larger than four megapixels")
-        img = source.convert("RGB")
+        img = ImageOps.exif_transpose(source).convert("RGB")
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
