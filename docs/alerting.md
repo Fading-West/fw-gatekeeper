@@ -46,7 +46,7 @@ the dashboard does.
 | `stale` | `lastSync` is older than 15 minutes | Cleared automatically (no recovery notice) if the kiosk escalates to `offline`. |
 | `offline` | `lastSync` is older than 60 minutes | `stale` is never reported alongside `offline` for the same kiosk. |
 | `never_synced` | The kiosk has no `lastSync` at all | Usually a freshly registered kiosk whose `KIOSK_ID` does not match. |
-| `device_fault` | `health.cameraOk === false`, `health.modelOk === false`, or `health.degradedReason` is one of `camera_error`, `model_error`, `encoding_mismatch`, `no_workers_synced`, `liveness_required_unavailable` | These are the faults that block every scan. `liveness_unavailable` is shown on the dashboard but does not page anyone. |
+| `device_fault` | `health.cameraOk === false`, `health.modelOk === false`, or `health.degradedReason` is one of `camera_error`, `model_error`, `encoding_mismatch`, `no_workers_synced`, `liveness_required_unavailable`, `attendance_write_failed` | These are the faults that block every scan or stop punches from being saved. An attendance write fault adds supervisor guidance to the email and clears when the kiosk's next punch commits (a kiosk restart also clears it). `liveness_unavailable` is shown on the dashboard but does not page anyone. |
 | `queue_backlog` | `health.queuedLogs >= 50` | The kiosk is scanning but cannot upload attendance.  Closeout separately requires acknowledgement for any positive count; see [attendance-queue-closeout.md](attendance-queue-closeout.md). |
 
 Inactive kiosks (`active: false`) are ignored.
@@ -162,6 +162,7 @@ on the next cron run; a cleared alert is also retained until its recovery notice
 delivered. A successful channel counts as delivery when both channels are configured.
 Malformed or future sync timestamps produce a stale alert instead of reporting healthy.
 Required-liveness failures (`liveness_required_unavailable`) count as device faults.
+Failed local attendance writes (`attendance_write_failed`) count as device faults too.
 The public health endpoint returns a generic 503 during backend failures; diagnostics
 stay in server logs. No health probe updates kiosk sync timestamps.
 
