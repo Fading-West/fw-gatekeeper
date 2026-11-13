@@ -40,6 +40,11 @@ function normalizeAttempt(raw: any, kioskId: string) {
   const bestScore = optionalNumber(raw.best_score) ?? optionalNumber(raw.bestScore) ?? optionalNumber(raw.score) ?? optionalNumber(raw.confidence);
   const secondBestScore = optionalNumber(raw.second_best_score) ?? optionalNumber(raw.secondBestScore) ?? optionalNumber(raw.second_score) ?? optionalNumber(raw.secondScore);
   const scoreMargin = optionalNumber(raw.score_margin) ?? optionalNumber(raw.scoreMargin) ?? optionalNumber(raw.margin);
+  const candidateWorkerName =
+    optionalString(raw.candidate_worker_name) ||
+    optionalString(raw.candidateWorkerName) ||
+    optionalString(raw.worker_name) ||
+    optionalString(raw.workerName);
 
   return {
     sourceAttemptId:
@@ -54,17 +59,15 @@ function normalizeAttempt(raw: any, kioskId: string) {
     faceDetected:
       optionalBoolean(raw.face_detected) ??
       optionalBoolean(raw.faceDetected) ??
-      (bestScore !== undefined || optionalString(raw.candidate_worker_name) !== undefined),
+      // Infer from the same normalized name we persist, so supported aliases
+      // cannot change immutable evidence or turn a safe retry into a conflict.
+      (bestScore !== undefined || candidateWorkerName !== undefined),
     candidateWorkerId:
       optionalString(raw.candidate_worker_id) ||
       optionalString(raw.candidateWorkerId) ||
       optionalString(raw.worker_id) ||
       optionalString(raw.workerId),
-    candidateWorkerName:
-      optionalString(raw.candidate_worker_name) ||
-      optionalString(raw.candidateWorkerName) ||
-      optionalString(raw.worker_name) ||
-      optionalString(raw.workerName),
+    candidateWorkerName,
     bestScore,
     secondBestScore,
     scoreMargin,
