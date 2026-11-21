@@ -192,6 +192,12 @@ class KioskClaimQueueTests(unittest.TestCase):
         self.assertEqual(params['queued_logs'], '3')
         self.assertEqual(params['queued_attempts'], '4')
         self.assertNotIn('degraded_reason', sync._health_params({'rejected_logs': 0, 'rejected_attempts': 0}))
+        params = sync._health_params({'camera_ok': False, 'model_ok': False,
+                                     'degraded_reason': 'camera_stalled,recognition_stalled,clock_unsynchronized',
+                                     'rejected_logs': 1, 'rejected_attempts': 2})
+        self.assertEqual(params, {'camera_ok': '0', 'model_ok': '0', 'rejected_attempts': '2',
+                                 'degraded_reason': 'camera_stalled,recognition_stalled,clock_unsynchronized; '
+                                                    'upload_quarantine: 1 attendance, 2 recognition'})
 
     def test_local_health_is_degraded_while_quarantined_evidence_needs_recovery(self):
         import app as web_app

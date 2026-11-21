@@ -90,12 +90,13 @@ function getKioskStatus(lastSync: string | null): KioskStatus {
 function getDeviceIssues(health: KioskDeviceHealth | null, queue: AttendanceQueueObservation | null): string[] {
   if (!health) return getAttendanceQueueIssues(queue);
   const issues: string[] = [];
-  if (health.camera_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
-  if (health.model_ok === false) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
+  const reasons = getKioskDegradedReasons(health.degraded_reason);
+  if (health.camera_ok === false && !reasons.includes('camera_stalled')) issues.push(KIOSK_DEGRADED_REASON_LABELS.camera_error);
+  if (health.model_ok === false && !reasons.includes('recognition_stalled')) issues.push(KIOSK_DEGRADED_REASON_LABELS.model_error);
   if ((health.rejected_attempts ?? 0) > 0) issues.push(`${health.rejected_attempts} recognition record${health.rejected_attempts === 1 ? " needs" : "s need"} supervisor review`);
-  for (const reason of getKioskDegradedReasons(health.degraded_reason)) {
-    if ((reason === 'camera_error' && health.camera_ok === false) ||
-        (reason === 'model_error' && health.model_ok === false)) continue;
+  for (const reason of reasons) {
+    if ((reason === 'camera_error' && (health.camera_ok === false || reasons.includes('camera_stalled'))) ||
+        (reason === 'model_error' && (health.model_ok === false || reasons.includes('recognition_stalled')))) continue;
     issues.push(KIOSK_DEGRADED_REASON_LABELS[reason] ?? `degraded (${reason})`);
   }
   return [...issues, ...getAttendanceQueueIssues(queue)];
