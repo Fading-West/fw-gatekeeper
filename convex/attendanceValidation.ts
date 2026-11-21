@@ -93,8 +93,12 @@ export function validateAttendanceEvent(value: unknown): AttendanceEvent {
   return validateEvent(value);
 }
 
+export function createAttendanceEventValidator() {
+  const resolveLocalTimestamp = createRecognitionTimestampSortKey();
+  return (event: unknown) => validateEvent(event, resolveLocalTimestamp);
+}
+
 export function validateAttendanceBatch(events: unknown): AttendanceEvent[] {
   if (!Array.isArray(events) || events.length > MAX_ATTENDANCE_BATCH_SIZE) invalid(`events must be an array of at most ${MAX_ATTENDANCE_BATCH_SIZE} events`);
-  const resolveLocalTimestamp = createRecognitionTimestampSortKey();
-  return events.map(event => validateEvent(event, resolveLocalTimestamp));
+  return events.map(createAttendanceEventValidator());
 }

@@ -28,6 +28,16 @@ it.each([501, 1501])('accepts %i legacy events through bounded chunks with full 
   expect(rows.size).toBe(size);
   expect(vi.mocked(ingestAttendanceBatch).mock.calls.map(call => call[0].length)).toEqual(size === 501 ? [500, 1] : [500, 500, 500, 1]);
 });
+it('reuses the factory clock while validating all receipt chunks', async () => {
+  const payload = events(1501);
+  const formatter = vi.spyOn(Intl, 'DateTimeFormat');
+  try {
+    await expect(ingestAttendanceBacklog(payload)).resolves.toEqual({ synced: 1501, acknowledged: 1501 });
+    expect(formatter).toHaveBeenCalledTimes(1);
+  } finally {
+    formatter.mockRestore();
+  }
+});
 it('retries only missing chunks after a partial failure without duplicates', async () => {
   vi.mocked(ingestAttendanceBatch).mockImplementationOnce(commit).mockRejectedValueOnce(new Error('network failed'));
   await expect(ingestAttendanceBacklog(events(1501))).rejects.toThrow('resume');
