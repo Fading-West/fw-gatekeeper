@@ -37,6 +37,20 @@ class SetupPolicyTests(unittest.TestCase):
         for name, value in self.values().items():
             self.assertEqual(namespace[name], value)
 
+    def test_cli_uses_python_source_lines_when_updating_existing_settings(self):
+        old = ('"""Operator note: \u2028 separate paragraph."""\n'
+               'LIVENESS_REQUIRED = True\nKIOSK_NAME = "old"\n')
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "config_local.py"
+            path.write_text(old, encoding="utf-8")
+            result = self.run_updater(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            namespace = {}
+            exec(path.read_text(encoding="utf-8"), namespace)
+            self.assertEqual(namespace["__doc__"], "Operator note: \u2028 separate paragraph.")
+            self.assertTrue(namespace["LIVENESS_REQUIRED"])
+            self.assertEqual(namespace["KIOSK_NAME"], self.values()["KIOSK_NAME"])
+
     def test_never_executes_existing_configuration_during_update(self):
         source = config_update.updated_source('raise RuntimeError("must not execute")\nLIVENESS_REQUIRED = True\n', self.values())
         self.assertIn('raise RuntimeError', source)

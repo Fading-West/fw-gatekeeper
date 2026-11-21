@@ -59,7 +59,9 @@ def updated_source(existing: str, values: dict[str, str]) -> str:
         # Do not print the invalid source line: it may contain credentials.
         raise ValueError("Existing local configuration is invalid; repair it before setup") from None
     validate_managed_bindings(module)
-    lines = existing.splitlines(keepends=True)
+    # AST line numbers count Python's physical newlines. Unicode separators
+    # inside comments or strings must not shift the managed assignment spans.
+    lines = existing.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     replacements = {}
     removed: set[int] = set()
     written = set()
@@ -76,10 +78,10 @@ def updated_source(existing: str, values: dict[str, str]) -> str:
                 if peers:
                     raise ValueError("Managed settings must each occupy their own lines")
                 name = targets[0].id
-                replacements[node.lineno - 1] = f"{name} = {values[name]!r}\n"
+                replacements[node.lineno - 1] = f"{name} = {values[name]!r}"
                 removed.update(range(node.lineno, node.end_lineno))
                 written.add(name)
-    preserved = "".join(replacements.get(index, line) for index, line in enumerate(lines) if index not in removed).rstrip()
+    preserved = "\n".join(replacements.get(index, line) for index, line in enumerate(lines) if index not in removed).rstrip()
     if not preserved:
         preserved = '"""Local kiosk configuration; operator overrides are preserved by setup."""'
     result = preserved + "\n\n# Installer-managed connection and display settings.\n"
