@@ -136,7 +136,15 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
 
-  await convex.mutation(api.workers.remove, { id: id as any });
-  systemHealthCache.invalidate();
-  return NextResponse.json({ ok: true });
+  try {
+    await convex.mutation(api.workers.remove, { id: id as any });
+    systemHealthCache.invalidate();
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    if (error instanceof ConvexError && error.data?.code === 'WORKER_NOT_FOUND') {
+      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    }
+    logApiError('Worker deactivation failed:', error);
+    return NextResponse.json({ error: 'Failed to deactivate worker' }, { status: 500 });
+  }
 }

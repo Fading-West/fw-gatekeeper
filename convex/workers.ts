@@ -412,7 +412,7 @@ export const remove = mutation({
   handler: async (ctx, args) => {
     const member = await assertPortalRole(ctx, ["admin"]);
     const worker = await ctx.db.get(args.id);
-    if (!worker) throw new Error("Worker not found");
+    if (!worker) throw new ConvexError({ code: "WORKER_NOT_FOUND", message: "Worker not found" });
     // Repeated deactivation (a retry or a stale tab) changes nothing to audit or resync.
     if (!worker.active) return { ok: true };
     await writeRosterWorker(ctx, { active: false, updatedAt: new Date().toISOString() }, args.id);
