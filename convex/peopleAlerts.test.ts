@@ -17,6 +17,8 @@ afterEach(() => {
 
 describe("new person alerts", () => {
   it("records a new worker once, but not identity updates", async () => {
+    // Keep this test's scheduled delivery from using the next test's providers.
+    vi.useFakeTimers();
     const t = convexTest(schema, modules);
     const adminId = await t.run(async (ctx) => {
       const id = await ctx.db.insert("users", { email: "admin@example.test" });
@@ -96,4 +98,38 @@ describe("new person alerts", () => {
     expect(event.delivered).toBe(true);
     expect(send).toHaveBeenCalledTimes(2);
   });
+});
+
+it("keeps a failed email pending even if its optional webhook was accepted", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-22T16:00:00.000Z"));
+  const t = convexTest(schema, modules);
+  const id = await t.run((ctx) => ctx.db.insert("peopleAlertEvents", {
+    kind: "worker", targetId: "synthetic-worker", label: "Synthetic Worker",
+    createdAt: new Date().toISOString(), delivered: false,
+  }));
+  vi.stubEnv("RESEND_API_KEY", "re_test");
+  vi.stubEnv("ALERT_EMAIL_FROM", "alerts@example.test");
+  vi.stubEnv("PEOPLE_ALERT_EMAIL_TO", "owner@example.test");
+  const webhook = "https://webhook.example.test/alerts";
+  vi.stubEnv("PEOPLE_ALERT_WEBHOOK_URL", webhook);
+  const email = vi.fn<(request: RequestInit) => Promise<Response>>()
+    .mockResolvedValueOnce(new Response(null, { status: 503 }))
+    .mockResolvedValueOnce(new Response(null, { status: 200 }));
+  const send = vi.fn((url: string, request: RequestInit) =>
+    url === webhook ? Promise.resolve(new Response(null, { status: 200 })) : email(request));
+  vi.stubGlobal("fetch", send);
+
+  await expect(t.action(internal.peopleAlerts.deliverPending, {})).resolves.toMatchObject({ delivered: 0 });
+  expect(send.mock.calls.map(([url]) => url)).toEqual(["https://api.resend.com/emails", webhook]);
+  expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ delivered: false });
+  await expect(t.action(internal.peopleAlerts.deliverPending, {})).resolves.toMatchObject({ delivered: 0 });
+  expect(email).toHaveBeenCalledTimes(1);
+
+  vi.advanceTimersByTime(60_000);
+  await expect(t.action(internal.peopleAlerts.deliverPending, {})).resolves.toMatchObject({ delivered: 1 });
+  expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ delivered: true });
+  expect(email).toHaveBeenCalledTimes(2);
+  expect(email.mock.calls.map(([request]) => new Headers(request.headers).get("Idempotency-Key")))
+    .toEqual([`fw-gatekeeper-person-${id}`, `fw-gatekeeper-person-${id}`]);
 });

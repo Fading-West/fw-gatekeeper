@@ -133,7 +133,9 @@ export const deliverPending = internalAction({
             }),
           });
           if (!response.ok) throw new Error(`Webhook responded ${response.status}`);
-          accepted = true;
+          // The webhook is supplemental when email is configured. Its
+          // success must not acknowledge away a failed primary delivery.
+          if (!config.email) accepted = true;
         } catch (error) {
           console.error("people_alert_webhook_failed", { eventId: event.id, error: String(error) });
         }
