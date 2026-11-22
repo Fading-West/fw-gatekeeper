@@ -124,3 +124,13 @@ it('continues to default an omitted action to save', async () => {
   expect((await patch({ notes: 'Intentional save' })).status).toBe(200);
   expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ notes: 'Intentional save', revision: 1 });
 });
+
+it('rejects an impossible signoff date before checking backend queue evidence', async () => {
+  const { t, id, patch } = await setup();
+  const response = await patch({ date: '2026-02-29', action: 'complete' });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: 'date must use YYYY-MM-DD format' });
+  expect(convex.query).not.toHaveBeenCalled();
+  expect(convex.mutation).not.toHaveBeenCalled();
+  expect(await t.run(ctx => ctx.db.get(id))).toMatchObject({ status: 'open', notes: 'Existing notes' });
+});

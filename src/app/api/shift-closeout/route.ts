@@ -145,7 +145,7 @@ export async function PATCH(req: NextRequest) {
     if (!date) {
       return NextResponse.json({ error: 'date required' }, { status: 400 });
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isValidLocalDateString(date)) {
       return NextResponse.json({ error: 'date must use YYYY-MM-DD format' }, { status: 400 });
     }
     if (!VALID_ACTIONS.has(action)) {
