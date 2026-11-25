@@ -93,3 +93,27 @@ describe("stats active worker population", () => {
     expect(history.map((row) => row.worker_id)).toContain(inactive);
   });
 });
+
+it("keeps legacy punches without a valid instant out of dashboard totals", async () => {
+  const { test, actor, worker } = await setup();
+  const factoryDate = "2026-03-08";
+  const present = await worker();
+  const absent = await worker();
+  await test.run(async (ctx) => {
+    for (const punch of [
+      { workerId: present, eventType: "clock_in", timestamp: "2026-03-08T06:00:00" },
+      // Before DST-gap validation, a legacy kiosk could upload a wall time
+      // from the skipped hour. Keep it in history without treating it as a scan.
+      { workerId: present, eventType: "clock_out", timestamp: "2026-03-08T02:30:00" },
+      { workerId: absent, eventType: "clock_in", timestamp: "2026-03-08T02:45:00" },
+    ]) {
+      await ctx.db.insert("attendance", { ...punch, synced: true });
+    }
+  });
+
+  expect(await actor.query(api.stats.get, { date: factoryDate })).toMatchObject({
+    totalWorkers: 2, clockedIn: 1, clockedOut: 0, notArrived: 1, avgArrival: "06:00",
+  });
+  const history = await actor.query(api.attendance.list, { date: factoryDate });
+  expect(history.filter((row) => row.timestamp_utc === null)).toHaveLength(2);
+});

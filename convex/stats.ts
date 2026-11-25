@@ -42,8 +42,10 @@ export const get = query({
 
     // All dashboard metrics use the current active roster, including historical dates.
     // Filter only this summary; attendance history still retains inactive workers.
+    // Legacy rows without a resolvable instant belong in history, but cannot
+    // establish a worker's presence or first arrival.
     const todayAttendance = (await listEffectiveAttendanceByTimestampRange(ctx, today))
-      .filter((record) => activeWorkerIds.has(record.workerId));
+      .filter((record) => record.chronologicalKey && activeWorkerIds.has(record.workerId));
 
     // The helper orders by instant, including offsets and subsecond precision.
     // Latest event per worker
