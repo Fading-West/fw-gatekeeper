@@ -106,6 +106,12 @@ update_kiosk() {
   [ -O "$active/venv" ] || { echo "Run as the installed venv owner." >&2; exit 1; }
   # Repair a convenience symlink if a successful retirement was interrupted.
   python3 "$helper" retire "$repo"
+  # The checkout stays at its original revision. Skip staging only after a
+  # release has been committed, so first-time migration still runs.
+  if [ -f "$repo/.git/kiosk-current.json" ] && [ "$deployed" = "$target" ]; then
+    echo "Kiosk is already running $target."
+    return 0
+  fi
   # A killed updater's trial is never a committed release. Cancel it before
   # building, then let the launcher finish returning to the committed version.
   python3 "$helper" cancel "$repo"
