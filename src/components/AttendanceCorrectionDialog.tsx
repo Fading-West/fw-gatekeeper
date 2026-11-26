@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, RefObject } from 'react';
+import { boundedRead } from '@/lib/bounded-read';
 import { createAttendanceClock } from '@/lib/attendance-time';
 import { acknowledgeCorrectionRequest, correctionRequestId } from '@/lib/correction-request';
 import { createLocalIsoTimestamp, DEFAULT_FACTORY_TIME_ZONE } from '@/lib/date';
@@ -93,6 +94,7 @@ export default function AttendanceCorrectionDialog({
   // look up the earlier request: its outcome is still unknown.
   const [signInRequired, setSignInRequired] = useState(false);
   const submittingRef = useRef(false);
+  const precheckRef = useRef<AbortController | null>(null);
   // Set once the dialog closes, so a pending pre-save check never posts.
   const closedRef = useRef(false);
   const modalRef = useRef<HTMLElement | null>(null);
@@ -150,6 +152,7 @@ export default function AttendanceCorrectionDialog({
     modalRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
     return () => {
       closedRef.current = true;
+      precheckRef.current?.abort();
       trigger?.focus?.();
     };
   // Capture the trigger once when the dialog opens.
@@ -160,6 +163,7 @@ export default function AttendanceCorrectionDialog({
   // locked by the page, so reopening shows it frozen for an identical retry.
   function close() {
     closedRef.current = true;
+    precheckRef.current?.abort();
     onClose();
   }
 
@@ -215,11 +219,16 @@ export default function AttendanceCorrectionDialog({
     writePendingDirectCorrection(record);
     onPendingStart(record);
     try {
-      const response = await fetch('/api/attendance-corrections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...record.request, request_id: record.request_id }),
-      });
+      const { response, body } = await boundedRead(async (signal) => {
+        const response = await fetch('/api/attendance-corrections', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...record.request, request_id: record.request_id }),
+          signal,
+        });
+        const body = response.ok ? null : await response.json().catch(() => ({}));
+        return { response, body };
+      }, new AbortController().signal);
       if (response.ok) {
         acknowledgeCorrectionRequest(record.request);
         clearPendingDirectCorrection(record.request_id);
@@ -227,7 +236,6 @@ export default function AttendanceCorrectionDialog({
         onSaved();
         return;
       }
-      const body = await response.json().catch(() => ({}));
       if (response.status === 401 || response.status === 403) {
         // The portal refuses the request before Convex can return the
         // idempotent receipt, so this proves nothing about an earlier
@@ -311,14 +319,20 @@ export default function AttendanceCorrectionDialog({
           holdFocus();
           submittingRef.current = true;
           setPhase('saving');
+          const precheck = new AbortController();
+          precheckRef.current = precheck;
           try {
-            for (const adjacentDate of adjacentDates) {
-              const params = new URLSearchParams({ date: adjacentDate, worker_id: worker.id });
-              const response = await fetch(`/api/attendance?${params.toString()}`);
-              const rows = response.ok ? await response.json() : null;
-              if (!Array.isArray(rows)) throw new Error('adjacent day unavailable');
-              candidates = [...candidates, ...rows];
-            }
+            candidates = await boundedRead(async (signal) => {
+              let checked = candidates;
+              for (const adjacentDate of adjacentDates) {
+                const params = new URLSearchParams({ date: adjacentDate, worker_id: worker.id });
+                const response = await fetch(`/api/attendance?${params.toString()}`, { signal });
+                const rows = response.ok ? await response.json() : null;
+                if (!Array.isArray(rows)) throw new Error('adjacent day unavailable');
+                checked = [...checked, ...rows];
+              }
+              return checked;
+            }, precheck.signal);
           } catch {
             if (!closedRef.current) {
               setPhase('editing');
@@ -326,6 +340,7 @@ export default function AttendanceCorrectionDialog({
             }
             return;
           } finally {
+            precheckRef.current = null;
             submittingRef.current = false;
           }
           if (closedRef.current) return;
