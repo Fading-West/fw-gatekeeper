@@ -40,6 +40,9 @@ export default function GuideDrawer() {
       return;
     }
     wasOpenRef.current = true;
+    const pageStyle = document.documentElement.style;
+    const previousOverflowY = pageStyle.overflowY;
+    pageStyle.overflowY = 'hidden';
     closeButtonRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -60,7 +63,10 @@ export default function GuideDrawer() {
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      pageStyle.overflowY = previousOverflowY;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [open, closeGuide]);
 
   if (pathname === '/guide') return null;
