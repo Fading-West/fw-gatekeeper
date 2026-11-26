@@ -7,6 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const FACTORY_TIME_ZONE = 'America/Chicago';
 export const DEFAULT_RUNS_DIR = path.join(os.homedir(), '.cache', 'fw-gatekeeper-verify', 'runs');
@@ -209,18 +210,32 @@ export function listenersFor(pids) {
 }
 
 export async function waitFor(label, fn, { timeoutMs = 60_000, intervalMs = 500 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+  const controller = new AbortController();
+  const { signal } = controller;
   let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const value = await fn();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new CheckFailure(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}`));
+      controller.abort();
+    }, timeoutMs);
+  });
+  async function poll() {
+    while (!signal.aborted) {
+      try {
+        const value = await fn(signal);
+        if (value) return value;
+      } catch (error) {
+        lastError = error;
+      }
+      await delay(intervalMs, undefined, { signal });
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  fail(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}`);
+  try {
+    return await Promise.race([deadline, poll()]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function factoryDate(offsetDays = 0) {

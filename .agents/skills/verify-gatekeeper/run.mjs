@@ -137,7 +137,7 @@ async function prepare(opts) {
       '--local-storage', path.join(run, 'backend', 'storage'), '--disable-beacon',
     ], { cwd: path.join(run, 'backend'), env: childEnv(state) });
     saveState(state);
-    await waitFor('owned Convex backend', async () => (await (await fetch(`${state.backend.url}/instance_name`)).text()) === instanceName);
+    await waitFor('owned Convex backend', async (signal) => (await (await fetch(`${state.backend.url}/instance_name`, { signal })).text()) === instanceName);
 
     // Disposable Convex Auth signing keys (never production's).
     const { generateKeyPairSync } = await import('node:crypto');
@@ -180,8 +180,8 @@ async function prepare(opts) {
     state.app.buildId = fs.readFileSync(path.join(app, '.next', 'BUILD_ID'), 'utf8').trim();
     state.app.proc = spawnOwned(state, 'next', process.execPath, ['node_modules/next/dist/bin/next', 'start', '-H', '127.0.0.1', '-p', String(appPort)], { cwd: app, env: childEnv(state, appEnv) });
     saveState(state);
-    await waitFor('owned Next app health', async () => {
-      const body = await (await fetch(`${state.app.url}/api/health`)).json();
+    await waitFor('owned Next app health', async (signal) => {
+      const body = await (await fetch(`${state.app.url}/api/health`, { signal })).json();
       return body.status === 'ok' && body.convex === 'ok';
     });
 

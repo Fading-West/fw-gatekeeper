@@ -95,8 +95,8 @@ try {
     '--instance-secret', state.secrets.instanceSecret,
     '--local-storage', path.join(run, 'backend/storage'), '--disable-beacon',
   ], { cwd: path.join(run, 'backend'), env: h.childEnv(state) });
-  await h.waitFor('owned backend', async () =>
-    (await (await fetch(`${state.backend.url}/instance_name`)).text()) === instance);
+  await h.waitFor('owned backend', async (signal) =>
+    (await (await fetch(`${state.backend.url}/instance_name`, { signal })).text()) === instance);
   assert(h.listenersFor([proc.pid]).every(address => address.startsWith('127.0.0.1:')));
   await setBackendEnv(state, { SITE_URL: `http://127.0.0.1:${sitePort}` });
   h.runLogged(state, 'deploy.log', path.join(app, 'node_modules/.bin/convex'),
