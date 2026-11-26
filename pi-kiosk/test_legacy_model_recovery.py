@@ -22,7 +22,7 @@ class LegacyModelRecoveryTests(unittest.TestCase):
             from urllib.request import urlopen
 
             def offline_open(url, *args, **kwargs):
-                if url != legacy.as_uri():
+                if url != legacy.resolve().as_uri():
                     raise OSError("Kiosk is offline")
                 return urlopen(url, *args, **kwargs)
 
