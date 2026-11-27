@@ -38,6 +38,7 @@ _frame = None
 _status_lock = threading.Lock()
 _status = {
     "message": "Starting camera",
+    "camera_ok": False,
     "face_detected": False,
     "liveness": False,
     "ear": 0.0,
@@ -93,6 +94,10 @@ def _camera_loop():
     while _running:
         ret, frame = cap.read()
         if not ret:
+            liveness.reset()
+            _set_frame(None)
+            _set_status(message="Camera frame unavailable", camera_ok=False,
+                        face_detected=False, liveness=False, ear=0.0)
             time.sleep(0.05)
             continue
 
@@ -117,7 +122,8 @@ def _camera_loop():
         cv2.putText(display, message, (10, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (235, 235, 235), 2)
 
         _set_frame(display)
-        _set_status(message=message, face_detected=face_detected, liveness=live, ear=liveness.get_ear())
+        _set_status(message=message, camera_ok=True, face_detected=face_detected,
+                    liveness=live, ear=liveness.get_ear())
         time.sleep(0.03)
 
     cap.release()
@@ -147,13 +153,14 @@ def index():
     </style></head>
     <body>
       <h1>FW Gatekeeper Quick Test</h1>
-      <img src="/feed" width="960" alt="camera feed">
+      <img id="camera-feed" src="/feed" width="960" alt="camera feed" hidden>
       <div id="status">Loading...</div>
       <script>
       async function poll(){
         try{
           const r = await fetch('/status', {cache:'no-store'});
           const s = await r.json();
+          document.getElementById('camera-feed').hidden = !s.camera_ok;
           document.getElementById('status').textContent =
             `Face ${s.face_detected ? 'detected' : 'not detected'} | EAR ${Number(s.ear).toFixed(2)} | Liveness ${s.liveness ? 'confirmed' : 'pending'} | ${s.message}`;
         }catch(_e){}
