@@ -78,12 +78,17 @@ def _download(url: str, destination: Path) -> None:
             out.write(chunk)
 
 
-def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, label: str = "model") -> Path:
+def ensure_pinned_model(
+    url: str, path: Path | str, expected_sha256: str, *,
+    label: str = "model", legacy_path: Path | None = None,
+) -> Path:
     """Make sure ``path`` holds the pinned model, downloading if needed.
 
     An already-present file is re-verified so a corrupt cached copy is caught;
     a mismatching file is deleted and fetched again. A fresh download is
     written to a temporary sibling, verified, then atomically moved into place.
+    A legacy cache with the same digest can supply the bytes offline. It is
+    copied, keeping the old release's model intact.
     Raises on download failure or digest mismatch.
     """
     path = Path(path)
@@ -95,6 +100,13 @@ def ensure_pinned_model(url: str, path: Path | str, expected_sha256: str, *, lab
             return path
         except ModelDigestMismatch as exc:
             logger.warning("Cached %s failed verification, re-downloading: %s", label, exc)
+
+    if legacy_path is not None and legacy_path.is_file():
+        try:
+            if sha256_of_file(legacy_path).lower() == expected_sha256.lower():
+                url = legacy_path.resolve().as_uri()
+        except OSError:
+            logger.warning("Legacy %s cache could not be read; using the pinned download", label)
 
     # Concurrent cold-start requests must never share a partial download.
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".part", delete=False) as handle:

@@ -15,7 +15,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from model_pinning import MODEL_COMMIT, REC_MODEL_SHA256, REC_MODEL_URL, ensure_pinned_model, sha256_of_file
+from model_pinning import MODEL_COMMIT, REC_MODEL_SHA256, REC_MODEL_URL, ensure_pinned_model
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +39,11 @@ def ensure_rec_model() -> bool:
     than scanning with an unknown model.
     """
     try:
-        source = REC_MODEL_URL
-        # Migrate the verified legacy cache by copying, so the first release
-        # update works offline and fallback can still use the original path.
-        if (not REC_MODEL_PATH.exists() and LEGACY_REC_MODEL_PATH.is_file()
-                and sha256_of_file(LEGACY_REC_MODEL_PATH) == REC_MODEL_SHA256):
-            source = LEGACY_REC_MODEL_PATH.resolve().as_uri()
         ensure_pinned_model(
-            source,
+            REC_MODEL_URL,
             REC_MODEL_PATH,
             REC_MODEL_SHA256,
+            legacy_path=LEGACY_REC_MODEL_PATH,
             label=f"MobileFaceNet (buffalo_s@{MODEL_COMMIT[:12]})",
         )
     except Exception as exc:
