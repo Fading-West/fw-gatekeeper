@@ -84,6 +84,11 @@ export async function openRole(state, browser, role) {
   return { role, file, context, page, landing: new URL(page.url()).pathname, status: response?.status(), jwt, reauthenticated };
 }
 
+export function kiosksPageAccessMatches(role, status, location, appUrl) {
+  if (role === 'admin') return status === 200;
+  return status === 307 && location === new URL('/', appUrl).href;
+}
+
 export async function closeRole(session) {
   await session.context.storageState({ path: session.file }).catch(() => {});
   if (fs.existsSync(session.file)) fs.chmodSync(session.file, 0o600);

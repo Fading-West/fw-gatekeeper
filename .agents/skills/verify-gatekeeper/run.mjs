@@ -14,7 +14,7 @@ import {
 import {
   adminClient, deployedModuleHashes, diffSnapshots, readTable, setBackendEnv, snapshot, userClient,
 } from './lib/convex-admin.mjs';
-import { browserEnvNames, closeRole, isolatedContext, launchBrowser, openRole, runFeature, signIn } from './lib/feature.mjs';
+import { browserEnvNames, closeRole, isolatedContext, kiosksPageAccessMatches, launchBrowser, openRole, runFeature, signIn } from './lib/feature.mjs';
 
 const SEEDED_WORKERS = ['Marcus Johnson', 'Sarah Chen', 'Diego Rivera', 'Aisha Patel', 'Tommy Krueger'];
 const DEFECT_FILE = 'convex/attendanceCorrections.ts';
@@ -282,9 +282,10 @@ async function doctor(run, opts) {
       const current = session.jwt ? await userClient(state, session.jwt).query('portalMembers:current').catch(() => null) : null;
       const stats = await session.context.request.get(`${state.app.url}/api/stats`);
       const kiosks = await session.context.request.get(`${state.app.url}/kiosks`, { maxRedirects: 0 });
-      const kioskAllowed = kiosks.status() === 200;
-      a.check(`session-${role}`, session.landing === '/' && current?.role === role && stats.status() === 200 && kioskAllowed === (role === 'admin'),
-        { landing: session.landing, role: current?.role, stats: stats.status(), kiosks: kiosks.status(), reauthenticated: session.reauthenticated });
+      const kiosksLocation = kiosks.headers().location;
+      const kioskAccessMatches = kiosksPageAccessMatches(role, kiosks.status(), kiosksLocation, state.app.url);
+      a.check(`session-${role}`, session.landing === '/' && current?.role === role && stats.status() === 200 && kioskAccessMatches,
+        { landing: session.landing, role: current?.role, stats: stats.status(), kiosks: kiosks.status(), kioskAccessMatches, reauthenticated: session.reauthenticated });
       await closeRole(session);
     }
   } finally {
