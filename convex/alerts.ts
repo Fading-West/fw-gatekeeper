@@ -1,3 +1,4 @@
+import { observeAttendanceQueue, type StoredAttendanceQueue } from "./attendanceQueue";
 import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -53,6 +54,7 @@ export type AlertKiosk = {
   deviceId?: string;
   lastSync?: string;
   health?: AlertKioskHealth;
+  attendanceQueue?: StoredAttendanceQueue;
   active?: boolean;
 };
 
@@ -146,7 +148,7 @@ export function evaluateKioskAlerts(
     if (hasScanBlockingFault(kiosk.health)) {
       conditions.push("device_fault");
     }
-    if ((kiosk.health?.queuedLogs ?? 0) >= thresholds.queueBacklog) {
+    if ((observeAttendanceQueue(kiosk).last_valid_count ?? 0) >= thresholds.queueBacklog) {
       conditions.push("queue_backlog");
     }
 
@@ -264,7 +266,9 @@ function conditionSummary(condition: string, kiosk: AlertKiosk, sinceMs: number)
     case "device_fault":
       return `reporting a scan-blocking device fault for ${duration}`;
     case "queue_backlog":
-      return `holding ${kiosk.health?.queuedLogs ?? "many"} queued logs for ${duration}`;
+      return kiosk.attendanceQueue?.latest === "unknown"
+        ? `last reported ${observeAttendanceQueue(kiosk).last_valid_count ?? "many"} queued logs; latest count unavailable (backlog flagged for ${duration})`
+        : `holding ${observeAttendanceQueue(kiosk).last_valid_count ?? "many"} queued logs for ${duration}`;
     default:
       return `${CONDITION_LABELS[condition] ?? condition} for ${duration}`;
   }
@@ -325,7 +329,7 @@ export function buildAlertMessage(alert: PlannedAlert, nowMs: number, siteUrl: s
     `Degraded reason: ${health?.degradedReason ?? "none reported"}`,
     `Camera OK: ${health?.cameraOk ?? "unknown"}`,
     `Model OK: ${health?.modelOk ?? "unknown"}`,
-    `Queued logs on device: ${health?.queuedLogs ?? "unknown"}`,
+    `Queued logs on device: ${observeAttendanceQueue(alert.kiosk).last_valid_count ?? "unknown"}${alert.kiosk.attendanceQueue?.latest === "unknown" ? " (last valid count; latest report omitted a count)" : ""}`,
     `Health reported at: ${describeAge(health?.reportedAt, nowMs)}`,
     "",
     `Kiosk readiness: ${siteUrl}/kiosks`,
@@ -476,6 +480,10 @@ async function deliver(config: AlertDeliveryConfig, message: AlertMessage, check
 }
 
 const alertKioskValidator = v.object({
+  attendanceQueue: v.optional(v.object({
+    lastValidCount: v.number(), observedAt: v.string(),
+    latest: v.union(v.literal("reported"), v.literal("unknown")),
+  })),
   kioskId: v.string(),
   name: v.string(),
   location: v.string(),
@@ -531,6 +539,7 @@ export const loadState = internalQuery({
         deviceId: kiosk.kioskId,
         lastSync: kiosk.lastSync,
         health: kiosk.health,
+        attendanceQueue: kiosk.attendanceQueue,
         active: kiosk.active,
       })),
       openStates: openRows.map((row) => ({

@@ -432,3 +432,34 @@ describe("alertState recording", () => {
   });
 
 });
+
+
+it("does not announce queue recovery after a newer report omits its count", async () => {
+  const t = convexTest(schema, modules);
+  const id = await t.run(ctx => ctx.db.insert("kiosks", {
+    name: "Entry", location: "A", type: "entry", active: true,
+    lastSync: new Date(NOW).toISOString(),
+    health: { cameraOk: true, modelOk: true, reportedAt: new Date(NOW).toISOString() },
+    attendanceQueue: { lastValidCount: 80, observedAt: new Date(NOW - MINUTE).toISOString(), latest: "unknown" },
+  }));
+  const states = [{ kioskId: String(id), condition: "queue_backlog", firstSeenAt: new Date(NOW - MINUTE).toISOString(), lastNotifiedAt: new Date(NOW - MINUTE).toISOString() }];
+  const snapshot = await t.query(internal.alerts.loadState, {});
+  const plan = planKioskNotifications(evaluateKioskAlerts(snapshot.kiosks, NOW), states, NOW);
+  expect(plan.observations).toContainEqual({ kioskId: String(id), condition: "queue_backlog" });
+  expect(plan.recoveries).toEqual([]);
+  const reminder = planKioskNotifications(evaluateKioskAlerts(snapshot.kiosks, NOW), [], NOW);
+  expect(buildAlertMessage(reminder.alerts[0], NOW, "https://example.test").text).toContain("Queued logs on device: 80 (last valid count; latest report omitted a count)");
+  await t.run(ctx => ctx.db.patch(id, { attendanceQueue: { lastValidCount: 49, observedAt: new Date(NOW).toISOString(), latest: "reported" } }));
+  const belowThreshold = await t.query(internal.alerts.loadState, {});
+  expect(planKioskNotifications(evaluateKioskAlerts(belowThreshold.kiosks, NOW), states, NOW).recoveries).toHaveLength(1);
+  await t.run(ctx => ctx.db.patch(id, { attendanceQueue: { lastValidCount: 0, observedAt: new Date(NOW).toISOString(), latest: "reported" } }));
+  const cleared = await t.query(internal.alerts.loadState, {});
+  expect(planKioskNotifications(evaluateKioskAlerts(cleared.kiosks, NOW), states, NOW).recoveries).toHaveLength(1);
+});
+
+
+it("keeps legacy missing queue counts quiet and falls back to legacy reported counts", () => {
+  const health = { cameraOk: true, modelOk: true, reportedAt: new Date(NOW).toISOString() };
+  expect(conditionsFor(kiosk({ health }))).toEqual([]);
+  expect(conditionsFor(kiosk({ health: { ...health, queuedLogs: 80 } }))).toEqual(["queue_backlog"]);
+});
