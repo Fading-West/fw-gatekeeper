@@ -263,7 +263,7 @@ sleep 1
 exec firefox-esr --kiosk http://localhost:5555
 DISPLAYEOF
 chmod +x "$KIOSK_HOME/fw-gatekeeper-display.sh"
-chown $KIOSK_USER:$KIOSK_USER "$KIOSK_HOME/fw-gatekeeper-display.sh"
+chown "${KIOSK_USER}:" "$KIOSK_HOME/fw-gatekeeper-display.sh"
 
 # XDG autostart entry — runs when the user's desktop session starts
 cat > "$KIOSK_HOME/.config/autostart/fw-gatekeeper-display.desktop" << EOF
@@ -275,7 +275,7 @@ X-GNOME-Autostart-enabled=true
 Hidden=false
 NoDisplay=false
 EOF
-chown -R $KIOSK_USER:$KIOSK_USER "$KIOSK_HOME/.config/autostart"
+chown -R "${KIOSK_USER}:" "$KIOSK_HOME/.config/autostart"
 
 # Remove old systemd display service if it exists
 systemctl disable fw-gatekeeper-display.service 2>/dev/null || true
@@ -336,14 +336,13 @@ fi
 
 # ─── 8. Permissions & Cleanup ──────────────────────────────────
 echo "[8/8] Setting permissions..."
-chown -hRP "$KIOSK_USER:$KIOSK_USER" "$INSTALL_DIR"
+chown -hRP "${KIOSK_USER}:" "$INSTALL_DIR"
 # Tighten pre-upgrade databases, sidecars, photos and directories too.
 resolve_data_root
 # Keep directory/file descriptors open: find -P followed by pathname-based
 # chmod still follows a symlink swapped in after find has checked a file.
 python3 - "$DATA_ROOT" "$KIOSK_USER" <<'PRIVATE_DATA'
 import errno
-import grp
 import os
 import pwd
 import stat
@@ -351,7 +350,6 @@ import sys
 
 root, user = sys.argv[1:]
 account = pwd.getpwnam(user)
-group_id = grp.getgrnam(user).gr_gid
 directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 # DATA_ROOT is canonical. Open every component without following symlinks,
@@ -372,7 +370,7 @@ try:
         metadata = os.fstat(fd)
         if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
             return
-        os.fchown(fd, account.pw_uid, group_id)
+        os.fchown(fd, account.pw_uid, account.pw_gid)
         os.fchmod(fd, stat.S_IMODE(metadata.st_mode) & ~0o077)
         if not stat.S_ISDIR(metadata.st_mode):
             return
