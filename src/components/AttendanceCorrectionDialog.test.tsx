@@ -79,7 +79,7 @@ beforeEach(() => {
   vi.stubGlobal('sessionStorage', storage());
   clearPendingDirectCorrection();
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe('void mode', () => {
   it('shows the source row read-only and posts a direct void without an exception key', async () => {
@@ -506,4 +506,44 @@ describe('accessible modal', () => {
     expect(onPendingSettled).toHaveBeenCalled();
     expect(readPendingDirectCorrection()).toBeNull();
   });
+});
+
+
+it.each(['headers', 'body'])('bounds a stalled correction %s and retries the frozen request', async (stall) => {
+  vi.useFakeTimers();
+  let finish!: (value: any) => void;
+  const hanging = new Promise<any>(resolve => { finish = resolve; });
+  const fetchMock = vi.fn().mockResolvedValueOnce(stall === 'headers' ? hanging : { ok: false, status: 400, json: () => hanging })
+    .mockResolvedValueOnce({ ok: true, status: 201 });
+  vi.stubGlobal('fetch', fetchMock);
+  const { tree, onSaved, onPendingSettled } = await render();
+  await change(tree.root.findByType('textarea'), 'Duplicate badge');
+  let save!: Promise<void>;
+  await act(async () => { save = button(tree, 'Void row').props.onClick(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); await save; });
+  expect(hasButton(tree, 'Retry same save')).toBe(true);
+  expect(onPendingSettled).not.toHaveBeenCalled();
+  await act(async () => { finish(stall === 'headers' ? { ok: true, status: 201 } : { error: 'late rejection' }); });
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(onPendingSettled).not.toHaveBeenCalled();
+  await act(async () => button(tree, 'Retry same save').props.onClick());
+  expect(postBodies()[1]).toEqual(postBodies()[0]);
+  expect(onSaved).toHaveBeenCalledTimes(1);
+});
+
+it.each(['headers', 'body'])('restores the draft after a stalled adjacent-day %s', async (stall) => {
+  vi.useFakeTimers();
+  const hanging = new Promise(() => {});
+  vi.stubGlobal('fetch', vi.fn(async () => stall === 'headers' ? hanging : { ok: true, json: () => hanging }));
+  const { tree } = await render({ mode: 'add', sourceEvent: null, effectiveEvents: [] });
+  await change(tree.root.findAllByType('select')[0], 'worker-1');
+  await change(tree.root.findByProps({ type: 'time' }), '00:01');
+  await change(tree.root.findByType('textarea'), 'Missed scan');
+  let save!: Promise<void>;
+  await act(async () => { save = button(tree, 'Add punch').props.onClick(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(20_000); await save; });
+  expect(tree.root.findByType('textarea').props.value).toBe('Missed scan');
+  expect(tree.root.findByType('textarea').props.disabled).toBe(false);
+  expect(alerts(tree).join(' ')).toContain('Could not check the neighboring day');
+  expect(postBodies()).toHaveLength(0);
 });
