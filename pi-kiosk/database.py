@@ -189,6 +189,8 @@ def _migrate_history(pause=None):
     for table in ("attendance_log", "recognition_attempts"):
         _create_history_index(conn, f"CREATE INDEX IF NOT EXISTS idx_{table}_retention "
                      f"ON {table}(timestamp_epoch, id) WHERE synced = 1 AND timestamp_epoch IS NOT NULL")
+    _create_history_index(conn, "CREATE INDEX IF NOT EXISTS idx_manual_receipt_log ON manual_attendance_receipts("
+                          "CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.log_id') END)")
     for table in ("attendance_log", "recognition_attempts"):
         _migrate_event_epoch(conn, table, pause=pause)
     logger.info("Local history epoch migration complete")
@@ -1822,7 +1824,7 @@ def prune_synced_history() -> dict[str, int]:
         return {"attendance_log": 0, "recognition_attempts": 0}
     if conn.execute("""SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
         AND name IN ('idx_attendance_log_retention', 'idx_recognition_attempts_retention',
-                     'idx_attendance_worker_epoch', 'idx_attendance_worker_id')""").fetchone()[0] != 4:
+                     'idx_attendance_worker_epoch', 'idx_attendance_worker_id', 'idx_manual_receipt_log')""").fetchone()[0] != 5:
         return {"attendance_log": 0, "recognition_attempts": 0}
     deleted = {}
     # Bound candidates BEFORE checking protected evidence. A LIMIT on deletable
@@ -1869,14 +1871,37 @@ def prune_synced_history() -> dict[str, int]:
                       ORDER BY latest.id DESC LIMIT 1)
                   AND NOT EXISTS (SELECT 1 FROM attendance_rejections r
                       WHERE r.log_id = l.id AND r.released_at IS NULL)
-            )""", [row["id"] for row in candidates] + [attendance_cutoff])
-            deleted["attendance_log"] = cursor.rowcount
+            ) RETURNING id""", [row["id"] for row in candidates] + [attendance_cutoff])
+            removed_ids = [row[0] for row in cursor.fetchall()]
+            for removed_id in removed_ids:
+                conn.execute("DELETE FROM manual_attendance_receipts WHERE "
+                             "CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.log_id') END = ?",
+                             (removed_id,))
+            deleted["attendance_log"] = len(removed_ids)
             last = candidates[-1]
             conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
                          (key, json.dumps([last["timestamp_epoch"], last["id"]])))
         else:
             conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
             deleted["attendance_log"] = 0
+    # Sweep legacy receipts whose attendance was pruned before receipt retention
+    # existed. Keyset pagination bounds work even when most receipts are retained.
+    receipt_cursor = get_sync_state("manual_receipt_prune_after") or ""
+    with conn:
+        receipts = conn.execute("SELECT request_id, result_json FROM manual_attendance_receipts "
+                                "WHERE request_id > ? ORDER BY request_id LIMIT ?",
+                                (receipt_cursor, _HISTORY_PRUNE_BATCH_SIZE)).fetchall()
+        for receipt in receipts:
+            try:
+                result = json.loads(receipt["result_json"])
+                log_id = result.get("log_id") if isinstance(result, dict) else None
+            except (ValueError, TypeError):
+                continue
+            if type(log_id) is int and log_id > 0 and not conn.execute(
+                    "SELECT 1 FROM attendance_log WHERE id = ?", (log_id,)).fetchone():
+                conn.execute("DELETE FROM manual_attendance_receipts WHERE request_id = ?", (receipt["request_id"],))
+        conn.execute("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                     ("manual_receipt_prune_after", receipts[-1]["request_id"] if receipts else ""))
     with conn:
         cursor = conn.execute("""DELETE FROM recognition_attempts WHERE id IN (
             SELECT id FROM recognition_attempts INDEXED BY idx_recognition_attempts_retention

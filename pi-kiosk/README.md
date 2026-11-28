@@ -218,6 +218,13 @@ for bounded cleanup. Unsynced events, active rejection evidence, debounce
 history, and each worker's latest timestamp and last inserted action remain. SQLite reuses freed pages;
 the database file does not immediately shrink because no full vacuum runs.
 
+Manual attendance retry receipts expire when their acknowledged attendance
+event is pruned. Retained latest events and queued or rejected events keep
+their receipts. Retrying an expired request ID creates a new attendance event;
+do not retry historical manual requests after retention. Legacy receipts for
+already removed events are cleaned in bounded background batches; malformed
+receipts remain for operator review.
+
 For scale, a synthetic 185 MiB WAL database with 200,000 attendance rows and
 600,000 recognition attempts took 3.65 seconds to migrate synchronously on an
 x86 host, with 8,003 commits (an earlier run during dependency installation
