@@ -1,0 +1,19 @@
+Baseline: bfaf65769cf0662c0fc68f4ac47a722fd521fbae
+Branch: t3/face-service-correctness
+Regression before product change: exit 1, 3 tests, 8 failures (before.txt).
+Regression after fix: exit 0, 3 tests (after.txt).
+Face-service suite: exit 0, 63 tests across all 8 files, no skips.
+Heavy checks serialized with flock /tmp/fw-gatekeeper-JYxTdXIa-heavy.lock.
+Resource gate checked before each heavy validation phase; no gate stop.
+Python 3.11 owned venv: outputs/face-venv; unchanged production lock installed with hashes.
+npm ci: exit 0; worktree-owned node_modules.
+Matching Chromium install: exit 0; worktree-owned outputs/playwright.
+npm run lint: exit 0 (six warnings in unchanged TypeScript files).
+npm run typecheck: exit 0 (app and Convex).
+npm run build: exit 0 (NEXT_PUBLIC_CONVEX_URL=https://ci-only.convex.cloud).
+npx vitest run --maxWorkers=2: exit 0; 213 files / 1738 tests passed, 1 file / 3 tests skipped.
+PYTHON="$PWD/outputs/face-venv/bin/python" npm run test:python: exit 0; all 67 files passed.
+npm run test:contracts: exit 0; all 28 files passed.
+Full logs and exit files retained in outputs/validation/ (not committed).
+No full-stack proof: local Convex backend binary absent at preflight.
+No actual face JPEG, camera, ONNX inference, Docker, Render or production validation.
