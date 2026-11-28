@@ -19,6 +19,15 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+// Match the sign-in form's HTML email grammar after applying the same normalization.
+const portalEmailPattern = /^[a-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+function validateNewAccountEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  if (!portalEmailPattern.test(normalized)) throw new ConvexError('A valid email address is required');
+  return normalized;
+}
+
 function assertValidPassword(password: string) {
   if (password.length < 8) {
     throw new ConvexError('Password must be at least 8 characters long');
@@ -128,10 +137,7 @@ export const createAccountAndMember = internalMutation({
   returns: v.object({ email: v.string(), role: portalMemberRole, active: v.boolean() }),
   handler: async (ctx, args) => {
     const actor = await assertPortalRole(ctx, ['admin']);
-    const email = normalizeEmail(args.email);
-    if (!email || !email.includes('@')) {
-      throw new ConvexError('A valid email address is required');
-    }
+    const email = validateNewAccountEmail(args.email);
     assertValidPassword(args.password);
     const now = new Date().toISOString();
     const existing = await ctx.db
@@ -321,10 +327,7 @@ export const createPortalAccount = action({
   handler: async (ctx, args): Promise<{ email: string; role: PortalMemberRole; active: boolean }> => {
     await assertAdminUser(ctx);
 
-    const email = normalizeEmail(args.email);
-    if (!email || !email.includes('@')) {
-      throw new ConvexError('A valid email address is required');
-    }
+    const email = validateNewAccountEmail(args.email);
     assertValidPassword(args.password);
 
     return await ctx.runMutation(internal.portalMembers.createAccountAndMember, {

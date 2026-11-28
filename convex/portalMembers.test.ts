@@ -747,3 +747,28 @@ describe('required password rotation', { timeout: 20_000 }, () => {
     expect(await t.run(ctx => ctx.db.get(viewerMember))).toMatchObject({ active: false });
   });
 });
+
+it('rejects account addresses that the sign-in form cannot submit', async ({ onTestFinished }) => {
+  const fastHashing = useFastPasswordHashing(onTestFinished);
+  const { t, admin, viewer } = await setup();
+  const actor = t.withIdentity({ subject: admin });
+  const args = { email: 'new member@example.com', password: 'InitialPass123!', role: 'viewer' as const };
+
+  await expect(t.action(api.portalMembers.createPortalAccount, args)).rejects.toThrow('Unauthorized');
+  await expect(t.withIdentity({ subject: viewer }).action(api.portalMembers.createPortalAccount, args))
+    .rejects.toThrow('Admin access required');
+
+  await expect(actor.action(api.portalMembers.createPortalAccount, args))
+    .rejects.toThrow('A valid email address is required');
+  await expect(actor.mutation(internal.portalMembers.createAccountAndMember, args))
+    .rejects.toThrow('A valid email address is required');
+  const state = await t.run(async ctx => ({
+    user: await ctx.db.query('users').withIndex('email', q => q.eq('email', args.email)).unique(),
+    account: await ctx.db.query('authAccounts')
+      .withIndex('providerAndAccountId', q => q.eq('provider', 'password').eq('providerAccountId', args.email)).unique(),
+    audit: await ctx.db.query('auditLog').collect(),
+    alerts: await ctx.db.query('peopleAlertEvents').collect(),
+  }));
+  expect(state).toEqual({ user: null, account: null, audit: [], alerts: [] });
+  expect(fastHashing.hash).not.toHaveBeenCalled();
+});
