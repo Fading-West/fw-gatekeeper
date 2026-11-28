@@ -71,6 +71,11 @@
     "typescript": "^6.0.3",
     "vitest": "^5.0.5"
   },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
+  },
   "engines": {
     "node": ">=22 <25"
   }
