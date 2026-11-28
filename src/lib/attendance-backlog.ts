@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MAX_ATTENDANCE_BATCH_SIZE, validateAttendanceEvent, type AttendanceEvent } from '../../convex/attendanceValidation';
+import { MAX_ATTENDANCE_BATCH_SIZE, createAttendanceEventValidator, type AttendanceEvent } from '../../convex/attendanceValidation';
 import { getAttendanceReceiptStatus, ingestAttendanceBatch, SecuredIngestError } from './convex-ingest';
 
 export class AttendanceBacklogPendingError extends Error {}
@@ -14,7 +14,7 @@ function checkedAcknowledgement(result: { synced: number; acknowledged: number }
 // Old kiosks acknowledge their entire queue on HTTP 200. Durable chunk receipts
 // let retries skip completed work while preserving that all-or-nothing response.
 export async function ingestAttendanceBacklog(input: AttendanceEvent[]) {
-  const events = input.map(validateAttendanceEvent);
+  const events = input.map(createAttendanceEventValidator());
   if (events.length === 0) return { synced: 0, acknowledged: 0 };
   if (events.length <= MAX_ATTENDANCE_BATCH_SIZE) {
     return checkedAcknowledgement(await ingestAttendanceBatch(events), events.length);

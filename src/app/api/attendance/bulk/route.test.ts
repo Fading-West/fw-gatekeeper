@@ -18,6 +18,17 @@ it('preserves the old Pi wire format and returns full acknowledgement for 501 lo
   expect(await response.json()).toEqual({ synced: 501, acknowledged: 501 });
   expect(vi.mocked(ingestAttendanceBacklog).mock.calls[0][0][0]).toMatchObject({ workerId: 'worker', eventType: 'clock_in', kioskId: 'entry', idempotencyKey: 'legacy-key', livenessConfirmed: true, confidence: 1 });
 });
+it('reuses the factory clock across a large legacy backlog', async () => {
+  vi.mocked(ingestAttendanceBacklog).mockResolvedValue({ synced: 1501, acknowledged: 1501 });
+  const formatter = vi.spyOn(Intl, 'DateTimeFormat');
+  try {
+    const response = await POST(request({ kiosk_id: 'entry', logs: Array(1501).fill(log) }));
+    expect(response.status).toBe(200);
+    expect(formatter).toHaveBeenCalledTimes(1);
+  } finally {
+    formatter.mockRestore();
+  }
+});
 it('rejects a malformed final row before forwarding any events', async () => {
   const response = await POST(request({ logs: [...Array(500).fill(log), { ...log, timestamp: 'bad' }] }));
   expect(response.status).toBe(400);

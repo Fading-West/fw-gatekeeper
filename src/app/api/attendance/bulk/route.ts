@@ -4,7 +4,7 @@ import { unauthorizedApiResponse } from '@/lib/auth';
 import { authenticateKiosk, kioskClaims, kioskEvidenceId, KioskClaimMismatchError } from '@/lib/kiosk-device-auth';
 import { ConvexError } from 'convex/values';
 import { SecuredIngestError } from '@/lib/convex-ingest';
-import { validateAttendanceEvent } from '../../../../../convex/attendanceValidation';
+import { createAttendanceEventValidator } from '../../../../../convex/attendanceValidation';
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
     const identity = await authenticateKiosk(req, claims, { batchClaims: kioskClaims(body) });
     if (!identity) return unauthorizedApiResponse();
 
+    const validateAttendanceEvent = createAttendanceEventValidator();
     const mapped = events.map((value: unknown) => {
       const e = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
       return validateAttendanceEvent({
