@@ -8,6 +8,7 @@ from test_sync_mapping import ENCODING, SERVER_ID
 import config
 import database
 import sync
+from sync_health import SyncAuthHealth
 
 
 def denial(status=403, code='KIOSK_CLAIM_MISMATCH'):
@@ -120,6 +121,39 @@ class KioskClaimQueueTests(unittest.TestCase):
                 self.assertEqual(post.call_count, 2)
                 self.assertEqual(count(), 1)
                 self.assertEqual(rejected(), 0)
+
+    def test_claim_mismatch_quarantine_is_not_reported_as_a_credential_denial(self):
+        # The portal checks the credential and current claim before event claims,
+        # so KIOSK_CLAIM_MISMATCH proves the credential was accepted. Reporting it
+        # as a denial would tell supervisors to check the API key.
+        self.enqueue([config.KIOSK_ID, 'old-kiosk'])
+        tracker = SyncAuthHealth()
+        with mock.patch.object(sync, 'sync_auth_health', tracker):
+            for upload, count, rejected, *_ in self.streams():
+                self.seen = []
+                with mock.patch.object(sync.requests, 'post', side_effect=self.server), self.assertLogs(sync.logger, 'ERROR'):
+                    upload()
+                self.assertEqual(self.seen, [(config.KIOSK_ID, 1), ('old-kiosk', 1)])
+                self.assertEqual(rejected(), 1)
+            snapshot = tracker.snapshot()
+            self.assertEqual(snapshot['sync_auth_faults'], [])
+            self.assertIs(snapshot['sync_auth_phases']['attendance'], True)
+            self.assertIs(snapshot['sync_auth_phases']['recognition'], True)
+
+            # Only historical rows left: the quarantine proves nothing either way.
+            idle = SyncAuthHealth()
+            with mock.patch.object(sync, 'sync_auth_health', idle):
+                database.log_recognition_attempt(decision='unknown', kiosk_id='old-kiosk')
+                with mock.patch.object(sync.requests, 'post', side_effect=self.server), self.assertLogs(sync.logger, 'ERROR'):
+                    sync.sync_recognition_attempts()
+                self.assertIsNone(idle.snapshot()['sync_auth_phases']['recognition'])
+                self.assertEqual(idle.snapshot()['sync_auth_faults'], [])
+
+            # Any other 403 is still a protected-phase denial.
+            database.log_recognition_attempt(decision='unknown')
+            with mock.patch.object(sync.requests, 'post', return_value=denial(403, 'FORBIDDEN')):
+                sync.sync_recognition_attempts()
+            self.assertEqual(tracker.snapshot()['sync_auth_faults'], ['recognition'])
 
     def test_operator_retry_keeps_original_claim_and_audit_snapshot(self):
         self.enqueue(['old-kiosk'])

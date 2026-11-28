@@ -177,7 +177,10 @@ def _upload_attendance(log_ids: list[int], payload: list[dict], budget: list[int
     except requests.RequestException as exc:
         logger.warning("Attendance sync request failed; retaining unacknowledged batch (error=%s)", type(exc).__name__)
         return False
-    sync_auth_health.observe("attendance", response.status_code)
+    # KIOSK_CLAIM_MISMATCH is a record-level denial returned only after the
+    # credential and current claim are accepted; it is not an auth fault.
+    if not _claim_mismatch(response):
+        sync_auth_health.observe("attendance", response.status_code)
     if response.status_code == 200 and _attendance_acknowledged(response, len(payload)):
         database.mark_synced(log_ids)
         sync_auth_health.observe("attendance", response.status_code, validated=True)
@@ -407,7 +410,10 @@ def _upload_recognition(attempt_ids: list[int], payload: list[dict], budget: lis
     except requests.RequestException as exc:
         logger.warning("Recognition sync request failed (error=%s); keeping unresolved evidence queued", type(exc).__name__)
         return False
-    sync_auth_health.observe("recognition", response.status_code)
+    # KIOSK_CLAIM_MISMATCH is a record-level denial returned only after the
+    # credential and current claim are accepted; it is not an auth fault.
+    if not _claim_mismatch(response):
+        sync_auth_health.observe("recognition", response.status_code)
     if 200 <= response.status_code < 300 and _recognition_acknowledged(response, len(payload)):
         database.mark_recognition_attempts_synced(attempt_ids)
         sync_auth_health.observe("recognition", response.status_code, validated=True)
