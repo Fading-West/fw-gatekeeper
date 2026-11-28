@@ -44,6 +44,22 @@ it('rejects malformed photo arrays before calling the encoding service', async (
   expect((await POST(request([{}, {}, {}]))).status).toBe(400);
   expect(mocks.fetch).not.toHaveBeenCalled();
 });
+it.each(['name', 'employeeId', 'department'].flatMap(field =>
+  [123, {}, [], null, true].map(value => ({ field, value })),
+))('rejects invalid identity value $field=$value before enrollment work', async ({ field, value }) => {
+  const response = await POST(new NextRequest('https://example.test/api/enroll', {
+    method: 'POST', body: JSON.stringify({
+      name: 'Test Worker', consent: true, consentAgeMs: 0,
+      photos: ['YQ==', 'Yg==', 'Yw=='], [field]: value,
+    }),
+  }));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: `${field} must be a string` });
+  expect(mocks.query).not.toHaveBeenCalled();
+  expect(mocks.fetch).not.toHaveBeenCalled();
+  expect(mocks.action).not.toHaveBeenCalled();
+  expect(mocks.mutation).not.toHaveBeenCalled();
+});
 it('rejects an invalid accepted-index response before any storage write', async () => {
   mocks.fetch.mockResolvedValueOnce(Response.json({ encoding: Array(512).fill(0.1), used_photo_indexes: [0,99] }));
   expect((await POST(request())).status).toBe(503);

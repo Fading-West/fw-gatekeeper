@@ -58,6 +58,12 @@ export async function POST(req: NextRequest) {
     // Preserve elapsed consent age across encoding and photo uploads.
     const consentAt = new Date(Date.now() - consentAgeMs).toISOString();
 
+    for (const [field, value] of Object.entries({ name, employeeId, department })) {
+      if (value !== undefined && typeof value !== 'string') {
+        return NextResponse.json({ error: `${field} must be a string` }, { status: 400 });
+      }
+    }
+
     let normalizedName = name?.trim();
     let employeeIdForSave = employeeId?.trim() || undefined;
     let departmentForSave = department?.trim() || undefined;
