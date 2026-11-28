@@ -4,9 +4,10 @@ import { getPortalMemberForToken } from '@/lib/portal-member';
 import { proxy } from './proxy';
 
 vi.mock('@/lib/portal-member', () => ({ getPortalMemberForToken: vi.fn() }));
+const { readSession } = vi.hoisted(() => ({ readSession: vi.fn(async () => 'session-token') }));
 vi.mock('@convex-dev/auth/nextjs/server', () => ({
   convexAuthNextjsMiddleware: (handler: (req: NextRequest, ctx: unknown) => unknown) =>
-    (req: NextRequest) => handler(req, { convexAuth: { getToken: async () => 'session-token' } }),
+    (req: NextRequest) => handler(req, { convexAuth: { getToken: readSession } }),
 }));
 
 beforeEach(() => {
@@ -18,6 +19,16 @@ const run = async (path: string, headers?: Record<string, string>) => {
   if (!response) throw new Error('Expected middleware response');
   return response;
 };
+
+it.each(['/api/health', '/api/health/', '/api/activity', '/api/activity/'])(
+  'dispatches %s without reading portal authentication or membership',
+  async path => {
+    const response = await run(path, { cookie: 'portal-session=synthetic' });
+    expect(response.headers.get('x-middleware-next')).toBe('1');
+    expect(readSession).not.toHaveBeenCalled();
+    expect(getPortalMemberForToken).not.toHaveBeenCalled();
+  },
+);
 
 describe('password rotation middleware', () => {
   it.each(['/', '/accounts', '/kiosks', '/workers', '/enroll', '/schedules'])('redirects %s to the change form', async path => {

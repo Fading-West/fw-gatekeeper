@@ -3,9 +3,8 @@ import { NextFetchEvent, NextRequest, NextResponse } from 'next/server';
 import { hasDeviceKeyFormat, hasValidKioskKey, isKioskRequestAllowed, unauthorizedApiResponse } from '@/lib/auth';
 import { getPortalMemberForToken, type PortalMemberRole } from '@/lib/portal-member';
 
-// /api/activity has its own dedicated bearer authentication. It must not use
-// browser cookies, but the route and its Convex data path both remain protected.
-const PUBLIC_PATHS = ['/login', '/api/convex-auth', '/api/health', '/api/activity'];
+const PUBLIC_PATHS = ['/login', '/api/convex-auth'];
+const MACHINE_ENDPOINTS = new Set(['/api/health', '/api/activity']);
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
@@ -146,6 +145,11 @@ const authenticatedMiddleware = convexAuthNextjsMiddleware(async (req, { convexA
 });
 
 export function proxy(req: NextRequest, event: NextFetchEvent) {
+  // Health has its own deadline and activity authenticates its bearer in
+  // Convex. Neither endpoint should wait on browser session refresh or lookup.
+  if (MACHINE_ENDPOINTS.has(req.nextUrl.pathname.replace(/\/$/, ''))) {
+    return NextResponse.next();
+  }
   return authenticatedMiddleware(req, event);
 }
 
