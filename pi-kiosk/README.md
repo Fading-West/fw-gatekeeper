@@ -325,8 +325,39 @@ loss as well as blocked UDP 123, and verify payroll review of the outage window.
 | "KIOSK_UI_KEY is required" | Rerun setup with a generated Pi-local UI key and restart the service |
 | False rejections | Lower `RECOGNITION_MATCH_THRESHOLD` slightly (e.g. `0.40`) in `config_local.py` |
 | False matches | Raise `RECOGNITION_MATCH_THRESHOLD` (e.g. `0.50`–`0.55`) in `config_local.py` |
+| "attendance write failed" on dashboard | See *Attendance write faults* below; a new committed punch clears it |
 | Scanner degraded on dashboard | Check `journalctl -u fw-gatekeeper-kiosk -f` for camera/model/liveness errors |
 | "queued logs have no server worker mapping" | Queued rows whose worker row was removed before this release; see *Stranded attendance rows* below |
+
+### Attendance write faults
+
+When the local SQLite attendance transaction fails (opening the database,
+`BEGIN IMMEDIATE`, the attendance insert, the manual-clock receipt insert, or
+the commit), the kiosk rolls back and adds `attendance_write_failed` to the
+health snapshot's `degraded_reason`. It composes with device, policy and clock
+reasons like `clock_unsynchronized`; `/health` reports `degraded`, the local-only
+`attendance_write_ok`/`attendance_write_failed_at` fields show the latest
+failure, and the existing heartbeat carries the reason to the portal. Kiosks,
+System Health, Briefing, Closeout and the `device_fault` alert show:
+"An attendance write failed — verify the worker’s punch and local storage;
+retry or ask a supervisor."
+
+Only a new punch whose enclosing transaction commits clears it, and only the
+write reason clears. A manual receipt replay, the inner insert of a transaction
+that later fails, and failed validation, identity, policy or enrollment checks
+change nothing. Recognition telemetry, sync, history pruning and health reads
+are not attendance writes. Outcomes are published at transaction completion
+under one lock, so concurrent punches report in the order they finished.
+
+The observation is process-local and in memory: restarting the kiosk service
+(or the Pi) removes it even if storage is still failing, until the next punch
+fails. Nothing probes storage, frees disk space, restarts the service,
+suppresses writes or corrects attendance. Check the worker's punch in the
+Activity Log, then `df -h` and `journalctl -u fw-gatekeeper-kiosk` for the
+logged SQLite error type. Physical Pi acceptance (full or read-only data disk,
+then recovery by a new punch) is still required. The recovery launcher
+migration (Trello EF9y08TJ) does not change this behavior; a launcher-driven
+restart or update trial also clears the observation.
 
 ### Rejected attendance uploads
 

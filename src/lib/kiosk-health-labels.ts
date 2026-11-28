@@ -2,6 +2,7 @@
 export const KIOSK_DEGRADED_REASON_LABELS: Record<string, string> = {
   clock_unsynchronized: 'system clock is not synchronized — attendance times may be wrong; contact a supervisor',
   camera_error: 'camera failure — the kiosk cannot scan',
+  attendance_write_failed: 'attendance write failed — verify the worker’s punch and local storage; retry or ask a supervisor',
   model_error: 'recognition model failed to load — all scans are rejected',
   encoding_mismatch: 'face encodings do not match the kiosk model — all workers are rejected',
   no_workers_synced: 'no workers synced — every scan is rejected',

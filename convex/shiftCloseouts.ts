@@ -7,6 +7,7 @@ import { isValidFactoryLocalDateKey } from "./localDate";
 import { buildShiftExceptions, getReviewFingerprint } from "./shiftExceptions";
 import { buildShiftBriefing, describeKioskWarningReasons, summarizeAttendanceQueue } from "./shiftBriefing";
 import { ATTENDANCE_QUEUE_SCOPE_NOTE } from "./attendanceQueue";
+import { ATTENDANCE_WRITE_FAULT_GUIDANCE } from "../src/lib/kiosk-health-reasons";
 import { assertPortalRole } from "./access";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
@@ -128,6 +129,7 @@ function buildChecklist(input: {
   recognitionReviews: any[];
   kioskWarnings: number;
   kioskWarningReasons: string;
+  attendanceWriteFault: boolean;
   attendanceQueue: AttendanceQueueSummary;
   unavailableWorkers: number;
   notYetDueWorkers: number;
@@ -205,7 +207,7 @@ function buildChecklist(input: {
       href: kioskHref,
       proof: proof(input.kioskWarnings, "kiosk trust warnings", kioskHref, false),
       description: input.kioskWarnings
-        ? `${input.kioskWarnings} kiosk trust warning${input.kioskWarnings === 1 ? "" : "s"} (${input.kioskWarningReasons}) may affect shift confidence.${input.attendanceQueue.affected_kiosks ? ` ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`
+        ? `${input.kioskWarnings} kiosk trust warning${input.kioskWarnings === 1 ? "" : "s"} (${input.kioskWarningReasons}) may affect shift confidence.${input.attendanceWriteFault ? ` ${ATTENDANCE_WRITE_FAULT_GUIDANCE}` : ""}${input.attendanceQueue.affected_kiosks ? ` ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`
         : input.attendanceQueue.unknown_kiosks
           ? `No kiosk trust warnings. ${plural(input.attendanceQueue.unknown_kiosks, "kiosk")} did not include a valid attendance queue count in the latest report and had no unresolved positive count.`
           : "All kiosk trust signals are clear.",
@@ -292,6 +294,7 @@ function buildCloseoutDraft(input: {
   sourceBlockers: ReturnType<typeof buildChecklist>;
   actionLinks: Array<{ label: string; href: string }>;
   attendanceQueue: AttendanceQueueSummary;
+  attendanceWriteFault: boolean;
 }) {
   const sourceCounts = {
     ...input.summary,
@@ -347,7 +350,7 @@ function buildCloseoutDraft(input: {
       "kiosk_trust_caveats",
       "Kiosk trust caveats",
       input.summary.kiosk_warnings
-        ? `${plural(input.summary.kiosk_warnings, "kiosk trust warning")} may affect confidence in the physical-door attendance record and should be reviewed against kiosk sync evidence.${input.attendanceQueue.affected_kiosks ? ` Incomplete attendance evidence: ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`
+        ? `${plural(input.summary.kiosk_warnings, "kiosk trust warning")} may affect confidence in the physical-door attendance record and should be reviewed against kiosk sync evidence.${input.attendanceWriteFault ? ` ${ATTENDANCE_WRITE_FAULT_GUIDANCE}` : ""}${input.attendanceQueue.affected_kiosks ? ` Incomplete attendance evidence: ${attendanceQueueSentence(input.attendanceQueue)}` : ""}`
         : "No kiosk trust warnings are blocking the closeout based on current kiosk sync evidence.",
       [
         {
@@ -413,6 +416,7 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
   const kioskWarnings = briefing.summary.kiosk_warnings || 0;
   const kioskWarningReasons = describeKioskWarningReasons(briefing.kiosks.rows.filter(kiosk => kiosk.warning_reasons.length > 0));
   const attendanceQueue = briefing.kiosks.attendance_queue;
+  const attendanceWriteFault = briefing.kiosks.rows.some(kiosk => kiosk.attendance_write_failed);
   // Canonical, collision-free comparison evidence. Exclude names, notes and
   // routine heartbeat times: those do not change the blocker being reviewed.
   // Queue entries carry the count and known/unknown state, never the
@@ -459,6 +463,7 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     recognitionReviews,
     kioskWarnings,
     kioskWarningReasons,
+    attendanceWriteFault,
     attendanceQueue,
     unavailableWorkers: briefing.coverage_unavailable,
     notYetDueWorkers: briefing.daily_attendance.not_yet_due,
@@ -472,6 +477,7 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     recognitionReviews,
     kioskWarnings,
     kioskWarningReasons,
+    attendanceWriteFault,
     attendanceQueue,
     unavailableWorkers: briefing.coverage_unavailable,
     notYetDueWorkers: briefing.daily_attendance.not_yet_due,
@@ -514,6 +520,7 @@ async function buildCloseoutPayload(ctx: any, date: string, { compareAttendance 
     sourceBlockers,
     actionLinks,
     attendanceQueue,
+    attendanceWriteFault,
   });
 
   return {

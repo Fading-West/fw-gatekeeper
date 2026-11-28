@@ -3,7 +3,7 @@ import { isSupportedEncoding } from "../src/lib/encoding";
 import { getFactoryLocalDateKey } from "./localDate";
 import { query } from "./_generated/server";
 import { v } from "convex/values";
-import { getKioskDegradedReasons } from "../src/lib/kiosk-health-reasons";
+import { ATTENDANCE_WRITE_FAULT_GUIDANCE, getKioskDegradedReasons, hasAttendanceWriteFault } from "../src/lib/kiosk-health-reasons";
 import { listEffectiveAttendanceByTimestampRange } from "./attendance";
 import { listCorrectionsByDateRange } from "./attendanceReads";
 import { buildShiftExceptions } from "./shiftExceptions";
@@ -148,6 +148,8 @@ const SCAN_BLOCKING_DEGRADED_REASONS = new Set([
   "encoding_mismatch",
   "no_workers_synced",
   "liveness_required_unavailable",
+  // Punches are not being saved locally; cleared by the kiosk's next committed punch.
+  "attendance_write_failed",
 ]);
 
 function hasScanBlockingDeviceFault(health: any): boolean {
@@ -221,6 +223,7 @@ function buildShiftTrustBrief(input: {
   kioskCounts: Record<KioskStatus, number>;
   // All kiosks reporting a scan-blocking fault (drives blockers/severity).
   deviceFaultKiosks: number;
+  attendanceWriteFaultKiosks: number;
   kioskWarningReasons: string;
   attendanceQueue: ReturnType<typeof summarizeAttendanceQueue>;
   attendanceCorrections: any[];
@@ -282,7 +285,7 @@ function buildShiftTrustBrief(input: {
       "kiosk",
       "critical",
       "Kiosk hardware faults block scanning",
-      `${plural(input.deviceFaultKiosks, "kiosk")} report a camera, model, roster, or required blink-verification fault that prevents face scans.`,
+      `${plural(input.deviceFaultKiosks, "kiosk")} report a camera, model, roster, required blink-verification, or attendance-write fault that prevents recording face scans.${input.attendanceWriteFaultKiosks ? ` ${ATTENDANCE_WRITE_FAULT_GUIDANCE}` : ""}`,
       input.deviceFaultKiosks,
       "/kiosks",
     ));
@@ -672,6 +675,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
         last_sync: kiosk.lastSync || null,
         status,
         device_fault: deviceFault,
+        attendance_write_failed: hasAttendanceWriteFault(kiosk.health?.degradedReason),
         attendance_queue: attendanceQueue,
         warning_reasons: getKioskWarningReasons(status, deviceFault, attendanceQueue),
       };
@@ -756,7 +760,9 @@ export async function buildShiftBriefing(ctx: any, date: string) {
           id: `kiosk-device:${kiosk.id}`,
           priority: "critical" as ActionPriority,
           label: `${kiosk.name} reports a device fault`,
-          description: `${kiosk.location || "No location set"} cannot scan faces until the reported camera, model, or roster fault is fixed.`,
+          description: kiosk.attendance_write_failed
+            ? `${kiosk.location || "No location set"}: ${ATTENDANCE_WRITE_FAULT_GUIDANCE}`
+            : `${kiosk.location || "No location set"} cannot scan faces until the reported camera, model, or roster fault is fixed.`,
           href: "/kiosks",
         })),
       ...kioskRows
@@ -807,6 +813,7 @@ export async function buildShiftBriefing(ctx: any, date: string) {
       recognitionReviews,
       kioskCounts,
       deviceFaultKiosks,
+      attendanceWriteFaultKiosks: kioskRows.filter((kiosk) => kiosk.attendance_write_failed).length,
       kioskWarningReasons: describeKioskWarningReasons(warningKiosks),
       attendanceQueue,
       attendanceCorrections,
