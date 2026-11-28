@@ -123,6 +123,7 @@ export const internalHealthSnapshot = internalQuery({
   returns: v.array(v.object({
     last_sync: v.union(v.string(), v.null()),
     health: healthSerialized,
+    attendance_queue: attendanceQueueSerialized,
   })),
   handler: async (ctx) => {
     const kiosks = await ctx.db
@@ -132,6 +133,7 @@ export const internalHealthSnapshot = internalQuery({
     return kiosks.map((kiosk) => ({
       last_sync: kiosk.lastSync ?? null,
       health: serializeHealth(kiosk.health),
+      attendance_queue: observeAttendanceQueue(kiosk),
     }));
   },
 });
