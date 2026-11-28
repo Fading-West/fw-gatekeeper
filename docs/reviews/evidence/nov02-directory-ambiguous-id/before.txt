@@ -1,0 +1,61 @@
+
+ RUN  v5.0.5 /home/noah/.t3/worktrees/fw-gatekeeper/t3-45de045f
+
+ ❯ src/app/api/employee-directory/ambiguous-id.test.ts (2 tests | 2 failed) 14ms
+   × does not bypass an ambiguous employee ID with a third name-only worker 7ms
+   × keeps the ambiguous row in remaining API suggestions without a re-enrollment target 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/app/api/employee-directory/ambiguous-id.test.ts > does not bypass an ambiguous employee ID with a third name-only worker
+AssertionError: expected { name: 'Alex Gonzalez', …(4) } to match object { status: 'not_enrolled' }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "status": "not_enrolled",
++   "status": "enrolled",
+  }
+
+ ❯ src/app/api/employee-directory/ambiguous-id.test.ts:26:22
+     24|     const result = reconcileEmployeeDirectory(input);
+     25|     const employee = result.employees.find(row => row.employeeId === '…
+     26|     expect(employee).toMatchObject({ status: 'not_enrolled' });
+       |                      ^
+     27|     expect(employee).not.toHaveProperty('workerId');
+     28|     expect(result.summary.enrolled).toBe(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/app/api/employee-directory/ambiguous-id.test.ts > keeps the ambiguous row in remaining API suggestions without a re-enrollment target
+AssertionError: expected { Object (name, employeeId, ...) } to deeply equal { name: 'Alex Gonzalez', …(3) }
+
+- Expected
++ Received
+
+  {
+    "department": "Area Manager",
+-   "employeeId": "F-2",
+-   "name": "Alex Gonzalez",
++   "employeeId": "F-29",
++   "name": "Angel Centeno Bastardo",
+    "status": "not_enrolled",
+  }
+
+ ❯ src/app/api/employee-directory/ambiguous-id.test.ts:39:33
+     37|   expect(response.status).toBe(200);
+     38|   const result = await response.json();
+     39|   expect(result.suggestions[0]).toEqual({
+       |                                 ^
+     40|     name: 'Alex Gonzalez', employeeId: 'F-2', department: 'Area Manage…
+     41|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed (2)
+   Start at  12:09:00
+   Duration  297ms (transform 53%, import 39%, tests 7%, worker 2%)
