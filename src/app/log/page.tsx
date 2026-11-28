@@ -11,6 +11,7 @@ import AttendanceCorrectionDialog from '@/components/AttendanceCorrectionDialog'
 import { useToast } from '@/components/Toast';
 import { AttendanceCorrection, AttendanceCorrectionsResponse, AttendanceWithWorker, Worker } from '@/lib/types';
 import { formatFactoryLocalDateTime } from '@/lib/date';
+import { boundedRead } from '@/lib/bounded-read';
 import { buildHoursExportRows } from '@/lib/attendance-hours';
 import { buildAttendanceExportCSV, buildHoursExportCSV } from '@/lib/attendance-export';
 import { isValidLocalDateString } from '@/lib/date';
@@ -150,19 +151,22 @@ function LogPageContent() {
   useEffect(() => {
     if (!canCorrect) return;
     let cancelled = false;
+    const controller = new AbortController();
     setWorkerList((current) => ({ status: 'loading', workers: current.workers }));
     (async () => {
       try {
-        const response = await fetch('/api/workers?scope=dashboard');
-        if (!response.ok) throw new Error('Failed to load workers');
-        const rows = await response.json();
+        const rows = await boundedRead(async (signal) => {
+          const response = await fetch('/api/workers?scope=dashboard', { signal });
+          if (!response.ok) throw new Error('Failed to load workers');
+          return response.json();
+        }, controller.signal);
         if (!Array.isArray(rows)) throw new Error('Unexpected worker list');
         if (!cancelled) setWorkerList({ status: 'ready', workers: rows });
       } catch {
         if (!cancelled) setWorkerList({ status: 'error', workers: [] });
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [canCorrect, workerListVersion]);
 
   useEffect(() => {
@@ -259,17 +263,22 @@ function LogPageContent() {
     }
 
     let cancelled = false;
+    const controller = new AbortController();
     const fetchLog = async () => {
       setLoading(true);
       setError('');
       try {
-        const [attendanceRes, correctionsRes] = await Promise.all([
-          fetch(`/api/attendance?${attendanceParams.toString()}`),
-          fetch(`/api/attendance-corrections?${correctionParams.toString()}`),
-        ]);
-        if (!attendanceRes.ok || !correctionsRes.ok) throw new Error('Failed to load activity log');
-        const eventRows: AttendanceWithWorker[] = await attendanceRes.json();
-        const correctionPayload: AttendanceCorrectionsResponse = await correctionsRes.json();
+        const [eventRows, correctionPayload] = await boundedRead(async (signal) => {
+          const [attendanceRes, correctionsRes] = await Promise.all([
+            fetch(`/api/attendance?${attendanceParams.toString()}`, { signal }),
+            fetch(`/api/attendance-corrections?${correctionParams.toString()}`, { signal }),
+          ]);
+          if (!attendanceRes.ok || !correctionsRes.ok) throw new Error('Failed to load activity log');
+          return Promise.all([
+            attendanceRes.json() as Promise<AttendanceWithWorker[]>,
+            correctionsRes.json() as Promise<AttendanceCorrectionsResponse>,
+          ]);
+        }, controller.signal);
         if (correctionPayload.backend_unavailable) throw new Error('Attendance correction history is unavailable');
         if (cancelled) return;
         setEvents(Array.isArray(eventRows) ? eventRows : []);
@@ -281,12 +290,14 @@ function LogPageContent() {
         setCorrections([]);
         setError(err instanceof Error ? err.message : 'Failed to load activity log');
       } finally {
+        controller.abort();
         if (!cancelled) setLoading(false);
       }
     };
     fetchLog();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [date, queryWorkerId, refreshVersion]);
 
@@ -374,17 +385,17 @@ function LogPageContent() {
     let boundaryEvents: AttendanceWithWorker[] = [];
     let previousEvents: AttendanceWithWorker[] = [];
     try {
-      [previousEvents, boundaryEvents] = await Promise.all([-1, 1].map(async (offset) => {
+      [previousEvents, boundaryEvents] = await boundedRead((signal) => Promise.all([-1, 1].map(async (offset) => {
         const neighbor = new Date(`${date}T00:00:00Z`);
         neighbor.setUTCDate(neighbor.getUTCDate() + offset);
         const params = new URLSearchParams({ date: neighbor.toISOString().slice(0, 10) });
         if (queryWorkerId) params.set('worker_id', queryWorkerId);
-        const res = await fetch(`/api/attendance?${params.toString()}`, { signal: controller.signal });
+        const res = await fetch(`/api/attendance?${params.toString()}`, { signal });
         if (!res.ok) throw new Error(`neighboring-day fetch failed (${res.status})`);
         const rows = await res.json();
         if (!Array.isArray(rows)) throw new Error('neighboring-day fetch returned an unexpected payload');
         return rows;
-      }));
+      })), controller.signal);
       // Abort alone cannot prevent a response/body that already completed
       // from downloading a payroll file based on superseded source events.
       if (!isCurrent()) return;

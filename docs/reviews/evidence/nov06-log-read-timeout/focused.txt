@@ -1,0 +1,22 @@
+
+ RUN  v5.0.5 /home/noah/repos/fw-gatekeeper
+
+
+ Test Files  4 passed (4)
+      Tests  70 passed (70)
+   Start at  13:08:31
+   Duration  759ms (tests 48%, transform 37%, import 14%, worker 1%)
+
+
+ RUN  v5.0.5 /home/noah/repos/fw-gatekeeper
+
+(node:1203402) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/noah/repos/fw-gatekeeper/tailwind.config.ts?id=1793992161331 is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/noah/repos/fw-gatekeeper/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  8 passed (8)
+      Tests  52 passed (52)
+   Start at  13:09:20
+   Duration  17.47s (tests 93%, import 5%, transform 1%)
+

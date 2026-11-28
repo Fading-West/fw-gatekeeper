@@ -1,0 +1,20 @@
+Base: origin/master 5f85003ad5e9eb40794337d020977f9a1b7929fa
+Command: npx vitest run src/app/log/log-read-timeout.test.tsx
+New first-six regression tests, before production changes.
+   × releases a stalled /api/attendance? request and ignores late completion after retry 52ms
+   × releases a stalled /api/attendance? body and ignores late completion after retry 5ms
+   × releases a stalled /api/attendance-corrections? request and ignores late completion after retry 4ms
+   × releases a stalled /api/attendance-corrections? body and ignores late completion after retry 4ms
+   × releases a stalled hours neighbor request without downloading and allows retry 7ms
+   × releases a stalled hours neighbor body without downloading and allows retry 5ms
+ FAIL  src/app/log/log-read-timeout.test.tsx > releases a stalled /api/attendance? request and ignores late completion after retry
+ FAIL  src/app/log/log-read-timeout.test.tsx > releases a stalled /api/attendance? body and ignores late completion after retry
+ FAIL  src/app/log/log-read-timeout.test.tsx > releases a stalled /api/attendance-corrections? request and ignores late completion after retry
+ FAIL  src/app/log/log-read-timeout.test.tsx > releases a stalled /api/attendance-corrections? body and ignores late completion after retry
+AssertionError: expected '{"type":"div","props":{"className":"a…' to contain 'Live data request timed out'
+ FAIL  src/app/log/log-read-timeout.test.tsx > releases a stalled hours neighbor request without downloading and allows retry
+ FAIL  src/app/log/log-read-timeout.test.tsx > releases a stalled hours neighbor body without downloading and allows retry
+TypeError: Cannot read properties of undefined (reading 'props')
+ Test Files  1 failed (1)
+      Tests  6 failed (6)
+   Duration  327ms (transform 50%, tests 32%, import 16%, worker 1%)
